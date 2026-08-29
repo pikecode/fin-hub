@@ -532,6 +532,35 @@ export default function DingTalkPage() {
     await loadMappings(template);
   }
 
+  async function syncTemplateSample() {
+    if (!selectedTemplate) return;
+    const template = selectedTemplate;
+    setIsLoading(true);
+    setErrorMessage(null);
+    try {
+      const job = await apiClient.dingtalk.startApprovalSync({
+        template_id: template.id,
+        started_by: "admin",
+        start_at: dayjs().subtract(180, "day").toISOString(),
+        end_at: dayjs().toISOString(),
+        page_size: 1,
+        max_pages: 1,
+        skip_existing: false,
+      });
+      await loadData();
+      await loadMappings(template);
+      if (job.success_count > 0) {
+        message.success("已拉取一条真实审批样例，钉钉字段下拉已刷新");
+      } else {
+        message.warning("没有拉取到审批样例，请调整同步时间窗口后再试");
+      }
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "无法拉取审批样例");
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
   function applyFieldCandidate(fieldKey: string) {
     const candidate = fieldCandidates.find((item) => candidateKey(item) === fieldKey || item.source_field_name === fieldKey);
     if (!candidate) return;
@@ -1036,8 +1065,8 @@ export default function DingTalkPage() {
         width={1040}
         extra={
           <Space>
-            <Button disabled={!selectedTemplate} onClick={openSyncModal} loading={isLoading}>
-              同步当前模板审批
+            <Button disabled={!selectedTemplate} onClick={syncTemplateSample} loading={isLoading}>
+              拉取一条样例审批
             </Button>
             <Button type="primary" disabled={!selectedTemplate} onClick={() => openMappingModal()}>
               新增字段
@@ -1070,10 +1099,10 @@ export default function DingTalkPage() {
                 type="warning"
                 showIcon
                 message="这个模板还没有可选字段"
-                description="字段样例来自已同步到本地的审批单。请先同步这个模板的审批列表，系统拿到真实审批数据后，这里会出现可配置的钉钉字段。"
+                description="字段下拉来自这个模板的真实审批数据。请先拉取一条样例审批，系统解析出字段后再配置显示名称。"
                 action={
-                  <Button size="small" type="primary" onClick={openSyncModal}>
-                    同步当前模板审批
+                  <Button size="small" type="primary" onClick={syncTemplateSample} loading={isLoading}>
+                    拉取样例
                   </Button>
                 }
               />
@@ -1356,14 +1385,30 @@ export default function DingTalkPage() {
         }}
         onOk={() => mappingForm.submit()}
         confirmLoading={isLoading}
+        okButtonProps={{ disabled: !fieldCandidates.length }}
         width={560}
       >
         <Form form={mappingForm} layout="vertical" onFinish={submitMapping}>
+          {!fieldCandidates.length ? (
+            <Alert
+              className="dashboard-alert"
+              type="warning"
+              showIcon
+              message="还没有可选择的钉钉字段"
+              description="字段必须从当前审批模板的真实审批数据解析出来。先拉取一条样例审批，成功后这里会变成下拉选择。"
+              action={
+                <Button size="small" type="primary" onClick={syncTemplateSample} loading={isLoading}>
+                  拉取一条样例审批
+                </Button>
+              }
+            />
+          ) : null}
           <Form.Item name="selected_field_key" label="选择钉钉字段" rules={[{ required: true }]}>
             <Select
               showSearch
               placeholder={fieldCandidates.length ? "选择这个模板里的钉钉字段" : "请先同步当前模板审批"}
               optionFilterProp="label"
+              disabled={!fieldCandidates.length}
               onChange={applyFieldCandidate}
               options={fieldCandidates.map((candidate) => ({
                 label: `${candidate.source_field_name} / ${compactSampleValue(candidate.sample_value)}`,
