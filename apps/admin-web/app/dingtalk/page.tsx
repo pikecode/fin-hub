@@ -209,6 +209,31 @@ function compactSampleValue(value: unknown) {
   return text.length > 120 ? `${text.slice(0, 120)}...` : text;
 }
 
+function fieldCandidateSearchText(candidate: TemplateFieldCandidate) {
+  return [
+    candidate.source_field_name,
+    candidate.source_field_id,
+    candidate.field_type,
+    compactSampleValue(candidate.sample_value),
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+function renderFieldCandidateOption(candidate: TemplateFieldCandidate) {
+  return (
+    <Space direction="vertical" size={2}>
+      <Typography.Text strong>{candidate.source_field_name}</Typography.Text>
+      <Typography.Text
+        type="secondary"
+        style={{ display: "block", maxWidth: 420, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+      >
+        样例：{compactSampleValue(candidate.sample_value)}
+      </Typography.Text>
+    </Space>
+  );
+}
+
 function approvalCountByTemplate(instances: ApprovalInstance[]) {
   return instances.reduce<Record<string, number>>((result, instance) => {
     result[instance.template_id] = (result[instance.template_id] ?? 0) + 1;
@@ -1433,11 +1458,16 @@ export default function DingTalkPage() {
             <Select
               showSearch
               placeholder={fieldCandidates.length ? "选择这个模板里的钉钉字段" : "请先同步当前模板审批"}
-              optionFilterProp="label"
+              optionLabelProp="fieldName"
+              filterOption={(input, option) =>
+                String(option?.searchText ?? "").toLowerCase().includes(input.toLowerCase())
+              }
               disabled={!fieldCandidates.length}
               onChange={applyFieldCandidate}
               options={fieldCandidates.map((candidate) => ({
-                label: `${candidate.source_field_name} / ${compactSampleValue(candidate.sample_value)}`,
+                label: renderFieldCandidateOption(candidate),
+                fieldName: candidate.source_field_name,
+                searchText: fieldCandidateSearchText(candidate),
                 value: candidateKey(candidate),
               }))}
             />
