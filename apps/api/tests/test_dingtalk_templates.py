@@ -340,3 +340,121 @@ def test_resume_approval_sync_uses_saved_cursor(client: TestClient, monkeypatch)
     descriptions = [item["description"] for item in expense_response.json()["data"]["items"]]
     assert "续跑同步 instance-1" in descriptions
     assert "续跑同步 instance-2" in descriptions
+
+
+def test_department_sync_preview_and_sync_creates_store(client: TestClient, monkeypatch) -> None:
+    client.put(
+        "/api/dingtalk/config",
+        json={"app_key": "ding-app-key", "app_secret": "super-secret"},
+    )
+
+    class FakeDingTalkClient:
+        def __init__(self) -> None:
+            self.departments = {
+                "1": [
+                    {"dept_id": 10, "name": "门店运营部", "parent_id": 1},
+                    {"dept_id": 20, "name": "财务部", "parent_id": 1},
+                ],
+                "10": [{"dept_id": 11, "name": "江门区", "parent_id": 10}],
+                "11": [{"dept_id": 12, "name": "蘑说测试店", "parent_id": 11}],
+                "12": [
+                    {"dept_id": 13, "name": "前厅部门", "parent_id": 12},
+                    {"dept_id": 14, "name": "后厨部门", "parent_id": 12},
+                ],
+                "13": [],
+                "14": [],
+                "20": [],
+            }
+
+        def list_child_departments(self, dept_id):
+            return self.departments.get(str(dept_id), [])
+
+    monkeypatch.setattr("app.modules.dingtalk.router.dingtalk_client", lambda config: FakeDingTalkClient())
+
+    preview_response = client.get("/api/dingtalk/departments/sync-preview?root_dept_id=1&max_depth=4")
+    assert preview_response.status_code == 200
+    preview = preview_response.json()["data"]
+    assert preview["candidate_count"] == 1
+    assert preview["create_count"] == 1
+    candidates = [item for item in preview["departments"] if item["is_store_candidate"]]
+    assert candidates[0]["name"] == "蘑说测试店"
+
+    sync_response = client.post("/api/dingtalk/departments/sync?root_dept_id=1&max_depth=4")
+    assert sync_response.status_code == 200
+    result = sync_response.json()["data"]
+    assert result["created_count"] == 1
+    assert result["stores"][0]["name"] == "蘑说测试店"
+    assert result["stores"][0]["dingtalk_dept_id"] == "12"
+
+
+def test_real_approval_sync_splits_table_rows_and_resolves_store_path(client: TestClient, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "dingtalk_sync_mode", "real")
+    client.put(
+        "/api/dingtalk/config",
+        json={"app_key": "ding-app-key", "app_secret": "super-secret"},
+    )
+    store_id = client.post(
+        "/api/stores",
+        json={"name": "菌山集开平东汇城店", "dingtalk_dept_id": "1083312383"},
+    ).json()["data"]["id"]
+    template_id = client.post(
+        "/api/dingtalk/templates",
+        json={"process_code": "PROC-TABLE", "name": "门店支出报销", "is_enabled": True},
+    ).json()["data"]["id"]
+
+    class FakeDingTalkClient:
+        def list_process_instance_ids(self, process_code, start_time_ms, end_time_ms, cursor=0, size=20):
+            return ["table-instance-1"], None
+
+        def get_process_instance(self, instance_id):
+            return {
+                "process_instance_id": instance_id,
+                "business_id": "NO-TABLE",
+                "originator_dept_id": "1083312383",
+                "originator_dept_name": "门店运营部-江门区-菌山集开平东汇城店",
+                "status": "COMPLETED",
+                "result": "agree",
+                "create_time": "2026-08-29 23:28:54",
+                "finish_time": "2026-08-30 10:00:00",
+                "form_component_values": [
+                    {"name": "报销日期", "value": "2026-08-29"},
+                    {"name": "支出门店", "value": "门店运营部-江门区-菌山集开平东汇城店"},
+                    {"name": "支出类型", "value": "门店零星报销"},
+                    {"name": "汇总金额（元）", "value": "350"},
+                    {"name": "收款账户", "value": "安少辉"},
+                    {
+                        "name": "表格",
+                        "value": (
+                            '[{"rowValue":['
+                            '{"label":"支出详情","value":"消杀"},'
+                            '{"label":"小项金额","value":"350"}'
+                            "]}]"
+                        ),
+                    },
+                ],
+            }
+
+    monkeypatch.setattr("app.modules.dingtalk.router.dingtalk_client", lambda config: FakeDingTalkClient())
+    response = client.post(
+        "/api/dingtalk/approval-sync",
+        json={
+            "template_id": template_id,
+            "started_by": "tester",
+            "start_at": "2026-08-01T00:00:00",
+            "end_at": "2026-08-31T23:59:59",
+        },
+    )
+    assert response.status_code == 201
+    assert response.json()["data"]["status"] == "succeeded"
+
+    expense_response = client.get(f"/api/expense-items?store_id={store_id}&ledger_period=2026-08&page_size=20")
+    items = expense_response.json()["data"]["items"]
+    assert len(items) == 1
+    assert items[0]["description"] == "消杀"
+    assert items[0]["amount"] == "350.00"
+    assert items[0]["category_l1"] == "门店零星报销"
+    assert items[0]["payee_account"] == "安少辉"
+
+    instances = client.get(f"/api/dingtalk/approval-instances?template_id={template_id}").json()["data"]["items"]
+    assert instances[0]["store_id"] == store_id
+    assert '"expense_row_count": 1' in instances[0]["raw_payload"]

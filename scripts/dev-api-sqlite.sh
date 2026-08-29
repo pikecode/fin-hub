@@ -11,7 +11,7 @@ if [ ! -d ".venv" ]; then
   uv venv --python python3.12 .venv
 fi
 
-.venv/bin/uv pip install -e ".[dev]"
+uv pip install --python .venv/bin/python -e ".[dev]"
 DATABASE_URL="$DATABASE_URL_VALUE" .venv/bin/alembic upgrade head
 DATABASE_URL="$DATABASE_URL_VALUE" .venv/bin/python -m app.dev_seed
 DATABASE_URL="$DATABASE_URL_VALUE" .venv/bin/uvicorn app.main:app --reload --host 0.0.0.0 --port 8000

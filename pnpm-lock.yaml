@@ -14,6 +14,9 @@ importers:
 
   apps/admin-web:
     dependencies:
+      '@ant-design/icons':
+        specifier: ^6.3.2
+        version: 6.3.2(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       '@ant-design/nextjs-registry':
         specifier: ^1.0.2
         version: 1.3.0(@ant-design/cssinjs@1.24.0(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(antd@5.29.3(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(next@15.5.24(@types/node@24.13.3)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(sass@1.103.1))(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
@@ -35,6 +38,12 @@ importers:
       dayjs:
         specifier: ^1.11.13
         version: 1.11.23
+      echarts:
+        specifier: ^6.1.0
+        version: 6.1.0
+      echarts-for-react:
+        specifier: ^3.0.6
+        version: 3.0.6(echarts@6.1.0)(react@19.2.8)
       next:
         specifier: ^15.5.0
         version: 15.5.24(@types/node@24.13.3)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(sass@1.103.1)
@@ -158,6 +167,9 @@ packages:
   '@ant-design/colors@7.2.1':
     resolution: {integrity: sha512-lCHDcEzieu4GA3n8ELeZ5VQ8pKQAWcGGLRTQ50aQM2iqPpq2evTxER84jfdPvsPAtEcZ7m44NI45edFMo8oOYQ==}
 
+  '@ant-design/colors@8.0.1':
+    resolution: {integrity: sha512-foPVl0+SWIslGUtD/xBr1p9U4AKzPhNYEseXYRRo5QSzGACYZrQbe11AYJbYfAWnWSpGBx6JjBmSeugUsD9vqQ==}
+
   '@ant-design/cssinjs-utils@1.1.3':
     resolution: {integrity: sha512-nOoQMLW1l+xR1Co8NFVYiP8pZp3VjIIzqV6D6ShYF2ljtdwWJn5WSsH+7kvCktXL/yhEtWURKOfH5Xz/gzlwsg==}
     peerDependencies:
@@ -174,11 +186,22 @@ packages:
     resolution: {integrity: sha512-y2217gk4NqL35giHl72o6Zzqji9O7vHh9YmhUVkPtAOpoTCH4uWxo/pr4VE8t0+ChEPs0qo4eJRC5Q1eXWo3vA==}
     engines: {node: '>=8.x'}
 
+  '@ant-design/fast-color@3.0.1':
+    resolution: {integrity: sha512-esKJegpW4nckh0o6kV3Tkb7NPIZYbPnnFxmQDUmL08ukXZAvV85TZBr70eGuke/CIArLaP6aw8lt9KILjnWuOw==}
+    engines: {node: '>=8.x'}
+
   '@ant-design/icons-svg@4.5.0':
     resolution: {integrity: sha512-1BTUFyKPTBZ53MuTP8s0k5SFEXL7o3VHEOwLgzaoWKwnBeqIcqUtVshc4SKzhI6uACfqhJqBwBUE9FsWR3uULA==}
 
   '@ant-design/icons@5.6.1':
     resolution: {integrity: sha512-0/xS39c91WjPAZOWsvi1//zjx6kAp4kxWwctR6kuU6p133w8RU0D2dSCvZC19uQyharg/sAvYxGYWl01BbZZfg==}
+    engines: {node: '>=8'}
+    peerDependencies:
+      react: '>=16.0.0'
+      react-dom: '>=16.0.0'
+
+  '@ant-design/icons@6.3.2':
+    resolution: {integrity: sha512-B6O5a5XJ4wjtNOfZejXYwHW5zvKV5gYkjGf11dHGLEbKn0ABDGndo41+gfIiXyTFhvESj4XTotuud33mUFid0g==}
     engines: {node: '>=8'}
     peerDependencies:
       react: '>=16.0.0'
@@ -1570,6 +1593,12 @@ packages:
       react: '>=16.9.0'
       react-dom: '>=16.9.0'
 
+  '@rc-component/util@1.12.0':
+    resolution: {integrity: sha512-AEjPL8JVdohIITaiXokyjL9WQ6tKWWjAYK9QU16tGNE9JaQABBQy+hA4H2Lup5MgXy9yY3iLrbZJheuU13hTdQ==}
+    peerDependencies:
+      react: '>=18.0.0'
+      react-dom: '>=18.0.0'
+
   '@rnx-kit/babel-preset-metro-react-native@1.1.8':
     resolution: {integrity: sha512-8DotuBK1ZgV0H/tmCmtW/3ofA7JR/8aPqSu9lKnuqwBfq4bxz+w1sMyfFl89m4teWlkhgyczWBGD6NCLqTgi9A==}
     peerDependencies:
@@ -2573,6 +2602,10 @@ packages:
     resolution: {integrity: sha512-JQHZ2QMW6l3aH/j6xCqQThY/9OH4D/9ls34cgkUBiEeocRTU04tHfKPBsUK1PqZCUQM7GiA0IIXJSuXHI64Kbg==}
     engines: {node: '>=0.8'}
 
+  clsx@2.1.1:
+    resolution: {integrity: sha512-eYm0QWBtUrBWZWG0d386OGAw16Z995PiOVo2B7bjWSbHedGl5e0ZWaq65kOGgUSNesEIDkB9ISbTg/JK9dhCZA==}
+    engines: {node: '>=6'}
+
   color-convert@2.0.1:
     resolution: {integrity: sha512-RRECPsj7iu/xb5oKYcsFHSppFNnsj/52OVTRKb4zP5onXwVF3zVmmToNcOfGC+CRDpfK/U584fMg38ZHCaElKQ==}
     engines: {node: '>=7.0.0'}
@@ -2989,6 +3022,15 @@ packages:
 
   eastasianwidth@0.2.0:
     resolution: {integrity: sha512-I88TYZWc9XiYHRQ4/3c5rjjfgkjhLyW2luGIheGERbNQ6OY7yTybanSpDXZa8y7VUP9YmDcYa+eyq4ca7iLqWA==}
+
+  echarts-for-react@3.0.6:
+    resolution: {integrity: sha512-4zqLgTGWS3JvkQDXjzkR1k1CHRdpd6by0988TWMJgnvDytegWLbeP/VNZmMa+0VJx2eD7Y632bi2JquXDgiGJg==}
+    peerDependencies:
+      echarts: ^3.0.0 || ^4.0.0 || ^5.0.0 || ^6.0.0
+      react: ^15.0.0 || >=16.0.0
+
+  echarts@6.1.0:
+    resolution: {integrity: sha512-q0yaFPggC9FUdsWH4blavRWFmxdrIodbkoKNAjJudAI6CA9gNPxHtV2RcZNEepZVlk4yvBYkOkbk6HIVpIyHZA==}
 
   ee-first@1.1.1:
     resolution: {integrity: sha512-WMwm9LhRUo+WUaRN+vRuETqG89IgZphVSNkdFgeb6sS/E4OrDIN7t48CAewSHXc6C8lefD8KKfr5vY61brQlow==}
@@ -3667,6 +3709,9 @@ packages:
   is-invalid-path@1.0.2:
     resolution: {integrity: sha512-6KLcFrPCEP3AFXMfnWrIFkZpYNBVzZAoBJJDEZKtI3LXkaDjM3uFMJQjxiizUuZTZ9Oh9FNv/soXbx5TcpaDmA==}
     engines: {node: '>=6.0'}
+
+  is-mobile@5.0.0:
+    resolution: {integrity: sha512-Tz/yndySvLAEXh+Uk8liFCxOwVH6YutuR74utvOcu7I9Di+DwM0mtdPVZNaVvvBUM2OXxne/NhOs1zAO7riusQ==}
 
   is-natural-number@4.0.1:
     resolution: {integrity: sha512-Y4LTamMe0DDQIIAlaer9eKebAlDSV6huy+TWhJVPlzZh2o4tRP5SQWFlLn5N0To4mDD22/qdOq+veo1cSISLgQ==}
@@ -5089,6 +5134,9 @@ packages:
   react-is@18.3.1:
     resolution: {integrity: sha512-/LLMVyas0ljjAtoYiPqYiL8VWXzUUdThrmU5+n20DZv+a+ClRoevUzw5JxU+Ieh5/c87ytoTBV9G1FiKfNJdmg==}
 
+  react-is@19.2.8:
+    resolution: {integrity: sha512-s5un28nYxKJw5gvUHyW5PCC28CvBqLu9r3cWgzHT4Vo/5fqqkFcdRYsGcKf50WMPpjjFZS5d76fn3YCo2njKwQ==}
+
   react-reconciler@0.29.0:
     resolution: {integrity: sha512-wa0fGj7Zht1EYMRhKWwoo1H9GApxYLBuhoAuXN0TlltESAjDssB+Apf0T/DngVqaMyPypDmabL37vw/2aRM98Q==}
     engines: {node: '>=0.10.0'}
@@ -5403,6 +5451,9 @@ packages:
     resolution: {integrity: sha512-bzyZ1e88w9O1iNJbKnOlvYTrWPDl46O1bG0D3XInv+9tkPrxrN8jUUTiFlDkkmKWgn1M6CfIA13SuGqOa9Korw==}
     engines: {node: '>=14'}
 
+  size-sensor@1.0.3:
+    resolution: {integrity: sha512-+k9mJ2/rQMiRmQUcjn+qznch260leIXY8r4FyYKKyRBO/s5UoeMAHGkCJyE1R/4wrIhTJONfyloY55SkE7ve3A==}
+
   slash@5.1.0:
     resolution: {integrity: sha512-ZA6oR3T/pEyuqwMgAKT0/hAv8oAXckzbkmR0UkUosQ+Mc4RxGoJkRmwHgHufaenlyAgE1Mxgpdcrf75y6XcnDg==}
     engines: {node: '>=14.16'}
@@ -5700,6 +5751,9 @@ packages:
 
   tslib@1.14.1:
     resolution: {integrity: sha512-Xni35NKzjgMrwevysHTCArtLDpPvye8zV/0E4EyYn43P7/7qvQwPh9BGkHewbMulVntbigmcT7rdX3BNo9wRJg==}
+
+  tslib@2.3.0:
+    resolution: {integrity: sha512-N82ooyxVNm6h1riLCoyS9e3fuJ3AMG2zIZs2Gd1ATcSFjSA23Q0fzjjZeh0jbJvWVDZ0cJT8yaNNaaXHzueNjg==}
 
   tslib@2.8.1:
     resolution: {integrity: sha512-oJFu94HQb+KVduSUQL7wnpmqnfmLsOA/nAh6b6EH0wCEoK0/mPeXU6c3wKDV83MkOuHPRHtSXKKU99IBazS/2w==}
@@ -6009,6 +6063,9 @@ packages:
     resolution: {integrity: sha512-rVksvsnNCdJ/ohGc6xgPwyN8eheCxsiLM8mxuE/t/mOVqJewPuO1miLpTHQiRgTKCLexL4MeAFVagts7HmNZ2Q==}
     engines: {node: '>=10'}
 
+  zrender@6.1.0:
+    resolution: {integrity: sha512-oEGMDB6pOP2S6OwRR4PdVv610zrjnA3Bh+JnSG12fYJlBKjtNAoEb5fSUoCOOINlH96I2fU38/A2UpRKs67xYQ==}
+
 snapshots:
 
   '@adobe/css-tools@4.3.3': {}
@@ -6016,6 +6073,10 @@ snapshots:
   '@ant-design/colors@7.2.1':
     dependencies:
       '@ant-design/fast-color': 2.0.6
+
+  '@ant-design/colors@8.0.1':
+    dependencies:
+      '@ant-design/fast-color': 3.0.1
 
   '@ant-design/cssinjs-utils@1.1.3(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:
@@ -6041,6 +6102,8 @@ snapshots:
     dependencies:
       '@babel/runtime': 7.29.7
 
+  '@ant-design/fast-color@3.0.1': {}
+
   '@ant-design/icons-svg@4.5.0': {}
 
   '@ant-design/icons@5.6.1(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
@@ -6050,6 +6113,15 @@ snapshots:
       '@babel/runtime': 7.29.7
       classnames: 2.5.1
       rc-util: 5.44.4(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      react: 19.2.8
+      react-dom: 19.2.8(react@19.2.8)
+
+  '@ant-design/icons@6.3.2(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
+    dependencies:
+      '@ant-design/colors': 8.0.1
+      '@ant-design/icons-svg': 4.5.0
+      '@rc-component/util': 1.12.0(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      clsx: 2.1.1
       react: 19.2.8
       react-dom: 19.2.8(react@19.2.8)
 
@@ -7402,6 +7474,13 @@ snapshots:
       react: 19.2.8
       react-dom: 19.2.8(react@19.2.8)
 
+  '@rc-component/util@1.12.0(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
+    dependencies:
+      is-mobile: 5.0.0
+      react: 19.2.8
+      react-dom: 19.2.8(react@19.2.8)
+      react-is: 19.2.8
+
   '@rnx-kit/babel-preset-metro-react-native@1.1.8(@babel/core@7.29.7)(@babel/plugin-transform-typescript@7.29.7(@babel/core@7.29.7))(@babel/runtime@7.29.7)':
     dependencies:
       '@babel/core': 7.29.7
@@ -8614,6 +8693,8 @@ snapshots:
 
   clone@1.0.4: {}
 
+  clsx@2.1.1: {}
+
   color-convert@2.0.1:
     dependencies:
       color-name: 1.1.4
@@ -9058,6 +9139,18 @@ snapshots:
   duplexer3@0.1.5: {}
 
   eastasianwidth@0.2.0: {}
+
+  echarts-for-react@3.0.6(echarts@6.1.0)(react@19.2.8):
+    dependencies:
+      echarts: 6.1.0
+      fast-deep-equal: 3.1.3
+      react: 19.2.8
+      size-sensor: 1.0.3
+
+  echarts@6.1.0:
+    dependencies:
+      tslib: 2.3.0
+      zrender: 6.1.0
 
   ee-first@1.1.1: {}
 
@@ -9878,6 +9971,8 @@ snapshots:
   is-interactive@1.0.0: {}
 
   is-invalid-path@1.0.2: {}
+
+  is-mobile@5.0.0: {}
 
   is-natural-number@4.0.1: {}
 
@@ -11311,6 +11406,8 @@ snapshots:
 
   react-is@18.3.1: {}
 
+  react-is@19.2.8: {}
+
   react-reconciler@0.29.0(react@18.3.1):
     dependencies:
       loose-envify: 1.4.0
@@ -11684,6 +11781,8 @@ snapshots:
 
   signal-exit@4.1.0: {}
 
+  size-sensor@1.0.3: {}
+
   slash@5.1.0: {}
 
   sockjs@0.3.24:
@@ -11945,6 +12044,8 @@ snapshots:
       escape-string-regexp: 1.0.5
 
   tslib@1.14.1: {}
+
+  tslib@2.3.0: {}
 
   tslib@2.8.1: {}
 
@@ -12274,3 +12375,7 @@ snapshots:
       fd-slicer: 1.1.0
 
   yocto-queue@0.1.0: {}
+
+  zrender@6.1.0:
+    dependencies:
+      tslib: 2.3.0

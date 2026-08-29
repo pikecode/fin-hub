@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from time import sleep
 from typing import Any
 
 import httpx
@@ -45,17 +46,21 @@ class DingTalkClient:
         return str(token)
 
     def list_processes_by_user(self, user_id: str, offset: int = 0, size: int = 100) -> list[dict[str, Any]]:
-        token = self.get_access_token()
-        response = httpx.post(
-            f"{self.oapi_base_url}/topapi/process/listbyuserid",
-            params={"access_token": token},
-            json={"userid": user_id, "offset": offset, "size": size},
-            timeout=self.timeout,
+        data = self._post_oapi_json(
+            "/topapi/process/listbyuserid",
+            {"userid": user_id, "offset": offset, "size": size},
         )
-        data = self._read_oapi_json(response)
         result = data.get("result") or {}
         items = result.get("process_list") or result.get("list") or []
         return [item for item in items if isinstance(item, dict)]
+
+    def list_child_departments(self, dept_id: int | str = 1) -> list[dict[str, Any]]:
+        data = self._post_oapi_json(
+            "/topapi/v2/department/listsub",
+            {"dept_id": dept_id, "language": "zh_CN"},
+        )
+        result = data.get("result") or []
+        return [item for item in result if isinstance(item, dict)]
 
     def list_process_instance_ids(
         self,
@@ -65,34 +70,26 @@ class DingTalkClient:
         cursor: int = 0,
         size: int = 20,
     ) -> tuple[list[str], int | None]:
-        token = self.get_access_token()
-        response = httpx.post(
-            f"{self.oapi_base_url}/topapi/processinstance/listids",
-            params={"access_token": token},
-            json={
+        data = self._post_oapi_json(
+            "/topapi/processinstance/listids",
+            {
                 "process_code": process_code,
                 "start_time": start_time_ms,
                 "end_time": end_time_ms,
                 "cursor": cursor,
                 "size": size,
             },
-            timeout=self.timeout,
         )
-        data = self._read_oapi_json(response)
         result = data.get("result") or {}
         ids = result.get("list") or []
         next_cursor = result.get("next_cursor")
         return [str(item) for item in ids], int(next_cursor) if next_cursor is not None else None
 
     def get_process_instance(self, instance_id: str) -> dict[str, Any]:
-        token = self.get_access_token()
-        response = httpx.post(
-            f"{self.oapi_base_url}/topapi/processinstance/get",
-            params={"access_token": token},
-            json={"process_instance_id": instance_id},
-            timeout=self.timeout,
+        data = self._post_oapi_json(
+            "/topapi/processinstance/get",
+            {"process_instance_id": instance_id},
         )
-        data = self._read_oapi_json(response)
         result = data.get("process_instance") or data.get("result")
         if not isinstance(result, dict):
             raise DingTalkClientError(f"DingTalk approval instance missing: {data}")
@@ -135,6 +132,28 @@ class DingTalkClient:
         if not isinstance(data, dict):
             raise DingTalkClientError("DingTalk response is not a JSON object")
         return data
+
+    def _post_oapi_json(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        last_error: DingTalkClientError | None = None
+        for attempt in range(3):
+            token = self.get_access_token()
+            response = httpx.post(
+                f"{self.oapi_base_url}{path}",
+                params={"access_token": token},
+                json=payload,
+                timeout=self.timeout,
+            )
+            data = self._read_json(response)
+            errcode = data.get("errcode", 0)
+            if errcode in (0, "0", None):
+                return data
+            last_error = DingTalkClientError(data.get("errmsg") or f"DingTalk API error: {data}")
+            if str(errcode) != "90002" or attempt == 2:
+                break
+            sleep(1.0 + attempt)
+        if last_error is not None:
+            raise last_error
+        raise DingTalkClientError("DingTalk OAPI request failed")
 
     @classmethod
     def _read_oapi_json(cls, response: httpx.Response) -> dict[str, Any]:

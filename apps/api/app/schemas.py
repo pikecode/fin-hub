@@ -485,6 +485,32 @@ class TemplateFieldCandidate(BaseModel):
     field_type: str | None = None
 
 
+class DingTalkDepartmentRead(BaseModel):
+    dept_id: str
+    name: str
+    parent_id: str | None = None
+    path: str
+    depth: int
+    is_store_candidate: bool
+    store_id: str | None = None
+    store_name: str | None = None
+
+
+class DingTalkDepartmentSyncPreview(BaseModel):
+    departments: list[DingTalkDepartmentRead]
+    candidate_count: int
+    existing_count: int
+    create_count: int
+    update_count: int
+
+
+class DingTalkDepartmentSyncResult(BaseModel):
+    created_count: int
+    updated_count: int
+    skipped_count: int
+    stores: list[StoreRead]
+
+
 class LedgerReportSummary(BaseModel):
     store_id: str
     store_name: str

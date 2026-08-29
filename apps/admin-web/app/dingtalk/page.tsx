@@ -9,6 +9,8 @@ import type {
   ApprovalTemplateCreate,
   ApprovalInstance,
   DingTalkConfig,
+  DingTalkDepartment,
+  DingTalkDepartmentSyncPreview,
   SyncJob,
   TemplateFieldCandidate,
   TemplateFieldMapping,
@@ -39,6 +41,7 @@ export default function DingTalkPage() {
   const [fieldCandidates, setFieldCandidates] = useState<TemplateFieldCandidate[]>([]);
   const [syncJobs, setSyncJobs] = useState<SyncJob[]>([]);
   const [approvalInstances, setApprovalInstances] = useState<ApprovalInstance[]>([]);
+  const [departmentPreview, setDepartmentPreview] = useState<DingTalkDepartmentSyncPreview | null>(null);
   const [selectedTemplate, setSelectedTemplate] = useState<ApprovalTemplate | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isTemplateModalOpen, setIsTemplateModalOpen] = useState(false);
@@ -114,6 +117,33 @@ export default function DingTalkPage() {
       await loadData();
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "无法连接钉钉 OpenAPI");
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  async function previewDepartments() {
+    setIsLoading(true);
+    setErrorMessage(null);
+    try {
+      const preview = await apiClient.dingtalk.previewDepartmentSync("?root_dept_id=1&max_depth=6");
+      setDepartmentPreview(preview);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "无法拉取钉钉部门");
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  async function syncDepartments() {
+    setIsLoading(true);
+    setErrorMessage(null);
+    try {
+      await apiClient.dingtalk.syncDepartments("?root_dept_id=1&max_depth=6");
+      const preview = await apiClient.dingtalk.previewDepartmentSync("?root_dept_id=1&max_depth=6");
+      setDepartmentPreview(preview);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "无法同步钉钉门店部门");
     } finally {
       setIsLoading(false);
     }
@@ -252,6 +282,18 @@ export default function DingTalkPage() {
     { title: "必填", dataIndex: "is_required", render: (value) => (value ? "是" : "否") },
   ];
 
+  const departmentColumns: ColumnsType<DingTalkDepartment> = [
+    { title: "部门名称", dataIndex: "name" },
+    { title: "部门 ID", dataIndex: "dept_id" },
+    { title: "路径", dataIndex: "path" },
+    {
+      title: "门店候选",
+      dataIndex: "is_store_candidate",
+      render: (value) => (value ? <Tag color="green">是</Tag> : <Tag>否</Tag>),
+    },
+    { title: "本地门店", dataIndex: "store_name", render: (value) => value || "-" },
+  ];
+
   const jobColumns: ColumnsType<SyncJob> = [
     { title: "任务类型", dataIndex: "job_type" },
     {
@@ -328,6 +370,40 @@ export default function DingTalkPage() {
               <Switch checked={Boolean(config?.app_secret_configured)} disabled />
             </Form.Item>
           </Form>
+        )}
+      </Card>
+      <Card
+        title="部门与门店"
+        className="section-card"
+        extra={
+          <Space>
+            <Button onClick={previewDepartments} loading={isLoading}>
+              预览部门
+            </Button>
+            <Button type="primary" onClick={syncDepartments} loading={isLoading}>
+              同步为门店
+            </Button>
+          </Space>
+        }
+      >
+        {departmentPreview ? (
+          <>
+            <Space wrap className="dashboard-alert">
+              <Tag color="blue">候选门店 {departmentPreview.candidate_count}</Tag>
+              <Tag color="green">已存在 {departmentPreview.existing_count}</Tag>
+              <Tag color="gold">将新增 {departmentPreview.create_count}</Tag>
+              <Tag color="purple">将更新 {departmentPreview.update_count}</Tag>
+            </Space>
+            <Table
+              rowKey="dept_id"
+              loading={isLoading}
+              columns={departmentColumns}
+              dataSource={departmentPreview.departments}
+              pagination={{ pageSize: 8 }}
+            />
+          </>
+        ) : (
+          <Alert message="先预览钉钉部门，确认门店候选后再同步到本地门店档案。" type="info" showIcon />
         )}
       </Card>
       <Card

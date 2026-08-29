@@ -474,6 +474,32 @@ export interface TemplateFieldCandidate {
   field_type?: string | null;
 }
 
+export interface DingTalkDepartment {
+  dept_id: string;
+  name: string;
+  parent_id?: string | null;
+  path: string;
+  depth: number;
+  is_store_candidate: boolean;
+  store_id?: string | null;
+  store_name?: string | null;
+}
+
+export interface DingTalkDepartmentSyncPreview {
+  departments: DingTalkDepartment[];
+  candidate_count: number;
+  existing_count: number;
+  create_count: number;
+  update_count: number;
+}
+
+export interface DingTalkDepartmentSyncResult {
+  created_count: number;
+  updated_count: number;
+  skipped_count: number;
+  stores: Store[];
+}
+
 export interface StartApprovalSyncRequest {
   template_id?: string | null;
   started_by?: string;

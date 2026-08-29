@@ -37,6 +37,9 @@ from app.schemas import (
     ApprovalTemplateRead,
     DingTalkConfigRead,
     DingTalkConfigUpdate,
+    DingTalkDepartmentRead,
+    DingTalkDepartmentSyncPreview,
+    DingTalkDepartmentSyncResult,
     Page,
     ResumeApprovalSyncRequest,
     StartApprovalSyncRequest,
@@ -147,6 +150,111 @@ def test_connection(
     )
     session.commit()
     return ApiEnvelope(data={"status": "ok", "access_token_prefix": token[:8]})
+
+
+@router.get("/departments", response_model=ApiEnvelope[list[DingTalkDepartmentRead]])
+def list_departments(
+    root_dept_id: str = "1",
+    max_depth: int = 6,
+    session: Session = Depends(get_session),
+    _: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+) -> ApiEnvelope[list[DingTalkDepartmentRead]]:
+    config = get_or_create_config(session)
+    try:
+        departments = build_department_tree(
+            dingtalk_client(config),
+            root_dept_id=root_dept_id,
+            max_depth=min(max(max_depth, 1), 8),
+        )
+    except DingTalkClientError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return ApiEnvelope(data=enrich_departments_with_stores(session, departments))
+
+
+@router.get("/departments/sync-preview", response_model=ApiEnvelope[DingTalkDepartmentSyncPreview])
+def preview_department_sync(
+    root_dept_id: str = "1",
+    max_depth: int = 6,
+    session: Session = Depends(get_session),
+    _: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+) -> ApiEnvelope[DingTalkDepartmentSyncPreview]:
+    config = get_or_create_config(session)
+    try:
+        departments = build_department_tree(
+            dingtalk_client(config),
+            root_dept_id=root_dept_id,
+            max_depth=min(max(max_depth, 1), 8),
+        )
+    except DingTalkClientError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return ApiEnvelope(data=build_department_sync_preview(session, departments))
+
+
+@router.post("/departments/sync", response_model=ApiEnvelope[DingTalkDepartmentSyncResult])
+def sync_departments_to_stores(
+    root_dept_id: str = "1",
+    max_depth: int = 6,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+) -> ApiEnvelope[DingTalkDepartmentSyncResult]:
+    config = get_or_create_config(session)
+    try:
+        departments = build_department_tree(
+            dingtalk_client(config),
+            root_dept_id=root_dept_id,
+            max_depth=min(max(max_depth, 1), 8),
+        )
+    except DingTalkClientError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    created_count = 0
+    updated_count = 0
+    skipped_count = 0
+    synced_stores: list[Store] = []
+    for department in departments:
+        if not department.is_store_candidate:
+            skipped_count += 1
+            continue
+        store = session.scalar(select(Store).where(Store.dingtalk_dept_id == department.dept_id))
+        if store is None:
+            store = session.scalar(select(Store).where(Store.name == department.name))
+        if store is None:
+            store = Store(name=department.name, dingtalk_dept_id=department.dept_id)
+            session.add(store)
+            created_count += 1
+        else:
+            changed = False
+            if store.dingtalk_dept_id != department.dept_id:
+                store.dingtalk_dept_id = department.dept_id
+                changed = True
+            if store.name != department.name:
+                store.name = department.name
+                changed = True
+            if changed:
+                updated_count += 1
+            else:
+                skipped_count += 1
+        synced_stores.append(store)
+    session.flush()
+    write_audit_log(
+        session,
+        actor=audit_actor(current_user),
+        action="dingtalk.departments.sync",
+        resource_type="store",
+        summary=f"同步钉钉门店部门：新增 {created_count} 个，更新 {updated_count} 个",
+        metadata={"root_dept_id": root_dept_id, "max_depth": max_depth, "skipped_count": skipped_count},
+    )
+    session.commit()
+    for store in synced_stores:
+        session.refresh(store)
+    return ApiEnvelope(
+        data=DingTalkDepartmentSyncResult(
+            created_count=created_count,
+            updated_count=updated_count,
+            skipped_count=skipped_count,
+            stores=synced_stores,
+        )
+    )
 
 
 @router.get("/templates", response_model=ApiEnvelope[Page[ApprovalTemplateRead]])
@@ -318,6 +426,125 @@ def unique_field_candidates(candidates: list[TemplateFieldCandidate]) -> list[Te
     return sorted(unique.values(), key=lambda item: (item.source_field_name, item.source_field_id or ""))
 
 
+def last_department_name(value: str | None) -> str | None:
+    if not value:
+        return None
+    parts = [part.strip() for part in value.replace("/", "-").split("-") if part.strip()]
+    return parts[-1] if parts else value.strip()
+
+
+def department_path(value: dict[str, Any], parent_path: str) -> str:
+    name = str(value.get("name") or value.get("dept_name") or value.get("deptName") or "")
+    return f"{parent_path}-{name}" if parent_path else name
+
+
+def department_id(value: dict[str, Any]) -> str:
+    return str(value.get("dept_id") or value.get("deptId") or value.get("id") or "")
+
+
+def department_parent_id(value: dict[str, Any]) -> str | None:
+    parent = value.get("parent_id") or value.get("parentId")
+    return str(parent) if parent not in (None, "") else None
+
+
+def looks_like_store_department(name: str, path: str, child_names: list[str]) -> bool:
+    if "门店运营部" not in path:
+        return False
+    non_store_words = ("运营部", "门店群", "区", "部门", "前厅", "后厨", "财务", "采购", "人力", "行政", "招商", "市场", "建店")
+    if any(word in name for word in non_store_words):
+        return False
+    has_front_or_kitchen = any("前厅" in child_name or "后厨" in child_name for child_name in child_names)
+    return has_front_or_kitchen or "店" in name or "城" in name or "万达" in name
+
+
+def build_department_tree(
+    client: DingTalkClient,
+    *,
+    root_dept_id: str = "1",
+    max_depth: int = 6,
+) -> list[DingTalkDepartmentRead]:
+    rows: list[DingTalkDepartmentRead] = []
+    seen: set[str] = set()
+
+    def walk(dept_id: str, parent_path: str, depth: int) -> None:
+        if dept_id in seen or depth > max_depth:
+            return
+        seen.add(dept_id)
+        children = client.list_child_departments(dept_id)
+        for child in children:
+            child_id = department_id(child)
+            name = str(child.get("name") or child.get("dept_name") or child.get("deptName") or "")
+            if not child_id or not name:
+                continue
+            path = department_path(child, parent_path)
+            grandchildren = client.list_child_departments(child_id) if depth < max_depth else []
+            child_names = [
+                str(item.get("name") or item.get("dept_name") or item.get("deptName") or "")
+                for item in grandchildren
+                if isinstance(item, dict)
+            ]
+            rows.append(
+                DingTalkDepartmentRead(
+                    dept_id=child_id,
+                    name=name,
+                    parent_id=department_parent_id(child),
+                    path=path,
+                    depth=depth,
+                    is_store_candidate=looks_like_store_department(name, path, child_names),
+                )
+            )
+            if child_id and depth < max_depth:
+                walk(child_id, path, depth + 1)
+
+    walk(root_dept_id, "", 0)
+    return rows
+
+
+def enrich_departments_with_stores(
+    session: Session,
+    departments: list[DingTalkDepartmentRead],
+) -> list[DingTalkDepartmentRead]:
+    stores = list(session.scalars(select(Store)))
+    stores_by_dept_id = {str(store.dingtalk_dept_id): store for store in stores if store.dingtalk_dept_id}
+    stores_by_name = {store.name: store for store in stores}
+    enriched: list[DingTalkDepartmentRead] = []
+    for department in departments:
+        store = stores_by_dept_id.get(department.dept_id) or stores_by_name.get(department.name)
+        enriched.append(
+            department.model_copy(
+                update={
+                    "store_id": store.id if store else None,
+                    "store_name": store.name if store else None,
+                }
+            )
+        )
+    return enriched
+
+
+def build_department_sync_preview(
+    session: Session,
+    departments: list[DingTalkDepartmentRead],
+) -> DingTalkDepartmentSyncPreview:
+    enriched = enrich_departments_with_stores(session, departments)
+    candidates = [department for department in enriched if department.is_store_candidate]
+    existing_count = len([department for department in candidates if department.store_id])
+    update_count = len(
+        [
+            department
+            for department in candidates
+            if department.store_id and department.store_name and department.store_name != department.name
+        ]
+    )
+    create_count = len(candidates) - existing_count
+    return DingTalkDepartmentSyncPreview(
+        departments=enriched,
+        candidate_count=len(candidates),
+        existing_count=existing_count,
+        create_count=create_count,
+        update_count=update_count,
+    )
+
+
 @router.get(
     "/templates/{template_id}/field-candidates",
     response_model=ApiEnvelope[list[TemplateFieldCandidate]],
@@ -475,10 +702,45 @@ def form_value_map(raw_instance: dict[str, Any]) -> dict[str, Any]:
     return values
 
 
+def normalize_label(value: str) -> str:
+    return value.replace(" ", "").replace("（", "(").replace("）", ")").lower()
+
+
+def form_component_values(raw_instance: dict[str, Any]) -> list[dict[str, Any]]:
+    components = raw_instance.get("form_component_values") or raw_instance.get("formComponentValues") or []
+    return [component for component in components if isinstance(component, dict)] if isinstance(components, list) else []
+
+
+def find_form_value(raw_instance: dict[str, Any], *names: str) -> Any:
+    expected_names = {normalize_label(name) for name in names}
+    for component in form_component_values(raw_instance):
+        labels = [
+            component.get("name"),
+            component.get("label"),
+            component.get("id"),
+            component.get("componentName"),
+        ]
+        if any(value is not None and normalize_label(str(value)) in expected_names for value in labels):
+            return component.get("value") or component.get("ext_value") or component.get("extValue")
+    return None
+
+
 def mapped_value(mapping: TemplateFieldMapping, values: dict[str, Any]) -> Any:
     if mapping.source_field_id and mapping.source_field_id in values:
         return values[mapping.source_field_id]
     return values.get(mapping.source_field_name)
+
+
+def mapped_or_form_value(
+    mapped: dict[str, Any],
+    raw_instance: dict[str, Any],
+    standard_field: str,
+    *fallback_names: str,
+) -> Any:
+    value = mapped.get(standard_field)
+    if value not in (None, ""):
+        return value
+    return find_form_value(raw_instance, *fallback_names)
 
 
 def parse_decimal(value: Any) -> Decimal | None:
@@ -518,6 +780,66 @@ def parse_text(value: Any) -> str | None:
     if isinstance(value, dict):
         return json.dumps(value, ensure_ascii=False)
     return str(value)
+
+
+def decode_table_value(value: Any) -> list[dict[str, Any]]:
+    if value in (None, ""):
+        return []
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return []
+    if isinstance(value, dict):
+        value = value.get("rowValue") or value.get("rows") or value.get("value") or []
+    if not isinstance(value, list):
+        return []
+
+    rows: list[dict[str, Any]] = []
+    for row in value:
+        row_value = row.get("rowValue") if isinstance(row, dict) else row
+        if not isinstance(row_value, list):
+            continue
+        parsed_row: dict[str, Any] = {}
+        for cell in row_value:
+            if not isinstance(cell, dict):
+                continue
+            label = cell.get("label") or cell.get("name") or cell.get("key")
+            if label:
+                parsed_row[str(label)] = cell.get("value") or cell.get("ext_value") or cell.get("extValue")
+        if parsed_row:
+            rows.append(parsed_row)
+    return rows
+
+
+def pick_row_value(row: dict[str, Any], *names: str) -> Any:
+    expected_names = {normalize_label(name) for name in names}
+    for key, value in row.items():
+        if normalize_label(key) in expected_names:
+            return value
+    return None
+
+
+def expense_rows_from_table(value: Any) -> list[dict[str, Any]]:
+    rows = []
+    for row in decode_table_value(value):
+        description = parse_text(pick_row_value(row, "支出详情", "费用明细", "费用说明", "说明", "摘要"))
+        amount = parse_decimal(pick_row_value(row, "小项金额", "金额", "报销金额", "费用金额"))
+        category_l1 = parse_text(pick_row_value(row, "支出类型", "费用类型", "一级分类"))
+        category_l2 = parse_text(pick_row_value(row, "二级分类", "小类"))
+        supplier_name = parse_text(pick_row_value(row, "供应商", "收款方", "收款单位"))
+        if amount is None:
+            continue
+        rows.append(
+            {
+                "description": description or "钉钉审批支出",
+                "amount": amount,
+                "category_l1": category_l1,
+                "category_l2": category_l2,
+                "supplier_name": supplier_name,
+            }
+        )
+    return rows
 
 
 def parse_voucher_items(value: Any) -> list[dict[str, str | None]]:
@@ -581,12 +903,18 @@ def create_dingtalk_attachment_placeholders(
 
 def resolve_store(session: Session, value: str | None) -> Store | None:
     if value:
+        stripped = value.strip()
         store = session.scalar(select(Store).where(Store.name == value))
         if store is not None:
             return store
-        store = session.scalar(select(Store).where(Store.dingtalk_dept_id == value))
+        store = session.scalar(select(Store).where(Store.dingtalk_dept_id == stripped))
         if store is not None:
             return store
+        last_name = last_department_name(stripped)
+        if last_name:
+            store = session.scalar(select(Store).where(Store.name == last_name))
+            if store is not None:
+                return store
     return None
 
 
@@ -605,11 +933,34 @@ def sync_real_instance(
     ).all()
     mapped: dict[str, Any] = {mapping.standard_field: mapped_value(mapping, values) for mapping in mappings}
 
-    store = resolve_store(session, parse_text(mapped.get("store")) or parse_text(mapped.get("store_name")))
-    amount = parse_decimal(mapped.get("amount"))
-    description = parse_text(mapped.get("description")) or template.name
-    expense_date = parse_date(mapped.get("expense_date")) or DingTalkClient.parse_time(
+    store_text = parse_text(
+        mapped_or_form_value(mapped, raw_instance, "store", "支出门店", "门店", "费用门店", "所属门店")
+    ) or parse_text(mapped.get("store_name"))
+    originator_dept_id = parse_text(raw_instance.get("originator_dept_id") or raw_instance.get("originatorDeptId"))
+    originator_dept_name = parse_text(raw_instance.get("originator_dept_name") or raw_instance.get("originatorDeptName"))
+    store = (
+        resolve_store(session, store_text)
+        or resolve_store(session, originator_dept_id)
+        or resolve_store(session, originator_dept_name)
+    )
+    amount = parse_decimal(
+        mapped_or_form_value(mapped, raw_instance, "amount", "汇总金额（元）", "汇总金额", "金额", "报销金额")
+    )
+    description = parse_text(
+        mapped_or_form_value(mapped, raw_instance, "description", "支出详情", "费用说明", "其他备注信息", "备注")
+    ) or template.name
+    expense_date = parse_date(
+        mapped_or_form_value(mapped, raw_instance, "expense_date", "报销日期", "支出日期", "费用日期", "日期")
+    ) or DingTalkClient.parse_time(
         raw_instance.get("create_time") or raw_instance.get("createTime")
+    )
+    table_value = mapped_or_form_value(mapped, raw_instance, "expense_table", "表格", "费用明细", "支出明细")
+    expense_rows = expense_rows_from_table(table_value)
+    payee_account = parse_text(
+        mapped_or_form_value(mapped, raw_instance, "payee_account", "收款账户", "收款账号", "账户")
+    )
+    category_l1 = parse_text(
+        mapped_or_form_value(mapped, raw_instance, "category_l1", "支出类型", "费用类型", "一级分类")
     )
 
     instance = session.scalar(select(ApprovalInstance).where(ApprovalInstance.dingtalk_instance_id == instance_id))
@@ -620,40 +971,59 @@ def sync_real_instance(
     instance.store_id = store.id if store is not None else None
     instance.applicant_name = parse_text(raw_instance.get("originator_user_name") or raw_instance.get("originatorUserName"))
     instance.applicant_user_id = parse_text(raw_instance.get("originator_userid") or raw_instance.get("originatorUserId"))
-    instance.approval_status = parse_text(raw_instance.get("status") or raw_instance.get("result")) or "unknown"
+    instance.approval_status = parse_text(raw_instance.get("result") or raw_instance.get("status")) or "unknown"
     instance.submit_at = DingTalkClient.parse_time(raw_instance.get("create_time") or raw_instance.get("createTime"))
     instance.approved_at = DingTalkClient.parse_time(raw_instance.get("finish_time") or raw_instance.get("finishTime"))
     instance.raw_payload = json.dumps(raw_instance, ensure_ascii=False)
     instance.synced_job_id = job.id
     session.flush()
 
-    if store is None or amount is None or expense_date is None:
+    if store is None or (amount is None and not expense_rows) or expense_date is None:
         return False
     if instance.approval_status.lower() not in {"agree", "approved", "completed", "finish", "success"}:
         return True
-    exists_item = session.scalar(
-        select(ExpenseItem).where(ExpenseItem.source_document_id == instance.dingtalk_instance_id)
-    )
-    if exists_item is None:
-        period = expense_date.strftime("%Y-%m")
-        if session.scalar(select(Ledger).where(Ledger.store_id == store.id, Ledger.period == period)) is None:
-            session.add(Ledger(store_id=store.id, period=period))
-            session.flush()
+    period = expense_date.strftime("%Y-%m")
+    if session.scalar(select(Ledger).where(Ledger.store_id == store.id, Ledger.period == period)) is None:
+        session.add(Ledger(store_id=store.id, period=period))
+        session.flush()
+
+    rows_to_create = expense_rows or [
+        {
+            "description": description,
+            "amount": amount,
+            "category_l1": category_l1,
+            "category_l2": parse_text(mapped.get("category_l2")),
+            "supplier_name": parse_text(mapped.get("supplier_name")),
+        }
+    ]
+    created_expense_ids: list[str] = []
+    for row_index, row in enumerate(rows_to_create, start=1):
+        source_document_id = (
+            instance.dingtalk_instance_id
+            if len(rows_to_create) == 1
+            else f"{instance.dingtalk_instance_id}:{row_index}"
+        )
+        exists_item = session.scalar(
+            select(ExpenseItem).where(ExpenseItem.source_document_id == source_document_id)
+        )
+        if exists_item is not None:
+            continue
         expense_item = ExpenseItem(
             store_id=store.id,
             ledger_period=period,
             expense_date=expense_date,
-            description=description,
-            amount=amount,
-            category_l1=parse_text(mapped.get("category_l1")),
-            category_l2=parse_text(mapped.get("category_l2")),
-            supplier_name=parse_text(mapped.get("supplier_name")),
-            payee_account=parse_text(mapped.get("payee_account")),
+            description=str(row["description"]),
+            amount=row["amount"],
+            category_l1=parse_text(row.get("category_l1")) or category_l1,
+            category_l2=parse_text(row.get("category_l2")) or parse_text(mapped.get("category_l2")),
+            supplier_name=parse_text(row.get("supplier_name")) or parse_text(mapped.get("supplier_name")),
+            payee_account=payee_account,
             source="dingtalk",
-            source_document_id=instance.dingtalk_instance_id,
+            source_document_id=source_document_id,
         )
         session.add(expense_item)
         session.flush()
+        created_expense_ids.append(expense_item.id)
         create_dingtalk_attachment_placeholders(
             session,
             "expense_item",
@@ -663,6 +1033,20 @@ def sync_real_instance(
                 *parse_voucher_items(mapped.get("voucher_files")),
             ],
         )
+    instance.raw_payload = json.dumps(
+        {
+            **raw_instance,
+            "_fin_hub_parse": {
+                "store_text": store_text,
+                "originator_dept_id": originator_dept_id,
+                "originator_dept_name": originator_dept_name,
+                "resolved_store_id": store.id,
+                "expense_row_count": len(rows_to_create),
+                "created_expense_ids": created_expense_ids,
+            },
+        },
+        ensure_ascii=False,
+    )
     return True
 
 

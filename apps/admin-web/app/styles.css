@@ -4,7 +4,8 @@
 
 body {
   margin: 0;
-  background: #f5f7f6;
+  background: #f9fafb;
+  color: #111827;
 }
 
 .app-shell {
@@ -12,44 +13,80 @@ body {
 }
 
 .sidebar {
-  background: #183b32 !important;
+  background: #0f172a !important;
+  box-shadow: 2px 0 8px rgba(0, 0, 0, 0.1);
 }
 
 .brand {
-  padding: 24px 20px 16px;
+  min-height: 76px;
+  padding: 20px 18px 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
 
 .brand h4.ant-typography {
   color: #fff;
   margin: 0;
+  letter-spacing: 0;
 }
 
 .brand .ant-typography {
-  color: rgba(255, 255, 255, 0.68);
+  color: rgba(255, 255, 255, 0.62);
+  font-size: 12px;
 }
 
 .topbar {
-  height: 72px;
-  padding: 0 28px;
-  background: #fff;
+  min-height: 76px;
+  height: auto;
+  padding: 14px 28px;
+  background: rgba(255, 255, 255, 0.92);
   display: flex;
   align-items: center;
   justify-content: space-between;
-  border-bottom: 1px solid #e7ece9;
+  gap: 16px;
+  border-bottom: 1px solid #dfe7e2;
+  backdrop-filter: blur(12px);
+  position: sticky;
+  top: 0;
+  z-index: 10;
 }
 
 .topbar h3.ant-typography {
   margin: 0;
+  font-size: 22px;
+  line-height: 30px;
+}
+
+.topbar-kicker {
+  display: block;
+  margin-bottom: 2px;
+  color: #6b7280;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
 }
 
 .topbar-actions {
   display: flex;
   align-items: center;
   gap: 12px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .content {
-  padding: 24px;
+  width: 100%;
+  max-width: 1480px;
+  padding: 22px 24px 36px;
+}
+
+.user-pill {
+  min-height: 32px;
+  padding: 5px 12px;
+  color: #374151;
+  background: #f3f4f6;
+  border: 1px solid #e5e7eb;
+  border-radius: 999px;
 }
 
 .dashboard-alert {
@@ -61,12 +98,27 @@ body {
 }
 
 .metrics .ant-card {
-  flex: 1 1 220px;
-  min-width: 220px;
+  flex: 1 1 240px;
+  min-width: 240px;
+  transition: all 0.3s ease;
+}
+
+.metrics .ant-card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12) !important;
 }
 
 .metrics h2.ant-typography {
   margin: 8px 0 0;
+  font-size: 36px;
+  line-height: 1.2;
+  font-weight: 700;
+  font-feature-settings: 'tnum';
+  color: #111827;
+}
+
+.metrics .ant-card-body {
+  min-height: 100px;
 }
 
 .compact-form-item {
@@ -106,19 +158,131 @@ body {
 
 .table-filter-form {
   margin-bottom: 16px;
+  padding: 16px;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
 }
 
 .filter-select {
   min-width: 180px;
 }
 
+.ant-layout {
+  background: #f9fafb;
+}
+
+.ant-menu-dark {
+  background: #0f172a;
+}
+
+.ant-menu-dark .ant-menu-item,
+.ant-menu-dark .ant-menu-submenu-title {
+  color: rgba(255, 255, 255, 0.78);
+}
+
+.ant-menu-dark .ant-menu-item-selected {
+  font-weight: 650;
+}
+
+.ant-card {
+  border-color: #e5e7eb;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+  border-radius: 12px;
+}
+
+.ant-card-head {
+  border-bottom-color: #e5e7eb;
+}
+
+.ant-card-head-title {
+  color: #111827;
+  font-weight: 700;
+}
+
+.ant-table-wrapper {
+  overflow-x: auto;
+}
+
+.ant-table {
+  color: #374151;
+}
+
+.ant-table-thead > tr > th {
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #374151;
+}
+
+.ant-table-tbody > tr > td {
+  vertical-align: middle;
+}
+
+/* 金额列样式 */
+.ant-table .money-cell {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  text-align: right;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Mono', 'Consolas', 'Monaco', monospace;
+}
+
+.ant-table .money-positive {
+  color: #111827;
+}
+
+.ant-table .money-negative {
+  color: #dc2626;
+}
+
+.ant-table .money-zero {
+  color: #9ca3af;
+}
+
+.ant-form-item-label > label {
+  color: #374151;
+  font-weight: 600;
+}
+
+.ant-modal .ant-modal-header {
+  margin-bottom: 18px;
+}
+
+.ant-tabs-nav {
+  margin-bottom: 14px !important;
+}
+
 @media (max-width: 1100px) {
   .matching-grid {
     grid-template-columns: 1fr;
   }
+
+  .matching-workspace {
+    grid-template-columns: 1fr !important;
+    grid-template-rows: 400px 1fr;
+    height: auto !important;
+    min-height: 800px !important;
+  }
 }
 
 @media (max-width: 720px) {
+  .content {
+    padding: 16px;
+  }
+
+  .table-filter-form .ant-form-item {
+    width: 100%;
+  }
+
+  .filter-select,
+  .audit-filter-input {
+    width: 100%;
+    min-width: 100%;
+  }
+
   .report-ledger-select {
     min-width: 100%;
   }
@@ -131,6 +295,11 @@ body {
     gap: 12px;
     padding: 16px 20px;
   }
+
+  .topbar-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
 }
 
 .login-page {
@@ -138,17 +307,41 @@ body {
   display: grid;
   place-items: center;
   padding: 24px;
-  background: #eef3f0;
+  background:
+    radial-gradient(circle at 20% 50%, rgba(42, 157, 102, 0.15) 0%, transparent 50%),
+    radial-gradient(circle at 80% 80%, rgba(14, 165, 233, 0.1) 0%, transparent 50%),
+    linear-gradient(135deg, #f9fafb 0%, #f3f4f6 100%);
 }
 
 .login-card {
-  width: min(420px, 100%);
+  width: min(440px, 100%);
+  border-color: #e5e7eb;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.12), 0 0 0 1px rgba(0, 0, 0, 0.03);
+  border-radius: 16px;
+}
+
+.login-card .ant-card-body {
+  padding: 40px;
 }
 
 .login-card h3.ant-typography {
-  margin-bottom: 4px;
+  margin-bottom: 8px;
+  font-size: 28px;
+  font-weight: 700;
+  color: #111827;
+}
+
+.login-card .ant-typography-secondary {
+  font-size: 15px;
+  color: #6b7280;
 }
 
 .login-form {
-  margin-top: 24px;
+  margin-top: 32px;
+}
+
+.login-form .ant-btn-primary {
+  height: 42px;
+  font-size: 16px;
+  font-weight: 600;
 }
