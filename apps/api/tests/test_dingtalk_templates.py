@@ -567,6 +567,21 @@ def test_pull_template_sample_approval_only_persists_raw_instance(client: TestCl
     assert session.scalar(select(ExpenseItem)) is None
 
 
+def test_pull_template_sample_approval_rejects_seed_template_in_real_mode(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(settings, "dingtalk_sync_mode", "real")
+    template_id = client.post(
+        "/api/dingtalk/templates",
+        json={"process_code": "seed-expense-approval", "name": "门店费用报销", "is_enabled": True},
+    ).json()["data"]["id"]
+
+    response = client.post(f"/api/dingtalk/templates/{template_id}/sample-approval")
+    assert response.status_code == 409
+    assert "本地演示模板" in response.json()["detail"]
+
+
 def test_real_approval_sync_persists_instance_when_expense_parse_is_incomplete(
     client: TestClient,
     monkeypatch,

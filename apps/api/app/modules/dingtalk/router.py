@@ -104,6 +104,10 @@ def should_use_real_dingtalk() -> bool:
     return settings.dingtalk_sync_mode.lower() == "real"
 
 
+def is_seed_process_code(process_code: str) -> bool:
+    return process_code.startswith("seed-")
+
+
 @router.get("/config", response_model=ApiEnvelope[DingTalkConfigRead])
 def read_config(session: Session = Depends(get_session)) -> ApiEnvelope[DingTalkConfigRead]:
     return ApiEnvelope(data=mask_config(get_or_create_config(session)))
@@ -804,6 +808,11 @@ def pull_template_sample_approval(
         raise HTTPException(status_code=404, detail="Template not found")
     if not template.is_enabled:
         raise HTTPException(status_code=409, detail="Template is disabled")
+    if should_use_real_dingtalk() and is_seed_process_code(template.process_code):
+        raise HTTPException(
+            status_code=409,
+            detail="当前模板是本地演示模板，不是钉钉真实审批模板；请先在审批模板页选择 process_code 为 PROC- 开头的模板。",
+        )
 
     if not should_use_real_dingtalk():
         raw_instance = {

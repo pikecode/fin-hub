@@ -216,6 +216,21 @@ function approvalCountByTemplate(instances: ApprovalInstance[]) {
   }, {});
 }
 
+function apiErrorMessage(error: unknown, fallback: string) {
+  if (error && typeof error === "object" && "payload" in error) {
+    const payload = (error as { payload?: unknown }).payload;
+    if (payload && typeof payload === "object" && "detail" in payload) {
+      const detail = (payload as { detail?: unknown }).detail;
+      if (typeof detail === "string") return detail;
+    }
+  }
+  return error instanceof Error ? error.message : fallback;
+}
+
+function isSeedTemplate(template: ApprovalTemplate) {
+  return template.process_code.startsWith("seed-");
+}
+
 function formValueMapFromPayload(payload: unknown) {
   const values: Record<string, unknown> = {};
   if (!payload || typeof payload !== "object") return values;
@@ -559,7 +574,7 @@ export default function DingTalkPage() {
         message.warning("当前模板最近 30 天没有审批样例");
       }
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "无法拉取审批样例");
+      setErrorMessage(apiErrorMessage(error, "无法拉取审批样例"));
     } finally {
       setIsLoading(false);
     }
@@ -722,7 +737,16 @@ export default function DingTalkPage() {
   }
 
   const templateColumns: ColumnsType<ApprovalTemplate> = [
-    { title: "模板名称", dataIndex: "name" },
+    {
+      title: "模板名称",
+      dataIndex: "name",
+      render: (value, record) => (
+        <Space size={8}>
+          <span>{value}</span>
+          {isSeedTemplate(record) ? <Tag>演示</Tag> : null}
+        </Space>
+      ),
+    },
     { title: "Process Code", dataIndex: "process_code" },
     {
       title: "映射状态",
