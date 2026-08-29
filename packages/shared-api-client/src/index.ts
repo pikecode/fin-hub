@@ -368,7 +368,10 @@ export function createApiClient(options: ApiClientOptions) {
           method: "POST",
           body: JSON.stringify(payload),
         }),
-      syncTemplates: () => request<{ created: number }>("/api/dingtalk/templates/sync", { method: "POST" }),
+      syncTemplates: () =>
+        request<{ pulled: number; created: number; updated: number }>("/api/dingtalk/templates/sync", {
+          method: "POST",
+        }),
       listMappings: (templateId: string) =>
         request<TemplateFieldMapping[]>(`/api/dingtalk/templates/${templateId}/mappings`),
       listFieldCandidates: (templateId: string) =>

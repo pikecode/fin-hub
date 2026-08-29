@@ -350,7 +350,9 @@ def sync_templates(
             ("seed-expense-approval", "门店费用报销", json.dumps({"source": "seed-sync"}, ensure_ascii=False)),
             ("seed-purchase-approval", "采购付款申请", json.dumps({"source": "seed-sync"}, ensure_ascii=False)),
         ]
+    now = utc_now()
     created = 0
+    updated = 0
     for process_code, name, raw_snapshot in samples:
         template = session.scalar(
             select(ApprovalTemplate).where(ApprovalTemplate.process_code == process_code)
@@ -359,26 +361,28 @@ def sync_templates(
             template = ApprovalTemplate(
                 process_code=process_code,
                 name=name,
-                last_sync_at=utc_now(),
+                last_sync_at=now,
                 raw_snapshot=raw_snapshot,
             )
             session.add(template)
             created += 1
         else:
+            if template.name != name or template.raw_snapshot != raw_snapshot:
+                updated += 1
             template.name = name
             template.raw_snapshot = raw_snapshot
-            template.last_sync_at = utc_now()
-    config.last_template_sync_at = utc_now()
+            template.last_sync_at = now
+    config.last_template_sync_at = now
     write_audit_log(
         session,
         actor=audit_actor(current_user),
         action="dingtalk.templates.sync",
         resource_type="dingtalk_config",
         resource_id=config.id,
-        summary=f"同步钉钉模板：新增 {created} 个",
+        summary=f"同步钉钉模板：拉取 {len(samples)} 个，新增 {created} 个，更新 {updated} 个",
     )
     session.commit()
-    return ApiEnvelope(data={"created": created})
+    return ApiEnvelope(data={"pulled": len(samples), "created": created, "updated": updated})
 
 
 @router.get(

@@ -1,6 +1,26 @@
 "use client";
 
-import { Alert, AutoComplete, Button, Card, DatePicker, Form, Input, InputNumber, Modal, Select, Skeleton, Space, Switch, Table, Tag } from "antd";
+import {
+  Alert,
+  AutoComplete,
+  Button,
+  Card,
+  DatePicker,
+  Form,
+  Input,
+  InputNumber,
+  Modal,
+  Select,
+  Skeleton,
+  Space,
+  Statistic,
+  Switch,
+  Table,
+  Tabs,
+  Tag,
+  Typography,
+  message,
+} from "antd";
 import type { ColumnsType } from "antd/es/table";
 import dayjs from "dayjs";
 import { useEffect, useMemo, useState } from "react";
@@ -72,6 +92,7 @@ export default function DingTalkPage() {
   const [isTemplateModalOpen, setIsTemplateModalOpen] = useState(false);
   const [isMappingModalOpen, setIsMappingModalOpen] = useState(false);
   const [isSyncModalOpen, setIsSyncModalOpen] = useState(false);
+  const [isConfigModalOpen, setIsConfigModalOpen] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [form] = Form.useForm<DingTalkFormValues>();
   const [templateForm] = Form.useForm<ApprovalTemplateCreate>();
@@ -128,6 +149,8 @@ export default function DingTalkPage() {
       const data = await apiClient.dingtalk.updateConfig(values);
       setConfig(data);
       form.setFieldValue("app_secret", undefined);
+      setIsConfigModalOpen(false);
+      message.success("钉钉配置已保存");
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "无法保存钉钉配置");
     } finally {
@@ -138,8 +161,9 @@ export default function DingTalkPage() {
   async function syncTemplates() {
     setIsLoading(true);
     try {
-      await apiClient.dingtalk.syncTemplates();
+      const result = await apiClient.dingtalk.syncTemplates();
       await loadData();
+      message.success(`模板增量同步完成：拉取 ${result.pulled} 个，新增 ${result.created} 个，更新 ${result.updated} 个`);
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "无法同步模板");
     } finally {
@@ -153,6 +177,7 @@ export default function DingTalkPage() {
     try {
       await apiClient.dingtalk.testConnection();
       await loadData();
+      message.success("钉钉连接正常");
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "无法连接钉钉 OpenAPI");
     } finally {
@@ -166,6 +191,7 @@ export default function DingTalkPage() {
     try {
       const preview = await apiClient.dingtalk.previewDepartmentSync();
       setDepartmentPreview(preview);
+      message.success("已刷新本地部门预览");
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "无法读取本地部门快照");
     } finally {
@@ -177,9 +203,12 @@ export default function DingTalkPage() {
     setIsLoading(true);
     setErrorMessage(null);
     try {
-      await apiClient.dingtalk.pullDepartments("?root_dept_id=1&max_depth=6");
+      const result = await apiClient.dingtalk.pullDepartments("?root_dept_id=1&max_depth=6");
       const preview = await apiClient.dingtalk.previewDepartmentSync();
       setDepartmentPreview(preview);
+      message.success(
+        `部门增量同步完成：拉取 ${result.pulled_count} 个，新增 ${result.created_count} 个，更新 ${result.updated_count} 个`,
+      );
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "无法从钉钉拉取部门");
     } finally {
@@ -191,9 +220,10 @@ export default function DingTalkPage() {
     setIsLoading(true);
     setErrorMessage(null);
     try {
-      await apiClient.dingtalk.syncDepartments();
+      const result = await apiClient.dingtalk.syncDepartments();
       const preview = await apiClient.dingtalk.previewDepartmentSync();
       setDepartmentPreview(preview);
+      message.success(`门店落库完成：新增 ${result.created_count} 个，更新 ${result.updated_count} 个`);
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "无法同步钉钉门店部门");
     } finally {
@@ -223,6 +253,7 @@ export default function DingTalkPage() {
       });
       setIsSyncModalOpen(false);
       await loadData();
+      message.success("审批列表增量同步完成");
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "无法同步审批实例");
     } finally {
@@ -412,12 +443,187 @@ export default function DingTalkPage() {
     { title: "通过时间", dataIndex: "approved_at", render: (value) => value?.replace("T", " ").slice(0, 16) || "-" },
   ];
 
+  const credentialStatus = config?.status === "configured" ? "已配置" : "未完成";
+
   return (
-    <AppShell title="钉钉同步设置" action={<Button type="primary" onClick={() => form.submit()}>保存配置</Button>}>
+    <AppShell
+      title="钉钉同步工作台"
+      kicker="DINGTALK DATA SYNC"
+      action={
+        <Space>
+          <Button onClick={testConnection} loading={isLoading}>
+            测试连接
+          </Button>
+          <Button type="primary" onClick={() => setIsConfigModalOpen(true)}>
+            配置凭证
+          </Button>
+        </Space>
+      }
+    >
       {errorMessage ? (
         <Alert className="dashboard-alert" message={errorMessage} type="warning" showIcon />
       ) : null}
-      <Card title="应用凭证">
+
+      <Card className="integration-overview">
+        <div className="integration-overview-grid">
+          <div>
+            <Typography.Text className="topbar-kicker">SYNC STATUS</Typography.Text>
+            <Typography.Title level={4}>钉钉数据同步</Typography.Title>
+            <Typography.Text type="secondary">
+              部门、审批模板、审批列表均先增量同步到本地数据库，再由业务流程消费本地数据。
+            </Typography.Text>
+          </div>
+          <Statistic title="凭证状态" value={credentialStatus} valueStyle={{ color: config?.status === "configured" ? "#059669" : "#d97706" }} />
+          <Statistic title="本地部门" value={departmentPreview?.departments.length ?? 0} />
+          <Statistic title="审批模板" value={templates.length} />
+          <Statistic title="审批实例" value={approvalInstances.length} />
+        </div>
+      </Card>
+
+      <Tabs
+        className="sync-tabs"
+        items={[
+          {
+            key: "departments",
+            label: "部门",
+            children: (
+              <Card
+                title="部门快照与门店落库"
+                extra={
+                  <Space>
+                    <Button onClick={previewDepartments} loading={isLoading}>
+                      刷新本地预览
+                    </Button>
+                    <Button onClick={pullDepartments} loading={isLoading}>
+                      增量同步部门
+                    </Button>
+                    <Button type="primary" onClick={syncDepartments} loading={isLoading}>
+                      落库门店
+                    </Button>
+                  </Space>
+                }
+              >
+                {departmentPreview ? (
+                  <>
+                    <Space wrap className="dashboard-alert">
+                      <Tag>本地部门 {departmentPreview.departments.length}</Tag>
+                      <Tag color="blue">候选门店 {departmentPreview.candidate_count}</Tag>
+                      <Tag color="green">已存在 {departmentPreview.existing_count}</Tag>
+                      <Tag color="gold">将新增 {departmentPreview.create_count}</Tag>
+                      <Tag color="purple">将更新 {departmentPreview.update_count}</Tag>
+                      <Tag color="cyan">
+                        上次同步 {lastDepartmentPulledAt ? lastDepartmentPulledAt.replace("T", " ").slice(0, 16) : "尚未同步"}
+                      </Tag>
+                    </Space>
+                    <Table
+                      rowKey="dept_id"
+                      loading={isLoading}
+                      columns={departmentColumns}
+                      dataSource={departmentTree}
+                      pagination={false}
+                      rowClassName={(record) => (record.is_store_candidate ? "store-candidate-row" : "")}
+                      expandable={{ defaultExpandAllRows: true }}
+                    />
+                  </>
+                ) : (
+                  <Alert message="先增量同步钉钉部门到本地快照，再确认门店候选并落库到门店档案。" type="info" showIcon />
+                )}
+              </Card>
+            ),
+          },
+          {
+            key: "templates",
+            label: "审批模板",
+            children: (
+              <Space direction="vertical" size={16} className="full-width">
+                <Card
+                  title="审批模板快照"
+                  extra={
+                    <Space>
+                      <Button onClick={syncTemplates} loading={isLoading}>
+                        增量同步模板
+                      </Button>
+                      <Button type="primary" onClick={() => setIsTemplateModalOpen(true)}>
+                        手动新增模板
+                      </Button>
+                    </Space>
+                  }
+                >
+                  <Space wrap className="dashboard-alert">
+                    <Tag>本地模板 {templates.length}</Tag>
+                    <Tag color="green">已映射 {templates.filter((item) => item.mapping_status === "mapped").length}</Tag>
+                    <Tag color="gold">未映射 {templates.filter((item) => item.mapping_status !== "mapped").length}</Tag>
+                    <Tag color="cyan">
+                      上次同步 {config?.last_template_sync_at ? config.last_template_sync_at.replace("T", " ").slice(0, 16) : "尚未同步"}
+                    </Tag>
+                  </Space>
+                  <Table rowKey="id" loading={isLoading} columns={templateColumns} dataSource={templates} />
+                </Card>
+                <Card
+                  title={selectedTemplate ? `${selectedTemplate.name} 字段映射` : "字段映射"}
+                  extra={
+                    <Button disabled={!selectedTemplate} onClick={() => setIsMappingModalOpen(true)}>
+                      新增/更新映射
+                    </Button>
+                  }
+                >
+                  <Table rowKey="id" loading={isLoading} columns={mappingColumns} dataSource={mappings} />
+                </Card>
+              </Space>
+            ),
+          },
+          {
+            key: "instances",
+            label: "审批列表",
+            children: (
+              <Space direction="vertical" size={16} className="full-width">
+                <Card
+                  title="审批实例快照"
+                  extra={
+                    <Button type="primary" onClick={openSyncModal} loading={isLoading}>
+                      增量同步审批
+                    </Button>
+                  }
+                >
+                  <Space wrap className="dashboard-alert">
+                    <Tag>本地实例 {approvalInstances.length}</Tag>
+                    <Tag color="green">已通过 {approvalInstances.filter((item) => item.approval_status === "approved").length}</Tag>
+                    <Tag color="blue">同步任务 {syncJobs.length}</Tag>
+                    <Tag color="cyan">
+                      上次同步 {config?.last_instance_sync_at ? config.last_instance_sync_at.replace("T", " ").slice(0, 16) : "尚未同步"}
+                    </Tag>
+                  </Space>
+                  <Table
+                    rowKey="id"
+                    loading={isLoading}
+                    columns={instanceColumns}
+                    dataSource={approvalInstances}
+                    pagination={{ pageSize: 8 }}
+                  />
+                </Card>
+                <Card title="同步任务">
+                  <Table
+                    rowKey="id"
+                    loading={isLoading}
+                    columns={jobColumns}
+                    dataSource={syncJobs}
+                    pagination={{ pageSize: 5 }}
+                  />
+                </Card>
+              </Space>
+            ),
+          },
+        ]}
+      />
+
+      <Modal
+        title="钉钉应用凭证"
+        open={isConfigModalOpen}
+        onCancel={() => setIsConfigModalOpen(false)}
+        onOk={() => form.submit()}
+        confirmLoading={isLoading}
+        width={640}
+      >
         {isLoading && !config ? (
           <Skeleton active />
         ) : (
@@ -437,106 +643,17 @@ export default function DingTalkPage() {
             <Form.Item label="钉盘下载 Union ID" name="drive_union_id">
               <Input />
             </Form.Item>
-            <Form.Item label="密钥状态">
-              <Switch checked={Boolean(config?.app_secret_configured)} disabled />
+            <Form.Item label="配置状态">
+              <Space>
+                <Tag color={config?.status === "configured" ? "green" : "gold"}>{credentialStatus}</Tag>
+                <Tag color={config?.app_secret_configured ? "green" : "red"}>
+                  Secret {config?.app_secret_configured ? "已保存" : "未保存"}
+                </Tag>
+              </Space>
             </Form.Item>
           </Form>
         )}
-      </Card>
-      <Card
-        title="部门与门店"
-        className="section-card"
-        extra={
-          <Space>
-            <Button onClick={previewDepartments} loading={isLoading}>
-              刷新本地预览
-            </Button>
-            <Button onClick={pullDepartments} loading={isLoading}>
-              从钉钉拉取部门
-            </Button>
-            <Button type="primary" onClick={syncDepartments} loading={isLoading}>
-              同步为门店
-            </Button>
-          </Space>
-        }
-      >
-        {departmentPreview ? (
-          <>
-            <Space wrap className="dashboard-alert">
-              <Tag>本地部门 {departmentPreview.departments.length}</Tag>
-              <Tag color="blue">候选门店 {departmentPreview.candidate_count}</Tag>
-              <Tag color="green">已存在 {departmentPreview.existing_count}</Tag>
-              <Tag color="gold">将新增 {departmentPreview.create_count}</Tag>
-              <Tag color="purple">将更新 {departmentPreview.update_count}</Tag>
-              <Tag color="cyan">
-                上次拉取 {lastDepartmentPulledAt ? lastDepartmentPulledAt.replace("T", " ").slice(0, 16) : "尚未拉取"}
-              </Tag>
-            </Space>
-            <Table
-              rowKey="dept_id"
-              loading={isLoading}
-              columns={departmentColumns}
-              dataSource={departmentTree}
-              pagination={false}
-              rowClassName={(record) => (record.is_store_candidate ? "store-candidate-row" : "")}
-              expandable={{ defaultExpandAllRows: true }}
-            />
-          </>
-        ) : (
-          <Alert message="先从钉钉拉取部门到本地快照，再确认门店候选并同步到本地门店档案。" type="info" showIcon />
-        )}
-      </Card>
-      <Card
-        title="审批模板"
-        className="section-card"
-        extra={
-          <Space>
-            <Button onClick={testConnection} loading={isLoading}>
-              测试连接
-            </Button>
-            <Button onClick={syncTemplates} loading={isLoading}>
-              同步模板
-            </Button>
-            <Button onClick={openSyncModal} loading={isLoading}>
-              同步审批实例
-            </Button>
-            <Button type="primary" onClick={() => setIsTemplateModalOpen(true)}>
-              新增模板
-            </Button>
-          </Space>
-        }
-      >
-        <Table rowKey="id" loading={isLoading} columns={templateColumns} dataSource={templates} />
-      </Card>
-      <Card
-        title={selectedTemplate ? `${selectedTemplate.name} 字段映射` : "字段映射"}
-        className="section-card"
-        extra={
-          <Button disabled={!selectedTemplate} onClick={() => setIsMappingModalOpen(true)}>
-            新增/更新映射
-          </Button>
-        }
-      >
-        <Table rowKey="id" loading={isLoading} columns={mappingColumns} dataSource={mappings} />
-      </Card>
-      <Card title="同步任务" className="section-card">
-        <Table
-          rowKey="id"
-          loading={isLoading}
-          columns={jobColumns}
-          dataSource={syncJobs}
-          pagination={{ pageSize: 5 }}
-        />
-      </Card>
-      <Card title="审批实例" className="section-card">
-        <Table
-          rowKey="id"
-          loading={isLoading}
-          columns={instanceColumns}
-          dataSource={approvalInstances}
-          pagination={{ pageSize: 8 }}
-        />
-      </Card>
+      </Modal>
       <Modal
         title="同步审批实例"
         open={isSyncModalOpen}

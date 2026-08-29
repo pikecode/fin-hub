@@ -148,6 +148,30 @@ body {
   margin-top: 16px;
 }
 
+.integration-overview {
+  margin-bottom: 16px;
+}
+
+.integration-overview h4.ant-typography {
+  margin: 0 0 4px;
+}
+
+.integration-overview-grid {
+  display: grid;
+  grid-template-columns: minmax(280px, 1.7fr) repeat(4, minmax(120px, 1fr));
+  gap: 20px;
+  align-items: center;
+}
+
+.sync-tabs .ant-tabs-nav {
+  margin-bottom: 16px;
+}
+
+.sync-tabs .ant-tabs-tab {
+  padding: 12px 18px;
+  font-weight: 600;
+}
+
 .report-ledger-select {
   min-width: 320px;
 }
