@@ -269,6 +269,13 @@ function bestCandidateForStandardField(
     .sort((a, b) => b.score - a.score)[0]?.candidate;
 }
 
+function approvalCountByTemplate(instances: ApprovalInstance[]) {
+  return instances.reduce<Record<string, number>>((result, instance) => {
+    result[instance.template_id] = (result[instance.template_id] ?? 0) + 1;
+    return result;
+  }, {});
+}
+
 export default function DingTalkPage() {
   const [config, setConfig] = useState<DingTalkConfig | null>(null);
   const [templates, setTemplates] = useState<ApprovalTemplate[]>([]);
@@ -332,6 +339,7 @@ export default function DingTalkPage() {
     const option = optionForStandardField(selectedStandardField);
     return [...fieldCandidates].sort((a, b) => candidateScore(b, option) - candidateScore(a, option));
   }, [fieldCandidates, selectedStandardField]);
+  const templateApprovalCounts = useMemo(() => approvalCountByTemplate(approvalInstances), [approvalInstances]);
 
   useEffect(() => {
     return () => {
@@ -347,7 +355,7 @@ export default function DingTalkPage() {
         apiClient.dingtalk.readConfig(),
         apiClient.dingtalk.listTemplates("?page_size=200"),
         apiClient.dingtalk.listSyncJobs("?page_size=20"),
-        apiClient.dingtalk.listApprovalInstances("?page_size=50"),
+        apiClient.dingtalk.listApprovalInstances("?page_size=500"),
         apiClient.dingtalk.previewDepartmentSync(),
       ]);
       setConfig(data);
@@ -729,6 +737,12 @@ export default function DingTalkPage() {
       render: (value) => (value === "mapped" ? <Tag color="green">已映射</Tag> : <Tag color="gold">未映射</Tag>),
     },
     { title: "启用", dataIndex: "is_enabled", render: (value) => (value ? "是" : "否") },
+    {
+      title: "本地审批数",
+      dataIndex: "id",
+      width: 110,
+      render: (value) => templateApprovalCounts[value] ?? 0,
+    },
     { title: "上次同步", dataIndex: "last_sync_at", render: (value) => value?.replace("T", " ").slice(0, 16) || "-" },
     {
       title: "操作",
@@ -1371,11 +1385,12 @@ export default function DingTalkPage() {
                   type="info"
                   showIcon
                   message={optionForStandardField(selectedStandardField)?.description}
+                  description="先选统一字段，再从右侧真实审批字段里点“选用”。字段路径和字段类型会自动带出，通常不需要手动输入。"
                 />
               ) : null}
-              <Form.Item name="source_field_name" label="真实来源字段" rules={[{ required: true }]}>
+              <Form.Item name="source_field_name" label="钉钉审批字段" rules={[{ required: true }]}>
                 <AutoComplete
-                  placeholder="从右侧样例表点选，或输入字段名搜索"
+                  placeholder={fieldCandidates.length ? "从右侧样例表点选，或输入字段名搜索" : "当前模板暂无字段样例，请先同步审批"}
                   onSelect={applyFieldCandidate}
                   options={recommendedFieldCandidates.map((candidate) => ({
                     label: (
@@ -1419,15 +1434,36 @@ export default function DingTalkPage() {
               </Space>
             </Space>
             <div className="mapping-candidate-panel">
-              <Typography.Title level={5}>最近审批真实字段样例</Typography.Title>
-              <Table
-                size="small"
-                rowKey={(record, index) => `${record.source_field_name}-${record.source_field_id || index}`}
-                columns={fieldCandidateColumns}
-                dataSource={recommendedFieldCandidates}
-                pagination={{ pageSize: 6 }}
-                rowClassName={(record) => (record.source_field_name === selectedSourceFieldName ? "selected-candidate-row" : "")}
-              />
+              <Typography.Title level={5}>当前模板的真实审批字段</Typography.Title>
+              {fieldCandidates.length ? (
+                <Table
+                  size="small"
+                  rowKey={(record, index) => `${record.source_field_name}-${record.source_field_id || index}`}
+                  columns={fieldCandidateColumns}
+                  dataSource={recommendedFieldCandidates}
+                  pagination={{ pageSize: 6 }}
+                  rowClassName={(record) => (record.source_field_name === selectedSourceFieldName ? "selected-candidate-row" : "")}
+                />
+              ) : (
+                <Alert
+                  type="warning"
+                  showIcon
+                  message="这个模板还没有可选字段"
+                  description="字段样例来自已同步到本地的审批单。请先同步这个模板的审批列表，系统拿到真实审批数据后，右侧会出现可点选的字段、路径、类型和样例值。"
+                  action={
+                    <Button
+                      size="small"
+                      type="primary"
+                      onClick={() => {
+                        setIsMappingModalOpen(false);
+                        openSyncModal();
+                      }}
+                    >
+                      同步当前模板审批
+                    </Button>
+                  }
+                />
+              )}
             </div>
           </div>
         </Form>
