@@ -808,6 +808,77 @@ def upsert_template_mapping(
     return ApiEnvelope(data=mapping)
 
 
+@router.patch(
+    "/templates/{template_id}/mappings/{mapping_id}",
+    response_model=ApiEnvelope[TemplateFieldMappingRead],
+)
+def update_template_mapping(
+    template_id: str,
+    mapping_id: str,
+    payload: TemplateFieldMappingCreate,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+) -> ApiEnvelope[TemplateFieldMappingRead]:
+    template = session.get(ApprovalTemplate, template_id)
+    if template is None:
+        raise HTTPException(status_code=404, detail="Template not found")
+    mapping = session.get(TemplateFieldMapping, mapping_id)
+    if mapping is None or mapping.template_id != template_id:
+        raise HTTPException(status_code=404, detail="Template mapping not found")
+    for key, value in payload.model_dump().items():
+        setattr(mapping, key, value)
+    template.mapping_status = "mapped"
+    session.flush()
+    write_audit_log(
+        session,
+        actor=audit_actor(current_user),
+        action="dingtalk.template_mapping.update",
+        resource_type="template_field_mapping",
+        resource_id=mapping.id,
+        summary=f"编辑审批字段映射：{payload.source_field_name}",
+        metadata={"template_id": template_id},
+    )
+    session.commit()
+    session.refresh(mapping)
+    return ApiEnvelope(data=mapping)
+
+
+@router.delete(
+    "/templates/{template_id}/mappings/{mapping_id}",
+    response_model=ApiEnvelope[dict[str, bool]],
+)
+def delete_template_mapping(
+    template_id: str,
+    mapping_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+) -> ApiEnvelope[dict[str, bool]]:
+    template = session.get(ApprovalTemplate, template_id)
+    if template is None:
+        raise HTTPException(status_code=404, detail="Template not found")
+    mapping = session.get(TemplateFieldMapping, mapping_id)
+    if mapping is None or mapping.template_id != template_id:
+        raise HTTPException(status_code=404, detail="Template mapping not found")
+    session.delete(mapping)
+    session.flush()
+    remaining = session.scalar(
+        select(TemplateFieldMapping).where(TemplateFieldMapping.template_id == template_id).limit(1)
+    )
+    if remaining is None:
+        template.mapping_status = "unmapped"
+    write_audit_log(
+        session,
+        actor=audit_actor(current_user),
+        action="dingtalk.template_mapping.delete",
+        resource_type="template_field_mapping",
+        resource_id=mapping_id,
+        summary=f"删除审批字段映射：{mapping.source_field_name}",
+        metadata={"template_id": template_id},
+    )
+    session.commit()
+    return ApiEnvelope(data={"ok": True})
+
+
 @router.get(
     "/templates/{template_id}/parse-preview",
     response_model=ApiEnvelope[ApprovalParsePreview],

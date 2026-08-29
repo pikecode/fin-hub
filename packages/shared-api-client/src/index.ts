@@ -386,6 +386,15 @@ export function createApiClient(options: ApiClientOptions) {
           method: "POST",
           body: JSON.stringify(payload),
         }),
+      updateMapping: (templateId: string, mappingId: string, payload: TemplateFieldMappingCreate) =>
+        request<TemplateFieldMapping>(`/api/dingtalk/templates/${templateId}/mappings/${mappingId}`, {
+          method: "PATCH",
+          body: JSON.stringify(payload),
+        }),
+      deleteMapping: (templateId: string, mappingId: string) =>
+        request<{ ok: boolean }>(`/api/dingtalk/templates/${templateId}/mappings/${mappingId}`, {
+          method: "DELETE",
+        }),
       previewTemplateParse: (templateId: string, params = "") =>
         request<ApprovalParsePreview>(`/api/dingtalk/templates/${templateId}/parse-preview${params}`),
       reparseTemplate: (templateId: string, payload: ApprovalReparseRequest) =>

@@ -40,6 +40,31 @@ def test_sync_templates_and_upsert_mapping(client: TestClient) -> None:
     assert mappings_response.json()["data"][0]["source_field_name"] == "金额"
     assert mappings_response.json()["data"][0]["show_in_detail"] is True
 
+    mapping_id = mappings_response.json()["data"][0]["id"]
+    update_response = client.patch(
+        f"/api/dingtalk/templates/{template_id}/mappings/{mapping_id}",
+        json={
+            "standard_field": "amount",
+            "source_field_id": "field-amount",
+            "source_field_name": "金额",
+            "display_label": "付款金额",
+            "source_path": "费用明细[].金额",
+            "field_type": "MoneyField",
+            "show_in_list": False,
+            "show_in_detail": True,
+            "is_required": True,
+            "sort_order": 30,
+        },
+    )
+    assert update_response.status_code == 200
+    assert update_response.json()["data"]["display_label"] == "付款金额"
+    assert update_response.json()["data"]["show_in_list"] is False
+
+    delete_response = client.delete(f"/api/dingtalk/templates/{template_id}/mappings/{mapping_id}")
+    assert delete_response.status_code == 200
+    assert delete_response.json()["data"]["ok"] is True
+    assert client.get(f"/api/dingtalk/templates/{template_id}/mappings").json()["data"] == []
+
 
 def test_template_field_candidates_from_snapshot_and_instances(client: TestClient, session) -> None:
     template_id = client.post(

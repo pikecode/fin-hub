@@ -2,16 +2,17 @@
 
 import {
   Alert,
-  AutoComplete,
   Button,
   Card,
   DatePicker,
   Descriptions,
+  Drawer,
   Form,
   Image,
   Input,
   InputNumber,
   Modal,
+  Popconfirm,
   Select,
   Skeleton,
   Space,
@@ -27,8 +28,6 @@ import type { ColumnsType } from "antd/es/table";
 import dayjs from "dayjs";
 import { useEffect, useMemo, useState } from "react";
 import type {
-  ApprovalParseExpenseRow,
-  ApprovalParsePreview,
   ApprovalTemplate,
   ApprovalTemplateCreate,
   ApprovalInstance,
@@ -61,7 +60,7 @@ interface ApprovalSyncFormValues {
 }
 
 interface MappingFormValues extends TemplateFieldMappingCreate {
-  business_standard_field?: string | null;
+  selected_field_key?: string;
 }
 
 type DepartmentTreeNode = DingTalkDepartment & {
@@ -81,28 +80,6 @@ type ImagePreviewState = {
   title: string;
   url: string;
 };
-
-type StandardFieldOption = {
-  label: string;
-  value: TemplateFieldMappingCreate["standard_field"];
-  description: string;
-  aliases: string[];
-  required?: boolean;
-};
-
-const STANDARD_FIELD_OPTIONS: StandardFieldOption[] = [
-  { label: "门店/部门", value: "store", description: "用于归属门店和银行对账范围", aliases: ["支出门店", "门店", "费用门店", "所属门店", "申请部门", "部门"], required: true },
-  { label: "金额", value: "amount", description: "没有明细表时的审批总金额", aliases: ["汇总金额", "金额", "报销金额", "付款金额"], required: true },
-  { label: "支出日期", value: "expense_date", description: "生成支出账期和匹配日期窗口", aliases: ["报销日期", "支出日期", "费用日期", "付款日期", "日期"], required: true },
-  { label: "摘要", value: "description", description: "支出说明，进入对账候选说明", aliases: ["支出详情", "费用说明", "摘要", "备注", "其他备注信息"] },
-  { label: "明细表", value: "expense_table", description: "多行报销明细，系统会拆成多条支出", aliases: ["表格", "费用明细", "支出明细", "报销明细"] },
-  { label: "报销图片", value: "voucher_images", description: "图片凭证字段", aliases: ["报销凭证图片", "凭证图片", "图片", "报销凭证"] },
-  { label: "报销文档", value: "voucher_files", description: "钉钉 Drive 或文档附件字段", aliases: ["报销凭证文档", "凭证文档", "附件", "报销凭证"] },
-  { label: "一级分类", value: "category_l1", description: "支出一级分类", aliases: ["支出类型", "费用类型", "一级分类"] },
-  { label: "二级分类", value: "category_l2", description: "支出二级分类", aliases: ["二级分类", "小类"] },
-  { label: "供应商", value: "supplier_name", description: "可辅助银行流水匹配收款方", aliases: ["供应商", "收款方", "收款单位"] },
-  { label: "收款账户", value: "payee_account", description: "可辅助银行流水匹配账号", aliases: ["收款账户", "收款账号", "账户", "付款账号"] },
-];
 
 function buildDepartmentTree(departments: DingTalkDepartment[]): DepartmentTreeNode[] {
   const nodeMap = new Map<string, DepartmentTreeNode>();
@@ -232,47 +209,6 @@ function compactSampleValue(value: unknown) {
   return text.length > 120 ? `${text.slice(0, 120)}...` : text;
 }
 
-function normalizeText(value: string) {
-  return value.replace(/\s/g, "").replace(/（/g, "(").replace(/）/g, ")").toLowerCase();
-}
-
-function optionForStandardField(value?: string) {
-  return STANDARD_FIELD_OPTIONS.find((option) => option.value === value);
-}
-
-function candidateScore(candidate: TemplateFieldCandidate, option?: StandardFieldOption) {
-  if (!option) return 0;
-  const sourceName = normalizeText(candidate.source_field_name);
-  const sourcePath = normalizeText(candidate.source_path || "");
-  const sourceType = normalizeText(candidate.field_type || "");
-  let score = 0;
-  option.aliases.forEach((alias) => {
-    const normalizedAlias = normalizeText(alias);
-    if (sourceName === normalizedAlias) score += 100;
-    else if (sourceName.includes(normalizedAlias)) score += 60;
-    else if (sourcePath.includes(normalizedAlias)) score += 25;
-  });
-  if (option.value === "amount" && /(money|amount|number)/.test(sourceType)) score += 20;
-  if (option.value === "expense_date" && /(date|time)/.test(sourceType)) score += 20;
-  if (option.value === "expense_table" && /(table)/.test(sourceType)) score += 30;
-  if ((option.value === "voucher_images" || option.value === "voucher_files") && /(attach|image|picture|file)/.test(sourceType)) {
-    score += 20;
-  }
-  if (candidate.sample_value !== undefined && candidate.sample_value !== null && candidate.sample_value !== "") score += 5;
-  return score;
-}
-
-function bestCandidateForStandardField(
-  candidates: TemplateFieldCandidate[],
-  standardField: TemplateFieldMappingCreate["standard_field"],
-) {
-  const option = optionForStandardField(standardField);
-  return candidates
-    .map((candidate) => ({ candidate, score: candidateScore(candidate, option) }))
-    .filter((item) => item.score > 0)
-    .sort((a, b) => b.score - a.score)[0]?.candidate;
-}
-
 function approvalCountByTemplate(instances: ApprovalInstance[]) {
   return instances.reduce<Record<string, number>>((result, instance) => {
     result[instance.template_id] = (result[instance.template_id] ?? 0) + 1;
@@ -312,11 +248,14 @@ function mappedDisplayValue(instance: ApprovalInstance, mapping: TemplateFieldMa
   }
 }
 
+function candidateKey(candidate: TemplateFieldCandidate) {
+  return candidate.source_field_id || candidate.source_field_name;
+}
+
 export default function DingTalkPage() {
   const [config, setConfig] = useState<DingTalkConfig | null>(null);
   const [templates, setTemplates] = useState<ApprovalTemplate[]>([]);
   const [mappings, setMappings] = useState<TemplateFieldMapping[]>([]);
-  const [parsePreview, setParsePreview] = useState<ApprovalParsePreview | null>(null);
   const [fieldCandidates, setFieldCandidates] = useState<TemplateFieldCandidate[]>([]);
   const [syncJobs, setSyncJobs] = useState<SyncJob[]>([]);
   const [approvalInstances, setApprovalInstances] = useState<ApprovalInstance[]>([]);
@@ -324,10 +263,12 @@ export default function DingTalkPage() {
   const [selectedTemplate, setSelectedTemplate] = useState<ApprovalTemplate | null>(null);
   const [selectedInstance, setSelectedInstance] = useState<ApprovalInstance | null>(null);
   const [selectedInstanceAttachments, setSelectedInstanceAttachments] = useState<Attachment[]>([]);
+  const [editingMapping, setEditingMapping] = useState<TemplateFieldMapping | null>(null);
   const [imagePreview, setImagePreview] = useState<ImagePreviewState | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isTemplateModalOpen, setIsTemplateModalOpen] = useState(false);
   const [isMappingModalOpen, setIsMappingModalOpen] = useState(false);
+  const [isMappingDrawerOpen, setIsMappingDrawerOpen] = useState(false);
   const [isSyncModalOpen, setIsSyncModalOpen] = useState(false);
   const [isConfigModalOpen, setIsConfigModalOpen] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -335,10 +276,7 @@ export default function DingTalkPage() {
   const [templateForm] = Form.useForm<ApprovalTemplateCreate>();
   const [mappingForm] = Form.useForm<MappingFormValues>();
   const [syncForm] = Form.useForm<ApprovalSyncFormValues>();
-  const selectedStandardField = Form.useWatch("business_standard_field", mappingForm);
   const selectedSourceFieldName = Form.useWatch("source_field_name", mappingForm);
-  const selectedSourcePath = Form.useWatch("source_path", mappingForm);
-  const selectedFieldType = Form.useWatch("field_type", mappingForm);
   const departmentTree = useMemo(
     () => buildDepartmentTree(departmentPreview?.departments ?? []),
     [departmentPreview],
@@ -371,12 +309,14 @@ export default function DingTalkPage() {
       }))
       .filter((table) => table.rows.length > 0);
   }, [selectedInstanceFields]);
-  const recommendedFieldCandidates = useMemo(() => {
-    const option = optionForStandardField(selectedStandardField ?? undefined);
-    return [...fieldCandidates].sort((a, b) => candidateScore(b, option) - candidateScore(a, option));
-  }, [fieldCandidates, selectedStandardField]);
   const templateApprovalCounts = useMemo(() => approvalCountByTemplate(approvalInstances), [approvalInstances]);
-  const detailDisplayMappings = mappings.filter((mapping) => mapping.show_in_detail);
+  const detailDisplayMappings = mappings;
+  const selectedTemplateSampleInstance = selectedTemplate
+    ? approvalInstances.find((instance) => instance.template_id === selectedTemplate.id)
+    : undefined;
+  const displayedApprovalInstances = selectedTemplate
+    ? approvalInstances.filter((instance) => instance.template_id === selectedTemplate.id)
+    : approvalInstances;
 
   useEffect(() => {
     return () => {
@@ -572,7 +512,6 @@ export default function DingTalkPage() {
 
   async function loadMappings(template: ApprovalTemplate) {
     setSelectedTemplate(template);
-    setParsePreview(null);
     setIsLoading(true);
     try {
       const [data, candidates] = await Promise.all([
@@ -581,11 +520,6 @@ export default function DingTalkPage() {
       ]);
       setMappings(data);
       setFieldCandidates(candidates);
-      try {
-        setParsePreview(await apiClient.dingtalk.previewTemplateParse(template.id));
-      } catch {
-        setParsePreview(null);
-      }
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "无法加载字段映射");
     } finally {
@@ -593,59 +527,48 @@ export default function DingTalkPage() {
     }
   }
 
-  async function previewSelectedTemplateParse() {
-    if (!selectedTemplate) return;
-    setIsLoading(true);
-    setErrorMessage(null);
-    try {
-      const preview = await apiClient.dingtalk.previewTemplateParse(selectedTemplate.id);
-      setParsePreview(preview);
-      message.success("试解析完成");
-    } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "无法试解析审批");
-    } finally {
-      setIsLoading(false);
-    }
+  async function openMappingDrawer(template: ApprovalTemplate) {
+    setIsMappingDrawerOpen(true);
+    await loadMappings(template);
   }
 
-  async function reparseSelectedTemplate() {
-    if (!selectedTemplate) return;
-    setIsLoading(true);
-    setErrorMessage(null);
-    try {
-      const result = await apiClient.dingtalk.reparseTemplate(selectedTemplate.id, {
-        limit: 200,
-        started_by: "admin",
-      });
-      await loadData();
-      await loadMappings(selectedTemplate);
-      message.success(
-        `重跑完成：处理 ${result.processed_count} 条，生成支出 ${result.created_expense_count} 条`,
-      );
-    } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "无法重跑审批解析");
-    } finally {
-      setIsLoading(false);
-    }
-  }
-
-  function applyFieldCandidate(sourceFieldName: string) {
-    const candidate = fieldCandidates.find((item) => item.source_field_name === sourceFieldName);
+  function applyFieldCandidate(fieldKey: string) {
+    const candidate = fieldCandidates.find((item) => candidateKey(item) === fieldKey || item.source_field_name === fieldKey);
     if (!candidate) return;
     mappingForm.setFieldsValue({
+      selected_field_key: candidateKey(candidate),
       source_field_name: candidate.source_field_name,
+      display_label: mappingForm.getFieldValue("display_label") || candidate.source_field_name,
       source_field_id: candidate.source_field_id ?? undefined,
       source_path: candidate.source_path ?? undefined,
       field_type: candidate.field_type ?? undefined,
     });
   }
 
-  function openMappingModal(candidate?: TemplateFieldCandidate) {
+  function openMappingModal(candidate?: TemplateFieldCandidate, mapping?: TemplateFieldMapping) {
+    setEditingMapping(mapping ?? null);
     mappingForm.resetFields();
+    if (mapping) {
+      mappingForm.setFieldsValue({
+        selected_field_key: mapping.source_field_id || mapping.source_field_name,
+        standard_field: mapping.standard_field,
+        display_label: mapping.display_label ?? mapping.source_field_name,
+        source_field_name: mapping.source_field_name,
+        source_field_id: mapping.source_field_id ?? undefined,
+        source_path: mapping.source_path ?? undefined,
+        field_type: mapping.field_type ?? undefined,
+        show_in_list: mapping.show_in_list,
+        show_in_detail: mapping.show_in_detail,
+        is_required: mapping.is_required,
+        sort_order: mapping.sort_order,
+      });
+      setIsMappingModalOpen(true);
+      return;
+    }
     mappingForm.setFieldsValue({
-      business_standard_field: undefined,
       standard_field: candidate ? `display:${candidate.source_field_id || candidate.source_field_name}` : undefined,
       display_label: candidate?.source_field_name,
+      selected_field_key: candidate ? candidateKey(candidate) : undefined,
       source_field_name: candidate?.source_field_name,
       source_field_id: candidate?.source_field_id ?? undefined,
       source_path: candidate?.source_path ?? undefined,
@@ -658,59 +581,17 @@ export default function DingTalkPage() {
     setIsMappingModalOpen(true);
   }
 
-  function applyStandardField(standardField?: TemplateFieldMappingCreate["standard_field"]) {
-    if (!standardField) {
-      mappingForm.setFieldsValue({
-        business_standard_field: undefined,
-        standard_field: undefined,
-        is_required: false,
-      });
-      return;
-    }
-    const candidate = bestCandidateForStandardField(fieldCandidates, standardField);
-    mappingForm.setFieldsValue({
-      business_standard_field: standardField,
-      standard_field: standardField,
-      is_required: optionForStandardField(standardField)?.required ?? false,
-    });
-    if (candidate) applyFieldCandidate(candidate.source_field_name);
-  }
-
-  async function createSuggestedMappings() {
+  async function deleteMapping(mapping: TemplateFieldMapping) {
     if (!selectedTemplate) return;
-    const existingFields = new Set(mappings.map((mapping) => mapping.standard_field));
-    const suggestions = STANDARD_FIELD_OPTIONS.flatMap((option, index) => {
-      if (existingFields.has(option.value)) return [];
-      const candidate = bestCandidateForStandardField(fieldCandidates, option.value);
-      if (!candidate) return [];
-      return [
-        {
-          standard_field: option.value,
-          source_field_id: candidate.source_field_id,
-          source_field_name: candidate.source_field_name,
-          source_path: candidate.source_path,
-          field_type: candidate.field_type,
-          display_label: option.label,
-          show_in_list: option.value === "store" || option.value === "amount" || option.value === "expense_date",
-          show_in_detail: true,
-          is_required: option.required ?? false,
-          sort_order: index,
-        },
-      ];
-    });
-    if (!suggestions.length) {
-      message.info("暂无可生成的建议映射");
-      return;
-    }
     setIsLoading(true);
     setErrorMessage(null);
     try {
-      await Promise.all(suggestions.map((payload) => apiClient.dingtalk.upsertMapping(selectedTemplate.id, payload)));
+      await apiClient.dingtalk.deleteMapping(selectedTemplate.id, mapping.id);
       await loadMappings(selectedTemplate);
       await loadData();
-      message.success(`已生成 ${suggestions.length} 条建议映射`);
+      message.success("字段映射已删除");
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "无法生成建议映射");
+      setErrorMessage(error instanceof Error ? error.message : "无法删除字段映射");
     } finally {
       setIsLoading(false);
     }
@@ -718,18 +599,24 @@ export default function DingTalkPage() {
 
   async function submitMapping(values: MappingFormValues) {
     if (!selectedTemplate) return;
-    const businessField = values.business_standard_field || "";
     const sourceKey = values.source_field_id || values.source_field_name;
     setIsLoading(true);
     try {
-      await apiClient.dingtalk.upsertMapping(selectedTemplate.id, {
+      const payload = {
         ...values,
-        standard_field: businessField || `display:${sourceKey}`,
+        standard_field: values.standard_field || `display:${sourceKey}`,
         display_label: values.display_label || values.source_field_name,
         show_in_detail: values.show_in_detail ?? true,
-        show_in_list: values.show_in_list ?? false,
-      });
+        show_in_list: true,
+        is_required: false,
+      };
+      if (editingMapping) {
+        await apiClient.dingtalk.updateMapping(selectedTemplate.id, editingMapping.id, payload);
+      } else {
+        await apiClient.dingtalk.upsertMapping(selectedTemplate.id, payload);
+      }
       setIsMappingModalOpen(false);
+      setEditingMapping(null);
       mappingForm.resetFields();
       await loadMappings(selectedTemplate);
       await loadData();
@@ -823,8 +710,8 @@ export default function DingTalkPage() {
       title: "操作",
       render: (_, record) => (
         <Space>
-          <Button type="link" onClick={() => loadMappings(record)}>
-            字段映射
+          <Button type="link" onClick={() => openMappingDrawer(record)}>
+            字段显示配置
           </Button>
         </Space>
       ),
@@ -835,32 +722,34 @@ export default function DingTalkPage() {
     { title: "钉钉字段", dataIndex: "source_field_name" },
     { title: "显示名称", dataIndex: "display_label", render: (_, record) => mappingDisplayLabel(record) },
     {
-      title: "业务用途",
-      dataIndex: "standard_field",
-      render: (value) => (String(value).startsWith("display:") ? <Tag>仅展示</Tag> : <Tag color="blue">{value}</Tag>),
+      title: "字段样例",
+      render: (_, record) =>
+        selectedTemplateSampleInstance ? renderDingTalkValue(mappedDisplayValue(selectedTemplateSampleInstance, record)) : "-",
     },
     {
-      title: "展示位置",
+      title: "操作",
+      width: 120,
       render: (_, record) => (
         <Space>
-          {record.show_in_list ? <Tag color="green">列表</Tag> : null}
-          {record.show_in_detail ? <Tag color="cyan">详情</Tag> : null}
+          <Button size="small" onClick={() => openMappingModal(undefined, record)}>
+            编辑
+          </Button>
+          <Popconfirm title="删除这个字段映射？" onConfirm={() => deleteMapping(record)}>
+            <Button size="small" danger>
+              删除
+            </Button>
+          </Popconfirm>
         </Space>
       ),
     },
-    { title: "字段路径", dataIndex: "source_path", render: (value) => value || "-" },
-    { title: "类型", dataIndex: "field_type", render: (value) => value || "-" },
-    { title: "必填", dataIndex: "is_required", render: (value) => (value ? "是" : "否") },
   ];
 
   const fieldCandidateColumns: ColumnsType<TemplateFieldCandidate> = [
-    { title: "来源字段", dataIndex: "source_field_name", width: 150 },
-    { title: "字段路径", dataIndex: "source_path", width: 220, render: (value) => value || "-" },
-    { title: "类型", dataIndex: "field_type", width: 120, render: (value) => value || "-" },
+    { title: "钉钉字段", dataIndex: "source_field_name", width: 150 },
     {
       title: "真实样例",
       dataIndex: "sample_value",
-      render: (value) => <Typography.Text className="json-preview">{compactSampleValue(value)}</Typography.Text>,
+      render: renderDingTalkValue,
     },
     {
       title: "操作",
@@ -871,15 +760,6 @@ export default function DingTalkPage() {
         </Button>
       ),
     },
-  ];
-
-  const parseRowColumns: ColumnsType<ApprovalParseExpenseRow> = [
-    { title: "摘要", dataIndex: "description" },
-    { title: "金额", dataIndex: "amount", width: 120 },
-    { title: "一级分类", dataIndex: "category_l1", render: (value) => value || "-" },
-    { title: "二级分类", dataIndex: "category_l2", render: (value) => value || "-" },
-    { title: "收款方", dataIndex: "supplier_name", render: (value) => value || "-" },
-    { title: "收款账户", dataIndex: "payee_account", render: (value) => value || "-" },
   ];
 
   const departmentColumns: ColumnsType<DingTalkDepartment> = [
@@ -948,7 +828,7 @@ export default function DingTalkPage() {
     },
   ];
 
-  const listDisplayMappings = mappings.filter((mapping) => mapping.show_in_list);
+  const listDisplayMappings = mappings;
   const instanceColumns: ColumnsType<ApprovalInstance> = [
     { title: "审批编号", dataIndex: "approval_no", render: (value) => value || "-" },
     ...listDisplayMappings.map((mapping): ColumnsType<ApprovalInstance>[number] => ({
@@ -1069,91 +949,29 @@ export default function DingTalkPage() {
             key: "templates",
             label: "审批模板",
             children: (
-              <Space direction="vertical" size={16} className="full-width">
-                <Card
-                  title="审批模板快照"
-                  extra={
-                    <Space>
-                      <Button onClick={syncTemplates} loading={isLoading}>
-                        增量同步模板
-                      </Button>
-                      <Button type="primary" onClick={() => setIsTemplateModalOpen(true)}>
-                        手动新增模板
-                      </Button>
-                    </Space>
-                  }
-                >
-                  <Space wrap className="dashboard-alert">
-                    <Tag>本地模板 {templates.length}</Tag>
-                    <Tag color="green">已映射 {templates.filter((item) => item.mapping_status === "mapped").length}</Tag>
-                    <Tag color="gold">未映射 {templates.filter((item) => item.mapping_status !== "mapped").length}</Tag>
-                    <Tag color="cyan">
-                      上次同步 {config?.last_template_sync_at ? config.last_template_sync_at.replace("T", " ").slice(0, 16) : "尚未同步"}
-                    </Tag>
+              <Card
+                title="审批模板快照"
+                extra={
+                  <Space>
+                    <Button onClick={syncTemplates} loading={isLoading}>
+                      增量同步模板
+                    </Button>
+                    <Button type="primary" onClick={() => setIsTemplateModalOpen(true)}>
+                      手动新增模板
+                    </Button>
                   </Space>
-                  <Table rowKey="id" loading={isLoading} columns={templateColumns} dataSource={templates} />
-                </Card>
-                <Card
-                  title={selectedTemplate ? `${selectedTemplate.name} 字段映射` : "字段映射"}
-                  extra={
-                    <Space>
-                      <Button disabled={!selectedTemplate} onClick={previewSelectedTemplateParse} loading={isLoading}>
-                        试解析
-                      </Button>
-                      <Button disabled={!selectedTemplate} onClick={reparseSelectedTemplate} loading={isLoading}>
-                        重跑解析
-                      </Button>
-                      <Button disabled={!selectedTemplate} onClick={createSuggestedMappings} loading={isLoading}>
-                        自动建议映射
-                      </Button>
-                      <Button type="primary" disabled={!selectedTemplate} onClick={() => openMappingModal()}>
-                        新增展示字段
-                      </Button>
-                    </Space>
-                  }
-                >
-                  <Space direction="vertical" size={16} className="full-width">
-                    <Table rowKey="id" loading={isLoading} columns={mappingColumns} dataSource={mappings} pagination={false} />
-                    {selectedTemplate ? (
-                      <Card size="small" title="统一字段试解析">
-                        {parsePreview ? (
-                          <Space direction="vertical" size={12} className="full-width">
-                            <Space wrap>
-                              <Tag color={parsePreview.can_create_expense ? "green" : "gold"}>
-                                {parsePreview.can_create_expense ? "可生成支出" : "需补映射"}
-                              </Tag>
-                              <Tag>明细 {parsePreview.expense_row_count}</Tag>
-                              <Tag>凭证 {parsePreview.voucher_count}</Tag>
-                              <Tag>审批号 {parsePreview.approval_no || parsePreview.dingtalk_instance_id}</Tag>
-                            </Space>
-                            <Descriptions bordered size="small" column={2}>
-                              <Descriptions.Item label="门店">{parsePreview.store_name || parsePreview.store_text || "-"}</Descriptions.Item>
-                              <Descriptions.Item label="支出日期">
-                                {parsePreview.expense_date?.replace("T", " ").slice(0, 10) || "-"}
-                              </Descriptions.Item>
-                              <Descriptions.Item label="发起部门">{parsePreview.originator_dept_name || "-"}</Descriptions.Item>
-                              <Descriptions.Item label="缺失字段">
-                                {parsePreview.missing_fields.length ? parsePreview.missing_fields.join(", ") : "-"}
-                              </Descriptions.Item>
-                            </Descriptions>
-                            <Table
-                              size="small"
-                              rowKey={(_, index) => `parse-row-${index}`}
-                              columns={parseRowColumns}
-                              dataSource={parsePreview.rows}
-                              pagination={false}
-                            />
-                          </Space>
-                        ) : (
-                          <Alert message="选择模板并同步审批实例后，可以在这里验证映射会生成哪些统一支出字段。" type="info" showIcon />
-                        )}
-                      </Card>
-                    ) : (
-                      <Alert message="先在审批模板列表选择一个模板，再维护它的字段映射。" type="info" showIcon />
-                    )}
-                  </Space>
-                </Card>
-              </Space>
+                }
+              >
+                <Space wrap className="dashboard-alert">
+                  <Tag>本地模板 {templates.length}</Tag>
+                  <Tag color="green">已映射 {templates.filter((item) => item.mapping_status === "mapped").length}</Tag>
+                  <Tag color="gold">未映射 {templates.filter((item) => item.mapping_status !== "mapped").length}</Tag>
+                  <Tag color="cyan">
+                    上次同步 {config?.last_template_sync_at ? config.last_template_sync_at.replace("T", " ").slice(0, 16) : "尚未同步"}
+                  </Tag>
+                </Space>
+                <Table rowKey="id" loading={isLoading} columns={templateColumns} dataSource={templates} />
+              </Card>
             ),
           },
           {
@@ -1162,16 +980,27 @@ export default function DingTalkPage() {
             children: (
               <Space direction="vertical" size={16} className="full-width">
                 <Card
-                  title="审批实例快照"
+                  title={selectedTemplate ? `${selectedTemplate.name} 审批列表` : "审批实例快照"}
                   extra={
-                    <Button type="primary" onClick={openSyncModal} loading={isLoading}>
-                      增量同步审批
-                    </Button>
+                    <Space>
+                      {selectedTemplate ? (
+                        <Button onClick={() => {
+                          setSelectedTemplate(null);
+                          setMappings([]);
+                          setFieldCandidates([]);
+                        }}>
+                          查看全部模板
+                        </Button>
+                      ) : null}
+                      <Button type="primary" onClick={openSyncModal} loading={isLoading}>
+                        增量同步审批
+                      </Button>
+                    </Space>
                   }
                 >
                   <Space wrap className="dashboard-alert">
-                    <Tag>本地实例 {approvalInstances.length}</Tag>
-                    <Tag color="green">已通过 {approvalInstances.filter((item) => item.approval_status === "approved").length}</Tag>
+                    <Tag>本地实例 {displayedApprovalInstances.length}</Tag>
+                    <Tag color="green">已通过 {displayedApprovalInstances.filter((item) => item.approval_status === "approved").length}</Tag>
                     <Tag color="blue">同步任务 {syncJobs.length}</Tag>
                     <Tag color="cyan">
                       上次同步 {config?.last_instance_sync_at ? config.last_instance_sync_at.replace("T", " ").slice(0, 16) : "尚未同步"}
@@ -1181,7 +1010,7 @@ export default function DingTalkPage() {
                     rowKey="id"
                     loading={isLoading}
                     columns={instanceColumns}
-                    dataSource={approvalInstances}
+                    dataSource={displayedApprovalInstances}
                     pagination={{ pageSize: 8 }}
                   />
                 </Card>
@@ -1199,6 +1028,59 @@ export default function DingTalkPage() {
           },
         ]}
       />
+
+      <Drawer
+        title={selectedTemplate ? `${selectedTemplate.name} 字段显示配置` : "字段显示配置"}
+        open={isMappingDrawerOpen}
+        onClose={() => setIsMappingDrawerOpen(false)}
+        width={1040}
+        extra={
+          <Space>
+            <Button disabled={!selectedTemplate} onClick={openSyncModal} loading={isLoading}>
+              同步当前模板审批
+            </Button>
+            <Button type="primary" disabled={!selectedTemplate} onClick={() => openMappingModal()}>
+              新增字段
+            </Button>
+          </Space>
+        }
+      >
+        <Space direction="vertical" size={16} className="full-width">
+          <Alert
+            type="info"
+            showIcon
+            message="字段显示配置用于从这个审批模板里挑选需要展示的字段。"
+            description="配置后，审批列表会按这些字段显示；其他业务场景选择这个审批模板数据时，也优先展示这些字段。完整原始数据仍可在详情里查看。"
+          />
+          <Card size="small" title="已选显示字段">
+            <Table rowKey="id" loading={isLoading} columns={mappingColumns} dataSource={mappings} pagination={false} />
+          </Card>
+          <Card size="small" title="可选钉钉字段样例">
+            {fieldCandidates.length ? (
+              <Table
+                size="small"
+                rowKey={(record, index) => `${record.source_field_name}-${record.source_field_id || index}`}
+                columns={fieldCandidateColumns}
+                dataSource={fieldCandidates}
+                pagination={{ pageSize: 8 }}
+                rowClassName={(record) => (record.source_field_name === selectedSourceFieldName ? "selected-candidate-row" : "")}
+              />
+            ) : (
+              <Alert
+                type="warning"
+                showIcon
+                message="这个模板还没有可选字段"
+                description="字段样例来自已同步到本地的审批单。请先同步这个模板的审批列表，系统拿到真实审批数据后，这里会出现可配置的钉钉字段。"
+                action={
+                  <Button size="small" type="primary" onClick={openSyncModal}>
+                    同步当前模板审批
+                  </Button>
+                }
+              />
+            )}
+          </Card>
+        </Space>
+      </Drawer>
 
       <Modal
         title="审批实例详情"
@@ -1466,130 +1348,59 @@ export default function DingTalkPage() {
         </Form>
       </Modal>
       <Modal
-        title="新增/更新字段映射"
+        title={editingMapping ? "编辑显示字段" : "新增显示字段"}
         open={isMappingModalOpen}
-        onCancel={() => setIsMappingModalOpen(false)}
+        onCancel={() => {
+          setIsMappingModalOpen(false);
+          setEditingMapping(null);
+        }}
         onOk={() => mappingForm.submit()}
         confirmLoading={isLoading}
-        width={1120}
+        width={560}
       >
         <Form form={mappingForm} layout="vertical" onFinish={submitMapping}>
-          <div className="mapping-modal-grid">
-            <Space direction="vertical" size={12} className="full-width">
-              <Form.Item name="business_standard_field" label="业务用途（可选）">
-                <Select
-                  allowClear
-                  showSearch
-                  placeholder="仅展示时可不选；参与对账落库时选择用途"
-                  onChange={applyStandardField}
-                  optionFilterProp="label"
-                  options={STANDARD_FIELD_OPTIONS.map((option) => ({
-                    label: `${option.label} ${option.value}`,
-                    value: option.value,
-                  }))}
-                />
-              </Form.Item>
-              {selectedStandardField ? (
-                <Alert
-                  type="info"
-                  showIcon
-                  message={optionForStandardField(selectedStandardField)?.description}
-                  description="选择业务用途后，这个字段会参与统一支出落库和后续银行对账。"
-                />
-              ) : (
-                <Alert
-                  type="info"
-                  showIcon
-                  message="不选择业务用途时，这个字段只用于审批列表/详情展示。"
-                />
-              )}
-              <Form.Item name="source_field_name" label="钉钉审批字段" rules={[{ required: true }]}>
-                <AutoComplete
-                  placeholder={fieldCandidates.length ? "从右侧样例表点选，或输入字段名搜索" : "当前模板暂无字段样例，请先同步审批"}
-                  onSelect={applyFieldCandidate}
-                  options={recommendedFieldCandidates.map((candidate) => ({
-                    label: (
-                      <Space direction="vertical" size={0}>
-                        <Typography.Text>{candidate.source_field_name}</Typography.Text>
-                        <Typography.Text type="secondary" className="json-preview">
-                          {candidate.source_path || "-"} / {compactSampleValue(candidate.sample_value)}
-                        </Typography.Text>
-                      </Space>
-                    ),
-                    value: candidate.source_field_name,
-                  }))}
-                >
-                  <Input />
-                </AutoComplete>
-              </Form.Item>
-              <Form.Item name="display_label" label="显示名称">
-                <Input placeholder="例如：门店、金额、凭证" />
-              </Form.Item>
-              <Descriptions bordered size="small" column={1}>
-                <Descriptions.Item label="字段路径">
-                  {selectedSourcePath || "-"}
-                </Descriptions.Item>
-                <Descriptions.Item label="字段类型">
-                  {selectedFieldType || "-"}
-                </Descriptions.Item>
-              </Descriptions>
-              <Form.Item name="source_field_id" hidden>
-                <Input />
-              </Form.Item>
-              <Form.Item name="source_path" hidden>
-                <Input />
-              </Form.Item>
-              <Form.Item name="field_type" hidden>
-                <Input />
-              </Form.Item>
-              <Space>
-                <Form.Item label="列表展示" name="show_in_list" initialValue={true} valuePropName="checked">
-                  <Switch />
-                </Form.Item>
-                <Form.Item label="详情展示" name="show_in_detail" initialValue={true} valuePropName="checked">
-                  <Switch />
-                </Form.Item>
-                <Form.Item label="必填" name="is_required" initialValue={false} valuePropName="checked">
-                  <Switch />
-                </Form.Item>
-                <Form.Item name="sort_order" label="排序" initialValue={0}>
-                  <InputNumber min={0} />
-                </Form.Item>
-              </Space>
-            </Space>
-            <div className="mapping-candidate-panel">
-              <Typography.Title level={5}>当前模板的真实审批字段</Typography.Title>
-              {fieldCandidates.length ? (
-                <Table
-                  size="small"
-                  rowKey={(record, index) => `${record.source_field_name}-${record.source_field_id || index}`}
-                  columns={fieldCandidateColumns}
-                  dataSource={recommendedFieldCandidates}
-                  pagination={{ pageSize: 6 }}
-                  rowClassName={(record) => (record.source_field_name === selectedSourceFieldName ? "selected-candidate-row" : "")}
-                />
-              ) : (
-                <Alert
-                  type="warning"
-                  showIcon
-                  message="这个模板还没有可选字段"
-                  description="字段样例来自已同步到本地的审批单。请先同步这个模板的审批列表，系统拿到真实审批数据后，右侧会出现可点选的字段、路径、类型和样例值。"
-                  action={
-                    <Button
-                      size="small"
-                      type="primary"
-                      onClick={() => {
-                        setIsMappingModalOpen(false);
-                        openSyncModal();
-                      }}
-                    >
-                      同步当前模板审批
-                    </Button>
-                  }
-                />
-              )}
-            </div>
-          </div>
+          <Form.Item name="selected_field_key" label="选择钉钉字段" rules={[{ required: true }]}>
+            <Select
+              showSearch
+              placeholder={fieldCandidates.length ? "选择这个模板里的钉钉字段" : "请先同步当前模板审批"}
+              optionFilterProp="label"
+              onChange={applyFieldCandidate}
+              options={fieldCandidates.map((candidate) => ({
+                label: `${candidate.source_field_name} / ${compactSampleValue(candidate.sample_value)}`,
+                value: candidateKey(candidate),
+              }))}
+            />
+          </Form.Item>
+          <Form.Item name="display_label" label="显示名称" rules={[{ required: true }]}>
+            <Input placeholder="例如：门店、金额、凭证" />
+          </Form.Item>
+          <Form.Item name="standard_field" hidden>
+            <Input />
+          </Form.Item>
+          <Form.Item name="source_field_name" hidden>
+            <Input />
+          </Form.Item>
+          <Form.Item name="source_field_id" hidden>
+            <Input />
+          </Form.Item>
+          <Form.Item name="source_path" hidden>
+            <Input />
+          </Form.Item>
+          <Form.Item name="field_type" hidden>
+            <Input />
+          </Form.Item>
+          <Form.Item name="show_in_list" hidden initialValue={true}>
+            <Input />
+          </Form.Item>
+          <Form.Item name="show_in_detail" hidden initialValue={true}>
+            <Input />
+          </Form.Item>
+          <Form.Item name="is_required" hidden initialValue={false}>
+            <Input />
+          </Form.Item>
+          <Form.Item name="sort_order" hidden initialValue={0}>
+            <Input />
+          </Form.Item>
         </Form>
       </Modal>
     </AppShell>
