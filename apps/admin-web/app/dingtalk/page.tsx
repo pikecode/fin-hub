@@ -8,6 +8,7 @@ import {
   DatePicker,
   Descriptions,
   Form,
+  Image,
   Input,
   InputNumber,
   Modal,
@@ -29,6 +30,7 @@ import type {
   ApprovalTemplate,
   ApprovalTemplateCreate,
   ApprovalInstance,
+  Attachment,
   DingTalkConfig,
   DingTalkDepartment,
   DingTalkDepartmentSyncPreview,
@@ -67,6 +69,13 @@ type DingTalkFormField = {
   value?: unknown;
 };
 
+type DingTalkTableRow = Record<string, unknown>;
+
+type ImagePreviewState = {
+  title: string;
+  url: string;
+};
+
 function buildDepartmentTree(departments: DingTalkDepartment[]): DepartmentTreeNode[] {
   const nodeMap = new Map<string, DepartmentTreeNode>();
   departments.forEach((department) => {
@@ -88,6 +97,53 @@ function buildDepartmentTree(departments: DingTalkDepartment[]): DepartmentTreeN
   return roots;
 }
 
+function parseDingTalkTableValue(value: unknown): DingTalkTableRow[] {
+  if (!value) return [];
+  if (typeof value === "string") {
+    try {
+      return parseDingTalkTableValue(JSON.parse(value));
+    } catch {
+      return [];
+    }
+  }
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((row) => {
+      if (!row || typeof row !== "object") return null;
+      const source = row as Record<string, unknown>;
+      const cells = source.rowValue ?? source.row_value ?? source.value;
+      if (!Array.isArray(cells)) return source;
+      const parsed: DingTalkTableRow = {};
+      cells.forEach((cell) => {
+        if (!cell || typeof cell !== "object") return;
+        const item = cell as Record<string, unknown>;
+        const label = item.label ?? item.name ?? item.title;
+        if (!label) return;
+        parsed[String(label)] = item.value ?? item.ext_value ?? item.extValue ?? "";
+      });
+      return parsed;
+    })
+    .filter((row): row is DingTalkTableRow => Boolean(row));
+}
+
+function isImageAttachment(attachment: Attachment, blob?: Blob) {
+  const contentType = blob?.type || attachment.content_type || "";
+  if (contentType.startsWith("image/")) return true;
+  return /\.(apng|avif|gif|jpe?g|png|webp)$/i.test(attachment.file_name);
+}
+
+function externalAttachmentUrl(attachment: Attachment) {
+  const value = attachment.external_file_id;
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value);
+    const url = parsed?.url ?? parsed?.downloadUrl ?? parsed?.download_url;
+    return typeof url === "string" && /^https?:\/\//i.test(url) ? url : null;
+  } catch {
+    return /^https?:\/\//i.test(value) ? value : null;
+  }
+}
+
 export default function DingTalkPage() {
   const [config, setConfig] = useState<DingTalkConfig | null>(null);
   const [templates, setTemplates] = useState<ApprovalTemplate[]>([]);
@@ -98,6 +154,8 @@ export default function DingTalkPage() {
   const [departmentPreview, setDepartmentPreview] = useState<DingTalkDepartmentSyncPreview | null>(null);
   const [selectedTemplate, setSelectedTemplate] = useState<ApprovalTemplate | null>(null);
   const [selectedInstance, setSelectedInstance] = useState<ApprovalInstance | null>(null);
+  const [selectedInstanceAttachments, setSelectedInstanceAttachments] = useState<Attachment[]>([]);
+  const [imagePreview, setImagePreview] = useState<ImagePreviewState | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isTemplateModalOpen, setIsTemplateModalOpen] = useState(false);
   const [isMappingModalOpen, setIsMappingModalOpen] = useState(false);
@@ -132,6 +190,20 @@ export default function DingTalkPage() {
     const fields = selectedInstancePayload?.form_component_values;
     return Array.isArray(fields) ? fields.filter((item) => item && typeof item === "object") : [];
   }, [selectedInstancePayload]);
+  const selectedInstanceTables = useMemo(() => {
+    return selectedInstanceFields
+      .map((field) => ({
+        name: field.name || "表格",
+        rows: parseDingTalkTableValue(field.value),
+      }))
+      .filter((table) => table.rows.length > 0);
+  }, [selectedInstanceFields]);
+
+  useEffect(() => {
+    return () => {
+      if (imagePreview?.url) URL.revokeObjectURL(imagePreview.url);
+    };
+  }, [imagePreview]);
 
   async function loadData() {
     setIsLoading(true);
@@ -362,6 +434,53 @@ export default function DingTalkPage() {
     }
   }
 
+  async function openInstanceDetail(instance: ApprovalInstance) {
+    setSelectedInstance(instance);
+    setSelectedInstanceAttachments([]);
+    try {
+      const data = await apiClient.attachments.list(
+        `?resource_type=approval_instance&resource_id=${encodeURIComponent(instance.id)}&page_size=50`,
+      );
+      setSelectedInstanceAttachments(data.items);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "无法读取审批附件");
+    }
+  }
+
+  async function ensureAttachmentStored(attachment: Attachment): Promise<Attachment> {
+    if (attachment.download_status === "stored") return attachment;
+    const stored = await apiClient.attachments.downloadDingtalk(attachment.id);
+    setSelectedInstanceAttachments((items) => items.map((item) => (item.id === stored.id ? stored : item)));
+    return stored;
+  }
+
+  async function openAttachment(attachment: Attachment, mode: "preview" | "download") {
+    try {
+      const stored = await ensureAttachmentStored(attachment);
+      const blob = await apiClient.attachments.download(stored.id);
+      const url = URL.createObjectURL(blob);
+      if (mode === "download") {
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = stored.file_name;
+        link.click();
+        URL.revokeObjectURL(url);
+        return;
+      }
+      if (isImageAttachment(stored, blob)) {
+        setImagePreview((current) => {
+          if (current?.url) URL.revokeObjectURL(current.url);
+          return { title: stored.file_name || "图片预览", url };
+        });
+        return;
+      }
+      window.open(url, "_blank", "noopener,noreferrer");
+      window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "无法打开附件");
+    }
+  }
+
   const templateColumns: ColumnsType<ApprovalTemplate> = [
     { title: "模板名称", dataIndex: "name" },
     { title: "Process Code", dataIndex: "process_code" },
@@ -473,7 +592,7 @@ export default function DingTalkPage() {
       title: "操作",
       width: 90,
       render: (_, record) => (
-        <Button type="link" onClick={() => setSelectedInstance(record)}>
+        <Button type="link" onClick={() => openInstanceDetail(record)}>
           详情
         </Button>
       ),
@@ -728,6 +847,74 @@ export default function DingTalkPage() {
               />
             </Card>
 
+            {selectedInstanceTables.map((table) => {
+              const keys = Array.from(new Set(table.rows.flatMap((row) => Object.keys(row))));
+              return (
+                <Card size="small" title={`${table.name}明细`} key={table.name}>
+                  <Table
+                    size="small"
+                    rowKey={(_, index) => `${table.name}-${index}`}
+                    pagination={false}
+                    dataSource={table.rows}
+                    columns={keys.map((key) => ({
+                      title: key,
+                      dataIndex: key,
+                      render: (value: unknown) => (
+                        <Typography.Text className="json-preview">
+                          {typeof value === "string" ? value : JSON.stringify(value)}
+                        </Typography.Text>
+                      ),
+                    }))}
+                  />
+                </Card>
+              );
+            })}
+
+            <Card size="small" title="报销凭证文档">
+              <Table
+                size="small"
+                rowKey="id"
+                pagination={false}
+                dataSource={selectedInstanceAttachments}
+                columns={[
+                  { title: "文件名", dataIndex: "file_name", render: (value) => value || "钉钉凭证" },
+                  {
+                    title: "状态",
+                    dataIndex: "download_status",
+                    width: 110,
+                    render: (value) => {
+                      if (value === "stored") return <Tag color="green">已下载</Tag>;
+                      if (value === "failed") return <Tag color="red">失败</Tag>;
+                      return <Tag color="gold">待下载</Tag>;
+                    },
+                  },
+                  { title: "类型", dataIndex: "content_type", width: 150, render: (value) => value || "-" },
+                  {
+                    title: "操作",
+                    width: 260,
+                    render: (_, record) => {
+                      const sourceUrl = externalAttachmentUrl(record);
+                      return (
+                        <Space>
+                          {sourceUrl ? (
+                            <Button size="small" href={sourceUrl} target="_blank" rel="noreferrer">
+                              源链接
+                            </Button>
+                          ) : null}
+                          <Button size="small" onClick={() => openAttachment(record, "preview")}>
+                            {isImageAttachment(record) ? "预览图片" : "打开"}
+                          </Button>
+                          <Button size="small" onClick={() => openAttachment(record, "download")}>
+                            下载
+                          </Button>
+                        </Space>
+                      );
+                    },
+                  },
+                ]}
+              />
+            </Card>
+
             <Card size="small" title="原始数据">
               <pre className="json-block">
                 {selectedInstance.raw_payload
@@ -737,6 +924,20 @@ export default function DingTalkPage() {
             </Card>
           </Space>
         ) : null}
+      </Modal>
+      <Modal
+        title={imagePreview?.title || "图片预览"}
+        open={Boolean(imagePreview)}
+        footer={null}
+        width={880}
+        onCancel={() =>
+          setImagePreview((current) => {
+            if (current?.url) URL.revokeObjectURL(current.url);
+            return null;
+          })
+        }
+      >
+        {imagePreview ? <Image src={imagePreview.url} alt={imagePreview.title} width="100%" /> : null}
       </Modal>
       <Modal
         title="钉钉应用凭证"

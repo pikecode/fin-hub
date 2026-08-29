@@ -1013,6 +1013,14 @@ def expense_rows_from_table(value: Any) -> list[dict[str, Any]]:
     return rows
 
 
+def voucher_items_from_table(value: Any) -> list[dict[str, str | None]]:
+    items: list[dict[str, str | None]] = []
+    for row in decode_table_value(value):
+        for name in ("报销凭证", "报销凭证图片", "报销凭证文档", "凭证", "凭证图片", "附件"):
+            items.extend(parse_voucher_items(pick_row_value(row, name)))
+    return items
+
+
 def parse_voucher_items(value: Any) -> list[dict[str, str | None]]:
     if value in (None, ""):
         return []
@@ -1127,6 +1135,30 @@ def sync_real_instance(
     )
     table_value = mapped_or_form_value(mapped, raw_instance, "expense_table", "表格", "费用明细", "支出明细")
     expense_rows = expense_rows_from_table(table_value)
+    voucher_items = [
+        *parse_voucher_items(
+            mapped_or_form_value(
+                mapped,
+                raw_instance,
+                "voucher_images",
+                "报销凭证图片",
+                "凭证图片",
+                "图片",
+            )
+        ),
+        *parse_voucher_items(
+            mapped_or_form_value(
+                mapped,
+                raw_instance,
+                "voucher_files",
+                "报销凭证文档",
+                "报销凭证",
+                "凭证文档",
+                "附件",
+            )
+        ),
+        *voucher_items_from_table(table_value),
+    ]
     payee_account = parse_text(
         mapped_or_form_value(mapped, raw_instance, "payee_account", "收款账户", "收款账号", "账户")
     )
@@ -1148,6 +1180,7 @@ def sync_real_instance(
     instance.raw_payload = json.dumps(raw_instance, ensure_ascii=False)
     instance.synced_job_id = job.id
     session.flush()
+    create_dingtalk_attachment_placeholders(session, "approval_instance", instance.id, voucher_items)
 
     if store is None or (amount is None and not expense_rows) or expense_date is None:
         missing_fields = []
@@ -1223,8 +1256,7 @@ def sync_real_instance(
             "expense_item",
             expense_item.id,
             [
-                *parse_voucher_items(mapped.get("voucher_images")),
-                *parse_voucher_items(mapped.get("voucher_files")),
+                *voucher_items,
             ],
         )
     instance.raw_payload = json.dumps(

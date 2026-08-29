@@ -546,9 +546,14 @@ def test_real_approval_sync_splits_table_rows_and_resolves_store_path(client: Te
                         "value": (
                             '[{"rowValue":['
                             '{"label":"支出详情","value":"消杀"},'
-                            '{"label":"小项金额","value":"350"}'
+                            '{"label":"小项金额","value":"350"},'
+                            '{"label":"报销凭证","value":"[\\"https://example.com/voucher.jpg\\"]"}'
                             "]}]"
                         ),
+                    },
+                    {
+                        "name": "报销凭证文档",
+                        "value": '[{"spaceId":"space-1","fileId":"file-1","fileName":"凭证.xlsx"}]',
                     },
                 ],
             }
@@ -577,3 +582,7 @@ def test_real_approval_sync_splits_table_rows_and_resolves_store_path(client: Te
     instances = client.get(f"/api/dingtalk/approval-instances?template_id={template_id}").json()["data"]["items"]
     assert instances[0]["store_id"] == store_id
     assert '"expense_row_count": 1' in instances[0]["raw_payload"]
+    attachments = client.get(
+        f"/api/attachments?resource_type=approval_instance&resource_id={instances[0]['id']}&page_size=20"
+    ).json()["data"]["items"]
+    assert {attachment["file_name"] for attachment in attachments} == {"voucher.jpg", "凭证.xlsx"}
