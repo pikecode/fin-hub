@@ -301,6 +301,8 @@ export default function DingTalkPage() {
   const [approvalInstances, setApprovalInstances] = useState<ApprovalInstance[]>([]);
   const [departmentPreview, setDepartmentPreview] = useState<DingTalkDepartmentSyncPreview | null>(null);
   const [selectedTemplate, setSelectedTemplate] = useState<ApprovalTemplate | null>(null);
+  const [instanceTemplateFilterId, setInstanceTemplateFilterId] = useState<string | null>(null);
+  const [instanceDisplayMappings, setInstanceDisplayMappings] = useState<TemplateFieldMapping[]>([]);
   const [selectedInstance, setSelectedInstance] = useState<ApprovalInstance | null>(null);
   const [selectedInstanceAttachments, setSelectedInstanceAttachments] = useState<Attachment[]>([]);
   const [editingMapping, setEditingMapping] = useState<TemplateFieldMapping | null>(null);
@@ -354,8 +356,11 @@ export default function DingTalkPage() {
   const selectedTemplateSampleInstance = selectedTemplate
     ? approvalInstances.find((instance) => instance.template_id === selectedTemplate.id)
     : undefined;
-  const displayedApprovalInstances = selectedTemplate
-    ? approvalInstances.filter((instance) => instance.template_id === selectedTemplate.id)
+  const instanceTemplateFilter = instanceTemplateFilterId
+    ? templates.find((template) => template.id === instanceTemplateFilterId) ?? null
+    : null;
+  const displayedApprovalInstances = instanceTemplateFilterId
+    ? approvalInstances.filter((instance) => instance.template_id === instanceTemplateFilterId)
     : approvalInstances;
 
   useEffect(() => {
@@ -487,13 +492,31 @@ export default function DingTalkPage() {
 
   function openSyncModal() {
     syncForm.setFieldsValue({
-      template_id: selectedTemplate?.id,
+      template_id: instanceTemplateFilterId ?? selectedTemplate?.id,
       time_range: [dayjs().subtract(7, "day"), dayjs()],
       page_size: 10,
       max_pages: 5,
       skip_existing: true,
     });
     setIsSyncModalOpen(true);
+  }
+
+  async function changeInstanceTemplateFilter(templateId?: string) {
+    setInstanceTemplateFilterId(templateId ?? null);
+    setErrorMessage(null);
+    if (!templateId) {
+      setInstanceDisplayMappings([]);
+      return;
+    }
+    setIsLoading(true);
+    try {
+      const data = await apiClient.dingtalk.listMappings(templateId);
+      setInstanceDisplayMappings(data);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "无法加载模板显示字段");
+    } finally {
+      setIsLoading(false);
+    }
   }
 
   async function startApprovalSync(values: ApprovalSyncFormValues) {
@@ -510,6 +533,9 @@ export default function DingTalkPage() {
       });
       setIsSyncModalOpen(false);
       await loadData();
+      if (instanceTemplateFilterId) {
+        setInstanceDisplayMappings(await apiClient.dingtalk.listMappings(instanceTemplateFilterId));
+      }
       if (job.status === "failed") {
         message.error(job.error_message || "审批列表同步失败");
       } else if (job.next_cursor) {
@@ -908,7 +934,7 @@ export default function DingTalkPage() {
     },
   ];
 
-  const listDisplayMappings = mappings;
+  const listDisplayMappings = instanceTemplateFilterId ? instanceDisplayMappings : [];
   const instanceColumns: ColumnsType<ApprovalInstance> = [
     { title: "审批编号", dataIndex: "approval_no", render: (value) => value || "-" },
     ...listDisplayMappings.map((mapping): ColumnsType<ApprovalInstance>[number] => ({
@@ -1060,18 +1086,22 @@ export default function DingTalkPage() {
             children: (
               <Space direction="vertical" size={16} className="full-width">
                 <Card
-                  title={selectedTemplate ? `${selectedTemplate.name} 审批列表` : "审批实例快照"}
+                  title={instanceTemplateFilter ? `${instanceTemplateFilter.name} 审批列表` : "审批实例快照"}
                   extra={
                     <Space>
-                      {selectedTemplate ? (
-                        <Button onClick={() => {
-                          setSelectedTemplate(null);
-                          setMappings([]);
-                          setFieldCandidates([]);
-                        }}>
-                          查看全部模板
-                        </Button>
-                      ) : null}
+                      <Select
+                        allowClear
+                        showSearch
+                        placeholder="按审批模板筛选"
+                        value={instanceTemplateFilterId ?? undefined}
+                        style={{ width: 260 }}
+                        optionFilterProp="label"
+                        onChange={changeInstanceTemplateFilter}
+                        options={templates.map((template) => ({
+                          label: template.name,
+                          value: template.id,
+                        }))}
+                      />
                       <Button type="primary" onClick={openSyncModal} loading={isLoading}>
                         增量同步审批
                       </Button>
@@ -1079,8 +1109,10 @@ export default function DingTalkPage() {
                   }
                 >
                   <Space wrap className="dashboard-alert">
+                    {instanceTemplateFilter ? <Tag color="blue">当前模板 {instanceTemplateFilter.name}</Tag> : <Tag>全部模板</Tag>}
                     <Tag>本地实例 {displayedApprovalInstances.length}</Tag>
                     <Tag color="green">已通过 {displayedApprovalInstances.filter((item) => item.approval_status === "approved").length}</Tag>
+                    {instanceTemplateFilter ? <Tag color="purple">显示字段 {instanceDisplayMappings.length}</Tag> : null}
                     <Tag color="blue">同步任务 {syncJobs.length}</Tag>
                     <Tag color="cyan">
                       上次同步 {config?.last_instance_sync_at ? config.last_instance_sync_at.replace("T", " ").slice(0, 16) : "尚未同步"}
