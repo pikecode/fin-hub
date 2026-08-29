@@ -52,8 +52,8 @@ def test_template_field_candidates_from_snapshot_and_instances(client: TestClien
             approval_status="approved",
             raw_payload=(
                 '{"form_component_values":['
-                '{"id":"field-store","name":"门店","componentType":"TextField"},'
-                '{"id":"field-amount","name":"金额","componentType":"MoneyField"}'
+                '{"id":"field-store","name":"门店","componentType":"TextField","value":"菌山集开平东汇城店"},'
+                '{"id":"field-amount","name":"金额","componentType":"MoneyField","value":"350"}'
                 "]}"
             ),
         )
@@ -66,7 +66,9 @@ def test_template_field_candidates_from_snapshot_and_instances(client: TestClien
     labels = {item["source_field_name"]: item for item in candidates}
     assert labels["金额"]["source_field_id"] == "field-amount"
     assert labels["金额"]["field_type"] == "MoneyField"
+    assert labels["金额"]["sample_value"] == "350"
     assert labels["门店"]["source_field_id"] == "field-store"
+    assert labels["门店"]["sample_value"] == "菌山集开平东汇城店"
     assert [item["source_field_name"] for item in candidates].count("金额") == 1
 
 

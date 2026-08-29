@@ -200,6 +200,12 @@ function renderDingTalkValue(value: unknown) {
   );
 }
 
+function compactSampleValue(value: unknown) {
+  if (value === undefined || value === null || value === "") return "-";
+  const text = typeof value === "string" ? value : JSON.stringify(value);
+  return text.length > 120 ? `${text.slice(0, 120)}...` : text;
+}
+
 export default function DingTalkPage() {
   const [config, setConfig] = useState<DingTalkConfig | null>(null);
   const [templates, setTemplates] = useState<ApprovalTemplate[]>([]);
@@ -511,6 +517,7 @@ export default function DingTalkPage() {
     const candidate = fieldCandidates.find((item) => item.source_field_name === sourceFieldName);
     if (!candidate) return;
     mappingForm.setFieldsValue({
+      source_field_name: candidate.source_field_name,
       source_field_id: candidate.source_field_id ?? undefined,
       source_path: candidate.source_path ?? undefined,
       field_type: candidate.field_type ?? undefined,
@@ -624,6 +631,26 @@ export default function DingTalkPage() {
     { title: "字段路径", dataIndex: "source_path", render: (value) => value || "-" },
     { title: "类型", dataIndex: "field_type", render: (value) => value || "-" },
     { title: "必填", dataIndex: "is_required", render: (value) => (value ? "是" : "否") },
+  ];
+
+  const fieldCandidateColumns: ColumnsType<TemplateFieldCandidate> = [
+    { title: "来源字段", dataIndex: "source_field_name", width: 150 },
+    { title: "字段路径", dataIndex: "source_path", width: 220, render: (value) => value || "-" },
+    { title: "类型", dataIndex: "field_type", width: 120, render: (value) => value || "-" },
+    {
+      title: "真实样例",
+      dataIndex: "sample_value",
+      render: (value) => <Typography.Text className="json-preview">{compactSampleValue(value)}</Typography.Text>,
+    },
+    {
+      title: "操作",
+      width: 90,
+      render: (_, record) => (
+        <Button size="small" onClick={() => applyFieldCandidate(record.source_field_name)}>
+          选用
+        </Button>
+      ),
+    },
   ];
 
   const parseRowColumns: ColumnsType<ApprovalParseExpenseRow> = [
@@ -1205,14 +1232,37 @@ export default function DingTalkPage() {
       >
         <Form form={mappingForm} layout="vertical" onFinish={submitMapping}>
           <Form.Item name="standard_field" label="标准字段" rules={[{ required: true }]}>
-            <Input placeholder="amount" />
+            <Select
+              showSearch
+              placeholder="选择统一字段"
+              options={[
+                { label: "门店/部门 store", value: "store" },
+                { label: "金额 amount", value: "amount" },
+                { label: "支出日期 expense_date", value: "expense_date" },
+                { label: "摘要 description", value: "description" },
+                { label: "明细表 expense_table", value: "expense_table" },
+                { label: "报销图片 voucher_images", value: "voucher_images" },
+                { label: "报销文档 voucher_files", value: "voucher_files" },
+                { label: "一级分类 category_l1", value: "category_l1" },
+                { label: "二级分类 category_l2", value: "category_l2" },
+                { label: "供应商 supplier_name", value: "supplier_name" },
+                { label: "收款账户 payee_account", value: "payee_account" },
+              ]}
+            />
           </Form.Item>
           <Form.Item name="source_field_name" label="来源字段名称" rules={[{ required: true }]}>
             <AutoComplete
               placeholder="金额"
               onSelect={applyFieldCandidate}
               options={fieldCandidates.map((candidate) => ({
-                label: `${candidate.source_field_name}${candidate.field_type ? ` / ${candidate.field_type}` : ""}`,
+                label: (
+                  <Space direction="vertical" size={0}>
+                    <Typography.Text>{candidate.source_field_name}</Typography.Text>
+                    <Typography.Text type="secondary" className="json-preview">
+                      {candidate.source_path || "-"} / {compactSampleValue(candidate.sample_value)}
+                    </Typography.Text>
+                  </Space>
+                ),
                 value: candidate.source_field_name,
               }))}
             >
@@ -1234,6 +1284,15 @@ export default function DingTalkPage() {
           <Form.Item name="sort_order" label="排序" initialValue={0}>
             <Input />
           </Form.Item>
+          <Card size="small" title="最近审批真实字段样例">
+            <Table
+              size="small"
+              rowKey={(record, index) => `${record.source_field_name}-${record.source_field_id || index}`}
+              columns={fieldCandidateColumns}
+              dataSource={fieldCandidates}
+              pagination={{ pageSize: 6 }}
+            />
+          </Card>
         </Form>
       </Modal>
     </AppShell>

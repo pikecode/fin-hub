@@ -489,6 +489,7 @@ class TemplateFieldCandidate(BaseModel):
     source_field_name: str
     source_path: str | None = None
     field_type: str | None = None
+    sample_value: object | None = None
 
 
 class DingTalkDepartmentRead(BaseModel):

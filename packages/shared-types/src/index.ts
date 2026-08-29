@@ -478,6 +478,7 @@ export interface TemplateFieldCandidate {
   source_field_name: string;
   source_path?: string | null;
   field_type?: string | null;
+  sample_value?: unknown;
 }
 
 export interface ApprovalParseExpenseRow {

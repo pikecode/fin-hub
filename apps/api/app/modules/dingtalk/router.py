@@ -431,6 +431,13 @@ def candidate_field_type(value: dict[str, Any]) -> str | None:
     return None
 
 
+def candidate_sample_value(value: dict[str, Any]) -> Any:
+    for key in ("value", "ext_value", "extValue"):
+        if key in value:
+            return value.get(key)
+    return None
+
+
 def collect_field_candidates(value: Any, path: str = "") -> list[TemplateFieldCandidate]:
     candidates: list[TemplateFieldCandidate] = []
     if isinstance(value, dict):
@@ -442,6 +449,7 @@ def collect_field_candidates(value: Any, path: str = "") -> list[TemplateFieldCa
                     source_field_name=label,
                     source_path=path or label,
                     field_type=candidate_field_type(value),
+                    sample_value=candidate_sample_value(value),
                 )
             )
         for key, child in value.items():
@@ -458,6 +466,10 @@ def unique_field_candidates(candidates: list[TemplateFieldCandidate]) -> list[Te
     for candidate in candidates:
         key = (candidate.source_field_id, candidate.source_field_name)
         if key not in unique:
+            unique[key] = candidate
+            continue
+        existing = unique[key]
+        if existing.sample_value in (None, "") and candidate.sample_value not in (None, ""):
             unique[key] = candidate
     return sorted(unique.values(), key=lambda item: (item.source_field_name, item.source_field_id or ""))
 
