@@ -591,6 +591,35 @@ def test_pull_template_sample_approval_rejects_seed_template_in_real_mode(
     assert "本地演示模板" in response.json()["detail"]
 
 
+def test_select_approval_instance_as_field_candidate_sample(client: TestClient, session) -> None:
+    template_id = client.post(
+        "/api/dingtalk/templates",
+        json={"process_code": "PROC-SAMPLE-SOURCE", "name": "样例来源模板", "is_enabled": True},
+    ).json()["data"]["id"]
+    first = ApprovalInstance(
+        template_id=template_id,
+        dingtalk_instance_id="first-source",
+        approval_status="approved",
+        raw_payload='{"form_component_values":[{"id":"first-field","name":"旧字段","componentType":"TextField","value":"旧值"}]}',
+    )
+    second = ApprovalInstance(
+        template_id=template_id,
+        dingtalk_instance_id="second-source",
+        approval_status="approved",
+        raw_payload='{"form_component_values":[{"id":"second-field","name":"新字段","componentType":"TextField","value":"新值"}]}',
+    )
+    session.add_all([first, second])
+    session.commit()
+
+    response = client.post(
+        f"/api/dingtalk/templates/{template_id}/field-candidate-sample",
+        json={"approval_instance_id": first.id},
+    )
+    assert response.status_code == 200
+    names = {item["source_field_name"] for item in response.json()["data"]["field_candidates"]}
+    assert names == {"旧字段"}
+
+
 def test_real_approval_sync_persists_instance_when_expense_parse_is_incomplete(
     client: TestClient,
     monkeypatch,

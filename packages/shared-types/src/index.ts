@@ -493,6 +493,10 @@ export interface TemplateSampleApprovalResult {
   pulled_count: number;
 }
 
+export interface TemplateFieldCandidateSampleRequest {
+  approval_instance_id: string;
+}
+
 export interface ApprovalParseExpenseRow {
   description: string;
   amount: string;

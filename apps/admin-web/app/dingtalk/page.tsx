@@ -785,6 +785,31 @@ export default function DingTalkPage() {
     }
   }
 
+  async function useSelectedInstanceAsFieldSample(instance: ApprovalInstance) {
+    const template = templates.find((item) => item.id === instance.template_id);
+    if (!template) {
+      setErrorMessage("未找到审批实例对应的模板");
+      return;
+    }
+    setIsLoading(true);
+    setErrorMessage(null);
+    try {
+      const result = await apiClient.dingtalk.useApprovalInstanceAsFieldCandidateSample(template.id, {
+        approval_instance_id: instance.id,
+      });
+      setSelectedTemplate(template);
+      setMappings(await apiClient.dingtalk.listMappings(template.id));
+      setFieldCandidates(result.field_candidates);
+      setSelectedInstance(null);
+      setIsMappingDrawerOpen(true);
+      message.success("已用当前审批单生成字段候选");
+    } catch (error) {
+      setErrorMessage(apiErrorMessage(error, "无法设置字段候选样例"));
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
   async function ensureAttachmentStored(attachment: Attachment): Promise<Attachment> {
     if (attachment.download_status === "stored") return attachment;
     const stored = await apiClient.attachments.downloadDingtalk(attachment.id);
@@ -1246,7 +1271,16 @@ export default function DingTalkPage() {
         title="审批实例详情"
         open={Boolean(selectedInstance)}
         onCancel={() => setSelectedInstance(null)}
-        footer={<Button onClick={() => setSelectedInstance(null)}>关闭</Button>}
+        footer={
+          <Space>
+            <Button onClick={() => setSelectedInstance(null)}>关闭</Button>
+            {selectedInstance ? (
+              <Button type="primary" loading={isLoading} onClick={() => useSelectedInstanceAsFieldSample(selectedInstance)}>
+                用这条配置显示字段
+              </Button>
+            ) : null}
+          </Space>
+        }
         width={920}
       >
         {selectedInstance ? (

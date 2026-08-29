@@ -691,6 +691,10 @@ class TemplateSampleApprovalResult(BaseModel):
     pulled_count: int
 
 
+class TemplateFieldCandidateSampleRequest(BaseModel):
+    approval_instance_id: str
+
+
 class BankImportRowError(BaseModel):
     row_number: int
     message: str

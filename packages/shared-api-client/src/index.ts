@@ -62,6 +62,7 @@ import type {
   SyncJob,
   SystemReadinessReport,
   TemplateFieldCandidate,
+  TemplateFieldCandidateSampleRequest,
   TemplateFieldMapping,
   TemplateFieldMappingCreate,
   TemplateSampleApprovalResult,
@@ -385,6 +386,11 @@ export function createApiClient(options: ApiClientOptions) {
       pullTemplateSampleApproval: (templateId: string) =>
         request<TemplateSampleApprovalResult>(`/api/dingtalk/templates/${templateId}/sample-approval`, {
           method: "POST",
+        }),
+      useApprovalInstanceAsFieldCandidateSample: (templateId: string, payload: TemplateFieldCandidateSampleRequest) =>
+        request<TemplateSampleApprovalResult>(`/api/dingtalk/templates/${templateId}/field-candidate-sample`, {
+          method: "POST",
+          body: JSON.stringify(payload),
         }),
       upsertMapping: (templateId: string, payload: TemplateFieldMappingCreate) =>
         request<TemplateFieldMapping>(`/api/dingtalk/templates/${templateId}/mappings`, {

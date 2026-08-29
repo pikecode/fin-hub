@@ -51,6 +51,7 @@ from app.schemas import (
     StartApprovalSyncRequest,
     SyncJobRead,
     TemplateFieldCandidate,
+    TemplateFieldCandidateSampleRequest,
     TemplateFieldMappingCreate,
     TemplateFieldMappingRead,
     TemplateSampleApprovalResult,
@@ -550,21 +551,17 @@ def unique_field_candidates(candidates: list[TemplateFieldCandidate]) -> list[Te
 
 
 def field_candidates_for_template(session: Session, template: ApprovalTemplate) -> list[TemplateFieldCandidate]:
-    candidates: list[TemplateFieldCandidate] = []
-    instances = session.scalars(
+    instance = session.scalar(
         select(ApprovalInstance)
         .where(ApprovalInstance.template_id == template.id)
-        .order_by(ApprovalInstance.created_at.desc())
-        .limit(10)
-    ).all()
-    for instance in instances:
-        if not instance.raw_payload:
-            continue
-        try:
-            candidates.extend(collect_approval_form_field_candidates(json.loads(instance.raw_payload)))
-        except ValueError:
-            continue
-    return unique_field_candidates(candidates)
+        .order_by(ApprovalInstance.updated_at.desc(), ApprovalInstance.created_at.desc())
+    )
+    if not instance or not instance.raw_payload:
+        return []
+    try:
+        return unique_field_candidates(collect_approval_form_field_candidates(json.loads(instance.raw_payload)))
+    except ValueError:
+        return []
 
 
 def save_sample_approval_instance(
@@ -941,6 +938,43 @@ def pull_template_sample_approval(
             instance=instance,
             field_candidates=field_candidates_for_template(session, template),
             pulled_count=1 if instance else 0,
+        )
+    )
+
+
+@router.post(
+    "/templates/{template_id}/field-candidate-sample",
+    response_model=ApiEnvelope[TemplateSampleApprovalResult],
+)
+def use_approval_instance_as_field_candidate_sample(
+    template_id: str,
+    payload: TemplateFieldCandidateSampleRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+) -> ApiEnvelope[TemplateSampleApprovalResult]:
+    template = session.get(ApprovalTemplate, template_id)
+    if template is None:
+        raise HTTPException(status_code=404, detail="Template not found")
+    instance = session.get(ApprovalInstance, payload.approval_instance_id)
+    if instance is None or instance.template_id != template_id:
+        raise HTTPException(status_code=404, detail="Approval instance not found for template")
+    instance.updated_at = utc_now()
+    write_audit_log(
+        session,
+        actor=audit_actor(current_user),
+        action="dingtalk.template_field_sample.select",
+        resource_type="approval_instance",
+        resource_id=instance.id,
+        summary=f"选择审批实例作为字段显示配置样例：{template.name}",
+        metadata={"template_id": template_id, "dingtalk_instance_id": instance.dingtalk_instance_id},
+    )
+    session.commit()
+    session.refresh(instance)
+    return ApiEnvelope(
+        data=TemplateSampleApprovalResult(
+            instance=instance,
+            field_candidates=field_candidates_for_template(session, template),
+            pulled_count=1,
         )
     )
 
