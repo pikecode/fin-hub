@@ -3,7 +3,7 @@
 import { Alert, AutoComplete, Button, Card, DatePicker, Form, Input, InputNumber, Modal, Select, Skeleton, Space, Switch, Table, Tag } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import dayjs from "dayjs";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type {
   ApprovalTemplate,
   ApprovalTemplateCreate,
@@ -34,6 +34,31 @@ interface ApprovalSyncFormValues {
   max_pages?: number;
 }
 
+type DepartmentTreeNode = DingTalkDepartment & {
+  children?: DepartmentTreeNode[];
+};
+
+function buildDepartmentTree(departments: DingTalkDepartment[]): DepartmentTreeNode[] {
+  const nodeMap = new Map<string, DepartmentTreeNode>();
+  departments.forEach((department) => {
+    nodeMap.set(department.dept_id, { ...department });
+  });
+
+  const roots: DepartmentTreeNode[] = [];
+  nodeMap.forEach((node) => {
+    if (node.parent_id && nodeMap.has(node.parent_id)) {
+      const parent = nodeMap.get(node.parent_id);
+      if (!parent) return;
+      parent.children = parent.children ?? [];
+      parent.children.push(node);
+    } else {
+      roots.push(node);
+    }
+  });
+
+  return roots;
+}
+
 export default function DingTalkPage() {
   const [config, setConfig] = useState<DingTalkConfig | null>(null);
   const [templates, setTemplates] = useState<ApprovalTemplate[]>([]);
@@ -52,6 +77,10 @@ export default function DingTalkPage() {
   const [templateForm] = Form.useForm<ApprovalTemplateCreate>();
   const [mappingForm] = Form.useForm<TemplateFieldMappingCreate>();
   const [syncForm] = Form.useForm<ApprovalSyncFormValues>();
+  const departmentTree = useMemo(
+    () => buildDepartmentTree(departmentPreview?.departments ?? []),
+    [departmentPreview],
+  );
 
   async function loadData() {
     setIsLoading(true);
@@ -283,15 +312,34 @@ export default function DingTalkPage() {
   ];
 
   const departmentColumns: ColumnsType<DingTalkDepartment> = [
-    { title: "部门名称", dataIndex: "name" },
-    { title: "部门 ID", dataIndex: "dept_id" },
-    { title: "路径", dataIndex: "path" },
     {
-      title: "门店候选",
-      dataIndex: "is_store_candidate",
-      render: (value) => (value ? <Tag color="green">是</Tag> : <Tag>否</Tag>),
+      title: "部门名称",
+      dataIndex: "name",
+      render: (value, record) => (
+        <Space size={8}>
+          <span style={{ fontWeight: record.is_store_candidate ? 700 : 500 }}>{value}</span>
+          {record.is_store_candidate ? <Tag color="green">候选门店</Tag> : null}
+          {record.store_name ? <Tag color="blue">已关联</Tag> : null}
+        </Space>
+      ),
     },
-    { title: "本地门店", dataIndex: "store_name", render: (value) => value || "-" },
+    { title: "部门 ID", dataIndex: "dept_id", width: 150 },
+    {
+      title: "层级路径",
+      dataIndex: "path",
+      render: (value) => <span style={{ color: "#64748b" }}>{value}</span>,
+    },
+    {
+      title: "落地状态",
+      dataIndex: "is_store_candidate",
+      width: 120,
+      render: (value, record) => {
+        if (!value) return <Tag>部门</Tag>;
+        if (record.store_name) return <Tag color="blue">已存在</Tag>;
+        return <Tag color="gold">将新增</Tag>;
+      },
+    },
+    { title: "本地门店", dataIndex: "store_name", width: 180, render: (value) => value || "-" },
   ];
 
   const jobColumns: ColumnsType<SyncJob> = [
@@ -398,8 +446,10 @@ export default function DingTalkPage() {
               rowKey="dept_id"
               loading={isLoading}
               columns={departmentColumns}
-              dataSource={departmentPreview.departments}
-              pagination={{ pageSize: 8 }}
+              dataSource={departmentTree}
+              pagination={false}
+              rowClassName={(record) => (record.is_store_candidate ? "store-candidate-row" : "")}
+              expandable={{ defaultExpandAllRows: true }}
             />
           </>
         ) : (

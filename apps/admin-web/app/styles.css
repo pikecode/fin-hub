@@ -93,6 +93,14 @@ body {
   margin-bottom: 16px;
 }
 
+.store-candidate-row > td {
+  background: #f0fdf4;
+}
+
+.store-candidate-row:hover > td {
+  background: #dcfce7 !important;
+}
+
 .metrics {
   margin-bottom: 16px;
 }
