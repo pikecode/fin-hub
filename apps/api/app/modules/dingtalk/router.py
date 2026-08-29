@@ -421,7 +421,7 @@ def candidate_label(value: dict[str, Any]) -> str | None:
 
 
 def candidate_field_id(value: dict[str, Any]) -> str | None:
-    for key in ("id", "field_id", "fieldId", "component_id", "componentId"):
+    for key in ("id", "key", "field_id", "fieldId", "component_id", "componentId"):
         candidate = value.get(key)
         if candidate not in (None, ""):
             return str(candidate)
@@ -441,6 +441,15 @@ def candidate_sample_value(value: dict[str, Any]) -> Any:
         if key in value:
             return value.get(key)
     return None
+
+
+def parsed_json_value(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    try:
+        return json.loads(value)
+    except ValueError:
+        return value
 
 
 def collect_field_candidates(value: Any, path: str = "") -> list[TemplateFieldCandidate]:
@@ -463,6 +472,67 @@ def collect_field_candidates(value: Any, path: str = "") -> list[TemplateFieldCa
     elif isinstance(value, list):
         for index, child in enumerate(value):
             candidates.extend(collect_field_candidates(child, f"{path}[{index}]"))
+    return candidates
+
+
+def collect_approval_form_field_candidates(raw_instance: dict[str, Any]) -> list[TemplateFieldCandidate]:
+    components = raw_instance.get("form_component_values") or raw_instance.get("formComponentValues") or []
+    if not isinstance(components, list):
+        return []
+
+    candidates: list[TemplateFieldCandidate] = []
+    for component in components:
+        if not isinstance(component, dict):
+            continue
+        field_name = candidate_label(component)
+        if not field_name:
+            continue
+        field_id = candidate_field_id(component)
+        field_type = candidate_field_type(component)
+        sample_value = candidate_sample_value(component)
+        parsed_value = parsed_json_value(sample_value)
+        is_table = field_type == "TableField" or (
+            isinstance(parsed_value, list)
+            and any(isinstance(row, dict) and isinstance(row.get("rowValue") or row.get("row_value"), list) for row in parsed_value)
+        )
+        if not is_table:
+            candidates.append(
+                TemplateFieldCandidate(
+                    source_field_id=field_id,
+                    source_field_name=field_name,
+                    source_path=f"field:{field_id or field_name}",
+                    field_type=field_type,
+                    sample_value=sample_value,
+                )
+            )
+            continue
+
+        if not isinstance(parsed_value, list):
+            continue
+        seen_table_fields: set[str] = set()
+        for row in parsed_value:
+            if not isinstance(row, dict):
+                continue
+            cells = row.get("rowValue") or row.get("row_value") or []
+            if not isinstance(cells, list):
+                continue
+            for cell in cells:
+                if not isinstance(cell, dict):
+                    continue
+                cell_name = candidate_label(cell)
+                if not cell_name or cell_name in seen_table_fields:
+                    continue
+                seen_table_fields.add(cell_name)
+                cell_id = candidate_field_id(cell)
+                candidates.append(
+                    TemplateFieldCandidate(
+                        source_field_id=cell_id,
+                        source_field_name=f"{field_name}.{cell_name}",
+                        source_path=f"table:{field_id or field_name}:{cell_id or cell_name}",
+                        field_type=candidate_field_type(cell),
+                        sample_value=candidate_sample_value(cell),
+                    )
+                )
     return candidates
 
 
@@ -491,7 +561,7 @@ def field_candidates_for_template(session: Session, template: ApprovalTemplate) 
         if not instance.raw_payload:
             continue
         try:
-            candidates.extend(collect_field_candidates(json.loads(instance.raw_payload), "instance"))
+            candidates.extend(collect_approval_form_field_candidates(json.loads(instance.raw_payload)))
         except ValueError:
             continue
     return unique_field_candidates(candidates)

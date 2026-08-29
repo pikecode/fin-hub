@@ -86,7 +86,12 @@ def test_template_field_candidates_from_snapshot_and_instances(client: TestClien
             raw_payload=(
                 '{"form_component_values":['
                 '{"id":"field-store","name":"门店","componentType":"TextField","value":"菌山集开平东汇城店"},'
-                '{"id":"field-amount","name":"金额","componentType":"MoneyField","value":"350"}'
+                '{"id":"field-amount","name":"金额","componentType":"MoneyField","value":"350"},'
+                '{"id":"table-expense","name":"表格","componentType":"TableField","value":"'
+                '[{\\"rowValue\\":['
+                '{\\"key\\":\\"field-detail\\",\\"label\\":\\"支出详情\\",\\"componentType\\":\\"TextField\\",\\"value\\":\\"灭火毯\\"},'
+                '{\\"key\\":\\"field-line-amount\\",\\"label\\":\\"小项金额\\",\\"componentType\\":\\"NumberField\\",\\"value\\":\\"76\\"}'
+                ']}]"}'
                 "]}"
             ),
         )
@@ -102,6 +107,10 @@ def test_template_field_candidates_from_snapshot_and_instances(client: TestClien
     assert labels["金额"]["sample_value"] == "350"
     assert labels["门店"]["source_field_id"] == "field-store"
     assert labels["门店"]["sample_value"] == "菌山集开平东汇城店"
+    assert labels["表格.支出详情"]["source_field_id"] == "field-detail"
+    assert labels["表格.支出详情"]["source_path"] == "table:table-expense:field-detail"
+    assert labels["表格.支出详情"]["sample_value"] == "灭火毯"
+    assert labels["表格.小项金额"]["source_field_id"] == "field-line-amount"
     assert [item["source_field_name"] for item in candidates].count("金额") == 1
 
 

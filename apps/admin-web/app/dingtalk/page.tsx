@@ -273,6 +273,56 @@ function formValueMapFromPayload(payload: unknown) {
   return values;
 }
 
+function tableValueFromPayload(payload: unknown, tableKey: string, cellKey: string) {
+  if (!payload || typeof payload !== "object") return undefined;
+  const source = payload as Record<string, unknown>;
+  const components = source.form_component_values ?? source.formComponentValues;
+  if (!Array.isArray(components)) return undefined;
+  const table = components.find((component) => {
+    if (!component || typeof component !== "object") return false;
+    const item = component as Record<string, unknown>;
+    return [item.id, item.name, item.label, item.key].some((value) => value != null && String(value) === tableKey);
+  });
+  if (!table || typeof table !== "object") return undefined;
+  const tableSource = table as Record<string, unknown>;
+  let rows = tableSource.value;
+  if (typeof rows === "string") {
+    try {
+      rows = JSON.parse(rows);
+    } catch {
+      rows = [];
+    }
+  }
+  if (!Array.isArray(rows)) return undefined;
+  const values: unknown[] = [];
+  rows.forEach((row) => {
+    if (!row || typeof row !== "object") return;
+    const cells = (row as Record<string, unknown>).rowValue ?? (row as Record<string, unknown>).row_value;
+    if (!Array.isArray(cells)) return;
+    cells.forEach((cell) => {
+      if (!cell || typeof cell !== "object") return;
+      const item = cell as Record<string, unknown>;
+      const matched = [item.key, item.id, item.name, item.label, item.title].some(
+        (value) => value != null && String(value) === cellKey,
+      );
+      const value = item.value ?? item.ext_value ?? item.extValue;
+      if (matched && value !== undefined && value !== null && value !== "") values.push(value);
+    });
+  });
+  if (!values.length) return undefined;
+  return values.length === 1 ? values[0] : values;
+}
+
+function mappedValueFromPayload(payload: unknown, mapping: TemplateFieldMapping) {
+  if (mapping.source_path?.startsWith("table:")) {
+    const [, tableKey, cellKey] = mapping.source_path.split(":");
+    if (tableKey && cellKey) return tableValueFromPayload(payload, tableKey, cellKey);
+  }
+  const values = formValueMapFromPayload(payload);
+  if (mapping.source_field_id && mapping.source_field_id in values) return values[mapping.source_field_id];
+  return values[mapping.source_field_name];
+}
+
 function mappingDisplayLabel(mapping: TemplateFieldMapping) {
   return mapping.display_label || mapping.source_field_name || mapping.standard_field;
 }
@@ -280,9 +330,7 @@ function mappingDisplayLabel(mapping: TemplateFieldMapping) {
 function mappedDisplayValue(instance: ApprovalInstance, mapping: TemplateFieldMapping) {
   if (!instance.raw_payload) return undefined;
   try {
-    const values = formValueMapFromPayload(JSON.parse(instance.raw_payload));
-    if (mapping.source_field_id && mapping.source_field_id in values) return values[mapping.source_field_id];
-    return values[mapping.source_field_name];
+    return mappedValueFromPayload(JSON.parse(instance.raw_payload), mapping);
   } catch {
     return undefined;
   }
