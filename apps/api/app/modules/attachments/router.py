@@ -26,7 +26,7 @@ from app.modules.audit.service import write_audit_log
 from app.modules.auth.router import audit_actor, require_roles
 from app.modules.common import paginate
 from app.modules.dingtalk.client import DingTalkClient, DingTalkClientError, DingTalkCredentials
-from app.schemas import ApiEnvelope, AttachmentRead, Page
+from app.schemas import ApiEnvelope, AttachmentAccessUrl, AttachmentRead, Page
 
 router = APIRouter(prefix="/attachments", tags=["attachments"])
 
@@ -193,6 +193,30 @@ def download_attachment(
         media_type=attachment.content_type or "application/octet-stream",
         filename=attachment.file_name,
     )
+
+
+@router.get("/{attachment_id}/access-url", response_model=ApiEnvelope[AttachmentAccessUrl])
+def get_attachment_access_url(
+    attachment_id: str,
+    session: Session = Depends(get_session),
+    _: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+) -> ApiEnvelope[AttachmentAccessUrl]:
+    attachment = session.get(Attachment, attachment_id)
+    if attachment is None:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    if attachment.source != "dingtalk":
+        raise HTTPException(status_code=409, detail="Only DingTalk attachments support access URLs")
+
+    direct_url, space_id, file_id = resolve_dingtalk_external_reference(attachment)
+    try:
+        if not direct_url:
+            if not space_id or not file_id:
+                raise HTTPException(status_code=422, detail="DingTalk attachment reference is incomplete")
+            client, union_id = create_dingtalk_client(session)
+            direct_url = client.get_drive_download_url(space_id, file_id, union_id)
+    except DingTalkClientError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return ApiEnvelope(data=AttachmentAccessUrl(url=direct_url, file_name=attachment.file_name, expires_in=None))
 
 
 @router.post("/{attachment_id}/download-dingtalk", response_model=ApiEnvelope[AttachmentRead])

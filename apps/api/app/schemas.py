@@ -343,6 +343,12 @@ class AttachmentRead(BaseModel):
     updated_at: datetime
 
 
+class AttachmentAccessUrl(BaseModel):
+    url: str
+    file_name: str
+    expires_in: int | None = None
+
+
 class BankTransactionCreate(BaseModel):
     store_id: str
     ledger_period: str = Field(pattern=r"^\d{4}-\d{2}$")

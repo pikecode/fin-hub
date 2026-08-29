@@ -1,6 +1,7 @@
 import type {
   ApiEnvelope,
   ApprovalInstance,
+  AttachmentAccessUrl,
   ApprovalTemplate,
   ApprovalTemplateCreate,
   Attachment,
@@ -274,6 +275,7 @@ export function createApiClient(options: ApiClientOptions) {
           },
         ),
       download: (id: string) => requestBlob(`/api/attachments/${id}/download`),
+      accessUrl: (id: string) => request<AttachmentAccessUrl>(`/api/attachments/${id}/access-url`),
       downloadDingtalk: (id: string) =>
         request<Attachment>(`/api/attachments/${id}/download-dingtalk`, {
           method: "POST",

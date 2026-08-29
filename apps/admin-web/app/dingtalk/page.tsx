@@ -132,6 +132,29 @@ function isImageAttachment(attachment: Attachment, blob?: Blob) {
   return /\.(apng|avif|gif|jpe?g|png|webp)$/i.test(attachment.file_name);
 }
 
+function isImageUrl(value: string) {
+  return /\.(apng|avif|gif|jpe?g|png|webp)(\?.*)?$/i.test(value);
+}
+
+function parseUrlValues(value: unknown): string[] {
+  if (!value) return [];
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (/^https?:\/\//i.test(trimmed)) return [trimmed];
+    try {
+      return parseUrlValues(JSON.parse(trimmed));
+    } catch {
+      return [];
+    }
+  }
+  if (Array.isArray(value)) return value.flatMap((item) => parseUrlValues(item));
+  if (typeof value === "object") {
+    const source = value as Record<string, unknown>;
+    return parseUrlValues(source.url ?? source.downloadUrl ?? source.download_url);
+  }
+  return [];
+}
+
 function externalAttachmentUrl(attachment: Attachment) {
   const value = attachment.external_file_id;
   if (!value) return null;
@@ -142,6 +165,37 @@ function externalAttachmentUrl(attachment: Attachment) {
   } catch {
     return /^https?:\/\//i.test(value) ? value : null;
   }
+}
+
+function renderDingTalkValue(value: unknown) {
+  const urls = parseUrlValues(value);
+  if (urls.length > 0) {
+    return (
+      <Space wrap size={8}>
+        {urls.map((url) =>
+          isImageUrl(url) ? (
+            <Image
+              key={url}
+              src={url}
+              alt="报销凭证"
+              width={72}
+              height={96}
+              style={{ objectFit: "cover", borderRadius: 4 }}
+            />
+          ) : (
+            <Button key={url} size="small" href={url} target="_blank" rel="noreferrer">
+              打开链接
+            </Button>
+          ),
+        )}
+      </Space>
+    );
+  }
+  return (
+    <Typography.Text className="json-preview">
+      {typeof value === "string" ? value : JSON.stringify(value)}
+    </Typography.Text>
+  );
 }
 
 export default function DingTalkPage() {
@@ -201,7 +255,7 @@ export default function DingTalkPage() {
 
   useEffect(() => {
     return () => {
-      if (imagePreview?.url) URL.revokeObjectURL(imagePreview.url);
+      if (imagePreview?.url.startsWith("blob:")) URL.revokeObjectURL(imagePreview.url);
     };
   }, [imagePreview]);
 
@@ -478,6 +532,22 @@ export default function DingTalkPage() {
       window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "无法打开附件");
+    }
+  }
+
+  async function openAttachmentAccessUrl(attachment: Attachment) {
+    try {
+      const data = await apiClient.attachments.accessUrl(attachment.id);
+      if (isImageAttachment(attachment) || isImageUrl(data.url)) {
+        setImagePreview((current) => {
+          if (current?.url && current.url.startsWith("blob:")) URL.revokeObjectURL(current.url);
+          return { title: data.file_name || attachment.file_name || "图片预览", url: data.url };
+        });
+        return;
+      }
+      window.open(data.url, "_blank", "noopener,noreferrer");
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "无法获取钉钉附件链接");
     }
   }
 
@@ -837,11 +907,7 @@ export default function DingTalkPage() {
                   {
                     title: "值",
                     dataIndex: "value",
-                    render: (value) => (
-                      <Typography.Text className="json-preview">
-                        {typeof value === "string" ? value : JSON.stringify(value)}
-                      </Typography.Text>
-                    ),
+                    render: renderDingTalkValue,
                   },
                 ]}
               />
@@ -859,11 +925,7 @@ export default function DingTalkPage() {
                     columns={keys.map((key) => ({
                       title: key,
                       dataIndex: key,
-                      render: (value: unknown) => (
-                        <Typography.Text className="json-preview">
-                          {typeof value === "string" ? value : JSON.stringify(value)}
-                        </Typography.Text>
-                      ),
+                      render: renderDingTalkValue,
                     }))}
                   />
                 </Card>
@@ -891,7 +953,7 @@ export default function DingTalkPage() {
                   { title: "类型", dataIndex: "content_type", width: 150, render: (value) => value || "-" },
                   {
                     title: "操作",
-                    width: 260,
+                    width: 280,
                     render: (_, record) => {
                       const sourceUrl = externalAttachmentUrl(record);
                       return (
@@ -901,11 +963,11 @@ export default function DingTalkPage() {
                               源链接
                             </Button>
                           ) : null}
-                          <Button size="small" onClick={() => openAttachment(record, "preview")}>
-                            {isImageAttachment(record) ? "预览图片" : "打开"}
+                          <Button size="small" onClick={() => openAttachmentAccessUrl(record)}>
+                            {isImageAttachment(record) ? "预览图片" : "链接访问"}
                           </Button>
                           <Button size="small" onClick={() => openAttachment(record, "download")}>
-                            下载
+                            保存到本地
                           </Button>
                         </Space>
                       );
@@ -932,7 +994,7 @@ export default function DingTalkPage() {
         width={880}
         onCancel={() =>
           setImagePreview((current) => {
-            if (current?.url) URL.revokeObjectURL(current.url);
+            if (current?.url.startsWith("blob:")) URL.revokeObjectURL(current.url);
             return null;
           })
         }

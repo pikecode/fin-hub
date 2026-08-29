@@ -102,3 +102,61 @@ def test_download_dingtalk_url_placeholder(client: TestClient, tmp_path: Path, m
 
     logs = client.get("/api/audit-logs?action=attachment.dingtalk_download&page_size=20").json()["data"]["items"]
     assert any(log["resource_id"] == attachment.id for log in logs)
+
+
+def test_get_dingtalk_static_access_url(client: TestClient, session) -> None:
+    _, item_id = create_expense(client)
+    attachment = Attachment(
+        resource_type="expense_item",
+        resource_id=item_id,
+        file_name="voucher.jpg",
+        source="dingtalk",
+        external_file_id="https://static.dingtalk.com/media/voucher.jpg",
+        download_status=AttachmentStatus.PLACEHOLDER.value,
+    )
+    session.add(attachment)
+    session.commit()
+    session.refresh(attachment)
+
+    response = client.get(f"/api/attachments/{attachment.id}/access-url")
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["url"] == "https://static.dingtalk.com/media/voucher.jpg"
+    assert data["file_name"] == "voucher.jpg"
+
+
+def test_get_dingtalk_drive_access_url(client: TestClient, monkeypatch, session) -> None:
+    _, item_id = create_expense(client)
+    attachment = Attachment(
+        resource_type="expense_item",
+        resource_id=item_id,
+        file_name="何睿7月考勤.xlsm",
+        source="dingtalk",
+        external_file_id='{"spaceId":"28938591849","fileName":"何睿7月考勤.xlsm","fileSize":21217,"fileType":"xlsm","fileId":"233978336277"}',
+        download_status=AttachmentStatus.PLACEHOLDER.value,
+    )
+    session.add(attachment)
+    session.commit()
+    session.refresh(attachment)
+
+    class FakeDingTalkClient:
+        def get_drive_download_url(self, space_id, file_id, union_id):
+            assert space_id == "28938591849"
+            assert file_id == "233978336277"
+            assert union_id == "union-1"
+            return "https://download.dingtalk.com/drive/file.xlsm"
+
+    monkeypatch.setattr(
+        "app.modules.attachments.router.create_dingtalk_client",
+        lambda session: (FakeDingTalkClient(), "union-1"),
+    )
+
+    response = client.get(f"/api/attachments/{attachment.id}/access-url")
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["url"] == "https://download.dingtalk.com/drive/file.xlsm"
+    assert data["file_name"] == "何睿7月考勤.xlsm"
+
+    session.refresh(attachment)
+    assert attachment.download_status == AttachmentStatus.PLACEHOLDER.value
+    assert attachment.file_path is None

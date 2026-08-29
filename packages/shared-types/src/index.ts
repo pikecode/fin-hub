@@ -299,6 +299,12 @@ export interface Attachment {
   updated_at: string;
 }
 
+export interface AttachmentAccessUrl {
+  url: string;
+  file_name: string;
+  expires_in?: number | null;
+}
+
 export interface ExpenseItemCreate {
   store_id: string;
   ledger_period: string;
