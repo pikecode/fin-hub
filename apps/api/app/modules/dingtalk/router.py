@@ -1750,6 +1750,21 @@ def start_approval_sync(
             summary=f"同步钉钉审批：成功 {job.success_count} 条，失败 {job.failed_count} 条",
         )
         session.commit()
+    except DingTalkClientError as exc:
+        job.status = SyncJobStatus.FAILED.value
+        job.failed_count += 1
+        job.error_message = str(exc)
+        job.finished_at = utc_now()
+        job.raw_summary = json.dumps({"error": str(exc)}, ensure_ascii=False)
+        write_audit_log(
+            session,
+            actor=audit_actor(current_user, payload.started_by),
+            action="dingtalk.approval_sync.failed",
+            resource_type="sync_job",
+            resource_id=job.id,
+            summary=f"同步钉钉审批失败：{exc}",
+        )
+        session.commit()
     except Exception as exc:
         job.status = SyncJobStatus.FAILED.value
         job.error_message = str(exc)
@@ -1812,6 +1827,22 @@ def resume_approval_sync(
             resource_type="sync_job",
             resource_id=job.id,
             summary=f"续跑钉钉审批同步：成功 {job.success_count} 条，失败 {job.failed_count} 条",
+            metadata={"previous_job_id": previous_job.id, "resume_cursor": previous_job.next_cursor},
+        )
+        session.commit()
+    except DingTalkClientError as exc:
+        job.status = SyncJobStatus.FAILED.value
+        job.failed_count += 1
+        job.error_message = str(exc)
+        job.finished_at = utc_now()
+        job.raw_summary = json.dumps({"error": str(exc), "previous_job_id": previous_job.id}, ensure_ascii=False)
+        write_audit_log(
+            session,
+            actor=audit_actor(current_user, payload.started_by),
+            action="dingtalk.approval_sync.resume.failed",
+            resource_type="sync_job",
+            resource_id=job.id,
+            summary=f"续跑钉钉审批同步失败：{exc}",
             metadata={"previous_job_id": previous_job.id, "resume_cursor": previous_job.next_cursor},
         )
         session.commit()

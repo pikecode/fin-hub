@@ -459,7 +459,7 @@ export default function DingTalkPage() {
   async function startApprovalSync(values: ApprovalSyncFormValues) {
     setIsLoading(true);
     try {
-      await apiClient.dingtalk.startApprovalSync({
+      const job = await apiClient.dingtalk.startApprovalSync({
         template_id: values.template_id,
         started_by: "admin",
         start_at: values.time_range?.[0]?.toISOString(),
@@ -470,7 +470,13 @@ export default function DingTalkPage() {
       });
       setIsSyncModalOpen(false);
       await loadData();
-      message.success("审批列表增量同步完成");
+      if (job.status === "failed") {
+        message.error(job.error_message || "审批列表同步失败");
+      } else if (job.next_cursor) {
+        message.warning("审批列表已同步一部分，可在同步任务中续跑");
+      } else {
+        message.success("审批列表增量同步完成");
+      }
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "无法同步审批实例");
     } finally {
@@ -482,13 +488,20 @@ export default function DingTalkPage() {
     setIsLoading(true);
     setErrorMessage(null);
     try {
-      await apiClient.dingtalk.resumeApprovalSync(job.id, {
+      const nextJob = await apiClient.dingtalk.resumeApprovalSync(job.id, {
         started_by: "admin",
         page_size: 20,
         max_pages: 20,
         skip_existing: true,
       });
       await loadData();
+      if (nextJob.status === "failed") {
+        message.error(nextJob.error_message || "审批同步续跑失败");
+      } else if (nextJob.next_cursor) {
+        message.warning("审批同步续跑已处理一部分，可继续续跑");
+      } else {
+        message.success("审批同步续跑完成");
+      }
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "无法续跑审批同步");
     } finally {
@@ -541,7 +554,7 @@ export default function DingTalkPage() {
       const job = await apiClient.dingtalk.startApprovalSync({
         template_id: template.id,
         started_by: "admin",
-        start_at: dayjs().subtract(180, "day").toISOString(),
+        start_at: dayjs().subtract(30, "day").toISOString(),
         end_at: dayjs().toISOString(),
         page_size: 1,
         max_pages: 1,
@@ -549,7 +562,9 @@ export default function DingTalkPage() {
       });
       await loadData();
       await loadMappings(template);
-      if (job.success_count > 0) {
+      if (job.status === "failed") {
+        message.error(job.error_message || "审批样例拉取失败");
+      } else if (job.success_count > 0) {
         message.success("已拉取一条真实审批样例，钉钉字段下拉已刷新");
       } else {
         message.warning("没有拉取到审批样例，请调整同步时间窗口后再试");

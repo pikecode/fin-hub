@@ -2,6 +2,7 @@ from fastapi.testclient import TestClient
 
 from app.core.config import settings
 from app.models import ApprovalInstance, ApprovalTemplate, DingTalkConfig
+from app.modules.dingtalk.client import DingTalkClientError
 
 
 def test_sync_templates_and_upsert_mapping(client: TestClient) -> None:
@@ -488,6 +489,38 @@ def test_real_approval_sync_skips_existing_instances(client: TestClient, session
     assert response.status_code == 201
     assert get_calls == ["new-instance"]
     assert '"skipped_existing_count": 1' in response.json()["data"]["raw_summary"]
+
+
+def test_real_approval_sync_returns_failed_job_on_dingtalk_error(client: TestClient, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "dingtalk_sync_mode", "real")
+    client.put(
+        "/api/dingtalk/config",
+        json={"app_key": "ding-app-key", "app_secret": "super-secret"},
+    )
+    template_id = client.post(
+        "/api/dingtalk/templates",
+        json={"process_code": "PROC-ERROR", "name": "钉钉错误审批", "is_enabled": True},
+    ).json()["data"]["id"]
+
+    class FakeDingTalkClient:
+        def list_process_instance_ids(self, process_code, start_time_ms, end_time_ms, cursor=0, size=20):
+            raise DingTalkClientError("时间戳无效")
+
+    monkeypatch.setattr("app.modules.dingtalk.router.dingtalk_client", lambda config: FakeDingTalkClient())
+    response = client.post(
+        "/api/dingtalk/approval-sync",
+        json={
+            "template_id": template_id,
+            "started_by": "tester",
+            "start_at": "2026-08-01T00:00:00",
+            "end_at": "2026-08-31T23:59:59",
+        },
+    )
+    assert response.status_code == 201
+    job = response.json()["data"]
+    assert job["status"] == "failed"
+    assert job["failed_count"] == 1
+    assert job["error_message"] == "时间戳无效"
 
 
 def test_real_approval_sync_persists_instance_when_expense_parse_is_incomplete(
