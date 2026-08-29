@@ -540,6 +540,15 @@ export default function DingTalkPage() {
     }
   }
 
+  async function refreshTemplateFieldOptions(template: ApprovalTemplate) {
+    const [data, candidates] = await Promise.all([
+      apiClient.dingtalk.listMappings(template.id),
+      apiClient.dingtalk.listFieldCandidates(template.id),
+    ]);
+    setMappings(data);
+    setFieldCandidates(candidates);
+  }
+
   async function openMappingDrawer(template: ApprovalTemplate) {
     setIsMappingDrawerOpen(true);
     await loadMappings(template);
@@ -560,8 +569,7 @@ export default function DingTalkPage() {
         max_pages: 1,
         skip_existing: false,
       });
-      await loadData();
-      await loadMappings(template);
+      await refreshTemplateFieldOptions(template);
       if (job.status === "failed") {
         message.error(job.error_message || "审批样例拉取失败");
       } else if (job.success_count > 0) {
@@ -632,7 +640,6 @@ export default function DingTalkPage() {
     try {
       await apiClient.dingtalk.deleteMapping(selectedTemplate.id, mapping.id);
       await loadMappings(selectedTemplate);
-      await loadData();
       message.success("字段映射已删除");
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "无法删除字段映射");
@@ -663,7 +670,6 @@ export default function DingTalkPage() {
       setEditingMapping(null);
       mappingForm.resetFields();
       await loadMappings(selectedTemplate);
-      await loadData();
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "无法保存字段映射");
     } finally {
