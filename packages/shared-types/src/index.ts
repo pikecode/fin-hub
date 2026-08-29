@@ -453,10 +453,13 @@ export interface TemplateFieldMapping {
   id: string;
   template_id: string;
   standard_field: string;
+  display_label?: string | null;
   source_field_id?: string | null;
   source_field_name: string;
   source_path?: string | null;
   field_type?: string | null;
+  show_in_list: boolean;
+  show_in_detail: boolean;
   is_required: boolean;
   sort_order: number;
   created_at: string;
@@ -465,10 +468,13 @@ export interface TemplateFieldMapping {
 
 export interface TemplateFieldMappingCreate {
   standard_field: string;
+  display_label?: string | null;
   source_field_id?: string | null;
   source_field_name: string;
   source_path?: string | null;
   field_type?: string | null;
+  show_in_list?: boolean;
+  show_in_detail?: boolean;
   is_required?: boolean;
   sort_order?: number;
 }

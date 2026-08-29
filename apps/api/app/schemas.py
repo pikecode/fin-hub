@@ -467,10 +467,13 @@ class ApprovalTemplateRead(ApprovalTemplateCreate):
 
 class TemplateFieldMappingCreate(BaseModel):
     standard_field: str = Field(min_length=1, max_length=80)
+    display_label: str | None = Field(default=None, max_length=120)
     source_field_id: str | None = None
     source_field_name: str = Field(min_length=1, max_length=120)
     source_path: str | None = None
     field_type: str | None = None
+    show_in_list: bool = False
+    show_in_detail: bool = True
     is_required: bool = False
     sort_order: int = 0
 

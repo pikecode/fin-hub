@@ -21,18 +21,24 @@ def test_sync_templates_and_upsert_mapping(client: TestClient) -> None:
             "standard_field": "amount",
             "source_field_id": "field-amount",
             "source_field_name": "金额",
+            "display_label": "报销金额",
             "source_path": "费用明细[].金额",
             "field_type": "MoneyField",
+            "show_in_list": True,
+            "show_in_detail": True,
             "is_required": True,
             "sort_order": 30,
         },
     )
     assert mapping_response.status_code == 201
     assert mapping_response.json()["data"]["standard_field"] == "amount"
+    assert mapping_response.json()["data"]["display_label"] == "报销金额"
+    assert mapping_response.json()["data"]["show_in_list"] is True
 
     mappings_response = client.get(f"/api/dingtalk/templates/{template_id}/mappings")
     assert mappings_response.status_code == 200
     assert mappings_response.json()["data"][0]["source_field_name"] == "金额"
+    assert mappings_response.json()["data"][0]["show_in_detail"] is True
 
 
 def test_template_field_candidates_from_snapshot_and_instances(client: TestClient, session) -> None:

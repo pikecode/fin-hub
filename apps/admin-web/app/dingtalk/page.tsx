@@ -60,6 +60,10 @@ interface ApprovalSyncFormValues {
   skip_existing?: boolean;
 }
 
+interface MappingFormValues extends TemplateFieldMappingCreate {
+  business_standard_field?: string | null;
+}
+
 type DepartmentTreeNode = DingTalkDepartment & {
   children?: DepartmentTreeNode[];
 };
@@ -276,6 +280,38 @@ function approvalCountByTemplate(instances: ApprovalInstance[]) {
   }, {});
 }
 
+function formValueMapFromPayload(payload: unknown) {
+  const values: Record<string, unknown> = {};
+  if (!payload || typeof payload !== "object") return values;
+  const source = payload as Record<string, unknown>;
+  const components = source.form_component_values ?? source.formComponentValues;
+  if (!Array.isArray(components)) return values;
+  components.forEach((component) => {
+    if (!component || typeof component !== "object") return;
+    const item = component as Record<string, unknown>;
+    const value = item.value ?? item.ext_value ?? item.extValue;
+    const name = item.name ?? item.label ?? item.id;
+    if (name) values[String(name)] = value;
+    if (item.id) values[String(item.id)] = value;
+  });
+  return values;
+}
+
+function mappingDisplayLabel(mapping: TemplateFieldMapping) {
+  return mapping.display_label || mapping.source_field_name || mapping.standard_field;
+}
+
+function mappedDisplayValue(instance: ApprovalInstance, mapping: TemplateFieldMapping) {
+  if (!instance.raw_payload) return undefined;
+  try {
+    const values = formValueMapFromPayload(JSON.parse(instance.raw_payload));
+    if (mapping.source_field_id && mapping.source_field_id in values) return values[mapping.source_field_id];
+    return values[mapping.source_field_name];
+  } catch {
+    return undefined;
+  }
+}
+
 export default function DingTalkPage() {
   const [config, setConfig] = useState<DingTalkConfig | null>(null);
   const [templates, setTemplates] = useState<ApprovalTemplate[]>([]);
@@ -297,9 +333,9 @@ export default function DingTalkPage() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [form] = Form.useForm<DingTalkFormValues>();
   const [templateForm] = Form.useForm<ApprovalTemplateCreate>();
-  const [mappingForm] = Form.useForm<TemplateFieldMappingCreate>();
+  const [mappingForm] = Form.useForm<MappingFormValues>();
   const [syncForm] = Form.useForm<ApprovalSyncFormValues>();
-  const selectedStandardField = Form.useWatch("standard_field", mappingForm);
+  const selectedStandardField = Form.useWatch("business_standard_field", mappingForm);
   const selectedSourceFieldName = Form.useWatch("source_field_name", mappingForm);
   const selectedSourcePath = Form.useWatch("source_path", mappingForm);
   const selectedFieldType = Form.useWatch("field_type", mappingForm);
@@ -336,10 +372,11 @@ export default function DingTalkPage() {
       .filter((table) => table.rows.length > 0);
   }, [selectedInstanceFields]);
   const recommendedFieldCandidates = useMemo(() => {
-    const option = optionForStandardField(selectedStandardField);
+    const option = optionForStandardField(selectedStandardField ?? undefined);
     return [...fieldCandidates].sort((a, b) => candidateScore(b, option) - candidateScore(a, option));
   }, [fieldCandidates, selectedStandardField]);
   const templateApprovalCounts = useMemo(() => approvalCountByTemplate(approvalInstances), [approvalInstances]);
+  const detailDisplayMappings = mappings.filter((mapping) => mapping.show_in_detail);
 
   useEffect(() => {
     return () => {
@@ -603,9 +640,36 @@ export default function DingTalkPage() {
     });
   }
 
-  function applyStandardField(standardField: TemplateFieldMappingCreate["standard_field"]) {
+  function openMappingModal(candidate?: TemplateFieldCandidate) {
+    mappingForm.resetFields();
+    mappingForm.setFieldsValue({
+      business_standard_field: undefined,
+      standard_field: candidate ? `display:${candidate.source_field_id || candidate.source_field_name}` : undefined,
+      display_label: candidate?.source_field_name,
+      source_field_name: candidate?.source_field_name,
+      source_field_id: candidate?.source_field_id ?? undefined,
+      source_path: candidate?.source_path ?? undefined,
+      field_type: candidate?.field_type ?? undefined,
+      show_in_list: true,
+      show_in_detail: true,
+      is_required: false,
+      sort_order: mappings.length,
+    });
+    setIsMappingModalOpen(true);
+  }
+
+  function applyStandardField(standardField?: TemplateFieldMappingCreate["standard_field"]) {
+    if (!standardField) {
+      mappingForm.setFieldsValue({
+        business_standard_field: undefined,
+        standard_field: undefined,
+        is_required: false,
+      });
+      return;
+    }
     const candidate = bestCandidateForStandardField(fieldCandidates, standardField);
     mappingForm.setFieldsValue({
+      business_standard_field: standardField,
       standard_field: standardField,
       is_required: optionForStandardField(standardField)?.required ?? false,
     });
@@ -626,6 +690,9 @@ export default function DingTalkPage() {
           source_field_name: candidate.source_field_name,
           source_path: candidate.source_path,
           field_type: candidate.field_type,
+          display_label: option.label,
+          show_in_list: option.value === "store" || option.value === "amount" || option.value === "expense_date",
+          show_in_detail: true,
           is_required: option.required ?? false,
           sort_order: index,
         },
@@ -649,11 +716,19 @@ export default function DingTalkPage() {
     }
   }
 
-  async function submitMapping(values: TemplateFieldMappingCreate) {
+  async function submitMapping(values: MappingFormValues) {
     if (!selectedTemplate) return;
+    const businessField = values.business_standard_field || "";
+    const sourceKey = values.source_field_id || values.source_field_name;
     setIsLoading(true);
     try {
-      await apiClient.dingtalk.upsertMapping(selectedTemplate.id, values);
+      await apiClient.dingtalk.upsertMapping(selectedTemplate.id, {
+        ...values,
+        standard_field: businessField || `display:${sourceKey}`,
+        display_label: values.display_label || values.source_field_name,
+        show_in_detail: values.show_in_detail ?? true,
+        show_in_list: values.show_in_list ?? false,
+      });
       setIsMappingModalOpen(false);
       mappingForm.resetFields();
       await loadMappings(selectedTemplate);
@@ -757,8 +832,22 @@ export default function DingTalkPage() {
   ];
 
   const mappingColumns: ColumnsType<TemplateFieldMapping> = [
-    { title: "标准字段", dataIndex: "standard_field" },
-    { title: "来源字段", dataIndex: "source_field_name" },
+    { title: "钉钉字段", dataIndex: "source_field_name" },
+    { title: "显示名称", dataIndex: "display_label", render: (_, record) => mappingDisplayLabel(record) },
+    {
+      title: "业务用途",
+      dataIndex: "standard_field",
+      render: (value) => (String(value).startsWith("display:") ? <Tag>仅展示</Tag> : <Tag color="blue">{value}</Tag>),
+    },
+    {
+      title: "展示位置",
+      render: (_, record) => (
+        <Space>
+          {record.show_in_list ? <Tag color="green">列表</Tag> : null}
+          {record.show_in_detail ? <Tag color="cyan">详情</Tag> : null}
+        </Space>
+      ),
+    },
     { title: "字段路径", dataIndex: "source_path", render: (value) => value || "-" },
     { title: "类型", dataIndex: "field_type", render: (value) => value || "-" },
     { title: "必填", dataIndex: "is_required", render: (value) => (value ? "是" : "否") },
@@ -777,8 +866,8 @@ export default function DingTalkPage() {
       title: "操作",
       width: 90,
       render: (_, record) => (
-        <Button size="small" onClick={() => applyFieldCandidate(record.source_field_name)}>
-          选用
+        <Button size="small" onClick={() => openMappingModal(record)}>
+          配置
         </Button>
       ),
     },
@@ -859,8 +948,15 @@ export default function DingTalkPage() {
     },
   ];
 
+  const listDisplayMappings = mappings.filter((mapping) => mapping.show_in_list);
   const instanceColumns: ColumnsType<ApprovalInstance> = [
     { title: "审批编号", dataIndex: "approval_no", render: (value) => value || "-" },
+    ...listDisplayMappings.map((mapping): ColumnsType<ApprovalInstance>[number] => ({
+      title: mappingDisplayLabel(mapping),
+      key: `mapping-${mapping.id}`,
+      width: 160,
+      render: (_, record) => renderDingTalkValue(mappedDisplayValue(record, mapping)),
+    })),
     { title: "实例 ID", dataIndex: "dingtalk_instance_id" },
     { title: "申请人", dataIndex: "applicant_name", render: (value) => value || "-" },
     {
@@ -1010,8 +1106,8 @@ export default function DingTalkPage() {
                       <Button disabled={!selectedTemplate} onClick={createSuggestedMappings} loading={isLoading}>
                         自动建议映射
                       </Button>
-                      <Button type="primary" disabled={!selectedTemplate} onClick={() => setIsMappingModalOpen(true)}>
-                        新增/更新映射
+                      <Button type="primary" disabled={!selectedTemplate} onClick={() => openMappingModal()}>
+                        新增展示字段
                       </Button>
                     </Space>
                   }
@@ -1131,6 +1227,18 @@ export default function DingTalkPage() {
                 {selectedInstance.approved_at?.replace("T", " ").slice(0, 16) || "-"}
               </Descriptions.Item>
             </Descriptions>
+
+            {detailDisplayMappings.length ? (
+              <Card size="small" title="已配置显示字段">
+                <Descriptions bordered size="small" column={2}>
+                  {detailDisplayMappings.map((mapping) => (
+                    <Descriptions.Item label={mappingDisplayLabel(mapping)} key={mapping.id}>
+                      {renderDingTalkValue(mappedDisplayValue(selectedInstance, mapping))}
+                    </Descriptions.Item>
+                  ))}
+                </Descriptions>
+              </Card>
+            ) : null}
 
             <Card size="small" title="解析诊断">
               {selectedInstanceParse ? (
@@ -1368,10 +1476,11 @@ export default function DingTalkPage() {
         <Form form={mappingForm} layout="vertical" onFinish={submitMapping}>
           <div className="mapping-modal-grid">
             <Space direction="vertical" size={12} className="full-width">
-              <Form.Item name="standard_field" label="统一字段" rules={[{ required: true }]}>
+              <Form.Item name="business_standard_field" label="业务用途（可选）">
                 <Select
+                  allowClear
                   showSearch
-                  placeholder="选择要落到统一支出表的字段"
+                  placeholder="仅展示时可不选；参与对账落库时选择用途"
                   onChange={applyStandardField}
                   optionFilterProp="label"
                   options={STANDARD_FIELD_OPTIONS.map((option) => ({
@@ -1385,9 +1494,15 @@ export default function DingTalkPage() {
                   type="info"
                   showIcon
                   message={optionForStandardField(selectedStandardField)?.description}
-                  description="先选统一字段，再从右侧真实审批字段里点“选用”。字段路径和字段类型会自动带出，通常不需要手动输入。"
+                  description="选择业务用途后，这个字段会参与统一支出落库和后续银行对账。"
                 />
-              ) : null}
+              ) : (
+                <Alert
+                  type="info"
+                  showIcon
+                  message="不选择业务用途时，这个字段只用于审批列表/详情展示。"
+                />
+              )}
               <Form.Item name="source_field_name" label="钉钉审批字段" rules={[{ required: true }]}>
                 <AutoComplete
                   placeholder={fieldCandidates.length ? "从右侧样例表点选，或输入字段名搜索" : "当前模板暂无字段样例，请先同步审批"}
@@ -1407,6 +1522,9 @@ export default function DingTalkPage() {
                   <Input />
                 </AutoComplete>
               </Form.Item>
+              <Form.Item name="display_label" label="显示名称">
+                <Input placeholder="例如：门店、金额、凭证" />
+              </Form.Item>
               <Descriptions bordered size="small" column={1}>
                 <Descriptions.Item label="字段路径">
                   {selectedSourcePath || "-"}
@@ -1425,6 +1543,12 @@ export default function DingTalkPage() {
                 <Input />
               </Form.Item>
               <Space>
+                <Form.Item label="列表展示" name="show_in_list" initialValue={true} valuePropName="checked">
+                  <Switch />
+                </Form.Item>
+                <Form.Item label="详情展示" name="show_in_detail" initialValue={true} valuePropName="checked">
+                  <Switch />
+                </Form.Item>
                 <Form.Item label="必填" name="is_required" initialValue={false} valuePropName="checked">
                   <Switch />
                 </Form.Item>
