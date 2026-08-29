@@ -179,6 +179,21 @@ body {
   word-break: break-word;
 }
 
+.mapping-modal-grid {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.8fr) minmax(520px, 1.2fr);
+  gap: 20px;
+  align-items: start;
+}
+
+.mapping-candidate-panel h5.ant-typography {
+  margin: 0 0 12px;
+}
+
+.selected-candidate-row > td {
+  background: #ecfdf5 !important;
+}
+
 .json-block {
   max-height: 360px;
   margin: 0;
@@ -317,6 +332,10 @@ body {
     grid-template-rows: 400px 1fr;
     height: auto !important;
     min-height: 800px !important;
+  }
+
+  .mapping-modal-grid {
+    grid-template-columns: 1fr;
   }
 }
 

@@ -78,6 +78,28 @@ type ImagePreviewState = {
   url: string;
 };
 
+type StandardFieldOption = {
+  label: string;
+  value: TemplateFieldMappingCreate["standard_field"];
+  description: string;
+  aliases: string[];
+  required?: boolean;
+};
+
+const STANDARD_FIELD_OPTIONS: StandardFieldOption[] = [
+  { label: "门店/部门", value: "store", description: "用于归属门店和银行对账范围", aliases: ["支出门店", "门店", "费用门店", "所属门店", "申请部门", "部门"], required: true },
+  { label: "金额", value: "amount", description: "没有明细表时的审批总金额", aliases: ["汇总金额", "金额", "报销金额", "付款金额"], required: true },
+  { label: "支出日期", value: "expense_date", description: "生成支出账期和匹配日期窗口", aliases: ["报销日期", "支出日期", "费用日期", "付款日期", "日期"], required: true },
+  { label: "摘要", value: "description", description: "支出说明，进入对账候选说明", aliases: ["支出详情", "费用说明", "摘要", "备注", "其他备注信息"] },
+  { label: "明细表", value: "expense_table", description: "多行报销明细，系统会拆成多条支出", aliases: ["表格", "费用明细", "支出明细", "报销明细"] },
+  { label: "报销图片", value: "voucher_images", description: "图片凭证字段", aliases: ["报销凭证图片", "凭证图片", "图片", "报销凭证"] },
+  { label: "报销文档", value: "voucher_files", description: "钉钉 Drive 或文档附件字段", aliases: ["报销凭证文档", "凭证文档", "附件", "报销凭证"] },
+  { label: "一级分类", value: "category_l1", description: "支出一级分类", aliases: ["支出类型", "费用类型", "一级分类"] },
+  { label: "二级分类", value: "category_l2", description: "支出二级分类", aliases: ["二级分类", "小类"] },
+  { label: "供应商", value: "supplier_name", description: "可辅助银行流水匹配收款方", aliases: ["供应商", "收款方", "收款单位"] },
+  { label: "收款账户", value: "payee_account", description: "可辅助银行流水匹配账号", aliases: ["收款账户", "收款账号", "账户", "付款账号"] },
+];
+
 function buildDepartmentTree(departments: DingTalkDepartment[]): DepartmentTreeNode[] {
   const nodeMap = new Map<string, DepartmentTreeNode>();
   departments.forEach((department) => {
@@ -206,6 +228,47 @@ function compactSampleValue(value: unknown) {
   return text.length > 120 ? `${text.slice(0, 120)}...` : text;
 }
 
+function normalizeText(value: string) {
+  return value.replace(/\s/g, "").replace(/（/g, "(").replace(/）/g, ")").toLowerCase();
+}
+
+function optionForStandardField(value?: string) {
+  return STANDARD_FIELD_OPTIONS.find((option) => option.value === value);
+}
+
+function candidateScore(candidate: TemplateFieldCandidate, option?: StandardFieldOption) {
+  if (!option) return 0;
+  const sourceName = normalizeText(candidate.source_field_name);
+  const sourcePath = normalizeText(candidate.source_path || "");
+  const sourceType = normalizeText(candidate.field_type || "");
+  let score = 0;
+  option.aliases.forEach((alias) => {
+    const normalizedAlias = normalizeText(alias);
+    if (sourceName === normalizedAlias) score += 100;
+    else if (sourceName.includes(normalizedAlias)) score += 60;
+    else if (sourcePath.includes(normalizedAlias)) score += 25;
+  });
+  if (option.value === "amount" && /(money|amount|number)/.test(sourceType)) score += 20;
+  if (option.value === "expense_date" && /(date|time)/.test(sourceType)) score += 20;
+  if (option.value === "expense_table" && /(table)/.test(sourceType)) score += 30;
+  if ((option.value === "voucher_images" || option.value === "voucher_files") && /(attach|image|picture|file)/.test(sourceType)) {
+    score += 20;
+  }
+  if (candidate.sample_value !== undefined && candidate.sample_value !== null && candidate.sample_value !== "") score += 5;
+  return score;
+}
+
+function bestCandidateForStandardField(
+  candidates: TemplateFieldCandidate[],
+  standardField: TemplateFieldMappingCreate["standard_field"],
+) {
+  const option = optionForStandardField(standardField);
+  return candidates
+    .map((candidate) => ({ candidate, score: candidateScore(candidate, option) }))
+    .filter((item) => item.score > 0)
+    .sort((a, b) => b.score - a.score)[0]?.candidate;
+}
+
 export default function DingTalkPage() {
   const [config, setConfig] = useState<DingTalkConfig | null>(null);
   const [templates, setTemplates] = useState<ApprovalTemplate[]>([]);
@@ -229,6 +292,10 @@ export default function DingTalkPage() {
   const [templateForm] = Form.useForm<ApprovalTemplateCreate>();
   const [mappingForm] = Form.useForm<TemplateFieldMappingCreate>();
   const [syncForm] = Form.useForm<ApprovalSyncFormValues>();
+  const selectedStandardField = Form.useWatch("standard_field", mappingForm);
+  const selectedSourceFieldName = Form.useWatch("source_field_name", mappingForm);
+  const selectedSourcePath = Form.useWatch("source_path", mappingForm);
+  const selectedFieldType = Form.useWatch("field_type", mappingForm);
   const departmentTree = useMemo(
     () => buildDepartmentTree(departmentPreview?.departments ?? []),
     [departmentPreview],
@@ -261,6 +328,10 @@ export default function DingTalkPage() {
       }))
       .filter((table) => table.rows.length > 0);
   }, [selectedInstanceFields]);
+  const recommendedFieldCandidates = useMemo(() => {
+    const option = optionForStandardField(selectedStandardField);
+    return [...fieldCandidates].sort((a, b) => candidateScore(b, option) - candidateScore(a, option));
+  }, [fieldCandidates, selectedStandardField]);
 
   useEffect(() => {
     return () => {
@@ -524,6 +595,52 @@ export default function DingTalkPage() {
     });
   }
 
+  function applyStandardField(standardField: TemplateFieldMappingCreate["standard_field"]) {
+    const candidate = bestCandidateForStandardField(fieldCandidates, standardField);
+    mappingForm.setFieldsValue({
+      standard_field: standardField,
+      is_required: optionForStandardField(standardField)?.required ?? false,
+    });
+    if (candidate) applyFieldCandidate(candidate.source_field_name);
+  }
+
+  async function createSuggestedMappings() {
+    if (!selectedTemplate) return;
+    const existingFields = new Set(mappings.map((mapping) => mapping.standard_field));
+    const suggestions = STANDARD_FIELD_OPTIONS.flatMap((option, index) => {
+      if (existingFields.has(option.value)) return [];
+      const candidate = bestCandidateForStandardField(fieldCandidates, option.value);
+      if (!candidate) return [];
+      return [
+        {
+          standard_field: option.value,
+          source_field_id: candidate.source_field_id,
+          source_field_name: candidate.source_field_name,
+          source_path: candidate.source_path,
+          field_type: candidate.field_type,
+          is_required: option.required ?? false,
+          sort_order: index,
+        },
+      ];
+    });
+    if (!suggestions.length) {
+      message.info("暂无可生成的建议映射");
+      return;
+    }
+    setIsLoading(true);
+    setErrorMessage(null);
+    try {
+      await Promise.all(suggestions.map((payload) => apiClient.dingtalk.upsertMapping(selectedTemplate.id, payload)));
+      await loadMappings(selectedTemplate);
+      await loadData();
+      message.success(`已生成 ${suggestions.length} 条建议映射`);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "无法生成建议映射");
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
   async function submitMapping(values: TemplateFieldMappingCreate) {
     if (!selectedTemplate) return;
     setIsLoading(true);
@@ -575,7 +692,7 @@ export default function DingTalkPage() {
       }
       if (isImageAttachment(stored, blob)) {
         setImagePreview((current) => {
-          if (current?.url) URL.revokeObjectURL(current.url);
+          if (current?.url.startsWith("blob:")) URL.revokeObjectURL(current.url);
           return { title: stored.file_name || "图片预览", url };
         });
         return;
@@ -875,6 +992,9 @@ export default function DingTalkPage() {
                       </Button>
                       <Button disabled={!selectedTemplate} onClick={reparseSelectedTemplate} loading={isLoading}>
                         重跑解析
+                      </Button>
+                      <Button disabled={!selectedTemplate} onClick={createSuggestedMappings} loading={isLoading}>
+                        自动建议映射
                       </Button>
                       <Button type="primary" disabled={!selectedTemplate} onClick={() => setIsMappingModalOpen(true)}>
                         新增/更新映射
@@ -1229,70 +1349,87 @@ export default function DingTalkPage() {
         onCancel={() => setIsMappingModalOpen(false)}
         onOk={() => mappingForm.submit()}
         confirmLoading={isLoading}
+        width={1120}
       >
         <Form form={mappingForm} layout="vertical" onFinish={submitMapping}>
-          <Form.Item name="standard_field" label="标准字段" rules={[{ required: true }]}>
-            <Select
-              showSearch
-              placeholder="选择统一字段"
-              options={[
-                { label: "门店/部门 store", value: "store" },
-                { label: "金额 amount", value: "amount" },
-                { label: "支出日期 expense_date", value: "expense_date" },
-                { label: "摘要 description", value: "description" },
-                { label: "明细表 expense_table", value: "expense_table" },
-                { label: "报销图片 voucher_images", value: "voucher_images" },
-                { label: "报销文档 voucher_files", value: "voucher_files" },
-                { label: "一级分类 category_l1", value: "category_l1" },
-                { label: "二级分类 category_l2", value: "category_l2" },
-                { label: "供应商 supplier_name", value: "supplier_name" },
-                { label: "收款账户 payee_account", value: "payee_account" },
-              ]}
-            />
-          </Form.Item>
-          <Form.Item name="source_field_name" label="来源字段名称" rules={[{ required: true }]}>
-            <AutoComplete
-              placeholder="金额"
-              onSelect={applyFieldCandidate}
-              options={fieldCandidates.map((candidate) => ({
-                label: (
-                  <Space direction="vertical" size={0}>
-                    <Typography.Text>{candidate.source_field_name}</Typography.Text>
-                    <Typography.Text type="secondary" className="json-preview">
-                      {candidate.source_path || "-"} / {compactSampleValue(candidate.sample_value)}
-                    </Typography.Text>
-                  </Space>
-                ),
-                value: candidate.source_field_name,
-              }))}
-            >
-              <Input />
-            </AutoComplete>
-          </Form.Item>
-          <Form.Item name="source_field_id" label="来源字段 ID">
-            <Input />
-          </Form.Item>
-          <Form.Item name="source_path" label="字段路径">
-            <Input placeholder="费用明细[].金额" />
-          </Form.Item>
-          <Form.Item name="field_type" label="字段类型">
-            <Input placeholder="MoneyField" />
-          </Form.Item>
-          <Form.Item label="必填" name="is_required" initialValue={false}>
-            <Switch />
-          </Form.Item>
-          <Form.Item name="sort_order" label="排序" initialValue={0}>
-            <Input />
-          </Form.Item>
-          <Card size="small" title="最近审批真实字段样例">
-            <Table
-              size="small"
-              rowKey={(record, index) => `${record.source_field_name}-${record.source_field_id || index}`}
-              columns={fieldCandidateColumns}
-              dataSource={fieldCandidates}
-              pagination={{ pageSize: 6 }}
-            />
-          </Card>
+          <div className="mapping-modal-grid">
+            <Space direction="vertical" size={12} className="full-width">
+              <Form.Item name="standard_field" label="统一字段" rules={[{ required: true }]}>
+                <Select
+                  showSearch
+                  placeholder="选择要落到统一支出表的字段"
+                  onChange={applyStandardField}
+                  optionFilterProp="label"
+                  options={STANDARD_FIELD_OPTIONS.map((option) => ({
+                    label: `${option.label} ${option.value}`,
+                    value: option.value,
+                  }))}
+                />
+              </Form.Item>
+              {selectedStandardField ? (
+                <Alert
+                  type="info"
+                  showIcon
+                  message={optionForStandardField(selectedStandardField)?.description}
+                />
+              ) : null}
+              <Form.Item name="source_field_name" label="真实来源字段" rules={[{ required: true }]}>
+                <AutoComplete
+                  placeholder="从右侧样例表点选，或输入字段名搜索"
+                  onSelect={applyFieldCandidate}
+                  options={recommendedFieldCandidates.map((candidate) => ({
+                    label: (
+                      <Space direction="vertical" size={0}>
+                        <Typography.Text>{candidate.source_field_name}</Typography.Text>
+                        <Typography.Text type="secondary" className="json-preview">
+                          {candidate.source_path || "-"} / {compactSampleValue(candidate.sample_value)}
+                        </Typography.Text>
+                      </Space>
+                    ),
+                    value: candidate.source_field_name,
+                  }))}
+                >
+                  <Input />
+                </AutoComplete>
+              </Form.Item>
+              <Descriptions bordered size="small" column={1}>
+                <Descriptions.Item label="字段路径">
+                  {selectedSourcePath || "-"}
+                </Descriptions.Item>
+                <Descriptions.Item label="字段类型">
+                  {selectedFieldType || "-"}
+                </Descriptions.Item>
+              </Descriptions>
+              <Form.Item name="source_field_id" hidden>
+                <Input />
+              </Form.Item>
+              <Form.Item name="source_path" hidden>
+                <Input />
+              </Form.Item>
+              <Form.Item name="field_type" hidden>
+                <Input />
+              </Form.Item>
+              <Space>
+                <Form.Item label="必填" name="is_required" initialValue={false} valuePropName="checked">
+                  <Switch />
+                </Form.Item>
+                <Form.Item name="sort_order" label="排序" initialValue={0}>
+                  <InputNumber min={0} />
+                </Form.Item>
+              </Space>
+            </Space>
+            <div className="mapping-candidate-panel">
+              <Typography.Title level={5}>最近审批真实字段样例</Typography.Title>
+              <Table
+                size="small"
+                rowKey={(record, index) => `${record.source_field_name}-${record.source_field_id || index}`}
+                columns={fieldCandidateColumns}
+                dataSource={recommendedFieldCandidates}
+                pagination={{ pageSize: 6 }}
+                rowClassName={(record) => (record.source_field_name === selectedSourceFieldName ? "selected-candidate-row" : "")}
+              />
+            </div>
+          </div>
         </Form>
       </Modal>
     </AppShell>
