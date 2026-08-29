@@ -64,6 +64,7 @@ import type {
   TemplateFieldCandidate,
   TemplateFieldMapping,
   TemplateFieldMappingCreate,
+  TemplateSampleApprovalResult,
   UserAccount,
   UserAccountCreate,
   UserAccountUpdate,
@@ -381,6 +382,10 @@ export function createApiClient(options: ApiClientOptions) {
         request<TemplateFieldMapping[]>(`/api/dingtalk/templates/${templateId}/mappings`),
       listFieldCandidates: (templateId: string) =>
         request<TemplateFieldCandidate[]>(`/api/dingtalk/templates/${templateId}/field-candidates`),
+      pullTemplateSampleApproval: (templateId: string) =>
+        request<TemplateSampleApprovalResult>(`/api/dingtalk/templates/${templateId}/sample-approval`, {
+          method: "POST",
+        }),
       upsertMapping: (templateId: string, payload: TemplateFieldMappingCreate) =>
         request<TemplateFieldMapping>(`/api/dingtalk/templates/${templateId}/mappings`, {
           method: "POST",

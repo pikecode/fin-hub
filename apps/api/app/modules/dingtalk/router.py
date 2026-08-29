@@ -53,6 +53,7 @@ from app.schemas import (
     TemplateFieldCandidate,
     TemplateFieldMappingCreate,
     TemplateFieldMappingRead,
+    TemplateSampleApprovalResult,
 )
 
 router = APIRouter(prefix="/dingtalk", tags=["dingtalk"])
@@ -474,6 +475,48 @@ def unique_field_candidates(candidates: list[TemplateFieldCandidate]) -> list[Te
     return sorted(unique.values(), key=lambda item: (item.source_field_name, item.source_field_id or ""))
 
 
+def field_candidates_for_template(session: Session, template: ApprovalTemplate) -> list[TemplateFieldCandidate]:
+    candidates: list[TemplateFieldCandidate] = []
+    instances = session.scalars(
+        select(ApprovalInstance)
+        .where(ApprovalInstance.template_id == template.id)
+        .order_by(ApprovalInstance.created_at.desc())
+        .limit(10)
+    ).all()
+    for instance in instances:
+        if not instance.raw_payload:
+            continue
+        try:
+            candidates.extend(collect_field_candidates(json.loads(instance.raw_payload), "instance"))
+        except ValueError:
+            continue
+    return unique_field_candidates(candidates)
+
+
+def save_sample_approval_instance(
+    session: Session,
+    template: ApprovalTemplate,
+    raw_instance: dict[str, Any],
+) -> ApprovalInstance | None:
+    instance_id = str(raw_instance.get("process_instance_id") or raw_instance.get("processInstanceId") or "")
+    if not instance_id:
+        return None
+    instance = session.scalar(select(ApprovalInstance).where(ApprovalInstance.dingtalk_instance_id == instance_id))
+    if instance is None:
+        instance = ApprovalInstance(template_id=template.id, dingtalk_instance_id=instance_id)
+        session.add(instance)
+    instance.template_id = template.id
+    instance.approval_no = parse_text(raw_instance.get("business_id") or raw_instance.get("businessId"))
+    instance.applicant_name = parse_text(raw_instance.get("originator_user_name") or raw_instance.get("originatorUserName"))
+    instance.applicant_user_id = parse_text(raw_instance.get("originator_userid") or raw_instance.get("originatorUserId"))
+    instance.approval_status = parse_text(raw_instance.get("result") or raw_instance.get("status")) or "unknown"
+    instance.submit_at = DingTalkClient.parse_time(raw_instance.get("create_time") or raw_instance.get("createTime"))
+    instance.approved_at = DingTalkClient.parse_time(raw_instance.get("finish_time") or raw_instance.get("finishTime"))
+    instance.raw_payload = json.dumps(raw_instance, ensure_ascii=False)
+    session.flush()
+    return instance
+
+
 def last_department_name(value: str | None) -> str | None:
     if not value:
         return None
@@ -744,26 +787,83 @@ def list_template_field_candidates(
     if template is None:
         raise HTTPException(status_code=404, detail="Template not found")
 
-    candidates: list[TemplateFieldCandidate] = []
-    if template.raw_snapshot:
-        try:
-            candidates.extend(collect_field_candidates(json.loads(template.raw_snapshot), "template"))
-        except ValueError:
-            pass
-    instances = session.scalars(
-        select(ApprovalInstance)
-        .where(ApprovalInstance.template_id == template_id)
-        .order_by(ApprovalInstance.created_at.desc())
-        .limit(10)
-    ).all()
-    for instance in instances:
-        if not instance.raw_payload:
-            continue
-        try:
-            candidates.extend(collect_field_candidates(json.loads(instance.raw_payload), "instance"))
-        except ValueError:
-            continue
-    return ApiEnvelope(data=unique_field_candidates(candidates))
+    return ApiEnvelope(data=field_candidates_for_template(session, template))
+
+
+@router.post(
+    "/templates/{template_id}/sample-approval",
+    response_model=ApiEnvelope[TemplateSampleApprovalResult],
+)
+def pull_template_sample_approval(
+    template_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+) -> ApiEnvelope[TemplateSampleApprovalResult]:
+    template = session.get(ApprovalTemplate, template_id)
+    if template is None:
+        raise HTTPException(status_code=404, detail="Template not found")
+    if not template.is_enabled:
+        raise HTTPException(status_code=409, detail="Template is disabled")
+
+    if not should_use_real_dingtalk():
+        raw_instance = {
+            "process_instance_id": f"sample-{template.id}",
+            "business_id": f"SAMPLE-{template.name}",
+            "status": "COMPLETED",
+            "result": "agree",
+            "create_time": "2026-08-29 10:00:00",
+            "form_component_values": [
+                {"id": "sample-store", "name": "支出门店", "componentType": "TextField", "value": "样例门店"},
+                {"id": "sample-amount", "name": "汇总金额（元）", "componentType": "MoneyField", "value": "328.00"},
+            ],
+        }
+        instance = save_sample_approval_instance(session, template, raw_instance)
+        session.commit()
+        return ApiEnvelope(
+            data=TemplateSampleApprovalResult(
+                instance=instance,
+                field_candidates=field_candidates_for_template(session, template),
+                pulled_count=1 if instance else 0,
+            )
+        )
+
+    config = get_or_create_config(session)
+    client = dingtalk_client(config)
+    end_at = utc_now()
+    start_at = end_at - timedelta(days=30)
+    try:
+        ids, _next_cursor = client.list_process_instance_ids(
+            template.process_code,
+            int(start_at.timestamp() * 1000),
+            int(end_at.timestamp() * 1000),
+            cursor=0,
+            size=1,
+        )
+        instance = None
+        if ids:
+            raw_instance = client.get_process_instance(ids[0])
+            raw_instance.setdefault("process_instance_id", ids[0])
+            instance = save_sample_approval_instance(session, template, raw_instance)
+        write_audit_log(
+            session,
+            actor=audit_actor(current_user),
+            action="dingtalk.template_sample_approval.pull",
+            resource_type="approval_template",
+            resource_id=template.id,
+            summary=f"拉取审批模板样例审批：{template.name}",
+            metadata={"process_code": template.process_code, "pulled_count": 1 if instance else 0},
+        )
+        session.commit()
+    except DingTalkClientError as exc:
+        session.rollback()
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return ApiEnvelope(
+        data=TemplateSampleApprovalResult(
+            instance=instance,
+            field_candidates=field_candidates_for_template(session, template),
+            pulled_count=1 if instance else 0,
+        )
+    )
 
 
 @router.post(

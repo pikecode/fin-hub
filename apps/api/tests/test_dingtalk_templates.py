@@ -1,7 +1,8 @@
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from app.core.config import settings
-from app.models import ApprovalInstance, ApprovalTemplate, DingTalkConfig
+from app.models import ApprovalInstance, ApprovalTemplate, DingTalkConfig, ExpenseItem, SyncJob
 from app.modules.dingtalk.client import DingTalkClientError
 
 
@@ -521,6 +522,49 @@ def test_real_approval_sync_returns_failed_job_on_dingtalk_error(client: TestCli
     assert job["status"] == "failed"
     assert job["failed_count"] == 1
     assert job["error_message"] == "时间戳无效"
+
+
+def test_pull_template_sample_approval_only_persists_raw_instance(client: TestClient, session, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "dingtalk_sync_mode", "real")
+    client.put(
+        "/api/dingtalk/config",
+        json={"app_key": "ding-app-key", "app_secret": "super-secret"},
+    )
+    template_id = client.post(
+        "/api/dingtalk/templates",
+        json={"process_code": "PROC-SAMPLE", "name": "样例字段模板", "is_enabled": True},
+    ).json()["data"]["id"]
+    calls = []
+
+    class FakeDingTalkClient:
+        def list_process_instance_ids(self, process_code, start_time_ms, end_time_ms, cursor=0, size=20):
+            calls.append((process_code, cursor, size))
+            return ["sample-instance"], None
+
+        def get_process_instance(self, instance_id):
+            return {
+                "process_instance_id": instance_id,
+                "business_id": "NO-SAMPLE",
+                "originator_user_name": "测试申请人",
+                "status": "COMPLETED",
+                "result": "agree",
+                "create_time": "2026-08-29 23:28:54",
+                "form_component_values": [
+                    {"id": "field-store", "name": "支出门店", "componentType": "TextField", "value": "测试门店"},
+                    {"id": "field-amount", "name": "汇总金额（元）", "componentType": "MoneyField", "value": "350"},
+                ],
+            }
+
+    monkeypatch.setattr("app.modules.dingtalk.router.dingtalk_client", lambda config: FakeDingTalkClient())
+    response = client.post(f"/api/dingtalk/templates/{template_id}/sample-approval")
+    assert response.status_code == 200
+    result = response.json()["data"]
+    assert result["pulled_count"] == 1
+    assert result["instance"]["dingtalk_instance_id"] == "sample-instance"
+    assert {item["source_field_name"] for item in result["field_candidates"]} >= {"支出门店", "汇总金额（元）"}
+    assert calls == [("PROC-SAMPLE", 0, 1)]
+    assert session.scalar(select(SyncJob)) is None
+    assert session.scalar(select(ExpenseItem)) is None
 
 
 def test_real_approval_sync_persists_instance_when_expense_parse_is_incomplete(

@@ -540,15 +540,6 @@ export default function DingTalkPage() {
     }
   }
 
-  async function refreshTemplateFieldOptions(template: ApprovalTemplate) {
-    const [data, candidates] = await Promise.all([
-      apiClient.dingtalk.listMappings(template.id),
-      apiClient.dingtalk.listFieldCandidates(template.id),
-    ]);
-    setMappings(data);
-    setFieldCandidates(candidates);
-  }
-
   async function openMappingDrawer(template: ApprovalTemplate) {
     setIsMappingDrawerOpen(true);
     await loadMappings(template);
@@ -560,22 +551,12 @@ export default function DingTalkPage() {
     setIsLoading(true);
     setErrorMessage(null);
     try {
-      const job = await apiClient.dingtalk.startApprovalSync({
-        template_id: template.id,
-        started_by: "admin",
-        start_at: dayjs().subtract(30, "day").toISOString(),
-        end_at: dayjs().toISOString(),
-        page_size: 1,
-        max_pages: 1,
-        skip_existing: false,
-      });
-      await refreshTemplateFieldOptions(template);
-      if (job.status === "failed") {
-        message.error(job.error_message || "审批样例拉取失败");
-      } else if (job.success_count > 0) {
+      const result = await apiClient.dingtalk.pullTemplateSampleApproval(template.id);
+      setFieldCandidates(result.field_candidates);
+      if (result.pulled_count > 0) {
         message.success("已拉取一条真实审批样例，钉钉字段下拉已刷新");
       } else {
-        message.warning("没有拉取到审批样例，请调整同步时间窗口后再试");
+        message.warning("当前模板最近 30 天没有审批样例");
       }
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "无法拉取审批样例");

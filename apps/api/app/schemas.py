@@ -685,6 +685,12 @@ class ApprovalInstanceRead(BaseModel):
     updated_at: datetime
 
 
+class TemplateSampleApprovalResult(BaseModel):
+    instance: ApprovalInstanceRead | None = None
+    field_candidates: list[TemplateFieldCandidate]
+    pulled_count: int
+
+
 class BankImportRowError(BaseModel):
     row_number: int
     message: str

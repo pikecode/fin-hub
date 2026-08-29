@@ -487,6 +487,12 @@ export interface TemplateFieldCandidate {
   sample_value?: unknown;
 }
 
+export interface TemplateSampleApprovalResult {
+  instance?: ApprovalInstance | null;
+  field_candidates: TemplateFieldCandidate[];
+  pulled_count: number;
+}
+
 export interface ApprovalParseExpenseRow {
   description: string;
   amount: string;
