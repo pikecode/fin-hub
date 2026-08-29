@@ -586,3 +586,23 @@ def test_real_approval_sync_splits_table_rows_and_resolves_store_path(client: Te
         f"/api/attachments?resource_type=approval_instance&resource_id={instances[0]['id']}&page_size=20"
     ).json()["data"]["items"]
     assert {attachment["file_name"] for attachment in attachments} == {"voucher.jpg", "凭证.xlsx"}
+
+    preview_response = client.get(f"/api/dingtalk/templates/{template_id}/parse-preview")
+    assert preview_response.status_code == 200
+    preview = preview_response.json()["data"]
+    assert preview["can_create_expense"] is True
+    assert preview["store_id"] == store_id
+    assert preview["expense_row_count"] == 1
+    assert preview["rows"][0]["description"] == "消杀"
+    assert preview["rows"][0]["amount"] == "350.00"
+    assert preview["voucher_count"] == 2
+
+    reparse_response = client.post(
+        f"/api/dingtalk/templates/{template_id}/reparse",
+        json={"instance_id": instances[0]["id"], "limit": 10, "started_by": "tester"},
+    )
+    assert reparse_response.status_code == 200
+    reparse = reparse_response.json()["data"]
+    assert reparse["processed_count"] == 1
+    assert reparse["reparsed_count"] == 1
+    assert reparse["created_expense_count"] == 1

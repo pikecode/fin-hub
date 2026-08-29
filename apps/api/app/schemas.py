@@ -621,6 +621,47 @@ class SyncJobRead(BaseModel):
     updated_at: datetime
 
 
+class ApprovalParseExpenseRow(BaseModel):
+    description: str
+    amount: Decimal
+    category_l1: str | None = None
+    category_l2: str | None = None
+    supplier_name: str | None = None
+    payee_account: str | None = None
+
+
+class ApprovalParsePreview(BaseModel):
+    template_id: str
+    approval_instance_id: str
+    dingtalk_instance_id: str
+    approval_no: str | None = None
+    store_id: str | None = None
+    store_name: str | None = None
+    store_text: str | None = None
+    originator_dept_id: str | None = None
+    originator_dept_name: str | None = None
+    expense_date: datetime | None = None
+    expense_row_count: int
+    rows: list[ApprovalParseExpenseRow]
+    voucher_count: int
+    missing_fields: list[str]
+    can_create_expense: bool
+
+
+class ApprovalReparseRequest(BaseModel):
+    instance_id: str | None = None
+    limit: int = Field(default=100, ge=1, le=500)
+    started_by: str = "system"
+
+
+class ApprovalReparseResult(BaseModel):
+    processed_count: int
+    reparsed_count: int
+    skipped_count: int
+    created_expense_count: int
+    job: SyncJobRead
+
+
 class ApprovalInstanceRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

@@ -1,6 +1,9 @@
 import type {
   ApiEnvelope,
   ApprovalInstance,
+  ApprovalParsePreview,
+  ApprovalReparseRequest,
+  ApprovalReparseResult,
   AttachmentAccessUrl,
   ApprovalTemplate,
   ApprovalTemplateCreate,
@@ -380,6 +383,13 @@ export function createApiClient(options: ApiClientOptions) {
         request<TemplateFieldCandidate[]>(`/api/dingtalk/templates/${templateId}/field-candidates`),
       upsertMapping: (templateId: string, payload: TemplateFieldMappingCreate) =>
         request<TemplateFieldMapping>(`/api/dingtalk/templates/${templateId}/mappings`, {
+          method: "POST",
+          body: JSON.stringify(payload),
+        }),
+      previewTemplateParse: (templateId: string, params = "") =>
+        request<ApprovalParsePreview>(`/api/dingtalk/templates/${templateId}/parse-preview${params}`),
+      reparseTemplate: (templateId: string, payload: ApprovalReparseRequest) =>
+        request<ApprovalReparseResult>(`/api/dingtalk/templates/${templateId}/reparse`, {
           method: "POST",
           body: JSON.stringify(payload),
         }),

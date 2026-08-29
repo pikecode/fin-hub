@@ -480,6 +480,47 @@ export interface TemplateFieldCandidate {
   field_type?: string | null;
 }
 
+export interface ApprovalParseExpenseRow {
+  description: string;
+  amount: string;
+  category_l1?: string | null;
+  category_l2?: string | null;
+  supplier_name?: string | null;
+  payee_account?: string | null;
+}
+
+export interface ApprovalParsePreview {
+  template_id: string;
+  approval_instance_id: string;
+  dingtalk_instance_id: string;
+  approval_no?: string | null;
+  store_id?: string | null;
+  store_name?: string | null;
+  store_text?: string | null;
+  originator_dept_id?: string | null;
+  originator_dept_name?: string | null;
+  expense_date?: string | null;
+  expense_row_count: number;
+  rows: ApprovalParseExpenseRow[];
+  voucher_count: number;
+  missing_fields: string[];
+  can_create_expense: boolean;
+}
+
+export interface ApprovalReparseRequest {
+  instance_id?: string | null;
+  limit?: number;
+  started_by?: string;
+}
+
+export interface ApprovalReparseResult {
+  processed_count: number;
+  reparsed_count: number;
+  skipped_count: number;
+  created_expense_count: number;
+  job: SyncJob;
+}
+
 export interface DingTalkDepartment {
   dept_id: string;
   name: string;

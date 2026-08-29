@@ -17,6 +17,7 @@ from app.models import (
     AttachmentStatus,
     DingTalkConfig,
     DingTalkDepartment as DingTalkDepartmentModel,
+    ExpenseBankMatch,
     ExpenseItem,
     Ledger,
     Store,
@@ -34,6 +35,9 @@ from app.modules.dingtalk.client import DingTalkClient, DingTalkClientError, Din
 from app.schemas import (
     ApiEnvelope,
     ApprovalInstanceRead,
+    ApprovalParsePreview,
+    ApprovalReparseRequest,
+    ApprovalReparseResult,
     ApprovalTemplateCreate,
     ApprovalTemplateRead,
     DingTalkConfigRead,
@@ -792,6 +796,114 @@ def upsert_template_mapping(
     return ApiEnvelope(data=mapping)
 
 
+@router.get(
+    "/templates/{template_id}/parse-preview",
+    response_model=ApiEnvelope[ApprovalParsePreview],
+)
+def preview_template_parse(
+    template_id: str,
+    instance_id: str | None = None,
+    session: Session = Depends(get_session),
+) -> ApiEnvelope[ApprovalParsePreview]:
+    template = session.get(ApprovalTemplate, template_id)
+    if template is None:
+        raise HTTPException(status_code=404, detail="Template not found")
+    query = select(ApprovalInstance).where(ApprovalInstance.template_id == template_id)
+    if instance_id:
+        query = query.where(ApprovalInstance.id == instance_id)
+    instance = session.scalar(query.order_by(ApprovalInstance.created_at.desc()))
+    if instance is None:
+        raise HTTPException(status_code=404, detail="Approval instance not found")
+    return ApiEnvelope(data=build_approval_parse_preview(session, template, instance))
+
+
+@router.post(
+    "/templates/{template_id}/reparse",
+    response_model=ApiEnvelope[ApprovalReparseResult],
+)
+def reparse_template_instances(
+    template_id: str,
+    payload: ApprovalReparseRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+) -> ApiEnvelope[ApprovalReparseResult]:
+    template = session.get(ApprovalTemplate, template_id)
+    if template is None:
+        raise HTTPException(status_code=404, detail="Template not found")
+    query = select(ApprovalInstance).where(ApprovalInstance.template_id == template_id)
+    if payload.instance_id:
+        query = query.where(ApprovalInstance.id == payload.instance_id)
+    instances = list(session.scalars(query.order_by(ApprovalInstance.created_at.desc()).limit(payload.limit)))
+    job = SyncJob(
+        job_type="dingtalk_approval_reparse",
+        status=SyncJobStatus.RUNNING.value,
+        started_by=payload.started_by,
+        started_at=utc_now(),
+    )
+    session.add(job)
+    session.flush()
+
+    reparsed_count = 0
+    skipped_count = 0
+    before_ids = {
+        item.id
+        for item in session.scalars(
+            select(ExpenseItem).where(ExpenseItem.source == "dingtalk", ExpenseItem.source_document_id.is_not(None))
+        )
+    }
+    for instance in instances:
+        if not instance.raw_payload:
+            skipped_count += 1
+            continue
+        try:
+            raw_instance = json.loads(instance.raw_payload)
+        except ValueError:
+            skipped_count += 1
+            continue
+        delete_unmatched_dingtalk_expenses_for_instance(session, instance)
+        if sync_real_instance(session, template, job, raw_instance):
+            reparsed_count += 1
+        else:
+            skipped_count += 1
+
+    after_ids = {
+        item.id
+        for item in session.scalars(
+            select(ExpenseItem).where(ExpenseItem.source == "dingtalk", ExpenseItem.source_document_id.is_not(None))
+        )
+    }
+    created_expense_count = len(after_ids - before_ids)
+    job.status = SyncJobStatus.SUCCEEDED.value
+    job.finished_at = utc_now()
+    job.processed_count = len(instances)
+    job.success_count = reparsed_count
+    job.failed_count = skipped_count
+    job.raw_summary = json.dumps(
+        {"template_id": template_id, "created_expense_count": created_expense_count},
+        ensure_ascii=False,
+    )
+    write_audit_log(
+        session,
+        actor=audit_actor(current_user),
+        action="dingtalk.approval_reparse",
+        resource_type="approval_template",
+        resource_id=template_id,
+        summary=f"重新解析审批实例：{reparsed_count} 条",
+        metadata={"template_id": template_id, "instance_id": payload.instance_id},
+    )
+    session.commit()
+    session.refresh(job)
+    return ApiEnvelope(
+        data=ApprovalReparseResult(
+            processed_count=len(instances),
+            reparsed_count=reparsed_count,
+            skipped_count=skipped_count,
+            created_expense_count=created_expense_count,
+            job=job,
+        )
+    )
+
+
 def create_expense_from_instance(
     session: Session,
     template: ApprovalTemplate,
@@ -900,6 +1012,18 @@ def mapped_value(mapping: TemplateFieldMapping, values: dict[str, Any]) -> Any:
     if mapping.source_field_id and mapping.source_field_id in values:
         return values[mapping.source_field_id]
     return values.get(mapping.source_field_name)
+
+
+def mapped_values_for_template(
+    session: Session,
+    template_id: str,
+    raw_instance: dict[str, Any],
+) -> dict[str, Any]:
+    values = form_value_map(raw_instance)
+    mappings = session.scalars(
+        select(TemplateFieldMapping).where(TemplateFieldMapping.template_id == template_id)
+    ).all()
+    return {mapping.standard_field: mapped_value(mapping, values) for mapping in mappings}
 
 
 def mapped_or_form_value(
@@ -1097,6 +1221,130 @@ def resolve_store(session: Session, value: str | None) -> Store | None:
     return None
 
 
+def build_approval_parse_preview(
+    session: Session,
+    template: ApprovalTemplate,
+    instance: ApprovalInstance,
+) -> ApprovalParsePreview:
+    raw_instance: dict[str, Any] = {}
+    if instance.raw_payload:
+        try:
+            raw_instance = json.loads(instance.raw_payload)
+        except ValueError:
+            raw_instance = {}
+    mapped = mapped_values_for_template(session, template.id, raw_instance)
+    store_text = parse_text(
+        mapped_or_form_value(mapped, raw_instance, "store", "支出门店", "门店", "费用门店", "所属门店")
+    ) or parse_text(mapped.get("store_name"))
+    originator_dept_id = parse_text(raw_instance.get("originator_dept_id") or raw_instance.get("originatorDeptId"))
+    originator_dept_name = parse_text(raw_instance.get("originator_dept_name") or raw_instance.get("originatorDeptName"))
+    store = (
+        resolve_store(session, store_text)
+        or resolve_store(session, originator_dept_id)
+        or resolve_store(session, originator_dept_name)
+    )
+    amount = parse_decimal(
+        mapped_or_form_value(mapped, raw_instance, "amount", "汇总金额（元）", "汇总金额", "金额", "报销金额")
+    )
+    description = parse_text(
+        mapped_or_form_value(mapped, raw_instance, "description", "支出详情", "费用说明", "其他备注信息", "备注")
+    ) or template.name
+    expense_date = parse_date(
+        mapped_or_form_value(mapped, raw_instance, "expense_date", "报销日期", "支出日期", "费用日期", "日期")
+    ) or DingTalkClient.parse_time(raw_instance.get("create_time") or raw_instance.get("createTime"))
+    table_value = mapped_or_form_value(mapped, raw_instance, "expense_table", "表格", "费用明细", "支出明细")
+    expense_rows = expense_rows_from_table(table_value)
+    payee_account = parse_text(
+        mapped_or_form_value(mapped, raw_instance, "payee_account", "收款账户", "收款账号", "账户")
+    )
+    category_l1 = parse_text(
+        mapped_or_form_value(mapped, raw_instance, "category_l1", "支出类型", "费用类型", "一级分类")
+    )
+    rows = expense_rows or (
+        [
+            {
+                "description": description,
+                "amount": amount,
+                "category_l1": category_l1,
+                "category_l2": parse_text(mapped.get("category_l2")),
+                "supplier_name": parse_text(mapped.get("supplier_name")),
+            }
+        ]
+        if amount is not None
+        else []
+    )
+    voucher_items = [
+        *parse_voucher_items(
+            mapped_or_form_value(mapped, raw_instance, "voucher_images", "报销凭证图片", "凭证图片", "图片")
+        ),
+        *parse_voucher_items(
+            mapped_or_form_value(mapped, raw_instance, "voucher_files", "报销凭证文档", "报销凭证", "凭证文档", "附件")
+        ),
+        *voucher_items_from_table(table_value),
+    ]
+    missing_fields: list[str] = []
+    if store is None:
+        missing_fields.append("store")
+    if not rows:
+        missing_fields.append("amount")
+    if expense_date is None:
+        missing_fields.append("expense_date")
+    return ApprovalParsePreview(
+        template_id=template.id,
+        approval_instance_id=instance.id,
+        dingtalk_instance_id=instance.dingtalk_instance_id,
+        approval_no=instance.approval_no,
+        store_id=store.id if store else None,
+        store_name=store.name if store else None,
+        store_text=store_text,
+        originator_dept_id=originator_dept_id,
+        originator_dept_name=originator_dept_name,
+        expense_date=expense_date,
+        expense_row_count=len(rows),
+        rows=[
+            {
+                "description": str(row["description"]),
+                "amount": Decimal(row["amount"]).quantize(Decimal("0.01")),
+                "category_l1": parse_text(row.get("category_l1")) or category_l1,
+                "category_l2": parse_text(row.get("category_l2")) or parse_text(mapped.get("category_l2")),
+                "supplier_name": parse_text(row.get("supplier_name")) or parse_text(mapped.get("supplier_name")),
+                "payee_account": payee_account,
+            }
+            for row in rows
+        ],
+        voucher_count=len(voucher_items),
+        missing_fields=missing_fields,
+        can_create_expense=not missing_fields,
+    )
+
+
+def delete_unmatched_dingtalk_expenses_for_instance(session: Session, instance: ApprovalInstance) -> int:
+    prefix = f"{instance.dingtalk_instance_id}:"
+    items = list(
+        session.scalars(
+            select(ExpenseItem).where(
+                ExpenseItem.source == "dingtalk",
+                ExpenseItem.source_document_id.is_not(None),
+                ExpenseItem.source_document_id.in_([instance.dingtalk_instance_id])
+                | ExpenseItem.source_document_id.startswith(prefix),
+            )
+        )
+    )
+    deleted_count = 0
+    for item in items:
+        has_match = session.scalar(select(ExpenseBankMatch).where(ExpenseBankMatch.expense_item_id == item.id))
+        if has_match is not None:
+            continue
+        for attachment in session.scalars(
+            select(Attachment).where(Attachment.resource_type == "expense_item", Attachment.resource_id == item.id)
+        ):
+            session.delete(attachment)
+        session.delete(item)
+        deleted_count += 1
+    session.flush()
+    return deleted_count
+
+
 def sync_real_instance(
     session: Session,
     template: ApprovalTemplate,
@@ -1106,11 +1354,7 @@ def sync_real_instance(
     instance_id = str(raw_instance.get("process_instance_id") or raw_instance.get("processInstanceId") or "")
     if not instance_id:
         return False
-    values = form_value_map(raw_instance)
-    mappings = session.scalars(
-        select(TemplateFieldMapping).where(TemplateFieldMapping.template_id == template.id)
-    ).all()
-    mapped: dict[str, Any] = {mapping.standard_field: mapped_value(mapping, values) for mapping in mappings}
+    mapped = mapped_values_for_template(session, template.id, raw_instance)
 
     store_text = parse_text(
         mapped_or_form_value(mapped, raw_instance, "store", "支出门店", "门店", "费用门店", "所属门店")

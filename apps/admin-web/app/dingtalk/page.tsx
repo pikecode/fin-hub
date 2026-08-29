@@ -27,6 +27,8 @@ import type { ColumnsType } from "antd/es/table";
 import dayjs from "dayjs";
 import { useEffect, useMemo, useState } from "react";
 import type {
+  ApprovalParseExpenseRow,
+  ApprovalParsePreview,
   ApprovalTemplate,
   ApprovalTemplateCreate,
   ApprovalInstance,
@@ -202,6 +204,7 @@ export default function DingTalkPage() {
   const [config, setConfig] = useState<DingTalkConfig | null>(null);
   const [templates, setTemplates] = useState<ApprovalTemplate[]>([]);
   const [mappings, setMappings] = useState<TemplateFieldMapping[]>([]);
+  const [parsePreview, setParsePreview] = useState<ApprovalParsePreview | null>(null);
   const [fieldCandidates, setFieldCandidates] = useState<TemplateFieldCandidate[]>([]);
   const [syncJobs, setSyncJobs] = useState<SyncJob[]>([]);
   const [approvalInstances, setApprovalInstances] = useState<ApprovalInstance[]>([]);
@@ -447,6 +450,7 @@ export default function DingTalkPage() {
 
   async function loadMappings(template: ApprovalTemplate) {
     setSelectedTemplate(template);
+    setParsePreview(null);
     setIsLoading(true);
     try {
       const [data, candidates] = await Promise.all([
@@ -455,8 +459,49 @@ export default function DingTalkPage() {
       ]);
       setMappings(data);
       setFieldCandidates(candidates);
+      try {
+        setParsePreview(await apiClient.dingtalk.previewTemplateParse(template.id));
+      } catch {
+        setParsePreview(null);
+      }
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "无法加载字段映射");
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  async function previewSelectedTemplateParse() {
+    if (!selectedTemplate) return;
+    setIsLoading(true);
+    setErrorMessage(null);
+    try {
+      const preview = await apiClient.dingtalk.previewTemplateParse(selectedTemplate.id);
+      setParsePreview(preview);
+      message.success("试解析完成");
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "无法试解析审批");
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  async function reparseSelectedTemplate() {
+    if (!selectedTemplate) return;
+    setIsLoading(true);
+    setErrorMessage(null);
+    try {
+      const result = await apiClient.dingtalk.reparseTemplate(selectedTemplate.id, {
+        limit: 200,
+        started_by: "admin",
+      });
+      await loadData();
+      await loadMappings(selectedTemplate);
+      message.success(
+        `重跑完成：处理 ${result.processed_count} 条，生成支出 ${result.created_expense_count} 条`,
+      );
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "无法重跑审批解析");
     } finally {
       setIsLoading(false);
     }
@@ -579,6 +624,15 @@ export default function DingTalkPage() {
     { title: "字段路径", dataIndex: "source_path", render: (value) => value || "-" },
     { title: "类型", dataIndex: "field_type", render: (value) => value || "-" },
     { title: "必填", dataIndex: "is_required", render: (value) => (value ? "是" : "否") },
+  ];
+
+  const parseRowColumns: ColumnsType<ApprovalParseExpenseRow> = [
+    { title: "摘要", dataIndex: "description" },
+    { title: "金额", dataIndex: "amount", width: 120 },
+    { title: "一级分类", dataIndex: "category_l1", render: (value) => value || "-" },
+    { title: "二级分类", dataIndex: "category_l2", render: (value) => value || "-" },
+    { title: "收款方", dataIndex: "supplier_name", render: (value) => value || "-" },
+    { title: "收款账户", dataIndex: "payee_account", render: (value) => value || "-" },
   ];
 
   const departmentColumns: ColumnsType<DingTalkDepartment> = [
@@ -788,12 +842,59 @@ export default function DingTalkPage() {
                 <Card
                   title={selectedTemplate ? `${selectedTemplate.name} 字段映射` : "字段映射"}
                   extra={
-                    <Button disabled={!selectedTemplate} onClick={() => setIsMappingModalOpen(true)}>
-                      新增/更新映射
-                    </Button>
+                    <Space>
+                      <Button disabled={!selectedTemplate} onClick={previewSelectedTemplateParse} loading={isLoading}>
+                        试解析
+                      </Button>
+                      <Button disabled={!selectedTemplate} onClick={reparseSelectedTemplate} loading={isLoading}>
+                        重跑解析
+                      </Button>
+                      <Button type="primary" disabled={!selectedTemplate} onClick={() => setIsMappingModalOpen(true)}>
+                        新增/更新映射
+                      </Button>
+                    </Space>
                   }
                 >
-                  <Table rowKey="id" loading={isLoading} columns={mappingColumns} dataSource={mappings} />
+                  <Space direction="vertical" size={16} className="full-width">
+                    <Table rowKey="id" loading={isLoading} columns={mappingColumns} dataSource={mappings} pagination={false} />
+                    {selectedTemplate ? (
+                      <Card size="small" title="统一字段试解析">
+                        {parsePreview ? (
+                          <Space direction="vertical" size={12} className="full-width">
+                            <Space wrap>
+                              <Tag color={parsePreview.can_create_expense ? "green" : "gold"}>
+                                {parsePreview.can_create_expense ? "可生成支出" : "需补映射"}
+                              </Tag>
+                              <Tag>明细 {parsePreview.expense_row_count}</Tag>
+                              <Tag>凭证 {parsePreview.voucher_count}</Tag>
+                              <Tag>审批号 {parsePreview.approval_no || parsePreview.dingtalk_instance_id}</Tag>
+                            </Space>
+                            <Descriptions bordered size="small" column={2}>
+                              <Descriptions.Item label="门店">{parsePreview.store_name || parsePreview.store_text || "-"}</Descriptions.Item>
+                              <Descriptions.Item label="支出日期">
+                                {parsePreview.expense_date?.replace("T", " ").slice(0, 10) || "-"}
+                              </Descriptions.Item>
+                              <Descriptions.Item label="发起部门">{parsePreview.originator_dept_name || "-"}</Descriptions.Item>
+                              <Descriptions.Item label="缺失字段">
+                                {parsePreview.missing_fields.length ? parsePreview.missing_fields.join(", ") : "-"}
+                              </Descriptions.Item>
+                            </Descriptions>
+                            <Table
+                              size="small"
+                              rowKey={(_, index) => `parse-row-${index}`}
+                              columns={parseRowColumns}
+                              dataSource={parsePreview.rows}
+                              pagination={false}
+                            />
+                          </Space>
+                        ) : (
+                          <Alert message="选择模板并同步审批实例后，可以在这里验证映射会生成哪些统一支出字段。" type="info" showIcon />
+                        )}
+                      </Card>
+                    ) : (
+                      <Alert message="先在审批模板列表选择一个模板，再维护它的字段映射。" type="info" showIcon />
+                    )}
+                  </Space>
                 </Card>
               </Space>
             ),
