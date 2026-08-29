@@ -519,12 +519,14 @@ export interface StartApprovalSyncRequest {
   end_at?: string | null;
   page_size?: number;
   max_pages?: number;
+  skip_existing?: boolean;
 }
 
 export interface ResumeApprovalSyncRequest {
   started_by?: string;
   page_size?: number;
   max_pages?: number;
+  skip_existing?: boolean;
 }
 
 export interface SyncJob {

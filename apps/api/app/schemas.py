@@ -584,12 +584,14 @@ class StartApprovalSyncRequest(BaseModel):
     end_at: datetime | None = None
     page_size: int = Field(default=20, ge=1, le=100)
     max_pages: int = Field(default=20, ge=1, le=200)
+    skip_existing: bool = True
 
 
 class ResumeApprovalSyncRequest(BaseModel):
     started_by: str = Field(default="system", max_length=80)
     page_size: int = Field(default=20, ge=1, le=100)
     max_pages: int = Field(default=20, ge=1, le=200)
+    skip_existing: bool = True
 
 
 class SyncJobRead(BaseModel):

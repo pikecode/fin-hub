@@ -406,6 +406,57 @@ def test_department_pull_preview_and_sync_creates_store(client: TestClient, monk
     assert candidate["store_name"] == "蘑说测试店"
 
 
+def test_real_approval_sync_skips_existing_instances(client: TestClient, session, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "dingtalk_sync_mode", "real")
+    client.put(
+        "/api/dingtalk/config",
+        json={"app_key": "ding-app-key", "app_secret": "super-secret"},
+    )
+    template_id = client.post(
+        "/api/dingtalk/templates",
+        json={"process_code": "PROC-SKIP", "name": "跳过已有审批", "is_enabled": True},
+    ).json()["data"]["id"]
+    session.add(
+        ApprovalInstance(
+            template_id=template_id,
+            dingtalk_instance_id="existing-instance",
+            approval_status="agree",
+        )
+    )
+    session.commit()
+
+    get_calls = []
+
+    class FakeDingTalkClient:
+        def list_process_instance_ids(self, process_code, start_time_ms, end_time_ms, cursor=0, size=20):
+            return ["existing-instance", "new-instance"], None
+
+        def get_process_instance(self, instance_id):
+            get_calls.append(instance_id)
+            return {
+                "process_instance_id": instance_id,
+                "business_id": "NO-SKIP",
+                "status": "COMPLETED",
+                "result": "agree",
+                "create_time": "2026-08-29 23:28:54",
+            }
+
+    monkeypatch.setattr("app.modules.dingtalk.router.dingtalk_client", lambda config: FakeDingTalkClient())
+    response = client.post(
+        "/api/dingtalk/approval-sync",
+        json={
+            "template_id": template_id,
+            "started_by": "tester",
+            "start_at": "2026-08-01T00:00:00",
+            "end_at": "2026-08-31T23:59:59",
+            "skip_existing": True,
+        },
+    )
+    assert response.status_code == 201
+    assert get_calls == ["new-instance"]
+    assert '"skipped_existing_count": 1' in response.json()["data"]["raw_summary"]
+
+
 def test_real_approval_sync_splits_table_rows_and_resolves_store_path(client: TestClient, monkeypatch) -> None:
     monkeypatch.setattr(settings, "dingtalk_sync_mode", "real")
     client.put(

@@ -1241,6 +1241,7 @@ def run_approval_sync(
     templates: list[ApprovalTemplate],
     page_size: int,
     max_pages: int,
+    skip_existing: bool = True,
     resume_cursor: tuple[str, int] | None = None,
 ) -> None:
     template_summaries: list[dict[str, Any]] = []
@@ -1255,6 +1256,7 @@ def run_approval_sync(
             job.request_end_at = end_at
             cursor = resume_cursor[1] if resume_cursor and resume_cursor[0] == template.process_code else 0
             template_processed = 0
+            template_skipped_existing = 0
             template_next_cursor: str | None = None
             for page_index in range(max_pages):
                 ids, next_cursor = client.list_process_instance_ids(
@@ -1268,6 +1270,11 @@ def run_approval_sync(
                 for instance_id in ids:
                     job.processed_count += 1
                     template_processed += 1
+                    if skip_existing and session.scalar(
+                        select(ApprovalInstance.id).where(ApprovalInstance.dingtalk_instance_id == instance_id)
+                    ):
+                        template_skipped_existing += 1
+                        continue
                     raw_instance = client.get_process_instance(instance_id)
                     if sync_real_instance(session, template, job, raw_instance):
                         job.success_count += 1
@@ -1288,6 +1295,7 @@ def run_approval_sync(
                     "template_id": template.id,
                     "process_code": template.process_code,
                     "processed_count": template_processed,
+                    "skipped_existing_count": template_skipped_existing,
                     "next_cursor": job.next_cursor,
                 }
             )
@@ -1352,6 +1360,7 @@ def start_approval_sync(
             templates=templates,
             page_size=payload.page_size,
             max_pages=payload.max_pages,
+            skip_existing=payload.skip_existing,
         )
         write_audit_log(
             session,
@@ -1414,6 +1423,7 @@ def resume_approval_sync(
             templates=[template],
             page_size=payload.page_size,
             max_pages=payload.max_pages,
+            skip_existing=payload.skip_existing,
             resume_cursor=resume_cursor,
         )
         write_audit_log(

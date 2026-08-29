@@ -52,6 +52,7 @@ interface ApprovalSyncFormValues {
   time_range?: [dayjs.Dayjs, dayjs.Dayjs];
   page_size?: number;
   max_pages?: number;
+  skip_existing?: boolean;
 }
 
 type DepartmentTreeNode = DingTalkDepartment & {
@@ -234,8 +235,10 @@ export default function DingTalkPage() {
   function openSyncModal() {
     syncForm.setFieldsValue({
       template_id: selectedTemplate?.id,
-      page_size: 20,
-      max_pages: 20,
+      time_range: [dayjs().subtract(7, "day"), dayjs()],
+      page_size: 10,
+      max_pages: 5,
+      skip_existing: true,
     });
     setIsSyncModalOpen(true);
   }
@@ -250,6 +253,7 @@ export default function DingTalkPage() {
         end_at: values.time_range?.[1]?.toISOString(),
         page_size: values.page_size ?? 20,
         max_pages: values.max_pages ?? 20,
+        skip_existing: values.skip_existing ?? true,
       });
       setIsSyncModalOpen(false);
       await loadData();
@@ -269,6 +273,7 @@ export default function DingTalkPage() {
         started_by: "admin",
         page_size: 20,
         max_pages: 20,
+        skip_existing: true,
       });
       await loadData();
     } catch (error) {
@@ -665,7 +670,7 @@ export default function DingTalkPage() {
           form={syncForm}
           layout="vertical"
           onFinish={startApprovalSync}
-          initialValues={{ page_size: 20, max_pages: 20 }}
+          initialValues={{ page_size: 10, max_pages: 5, skip_existing: true }}
         >
           <Form.Item name="template_id" label="审批模板">
             <Select
@@ -679,6 +684,9 @@ export default function DingTalkPage() {
           </Form.Item>
           <Form.Item name="time_range" label="同步时间窗口">
             <DatePicker.RangePicker showTime className="full-width" />
+          </Form.Item>
+          <Form.Item name="skip_existing" label="跳过本地已有审批" initialValue={true}>
+            <Switch />
           </Form.Item>
           <Form.Item name="page_size" label="每页数量" rules={[{ required: true }]}>
             <InputNumber min={1} max={100} className="full-width" />
