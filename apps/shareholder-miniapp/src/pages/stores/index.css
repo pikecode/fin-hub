@@ -1,0 +1,101 @@
+.page {
+  padding: 32px;
+}
+
+.title {
+  display: block;
+  font-size: 40px;
+  font-weight: 700;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 24px;
+}
+
+.header-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 12px;
+}
+
+.action-button {
+  flex: 0 0 auto;
+  width: 120px;
+  height: 64px;
+  line-height: 64px;
+  color: #183b32;
+  background: #fff;
+  border: 1px solid #d9e3de;
+  border-radius: 10px;
+}
+
+.store-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 28px;
+  margin-bottom: 18px;
+  background: #fff;
+  border-radius: 16px;
+  border: 1px solid #e3e9e5;
+}
+
+.comparison {
+  padding: 24px;
+  margin-bottom: 18px;
+  background: #fff;
+  border: 1px solid #e3e9e5;
+  border-radius: 16px;
+}
+
+.section-title {
+  display: block;
+  margin-bottom: 14px;
+  color: #1f2d28;
+  font-size: 28px;
+  font-weight: 700;
+}
+
+.comparison-totals {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  color: #183b32;
+}
+
+.store-name {
+  font-size: 32px;
+  font-weight: 600;
+}
+
+.muted {
+  color: #64746d;
+}
+
+.metrics {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  color: #183b32;
+}
+
+.rank {
+  color: #64746d;
+  font-size: 24px;
+}
+
+@media (max-width: 420px) {
+  .header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .comparison-totals,
+  .metrics {
+    flex-direction: column;
+  }
+}

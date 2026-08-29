@@ -1,0 +1,38 @@
+{
+  "name": "@fin-hub/shareholder-miniapp",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build:deps": "pnpm --filter @fin-hub/shared-types build && pnpm --filter @fin-hub/shared-utils build && pnpm --filter @fin-hub/shared-api-client build",
+    "dev:weapp": "pnpm run build:deps && taro build --type weapp --watch",
+    "build": "pnpm run build:deps && taro build --type weapp",
+    "lint": "pnpm run build:deps && tsc --noEmit",
+    "typecheck": "pnpm run build:deps && tsc --noEmit"
+  },
+  "dependencies": {
+    "@babel/runtime": "^7.28.0",
+    "@fin-hub/shared-api-client": "workspace:*",
+    "@fin-hub/shared-types": "workspace:*",
+    "@fin-hub/shared-utils": "workspace:*",
+    "@tarojs/components": "^4.1.0",
+    "@tarojs/helper": "^4.1.0",
+    "@tarojs/plugin-framework-react": "^4.1.0",
+    "@tarojs/plugin-platform-weapp": "^4.1.0",
+    "@tarojs/react": "^4.1.0",
+    "@tarojs/runtime": "^4.1.0",
+    "@tarojs/shared": "^4.1.0",
+    "@tarojs/taro": "^4.1.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "devDependencies": {
+    "@babel/preset-react": "^7.28.0",
+    "@tarojs/cli": "^4.1.0",
+    "@tarojs/webpack5-runner": "^4.1.0",
+    "@types/react": "^18.2.0",
+    "babel-preset-taro": "^4.1.0",
+    "less": "^4.2.0",
+    "typescript": "^5.9.0",
+    "webpack": "5.91.0"
+  }
+}

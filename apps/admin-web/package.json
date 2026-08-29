@@ -1,0 +1,31 @@
+{
+  "name": "@fin-hub/admin-web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build:deps": "pnpm --filter @fin-hub/shared-types build && pnpm --filter @fin-hub/shared-utils build && pnpm --filter @fin-hub/shared-api-client build",
+    "dev": "next dev --port 3000",
+    "build": "pnpm run build:deps && next build",
+    "start": "next start --port 3000",
+    "lint": "pnpm run build:deps && tsc --noEmit",
+    "typecheck": "pnpm run build:deps && tsc --noEmit"
+  },
+  "dependencies": {
+    "@ant-design/nextjs-registry": "^1.0.2",
+    "@fin-hub/shared-api-client": "workspace:*",
+    "@fin-hub/shared-types": "workspace:*",
+    "@fin-hub/shared-utils": "workspace:*",
+    "@tanstack/react-query": "^5.85.0",
+    "antd": "^5.27.0",
+    "dayjs": "^1.11.13",
+    "next": "^15.5.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "typescript": "^5.9.0"
+  }
+}

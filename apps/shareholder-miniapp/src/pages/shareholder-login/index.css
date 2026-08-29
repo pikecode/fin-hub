@@ -1,0 +1,38 @@
+.page {
+  padding: 48px 32px;
+}
+
+.title {
+  display: block;
+  font-size: 42px;
+  font-weight: 700;
+  color: #183b32;
+  margin-bottom: 12px;
+}
+
+.muted {
+  display: block;
+  color: #64746d;
+  margin-bottom: 36px;
+}
+
+.input {
+  height: 88px;
+  padding: 0 24px;
+  background: #fff;
+  border: 1px solid #d9e3de;
+  border-radius: 12px;
+}
+
+.error {
+  display: block;
+  color: #b42318;
+  margin: 20px 0;
+}
+
+.login-button {
+  margin-top: 28px;
+  color: #fff;
+  background: #183b32;
+  border-radius: 12px;
+}

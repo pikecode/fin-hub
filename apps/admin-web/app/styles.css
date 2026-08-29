@@ -1,0 +1,154 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: #f5f7f6;
+}
+
+.app-shell {
+  min-height: 100vh;
+}
+
+.sidebar {
+  background: #183b32 !important;
+}
+
+.brand {
+  padding: 24px 20px 16px;
+}
+
+.brand h4.ant-typography {
+  color: #fff;
+  margin: 0;
+}
+
+.brand .ant-typography {
+  color: rgba(255, 255, 255, 0.68);
+}
+
+.topbar {
+  height: 72px;
+  padding: 0 28px;
+  background: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid #e7ece9;
+}
+
+.topbar h3.ant-typography {
+  margin: 0;
+}
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.content {
+  padding: 24px;
+}
+
+.dashboard-alert {
+  margin-bottom: 16px;
+}
+
+.metrics {
+  margin-bottom: 16px;
+}
+
+.metrics .ant-card {
+  flex: 1 1 220px;
+  min-width: 220px;
+}
+
+.metrics h2.ant-typography {
+  margin: 8px 0 0;
+}
+
+.compact-form-item {
+  width: 50%;
+}
+
+.full-width {
+  width: 100%;
+}
+
+.matching-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.section-card {
+  margin-top: 16px;
+}
+
+.report-ledger-select {
+  min-width: 320px;
+}
+
+.report-metrics {
+  margin-top: 16px;
+}
+
+.audit-filter-input {
+  min-width: 180px;
+}
+
+.audit-metadata {
+  max-width: 220px;
+}
+
+.table-filter-form {
+  margin-bottom: 16px;
+}
+
+.filter-select {
+  min-width: 180px;
+}
+
+@media (max-width: 1100px) {
+  .matching-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  .report-ledger-select {
+    min-width: 100%;
+  }
+
+  .topbar {
+    height: auto;
+    min-height: 72px;
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 12px;
+    padding: 16px 20px;
+  }
+}
+
+.login-page {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: #eef3f0;
+}
+
+.login-card {
+  width: min(420px, 100%);
+}
+
+.login-card h3.ant-typography {
+  margin-bottom: 4px;
+}
+
+.login-form {
+  margin-top: 24px;
+}

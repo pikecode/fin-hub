@@ -1,0 +1,17 @@
+{
+  "name": "fin-hub",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@10.30.1",
+  "scripts": {
+    "build:packages": "pnpm --filter @fin-hub/shared-types build && pnpm --filter @fin-hub/shared-utils build && pnpm --filter @fin-hub/shared-api-client build",
+    "dev:admin": "pnpm --filter @fin-hub/admin-web dev",
+    "dev:miniapp": "pnpm --filter @fin-hub/shareholder-miniapp dev:weapp",
+    "build": "pnpm -r build",
+    "lint": "pnpm -r lint",
+    "typecheck": "pnpm -r typecheck"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.0"
+  }
+}
