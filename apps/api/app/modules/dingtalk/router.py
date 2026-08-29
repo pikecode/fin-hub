@@ -478,10 +478,37 @@ def collect_field_candidates(value: Any, path: str = "") -> list[TemplateFieldCa
 
 def collect_approval_form_field_candidates(raw_instance: dict[str, Any]) -> list[TemplateFieldCandidate]:
     components = raw_instance.get("form_component_values") or raw_instance.get("formComponentValues") or []
-    if not isinstance(components, list):
-        return []
-
     candidates: list[TemplateFieldCandidate] = []
+    root_fields = [
+        ("business_id", "审批编号", "TextField"),
+        ("title", "审批标题", "TextField"),
+        ("status", "审批状态", "TextField"),
+        ("result", "审批结果", "TextField"),
+        ("create_time", "提交时间", "DDDateField"),
+        ("finish_time", "完成时间", "DDDateField"),
+        ("originator_userid", "发起人 User ID", "TextField"),
+        ("originator_dept_id", "发起部门 ID", "TextField"),
+        ("originator_dept_name", "发起部门", "TextField"),
+        ("biz_action", "业务动作", "TextField"),
+        ("cc_userids", "抄送人 User ID", "TextField"),
+        ("attached_process_instance_ids", "关联审批实例", "TextField"),
+    ]
+    for key, label, field_type in root_fields:
+        if key not in raw_instance:
+            continue
+        candidates.append(
+            TemplateFieldCandidate(
+                source_field_id=key,
+                source_field_name=label,
+                source_path=f"root:{key}",
+                field_type=field_type,
+                sample_value=raw_instance.get(key),
+            )
+        )
+
+    if not isinstance(components, list):
+        return candidates
+
     for component in components:
         if not isinstance(component, dict):
             continue
@@ -547,7 +574,7 @@ def unique_field_candidates(candidates: list[TemplateFieldCandidate]) -> list[Te
         existing = unique[key]
         if existing.sample_value in (None, "") and candidate.sample_value not in (None, ""):
             unique[key] = candidate
-    return sorted(unique.values(), key=lambda item: (item.source_field_name, item.source_field_id or ""))
+    return list(unique.values())
 
 
 def field_candidates_for_template(session: Session, template: ApprovalTemplate) -> list[TemplateFieldCandidate]:

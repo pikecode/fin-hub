@@ -314,6 +314,11 @@ function tableValueFromPayload(payload: unknown, tableKey: string, cellKey: stri
 }
 
 function mappedValueFromPayload(payload: unknown, mapping: TemplateFieldMapping) {
+  if (mapping.source_path?.startsWith("root:")) {
+    const [, key] = mapping.source_path.split(":");
+    if (!key || !payload || typeof payload !== "object") return undefined;
+    return (payload as Record<string, unknown>)[key];
+  }
   if (mapping.source_path?.startsWith("table:")) {
     const [, tableKey, cellKey] = mapping.source_path.split(":");
     if (tableKey && cellKey) return tableValueFromPayload(payload, tableKey, cellKey);

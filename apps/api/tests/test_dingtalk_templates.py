@@ -84,7 +84,9 @@ def test_template_field_candidates_from_snapshot_and_instances(client: TestClien
             dingtalk_instance_id="instance-fields",
             approval_status="approved",
             raw_payload=(
-                '{"form_component_values":['
+                '{"business_id":"NO-FIELDS","title":"测试提交的字段候选","status":"COMPLETED",'
+                '"create_time":"2026-08-29 10:00:00","originator_dept_name":"门店运营部-测试店",'
+                '"form_component_values":['
                 '{"id":"field-store","name":"门店","componentType":"TextField","value":"菌山集开平东汇城店"},'
                 '{"id":"field-amount","name":"金额","componentType":"MoneyField","value":"350"},'
                 '{"id":"table-expense","name":"表格","componentType":"TableField","value":"'
@@ -102,6 +104,10 @@ def test_template_field_candidates_from_snapshot_and_instances(client: TestClien
     assert response.status_code == 200
     candidates = response.json()["data"]
     labels = {item["source_field_name"]: item for item in candidates}
+    assert labels["审批编号"]["source_path"] == "root:business_id"
+    assert labels["审批编号"]["sample_value"] == "NO-FIELDS"
+    assert labels["审批标题"]["sample_value"] == "测试提交的字段候选"
+    assert labels["发起部门"]["sample_value"] == "门店运营部-测试店"
     assert labels["金额"]["source_field_id"] == "field-amount"
     assert labels["金额"]["field_type"] == "MoneyField"
     assert labels["金额"]["sample_value"] == "350"
