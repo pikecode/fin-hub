@@ -1150,7 +1150,30 @@ def sync_real_instance(
     session.flush()
 
     if store is None or (amount is None and not expense_rows) or expense_date is None:
-        return False
+        missing_fields = []
+        if store is None:
+            missing_fields.append("store")
+        if amount is None and not expense_rows:
+            missing_fields.append("amount")
+        if expense_date is None:
+            missing_fields.append("expense_date")
+        instance.raw_payload = json.dumps(
+            {
+                **raw_instance,
+                "_fin_hub_parse": {
+                    "store_text": store_text,
+                    "originator_dept_id": originator_dept_id,
+                    "originator_dept_name": originator_dept_name,
+                    "resolved_store_id": None,
+                    "expense_row_count": len(expense_rows),
+                    "created_expense_ids": [],
+                    "expense_parse_status": "skipped",
+                    "missing_fields": missing_fields,
+                },
+            },
+            ensure_ascii=False,
+        )
+        return True
     if instance.approval_status.lower() not in {"agree", "approved", "completed", "finish", "success"}:
         return True
     period = expense_date.strftime("%Y-%m")
@@ -1276,6 +1299,7 @@ def run_approval_sync(
                         template_skipped_existing += 1
                         continue
                     raw_instance = client.get_process_instance(instance_id)
+                    raw_instance.setdefault("process_instance_id", instance_id)
                     if sync_real_instance(session, template, job, raw_instance):
                         job.success_count += 1
                     else:
@@ -1289,7 +1313,7 @@ def run_approval_sync(
                 incomplete_sync = True
                 if template_next_cursor:
                     job.next_cursor = f"{template.process_code}:{template_next_cursor}"
-                job.error_message = "DingTalk approval sync stopped at max_pages"
+                job.error_message = "DingTalk approval sync paused at max_pages; resume is available"
             template_summaries.append(
                 {
                     "template_id": template.id,
@@ -1318,11 +1342,7 @@ def run_approval_sync(
         template.last_sync_at = utc_now()
     if not incomplete_sync:
         job.next_cursor = None
-    job.status = (
-        SyncJobStatus.SUCCEEDED.value
-        if job.failed_count == 0 and not incomplete_sync
-        else SyncJobStatus.FAILED.value
-    )
+    job.status = SyncJobStatus.SUCCEEDED.value if job.failed_count == 0 else SyncJobStatus.FAILED.value
     job.finished_at = utc_now()
     job.raw_summary = json.dumps({"templates": template_summaries}, ensure_ascii=False)
     config = get_or_create_config(session)

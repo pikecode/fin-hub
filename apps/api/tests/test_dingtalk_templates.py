@@ -218,7 +218,7 @@ def test_real_approval_sync_paginates_and_records_window(client: TestClient, mon
     assert "真实同步 instance-2" in descriptions
 
 
-def test_real_approval_sync_marks_failed_when_max_pages_reached(client: TestClient, monkeypatch) -> None:
+def test_real_approval_sync_keeps_resume_cursor_when_max_pages_reached(client: TestClient, monkeypatch) -> None:
     monkeypatch.setattr(settings, "dingtalk_sync_mode", "real")
     client.put(
         "/api/dingtalk/config",
@@ -254,9 +254,9 @@ def test_real_approval_sync_marks_failed_when_max_pages_reached(client: TestClie
     )
     assert response.status_code == 201
     job = response.json()["data"]
-    assert job["status"] == "failed"
+    assert job["status"] == "succeeded"
     assert job["next_cursor"] == "PROC-LIMIT:1"
-    assert job["error_message"] == "DingTalk approval sync stopped at max_pages"
+    assert job["error_message"] == "DingTalk approval sync paused at max_pages; resume is available"
 
 
 def test_resume_approval_sync_uses_saved_cursor(client: TestClient, monkeypatch) -> None:
@@ -319,7 +319,7 @@ def test_resume_approval_sync_uses_saved_cursor(client: TestClient, monkeypatch)
         },
     )
     first_job = first_response.json()["data"]
-    assert first_job["status"] == "failed"
+    assert first_job["status"] == "succeeded"
     assert first_job["next_cursor"] == "PROC-RESUME:1"
 
     resume_response = client.post(
@@ -455,6 +455,55 @@ def test_real_approval_sync_skips_existing_instances(client: TestClient, session
     assert response.status_code == 201
     assert get_calls == ["new-instance"]
     assert '"skipped_existing_count": 1' in response.json()["data"]["raw_summary"]
+
+
+def test_real_approval_sync_persists_instance_when_expense_parse_is_incomplete(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(settings, "dingtalk_sync_mode", "real")
+    client.put(
+        "/api/dingtalk/config",
+        json={"app_key": "ding-app-key", "app_secret": "super-secret"},
+    )
+    template_id = client.post(
+        "/api/dingtalk/templates",
+        json={"process_code": "PROC-INCOMPLETE", "name": "缺字段审批", "is_enabled": True},
+    ).json()["data"]["id"]
+
+    class FakeDingTalkClient:
+        def list_process_instance_ids(self, process_code, start_time_ms, end_time_ms, cursor=0, size=20):
+            return ["incomplete-instance"], None
+
+        def get_process_instance(self, instance_id):
+            return {
+                "business_id": "NO-INCOMPLETE",
+                "originator_user_name": "测试申请人",
+                "status": "RUNNING",
+                "create_time": "2026-08-29 23:28:54",
+                "form_component_values": [{"name": "说明", "value": "缺少门店和金额"}],
+            }
+
+    monkeypatch.setattr("app.modules.dingtalk.router.dingtalk_client", lambda config: FakeDingTalkClient())
+    response = client.post(
+        "/api/dingtalk/approval-sync",
+        json={
+            "template_id": template_id,
+            "started_by": "tester",
+            "start_at": "2026-08-01T00:00:00",
+            "end_at": "2026-08-31T23:59:59",
+        },
+    )
+    assert response.status_code == 201
+    job = response.json()["data"]
+    assert job["status"] == "succeeded"
+    assert job["success_count"] == 1
+    assert job["failed_count"] == 0
+
+    instances = client.get(f"/api/dingtalk/approval-instances?template_id={template_id}").json()["data"]["items"]
+    assert len(instances) == 1
+    assert instances[0]["dingtalk_instance_id"] == "incomplete-instance"
+    assert '"expense_parse_status": "skipped"' in instances[0]["raw_payload"]
 
 
 def test_real_approval_sync_splits_table_rows_and_resolves_store_path(client: TestClient, monkeypatch) -> None:

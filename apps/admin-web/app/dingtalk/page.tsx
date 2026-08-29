@@ -406,7 +406,8 @@ export default function DingTalkPage() {
     {
       title: "状态",
       dataIndex: "status",
-      render: (value: SyncJob["status"]) => {
+      render: (value: SyncJob["status"], record) => {
+        if (value === "succeeded" && record.next_cursor) return <Tag color="blue">可续跑</Tag>;
         if (value === "succeeded") return <Tag color="green">成功</Tag>;
         if (value === "failed") return <Tag color="red">失败</Tag>;
         if (value === "running") return <Tag color="blue">运行中</Tag>;
