@@ -81,21 +81,30 @@ export default function DingTalkPage() {
     () => buildDepartmentTree(departmentPreview?.departments ?? []),
     [departmentPreview],
   );
+  const lastDepartmentPulledAt = useMemo(() => {
+    const timestamps = (departmentPreview?.departments ?? [])
+      .map((department) => department.last_synced_at)
+      .filter((value): value is string => Boolean(value));
+    if (!timestamps.length) return null;
+    return timestamps.sort().at(-1) ?? null;
+  }, [departmentPreview]);
 
   async function loadData() {
     setIsLoading(true);
     setErrorMessage(null);
     try {
-      const [data, templatePage, jobPage, instancePage] = await Promise.all([
+      const [data, templatePage, jobPage, instancePage, departmentData] = await Promise.all([
         apiClient.dingtalk.readConfig(),
         apiClient.dingtalk.listTemplates("?page_size=200"),
         apiClient.dingtalk.listSyncJobs("?page_size=20"),
         apiClient.dingtalk.listApprovalInstances("?page_size=50"),
+        apiClient.dingtalk.previewDepartmentSync(),
       ]);
       setConfig(data);
       setTemplates(templatePage.items);
       setSyncJobs(jobPage.items);
       setApprovalInstances(instancePage.items);
+      setDepartmentPreview(departmentData);
       form.setFieldsValue({
         corp_id: data.corp_id ?? undefined,
         app_key: data.app_key ?? undefined,
@@ -155,10 +164,24 @@ export default function DingTalkPage() {
     setIsLoading(true);
     setErrorMessage(null);
     try {
-      const preview = await apiClient.dingtalk.previewDepartmentSync("?root_dept_id=1&max_depth=6");
+      const preview = await apiClient.dingtalk.previewDepartmentSync();
       setDepartmentPreview(preview);
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "无法拉取钉钉部门");
+      setErrorMessage(error instanceof Error ? error.message : "无法读取本地部门快照");
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  async function pullDepartments() {
+    setIsLoading(true);
+    setErrorMessage(null);
+    try {
+      await apiClient.dingtalk.pullDepartments("?root_dept_id=1&max_depth=6");
+      const preview = await apiClient.dingtalk.previewDepartmentSync();
+      setDepartmentPreview(preview);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "无法从钉钉拉取部门");
     } finally {
       setIsLoading(false);
     }
@@ -168,8 +191,8 @@ export default function DingTalkPage() {
     setIsLoading(true);
     setErrorMessage(null);
     try {
-      await apiClient.dingtalk.syncDepartments("?root_dept_id=1&max_depth=6");
-      const preview = await apiClient.dingtalk.previewDepartmentSync("?root_dept_id=1&max_depth=6");
+      await apiClient.dingtalk.syncDepartments();
+      const preview = await apiClient.dingtalk.previewDepartmentSync();
       setDepartmentPreview(preview);
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "无法同步钉钉门店部门");
@@ -426,7 +449,10 @@ export default function DingTalkPage() {
         extra={
           <Space>
             <Button onClick={previewDepartments} loading={isLoading}>
-              预览部门
+              刷新本地预览
+            </Button>
+            <Button onClick={pullDepartments} loading={isLoading}>
+              从钉钉拉取部门
             </Button>
             <Button type="primary" onClick={syncDepartments} loading={isLoading}>
               同步为门店
@@ -437,10 +463,14 @@ export default function DingTalkPage() {
         {departmentPreview ? (
           <>
             <Space wrap className="dashboard-alert">
+              <Tag>本地部门 {departmentPreview.departments.length}</Tag>
               <Tag color="blue">候选门店 {departmentPreview.candidate_count}</Tag>
               <Tag color="green">已存在 {departmentPreview.existing_count}</Tag>
               <Tag color="gold">将新增 {departmentPreview.create_count}</Tag>
               <Tag color="purple">将更新 {departmentPreview.update_count}</Tag>
+              <Tag color="cyan">
+                上次拉取 {lastDepartmentPulledAt ? lastDepartmentPulledAt.replace("T", " ").slice(0, 16) : "尚未拉取"}
+              </Tag>
             </Space>
             <Table
               rowKey="dept_id"
@@ -453,7 +483,7 @@ export default function DingTalkPage() {
             />
           </>
         ) : (
-          <Alert message="先预览钉钉部门，确认门店候选后再同步到本地门店档案。" type="info" showIcon />
+          <Alert message="先从钉钉拉取部门到本地快照，再确认门店候选并同步到本地门店档案。" type="info" showIcon />
         )}
       </Card>
       <Card

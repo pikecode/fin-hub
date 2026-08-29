@@ -342,7 +342,7 @@ def test_resume_approval_sync_uses_saved_cursor(client: TestClient, monkeypatch)
     assert "续跑同步 instance-2" in descriptions
 
 
-def test_department_sync_preview_and_sync_creates_store(client: TestClient, monkeypatch) -> None:
+def test_department_pull_preview_and_sync_creates_store(client: TestClient, monkeypatch) -> None:
     client.put(
         "/api/dingtalk/config",
         json={"app_key": "ding-app-key", "app_secret": "super-secret"},
@@ -371,7 +371,22 @@ def test_department_sync_preview_and_sync_creates_store(client: TestClient, monk
 
     monkeypatch.setattr("app.modules.dingtalk.router.dingtalk_client", lambda config: FakeDingTalkClient())
 
-    preview_response = client.get("/api/dingtalk/departments/sync-preview?root_dept_id=1&max_depth=4")
+    empty_preview_response = client.get("/api/dingtalk/departments/sync-preview")
+    assert empty_preview_response.status_code == 200
+    assert empty_preview_response.json()["data"]["candidate_count"] == 0
+
+    pull_response = client.post("/api/dingtalk/departments/pull?root_dept_id=1&max_depth=4")
+    assert pull_response.status_code == 200
+    pull_result = pull_response.json()["data"]
+    assert pull_result["pulled_count"] == 6
+    assert pull_result["created_count"] == 6
+    assert pull_result["candidate_count"] == 1
+
+    list_response = client.get("/api/dingtalk/departments")
+    assert list_response.status_code == 200
+    assert len(list_response.json()["data"]) == 6
+
+    preview_response = client.get("/api/dingtalk/departments/sync-preview")
     assert preview_response.status_code == 200
     preview = preview_response.json()["data"]
     assert preview["candidate_count"] == 1
@@ -379,12 +394,16 @@ def test_department_sync_preview_and_sync_creates_store(client: TestClient, monk
     candidates = [item for item in preview["departments"] if item["is_store_candidate"]]
     assert candidates[0]["name"] == "蘑说测试店"
 
-    sync_response = client.post("/api/dingtalk/departments/sync?root_dept_id=1&max_depth=4")
+    sync_response = client.post("/api/dingtalk/departments/sync")
     assert sync_response.status_code == 200
     result = sync_response.json()["data"]
     assert result["created_count"] == 1
     assert result["stores"][0]["name"] == "蘑说测试店"
     assert result["stores"][0]["dingtalk_dept_id"] == "12"
+
+    preview_after_sync = client.get("/api/dingtalk/departments/sync-preview").json()["data"]
+    candidate = next(item for item in preview_after_sync["departments"] if item["is_store_candidate"])
+    assert candidate["store_name"] == "蘑说测试店"
 
 
 def test_real_approval_sync_splits_table_rows_and_resolves_store_path(client: TestClient, monkeypatch) -> None:

@@ -391,6 +391,27 @@ class DingTalkConfig(Base):
     )
 
 
+class DingTalkDepartment(Base):
+    __tablename__ = "dingtalk_departments"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    dept_id: Mapped[str] = mapped_column(String(120), nullable=False, unique=True)
+    parent_id: Mapped[str | None] = mapped_column(String(120))
+    name: Mapped[str] = mapped_column(String(160), nullable=False)
+    path: Mapped[str] = mapped_column(String(500), nullable=False)
+    depth: Mapped[int] = mapped_column(default=0, nullable=False)
+    is_store_candidate: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    store_id: Mapped[str | None] = mapped_column(ForeignKey("stores.id"))
+    raw_payload: Mapped[str | None] = mapped_column(Text)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+    last_synced_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+
 class ApprovalTemplate(Base):
     __tablename__ = "approval_templates"
     __table_args__ = (UniqueConstraint("process_code", name="uq_approval_templates_process_code"),)

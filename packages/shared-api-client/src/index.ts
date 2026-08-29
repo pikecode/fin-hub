@@ -15,6 +15,7 @@ import type {
   DatabaseBackupStatus,
   DingTalkConfig,
   DingTalkDepartment,
+  DingTalkDepartmentPullResult,
   DingTalkDepartmentSyncPreview,
   DingTalkDepartmentSyncResult,
   ExpenseBankMatch,
@@ -354,6 +355,8 @@ export function createApiClient(options: ApiClientOptions) {
         request<{ status: string; access_token_prefix: string }>("/api/dingtalk/connection-test", {
           method: "POST",
         }),
+      pullDepartments: (params = "") =>
+        request<DingTalkDepartmentPullResult>(`/api/dingtalk/departments/pull${params}`, { method: "POST" }),
       listDepartments: (params = "") => request<DingTalkDepartment[]>(`/api/dingtalk/departments${params}`),
       previewDepartmentSync: (params = "") =>
         request<DingTalkDepartmentSyncPreview>(`/api/dingtalk/departments/sync-preview${params}`),

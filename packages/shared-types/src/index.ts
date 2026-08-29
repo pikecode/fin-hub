@@ -483,6 +483,18 @@ export interface DingTalkDepartment {
   is_store_candidate: boolean;
   store_id?: string | null;
   store_name?: string | null;
+  is_active: boolean;
+  last_seen_at?: string | null;
+  last_synced_at?: string | null;
+}
+
+export interface DingTalkDepartmentPullResult {
+  departments: DingTalkDepartment[];
+  pulled_count: number;
+  created_count: number;
+  updated_count: number;
+  deactivated_count: number;
+  candidate_count: number;
 }
 
 export interface DingTalkDepartmentSyncPreview {

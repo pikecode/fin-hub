@@ -486,6 +486,8 @@ class TemplateFieldCandidate(BaseModel):
 
 
 class DingTalkDepartmentRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     dept_id: str
     name: str
     parent_id: str | None = None
@@ -494,6 +496,18 @@ class DingTalkDepartmentRead(BaseModel):
     is_store_candidate: bool
     store_id: str | None = None
     store_name: str | None = None
+    is_active: bool = True
+    last_seen_at: datetime | None = None
+    last_synced_at: datetime | None = None
+
+
+class DingTalkDepartmentPullResult(BaseModel):
+    departments: list[DingTalkDepartmentRead]
+    pulled_count: int
+    created_count: int
+    updated_count: int
+    deactivated_count: int
+    candidate_count: int
 
 
 class DingTalkDepartmentSyncPreview(BaseModel):

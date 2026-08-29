@@ -16,6 +16,7 @@ from app.models import (
     Attachment,
     AttachmentStatus,
     DingTalkConfig,
+    DingTalkDepartment as DingTalkDepartmentModel,
     ExpenseItem,
     Ledger,
     Store,
@@ -37,6 +38,7 @@ from app.schemas import (
     ApprovalTemplateRead,
     DingTalkConfigRead,
     DingTalkConfigUpdate,
+    DingTalkDepartmentPullResult,
     DingTalkDepartmentRead,
     DingTalkDepartmentSyncPreview,
     DingTalkDepartmentSyncResult,
@@ -154,58 +156,79 @@ def test_connection(
 
 @router.get("/departments", response_model=ApiEnvelope[list[DingTalkDepartmentRead]])
 def list_departments(
-    root_dept_id: str = "1",
-    max_depth: int = 6,
+    include_inactive: bool = False,
     session: Session = Depends(get_session),
     _: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
 ) -> ApiEnvelope[list[DingTalkDepartmentRead]]:
+    return ApiEnvelope(data=load_local_departments(session, include_inactive=include_inactive))
+
+
+@router.post("/departments/pull", response_model=ApiEnvelope[DingTalkDepartmentPullResult])
+def pull_departments(
+    root_dept_id: str = "1",
+    max_depth: int = 6,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+) -> ApiEnvelope[DingTalkDepartmentPullResult]:
     config = get_or_create_config(session)
     try:
-        departments = build_department_tree(
+        pulled_departments = build_department_tree(
             dingtalk_client(config),
             root_dept_id=root_dept_id,
             max_depth=min(max(max_depth, 1), 8),
         )
     except DingTalkClientError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
-    return ApiEnvelope(data=enrich_departments_with_stores(session, departments))
+    result = upsert_dingtalk_departments(
+        session,
+        pulled_departments,
+        root_dept_id=root_dept_id,
+        max_depth=max_depth,
+    )
+    write_audit_log(
+        session,
+        actor=audit_actor(current_user),
+        action="dingtalk.departments.pull",
+        resource_type="dingtalk_department",
+        summary=(
+            f"拉取钉钉部门：拉取 {result['pulled_count']} 个，"
+            f"新增 {result['created_count']} 个，更新 {result['updated_count']} 个"
+        ),
+        metadata={
+            "root_dept_id": root_dept_id,
+            "max_depth": max_depth,
+            "deactivated_count": result["deactivated_count"],
+        },
+    )
+    session.commit()
+    departments = load_local_departments(session)
+    return ApiEnvelope(
+        data=DingTalkDepartmentPullResult(
+            departments=departments,
+            pulled_count=result["pulled_count"],
+            created_count=result["created_count"],
+            updated_count=result["updated_count"],
+            deactivated_count=result["deactivated_count"],
+            candidate_count=len([department for department in departments if department.is_store_candidate]),
+        )
+    )
 
 
 @router.get("/departments/sync-preview", response_model=ApiEnvelope[DingTalkDepartmentSyncPreview])
 def preview_department_sync(
-    root_dept_id: str = "1",
-    max_depth: int = 6,
     session: Session = Depends(get_session),
     _: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
 ) -> ApiEnvelope[DingTalkDepartmentSyncPreview]:
-    config = get_or_create_config(session)
-    try:
-        departments = build_department_tree(
-            dingtalk_client(config),
-            root_dept_id=root_dept_id,
-            max_depth=min(max(max_depth, 1), 8),
-        )
-    except DingTalkClientError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    departments = load_local_departments(session)
     return ApiEnvelope(data=build_department_sync_preview(session, departments))
 
 
 @router.post("/departments/sync", response_model=ApiEnvelope[DingTalkDepartmentSyncResult])
 def sync_departments_to_stores(
-    root_dept_id: str = "1",
-    max_depth: int = 6,
     session: Session = Depends(get_session),
     current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
 ) -> ApiEnvelope[DingTalkDepartmentSyncResult]:
-    config = get_or_create_config(session)
-    try:
-        departments = build_department_tree(
-            dingtalk_client(config),
-            root_dept_id=root_dept_id,
-            max_depth=min(max(max_depth, 1), 8),
-        )
-    except DingTalkClientError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    departments = load_local_departments(session)
 
     created_count = 0
     updated_count = 0
@@ -215,6 +238,9 @@ def sync_departments_to_stores(
         if not department.is_store_candidate:
             skipped_count += 1
             continue
+        department_model = session.scalar(
+            select(DingTalkDepartmentModel).where(DingTalkDepartmentModel.dept_id == department.dept_id)
+        )
         store = session.scalar(select(Store).where(Store.dingtalk_dept_id == department.dept_id))
         if store is None:
             store = session.scalar(select(Store).where(Store.name == department.name))
@@ -234,6 +260,8 @@ def sync_departments_to_stores(
                 updated_count += 1
             else:
                 skipped_count += 1
+        if department_model is not None and department_model.store_id != store.id:
+            department_model.store_id = store.id
         synced_stores.append(store)
     session.flush()
     write_audit_log(
@@ -242,7 +270,7 @@ def sync_departments_to_stores(
         action="dingtalk.departments.sync",
         resource_type="store",
         summary=f"同步钉钉门店部门：新增 {created_count} 个，更新 {updated_count} 个",
-        metadata={"root_dept_id": root_dept_id, "max_depth": max_depth, "skipped_count": skipped_count},
+        metadata={"skipped_count": skipped_count},
     )
     session.commit()
     for store in synced_stores:
@@ -521,21 +549,160 @@ def enrich_departments_with_stores(
     return enriched
 
 
+def department_model_to_read(
+    department: DingTalkDepartmentModel,
+    store: Store | None = None,
+) -> DingTalkDepartmentRead:
+    return DingTalkDepartmentRead(
+        dept_id=department.dept_id,
+        name=department.name,
+        parent_id=department.parent_id,
+        path=department.path,
+        depth=department.depth,
+        is_store_candidate=department.is_store_candidate,
+        store_id=department.store_id or (store.id if store else None),
+        store_name=store.name if store else None,
+        is_active=department.is_active,
+        last_seen_at=department.last_seen_at,
+        last_synced_at=department.last_synced_at,
+    )
+
+
+def load_local_departments(
+    session: Session,
+    *,
+    include_inactive: bool = False,
+) -> list[DingTalkDepartmentRead]:
+    query = select(DingTalkDepartmentModel)
+    if not include_inactive:
+        query = query.where(DingTalkDepartmentModel.is_active.is_(True))
+    departments = list(session.scalars(query.order_by(DingTalkDepartmentModel.path.asc())))
+    stores = list(session.scalars(select(Store)))
+    stores_by_id = {store.id: store for store in stores}
+    stores_by_dept_id = {str(store.dingtalk_dept_id): store for store in stores if store.dingtalk_dept_id}
+    stores_by_name = {store.name: store for store in stores}
+
+    rows: list[DingTalkDepartmentRead] = []
+    for department in departments:
+        store = (
+            stores_by_id.get(department.store_id or "")
+            or stores_by_dept_id.get(department.dept_id)
+            or stores_by_name.get(department.name)
+        )
+        rows.append(department_model_to_read(department, store))
+    return rows
+
+
+def upsert_dingtalk_departments(
+    session: Session,
+    departments: list[DingTalkDepartmentRead],
+    *,
+    root_dept_id: str,
+    max_depth: int,
+) -> dict[str, int]:
+    now = utc_now()
+    stores = list(session.scalars(select(Store)))
+    stores_by_dept_id = {str(store.dingtalk_dept_id): store for store in stores if store.dingtalk_dept_id}
+    stores_by_name = {store.name: store for store in stores}
+    existing = {
+        department.dept_id: department
+        for department in session.scalars(select(DingTalkDepartmentModel))
+    }
+    seen_ids = {department.dept_id for department in departments}
+    created_count = 0
+    updated_count = 0
+
+    for department in departments:
+        store = stores_by_dept_id.get(department.dept_id) or stores_by_name.get(department.name)
+        raw_payload = json.dumps(
+            {
+                "dept_id": department.dept_id,
+                "parent_id": department.parent_id,
+                "name": department.name,
+                "path": department.path,
+                "depth": department.depth,
+                "root_dept_id": root_dept_id,
+                "max_depth": max_depth,
+            },
+            ensure_ascii=False,
+        )
+        row = existing.get(department.dept_id)
+        if row is None:
+            session.add(
+                DingTalkDepartmentModel(
+                    dept_id=department.dept_id,
+                    parent_id=department.parent_id,
+                    name=department.name,
+                    path=department.path,
+                    depth=department.depth,
+                    is_store_candidate=department.is_store_candidate,
+                    store_id=store.id if store else None,
+                    raw_payload=raw_payload,
+                    is_active=True,
+                    last_seen_at=now,
+                    last_synced_at=now,
+                )
+            )
+            created_count += 1
+            continue
+
+        changed = False
+        updates = {
+            "parent_id": department.parent_id,
+            "name": department.name,
+            "path": department.path,
+            "depth": department.depth,
+            "is_store_candidate": department.is_store_candidate,
+            "store_id": store.id if store else row.store_id,
+            "raw_payload": raw_payload,
+            "is_active": True,
+        }
+        for key, value in updates.items():
+            if getattr(row, key) != value:
+                setattr(row, key, value)
+                changed = True
+        row.last_seen_at = now
+        row.last_synced_at = now
+        if changed:
+            updated_count += 1
+
+    deactivated_count = 0
+    for dept_id, row in existing.items():
+        if row.is_active and dept_id not in seen_ids:
+            row.is_active = False
+            row.last_synced_at = now
+            deactivated_count += 1
+
+    session.flush()
+    return {
+        "pulled_count": len(departments),
+        "created_count": created_count,
+        "updated_count": updated_count,
+        "deactivated_count": deactivated_count,
+    }
+
+
 def build_department_sync_preview(
     session: Session,
     departments: list[DingTalkDepartmentRead],
 ) -> DingTalkDepartmentSyncPreview:
     enriched = enrich_departments_with_stores(session, departments)
+    stores = list(session.scalars(select(Store)))
+    stores_by_dept_id = {str(store.dingtalk_dept_id): store for store in stores if store.dingtalk_dept_id}
+    stores_by_name = {store.name: store for store in stores}
     candidates = [department for department in enriched if department.is_store_candidate]
-    existing_count = len([department for department in candidates if department.store_id])
-    update_count = len(
-        [
-            department
-            for department in candidates
-            if department.store_id and department.store_name and department.store_name != department.name
-        ]
-    )
-    create_count = len(candidates) - existing_count
+    existing_count = 0
+    update_count = 0
+    create_count = 0
+    for department in candidates:
+        store_by_dept = stores_by_dept_id.get(department.dept_id)
+        store_by_name = stores_by_name.get(department.name)
+        if store_by_dept and store_by_dept.name == department.name:
+            existing_count += 1
+        elif store_by_dept or store_by_name:
+            update_count += 1
+        else:
+            create_count += 1
     return DingTalkDepartmentSyncPreview(
         departments=enriched,
         candidate_count=len(candidates),
