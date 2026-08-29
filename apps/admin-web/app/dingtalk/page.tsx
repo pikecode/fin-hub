@@ -6,6 +6,7 @@ import {
   Button,
   Card,
   DatePicker,
+  Descriptions,
   Form,
   Input,
   InputNumber,
@@ -59,6 +60,13 @@ type DepartmentTreeNode = DingTalkDepartment & {
   children?: DepartmentTreeNode[];
 };
 
+type DingTalkFormField = {
+  id?: string;
+  name?: string;
+  componentType?: string;
+  value?: unknown;
+};
+
 function buildDepartmentTree(departments: DingTalkDepartment[]): DepartmentTreeNode[] {
   const nodeMap = new Map<string, DepartmentTreeNode>();
   departments.forEach((department) => {
@@ -89,6 +97,7 @@ export default function DingTalkPage() {
   const [approvalInstances, setApprovalInstances] = useState<ApprovalInstance[]>([]);
   const [departmentPreview, setDepartmentPreview] = useState<DingTalkDepartmentSyncPreview | null>(null);
   const [selectedTemplate, setSelectedTemplate] = useState<ApprovalTemplate | null>(null);
+  const [selectedInstance, setSelectedInstance] = useState<ApprovalInstance | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isTemplateModalOpen, setIsTemplateModalOpen] = useState(false);
   const [isMappingModalOpen, setIsMappingModalOpen] = useState(false);
@@ -110,6 +119,19 @@ export default function DingTalkPage() {
     if (!timestamps.length) return null;
     return timestamps.sort().at(-1) ?? null;
   }, [departmentPreview]);
+  const selectedInstancePayload = useMemo(() => {
+    if (!selectedInstance?.raw_payload) return null;
+    try {
+      return JSON.parse(selectedInstance.raw_payload);
+    } catch {
+      return null;
+    }
+  }, [selectedInstance]);
+  const selectedInstanceParse = selectedInstancePayload?._fin_hub_parse;
+  const selectedInstanceFields = useMemo<DingTalkFormField[]>(() => {
+    const fields = selectedInstancePayload?.form_component_values;
+    return Array.isArray(fields) ? fields.filter((item) => item && typeof item === "object") : [];
+  }, [selectedInstancePayload]);
 
   async function loadData() {
     setIsLoading(true);
@@ -447,6 +469,15 @@ export default function DingTalkPage() {
     },
     { title: "提交时间", dataIndex: "submit_at", render: (value) => value?.replace("T", " ").slice(0, 16) || "-" },
     { title: "通过时间", dataIndex: "approved_at", render: (value) => value?.replace("T", " ").slice(0, 16) || "-" },
+    {
+      title: "操作",
+      width: 90,
+      render: (_, record) => (
+        <Button type="link" onClick={() => setSelectedInstance(record)}>
+          详情
+        </Button>
+      ),
+    },
   ];
 
   const credentialStatus = config?.status === "configured" ? "已配置" : "未完成";
@@ -622,6 +653,91 @@ export default function DingTalkPage() {
         ]}
       />
 
+      <Modal
+        title="审批实例详情"
+        open={Boolean(selectedInstance)}
+        onCancel={() => setSelectedInstance(null)}
+        footer={<Button onClick={() => setSelectedInstance(null)}>关闭</Button>}
+        width={920}
+      >
+        {selectedInstance ? (
+          <Space direction="vertical" size={16} className="full-width">
+            <Descriptions bordered size="small" column={2}>
+              <Descriptions.Item label="审批编号">{selectedInstance.approval_no || "-"}</Descriptions.Item>
+              <Descriptions.Item label="审批状态">{selectedInstance.approval_status}</Descriptions.Item>
+              <Descriptions.Item label="实例 ID" span={2}>
+                {selectedInstance.dingtalk_instance_id}
+              </Descriptions.Item>
+              <Descriptions.Item label="申请人">{selectedInstance.applicant_name || "-"}</Descriptions.Item>
+              <Descriptions.Item label="申请人 User ID">{selectedInstance.applicant_user_id || "-"}</Descriptions.Item>
+              <Descriptions.Item label="本地门店 ID" span={2}>
+                {selectedInstance.store_id || "-"}
+              </Descriptions.Item>
+              <Descriptions.Item label="提交时间">
+                {selectedInstance.submit_at?.replace("T", " ").slice(0, 16) || "-"}
+              </Descriptions.Item>
+              <Descriptions.Item label="通过时间">
+                {selectedInstance.approved_at?.replace("T", " ").slice(0, 16) || "-"}
+              </Descriptions.Item>
+            </Descriptions>
+
+            <Card size="small" title="解析诊断">
+              {selectedInstanceParse ? (
+                <Space direction="vertical" size={8} className="full-width">
+                  <Space wrap>
+                    <Tag color={selectedInstanceParse.expense_parse_status === "skipped" ? "gold" : "green"}>
+                      {selectedInstanceParse.expense_parse_status === "skipped" ? "未生成支出" : "已解析"}
+                    </Tag>
+                    <Tag>明细行 {selectedInstanceParse.expense_row_count ?? 0}</Tag>
+                    <Tag>生成支出 {selectedInstanceParse.created_expense_ids?.length ?? 0}</Tag>
+                  </Space>
+                  <Descriptions bordered size="small" column={1}>
+                    <Descriptions.Item label="表单门店">{selectedInstanceParse.store_text || "-"}</Descriptions.Item>
+                    <Descriptions.Item label="发起部门 ID">{selectedInstanceParse.originator_dept_id || "-"}</Descriptions.Item>
+                    <Descriptions.Item label="发起部门">{selectedInstanceParse.originator_dept_name || "-"}</Descriptions.Item>
+                    <Descriptions.Item label="解析门店 ID">{selectedInstanceParse.resolved_store_id || "-"}</Descriptions.Item>
+                    <Descriptions.Item label="缺失字段">
+                      {selectedInstanceParse.missing_fields?.length ? selectedInstanceParse.missing_fields.join(", ") : "-"}
+                    </Descriptions.Item>
+                  </Descriptions>
+                </Space>
+              ) : (
+                <Typography.Text type="secondary">暂无解析诊断</Typography.Text>
+              )}
+            </Card>
+
+            <Card size="small" title="钉钉表单字段">
+              <Table
+                size="small"
+                rowKey={(record, index) => `${record.name || record.id || "field"}-${index}`}
+                pagination={false}
+                dataSource={selectedInstanceFields}
+                columns={[
+                  { title: "字段", dataIndex: "name", width: 180, render: (value) => value || "-" },
+                  { title: "类型", dataIndex: "componentType", width: 140, render: (value) => value || "-" },
+                  {
+                    title: "值",
+                    dataIndex: "value",
+                    render: (value) => (
+                      <Typography.Text className="json-preview">
+                        {typeof value === "string" ? value : JSON.stringify(value)}
+                      </Typography.Text>
+                    ),
+                  },
+                ]}
+              />
+            </Card>
+
+            <Card size="small" title="原始数据">
+              <pre className="json-block">
+                {selectedInstance.raw_payload
+                  ? JSON.stringify(selectedInstancePayload ?? selectedInstance.raw_payload, null, 2)
+                  : "-"}
+              </pre>
+            </Card>
+          </Space>
+        ) : null}
+      </Modal>
       <Modal
         title="钉钉应用凭证"
         open={isConfigModalOpen}

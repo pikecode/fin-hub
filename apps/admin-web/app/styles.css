@@ -172,6 +172,26 @@ body {
   font-weight: 600;
 }
 
+.json-preview {
+  display: block;
+  max-width: 520px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.json-block {
+  max-height: 360px;
+  margin: 0;
+  padding: 12px;
+  overflow: auto;
+  color: #1f2937;
+  background: #f8fafc;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
 .report-ledger-select {
   min-width: 320px;
 }
