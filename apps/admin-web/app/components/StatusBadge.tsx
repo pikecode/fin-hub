@@ -14,7 +14,7 @@ type StatusType =
   | "rejected";
 
 interface StatusBadgeProps {
-  status: StatusType;
+  status: StatusType | string;
   text?: string;
   size?: "small" | "medium";
 }
@@ -43,15 +43,15 @@ const statusConfig: Record<
   },
   matched: {
     label: "已匹配",
-    color: "#065f46",
-    backgroundColor: "#d1fae5",
-    borderColor: "#6ee7b7",
+    color: "#0f766e",
+    backgroundColor: "#ccfbf1",
+    borderColor: "#5eead4",
   },
   unmatched: {
     label: "未匹配",
-    color: "#6b7280",
-    backgroundColor: "#f3f4f6",
-    borderColor: "#d1d5db",
+    color: "#525252",
+    backgroundColor: "#f5f5f5",
+    borderColor: "#d4d4d4",
   },
   open: {
     label: "待做账",
@@ -61,9 +61,9 @@ const statusConfig: Record<
   },
   closed: {
     label: "已封账",
-    color: "#065f46",
-    backgroundColor: "#d1fae5",
-    borderColor: "#6ee7b7",
+    color: "#0f766e",
+    backgroundColor: "#ccfbf1",
+    borderColor: "#5eead4",
   },
   pending: {
     label: "待处理",
@@ -73,9 +73,9 @@ const statusConfig: Record<
   },
   confirmed: {
     label: "已确认",
-    color: "#065f46",
-    backgroundColor: "#d1fae5",
-    borderColor: "#6ee7b7",
+    color: "#0f766e",
+    backgroundColor: "#ccfbf1",
+    borderColor: "#5eead4",
   },
   rejected: {
     label: "已拒绝",
@@ -86,7 +86,7 @@ const statusConfig: Record<
 };
 
 export function StatusBadge({ status, text, size = "medium" }: StatusBadgeProps) {
-  const config = statusConfig[status];
+  const config = statusConfig[status as StatusType] ?? statusConfig.pending;
   const label = text || config.label;
 
   const style: CSSProperties = {

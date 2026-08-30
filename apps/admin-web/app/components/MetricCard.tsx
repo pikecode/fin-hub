@@ -22,7 +22,7 @@ interface MetricCardProps {
 export function MetricCard({ title, value, unit, trend, status = "normal", action, loading }: MetricCardProps) {
   const cardStyle: CSSProperties = {
     position: "relative",
-    borderLeft: status === "warning" ? "4px solid #f59e0b" : status === "danger" ? "4px solid #dc2626" : undefined,
+    borderLeft: status === "warning" ? "4px solid #f59e0b" : status === "danger" ? "4px solid #ef4444" : undefined,
   };
 
   const getTrendIcon = () => {
@@ -45,12 +45,12 @@ export function MetricCard({ title, value, unit, trend, status = "normal", actio
     };
 
     if (trend.direction === "up") {
-      return { ...baseStyle, color: "#059669", backgroundColor: "rgba(5, 150, 105, 0.1)" };
+      return { ...baseStyle, color: "#10b981", backgroundColor: "rgba(16, 185, 129, 0.1)" };
     }
     if (trend.direction === "down") {
-      return { ...baseStyle, color: "#dc2626", backgroundColor: "rgba(220, 38, 38, 0.1)" };
+      return { ...baseStyle, color: "#ef4444", backgroundColor: "rgba(239, 68, 68, 0.1)" };
     }
-    return { ...baseStyle, color: "#6b7280", backgroundColor: "#f3f4f6" };
+    return { ...baseStyle, color: "#737373", backgroundColor: "#f5f5f5" };
   };
 
   return (
