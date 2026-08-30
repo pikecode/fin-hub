@@ -579,6 +579,26 @@ body {
   white-space: nowrap;
 }
 
+.ant-table-wrapper .ant-table-cell-fix-left,
+.ant-table-wrapper .ant-table-cell-fix-right,
+.ant-table-wrapper .ant-table-cell-fix-left-first,
+.ant-table-wrapper .ant-table-cell-fix-left-last,
+.ant-table-wrapper .ant-table-cell-fix-right-first,
+.ant-table-wrapper .ant-table-cell-fix-right-last {
+  background-color: #ffffff !important;
+  background-clip: padding-box;
+}
+
+.ant-table-wrapper .ant-table-thead .ant-table-cell-fix-left,
+.ant-table-wrapper .ant-table-thead .ant-table-cell-fix-right,
+.ant-table-wrapper .ant-table-thead .ant-table-cell-fix-left-first,
+.ant-table-wrapper .ant-table-thead .ant-table-cell-fix-left-last,
+.ant-table-wrapper .ant-table-thead .ant-table-cell-fix-right-first,
+.ant-table-wrapper .ant-table-thead .ant-table-cell-fix-right-last {
+  background-color: #fafafa !important;
+  background-clip: padding-box;
+}
+
 .table-action-buttons {
   flex-wrap: nowrap;
 }
@@ -596,12 +616,40 @@ body {
   background: #f8fafc;
 }
 
+.ant-table-tbody > tr.ant-table-row:hover > td.ant-table-cell-fix-left,
+.ant-table-tbody > tr.ant-table-row:hover > td.ant-table-cell-fix-right,
+.ant-table-tbody > tr.ant-table-row:hover > td.ant-table-cell-fix-left-first,
+.ant-table-tbody > tr.ant-table-row:hover > td.ant-table-cell-fix-left-last,
+.ant-table-tbody > tr.ant-table-row:hover > td.ant-table-cell-fix-right-first,
+.ant-table-tbody > tr.ant-table-row:hover > td.ant-table-cell-fix-right-last {
+  background-color: #f8fafc !important;
+}
+
 .ant-table-tbody > tr.selected-table-row > td {
   background: #eef6ff;
 }
 
+.ant-table-tbody > tr.selected-table-row > td.ant-table-cell-fix-left,
+.ant-table-tbody > tr.selected-table-row > td.ant-table-cell-fix-right,
+.ant-table-tbody > tr.selected-table-row > td.ant-table-cell-fix-left-first,
+.ant-table-tbody > tr.selected-table-row > td.ant-table-cell-fix-left-last,
+.ant-table-tbody > tr.selected-table-row > td.ant-table-cell-fix-right-first,
+.ant-table-tbody > tr.selected-table-row > td.ant-table-cell-fix-right-last {
+  background-color: #eef6ff !important;
+}
+
+.ant-table-tbody > tr.selected-table-row:hover > td.ant-table-cell-fix-left,
+.ant-table-tbody > tr.selected-table-row:hover > td.ant-table-cell-fix-right,
+.ant-table-tbody > tr.selected-table-row:hover > td.ant-table-cell-fix-left-first,
+.ant-table-tbody > tr.selected-table-row:hover > td.ant-table-cell-fix-left-last,
+.ant-table-tbody > tr.selected-table-row:hover > td.ant-table-cell-fix-right-first,
+.ant-table-tbody > tr.selected-table-row:hover > td.ant-table-cell-fix-right-last {
+  background-color: #eef6ff !important;
+}
+
 .reconciliation-workbench {
-  min-height: 640px;
+  height: calc(100vh - 320px);
+  min-height: 520px;
 }
 
 .reconciliation-workbench .ant-splitter-panel {
@@ -610,6 +658,278 @@ body {
 
 .reconciliation-workbench .ant-table-row {
   cursor: pointer;
+}
+
+.reconciliation-tabs {
+  margin-top: 16px;
+}
+
+.reconciliation-tabs > .ant-tabs-nav {
+  margin-bottom: 12px;
+}
+
+.reconciliation-record-card .ant-card-body {
+  padding: 12px;
+}
+
+.bank-transaction-panel .ant-card-body {
+  padding: 12px;
+}
+
+.bank-transaction-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  height: calc(100vh - 430px);
+  min-height: 400px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.bank-transaction-list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.bank-transaction-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.bank-transaction-list::-webkit-scrollbar-thumb {
+  background: #d4d4d4;
+  border-radius: 999px;
+}
+
+.bank-transaction-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  width: 100%;
+  padding: 12px;
+  color: inherit;
+  text-align: left;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  cursor: pointer;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease, background-color 0.16s ease;
+}
+
+.bank-transaction-card:hover {
+  background: #f8fafc;
+  border-color: #99f6e4;
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.08);
+}
+
+.bank-transaction-card.is-selected {
+  background: #f0fdfa;
+  border-color: #14b8a6;
+  box-shadow: 0 0 0 1px rgba(20, 184, 166, 0.18), 0 8px 22px rgba(15, 23, 42, 0.08);
+}
+
+.bank-transaction-card__main,
+.bank-transaction-card__amounts {
+  min-width: 0;
+}
+
+.bank-transaction-card__main {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.bank-transaction-card__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.bank-transaction-card__summary {
+  max-width: 100%;
+  font-size: 14px;
+}
+
+.bank-transaction-card__serial {
+  color: #737373;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.bank-transaction-card__amounts {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.bank-transaction-card__amount {
+  color: #991b1b;
+  font-size: 15px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.approval-candidate-panel .ant-card-body {
+  padding: 12px;
+}
+
+.approval-candidate-panel .ant-card-extra {
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+.approval-candidate-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  height: calc(100vh - 430px);
+  min-height: 400px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.approval-candidate-list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.approval-candidate-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.approval-candidate-list::-webkit-scrollbar-thumb {
+  background: #d4d4d4;
+  border-radius: 999px;
+}
+
+.approval-candidate-card {
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr) auto;
+  gap: 14px;
+  width: 100%;
+  padding: 14px;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  cursor: pointer;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease, background-color 0.16s ease;
+}
+
+.approval-candidate-card:hover {
+  background: #f8fafc;
+  border-color: #bfdbfe;
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.08);
+}
+
+.approval-candidate-card.is-selected {
+  background: #eff6ff;
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.18), 0 8px 22px rgba(15, 23, 42, 0.08);
+}
+
+.approval-candidate-card__score {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-width: 0;
+  height: 58px;
+  background: #f0f7ff;
+  border: 1px solid #dbeafe;
+  border-radius: 8px;
+}
+
+.approval-candidate-card__score span {
+  color: #1d4ed8;
+  font-size: 18px;
+  font-weight: 750;
+  font-variant-numeric: tabular-nums;
+}
+
+.approval-candidate-card__score .ant-typography {
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.approval-candidate-card__main,
+.approval-candidate-card__aside {
+  min-width: 0;
+}
+
+.approval-candidate-card__main {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.approval-candidate-card__title {
+  max-width: 100%;
+  font-size: 14px;
+}
+
+.approval-candidate-card__meta {
+  color: #525252;
+  font-size: 12px;
+}
+
+.approval-candidate-card__fields .ant-tag {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+}
+
+.approval-candidate-card__aside {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.approval-candidate-card__amount {
+  color: #0f766e;
+  font-size: 16px;
+  font-weight: 750;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 960px) {
+  .bank-transaction-card {
+    grid-template-columns: 1fr;
+  }
+
+  .bank-transaction-card__amounts {
+    align-items: flex-start;
+  }
+
+  .reconciliation-workbench {
+    height: auto;
+  }
+
+  .bank-transaction-list,
+  .approval-candidate-list {
+    height: auto;
+    max-height: 520px;
+    min-height: 0;
+  }
+
+  .approval-candidate-card {
+    grid-template-columns: 1fr;
+  }
+
+  .approval-candidate-card__score {
+    width: 58px;
+  }
+
+  .approval-candidate-card__aside {
+    align-items: flex-start;
+  }
 }
 
 .ant-layout {

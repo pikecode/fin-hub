@@ -6,6 +6,7 @@ import {
   Card,
   DatePicker,
   Drawer,
+  Empty,
   Form,
   Image,
   Input,
@@ -14,6 +15,7 @@ import {
   Select,
   Space,
   Splitter,
+  Spin,
   Statistic,
   Switch,
   Table,
@@ -276,11 +278,15 @@ export default function FinanceReconciliationPage() {
     setIsLoading(true);
     setErrorMessage(null);
     try {
-      const [bankPage, recordPage] = await Promise.all([
+      const [bankPage, recordPage, pendingMatchPage] = await Promise.all([
         apiClient.bankTransactions.list(`?store_id=${storeId}&direction=expense&page_size=500`),
         apiClient.matches.reconciliationRecords(`?store_id=${storeId}&page_size=200`),
+        apiClient.matches.reconciliationRecords(`?store_id=${storeId}&status=candidate&page_size=500`),
       ]);
-      const unmatched = bankPage.items.filter((item) => remainingAmount(item) > 0);
+      const activeMatchedBankIds = new Set(
+        [...recordPage.items, ...pendingMatchPage.items].map((record) => record.bank_transaction.id),
+      );
+      const unmatched = bankPage.items.filter((item) => remainingAmount(item) > 0 && !activeMatchedBankIds.has(item.id));
       setTransactions(unmatched);
       setRecords(recordPage.items);
       const nextTransaction = transaction && remainingAmount(transaction) > 0 ? transaction : unmatched[0] ?? null;
@@ -302,6 +308,7 @@ export default function FinanceReconciliationPage() {
     const params = new URLSearchParams({
       bank_transaction_id: transaction.id,
       store_id: storeId,
+      approval_only: "true",
       page_size: "100",
     });
     if (filters?.template_id) params.set("template_id", filters.template_id);
@@ -485,36 +492,6 @@ export default function FinanceReconciliationPage() {
     }
   }
 
-  const transactionColumns: ColumnsType<BankTransaction> = [
-    { title: "日期", dataIndex: "occurred_at", width: 120, fixed: "left", render: formatDateTime },
-    { title: "金额", dataIndex: "amount", width: 110, align: "right", render: (value: string) => formatMoney(value) },
-    { title: "未匹配", width: 110, align: "right", render: (_, record) => formatMoney(remainingAmount(record)) },
-    { title: "摘要", dataIndex: "summary", width: 220, ellipsis: true, render: (value) => value || "-" },
-    { title: "流水号", dataIndex: "bank_serial_no", width: 180, ellipsis: true, render: (value) => value || "-" },
-  ];
-
-  const candidateColumns: ColumnsType<ReconciliationExpenseCandidate> = [
-    { title: "推荐", dataIndex: "score", width: 80, fixed: "left", align: "center", render: (value: string) => <Tag color="blue">{Number(value).toFixed(0)}</Tag> },
-    { title: "审批编号", width: 180, fixed: "left", ellipsis: true, render: (_, record) => approvalNoText(record) },
-    { title: "审批单", dataIndex: ["expense_item", "description"], width: 220, ellipsis: true },
-    { title: "金额", dataIndex: "remaining_amount", width: 110, align: "right", render: (value: string) => formatMoney(value) },
-    { title: "二级分类", dataIndex: ["expense_item", "category_l2"], width: 130, render: (value) => value || <Typography.Text type="secondary">未归类</Typography.Text> },
-    { title: "模板", dataIndex: "template_name", width: 160, ellipsis: true, render: (value) => value || "手工支出" },
-    { title: "显示字段", dataIndex: "display_fields", width: 320, render: displayFieldSummary },
-    {
-      title: "操作",
-      width: 90,
-      fixed: "right",
-      align: "center",
-      className: "table-action-column",
-      render: (_, record) => (
-        <Button size="small" onClick={() => setDetailRecord(record)}>
-          明细
-        </Button>
-      ),
-    },
-  ];
-
   const recordColumns: ColumnsType<ReconciliationRecord> = [
     { title: "入账月", dataIndex: ["match", "accounting_period"], width: 100, fixed: "left", render: (value) => value || "-" },
     { title: "金额", dataIndex: ["match", "amount"], width: 110, align: "right", render: (value: string) => formatMoney(value) },
@@ -571,73 +548,160 @@ export default function FinanceReconciliationPage() {
         </Space>
       </Card>
 
-      <Splitter className="reconciliation-workbench">
-        <Splitter.Panel defaultSize="42%" min="340px">
-          <Card title="银行流水" className="data-table-card">
-            <Table
-              rowKey="id"
-              size="small"
-              loading={isLoading}
-              columns={transactionColumns}
-              dataSource={transactions}
-              pagination={{ pageSize: 12 }}
-              rowClassName={(record) => (record.id === selectedTransaction?.id ? "selected-table-row" : "")}
-              onRow={(record) => ({ onClick: () => selectTransaction(record) })}
-              scroll={{ x: 740, y: 520 }}
-              sticky
-            />
-          </Card>
-        </Splitter.Panel>
-        <Splitter.Panel min="460px">
-          <Card
-            title={selectedTransaction ? `审批单候选：${formatMoney(bankRemaining)}` : "审批单候选"}
-            extra={
-              <Space>
-                <Form form={filterForm} layout="inline" onFinish={(values) => selectedTransaction && selectedStoreId && loadCandidates(selectedTransaction, selectedStoreId, values)}>
-                  <Form.Item name="template_id">
-                    <Select
-                      allowClear
-                      placeholder="模板"
-                      style={{ width: 180 }}
-                      options={templates
-                        .filter((template) => template.is_enabled)
-                        .map((template) => ({ label: template.name, value: template.id }))}
-                    />
-                  </Form.Item>
-                  <Form.Item name="approval_no">
-                    <Input allowClear placeholder="审批编号" style={{ width: 160 }} />
-                  </Form.Item>
-                  <Button htmlType="submit">筛选</Button>
-                </Form>
-                <Button type="primary" disabled={!selectedCandidate || !selectedTransaction} onClick={openConfirm}>确认匹配</Button>
-              </Space>
-            }
-            className="data-table-card"
-          >
-            <Table
-              rowKey={(record) => record.expense_item.id}
-              size="small"
-              loading={isLoading}
-              columns={candidateColumns}
-              dataSource={candidates}
-              pagination={{ pageSize: 12 }}
-              rowSelection={{
-                type: "radio",
-                fixed: true,
-                selectedRowKeys: selectedCandidateId ? [selectedCandidateId] : [],
-                onChange: (keys) => setSelectedCandidateId(String(keys[0] ?? "")),
-              }}
-              onRow={(record) => ({ onClick: () => setSelectedCandidateId(record.expense_item.id) })}
-              scroll={{ x: 1290, y: 520 }}
-              sticky
-            />
-          </Card>
-        </Splitter.Panel>
-      </Splitter>
-
-      <Card title="已对账记录" className="data-table-card" style={{ marginTop: 16 }}>
-        <Table rowKey={(record) => record.match.id} size="small" loading={isLoading} columns={recordColumns} dataSource={records} pagination={{ pageSize: 10 }} scroll={{ x: 1290 }} sticky />
-      </Card>
+      <Tabs
+        className="reconciliation-tabs"
+        defaultActiveKey="workbench"
+        items={[
+          {
+            key: "workbench",
+            label: `待匹配 (${transactions.length})`,
+            children: (
+              <Splitter className="reconciliation-workbench">
+                <Splitter.Panel defaultSize="34%" min="300px">
+                  <Card
+                    title="待匹配银行流水"
+                    className="data-table-card bank-transaction-panel"
+                    extra={<Typography.Text type="secondary">共 {transactions.length} 条</Typography.Text>}
+                  >
+                    {transactions.length ? (
+                      <div className="bank-transaction-list">
+                        {transactions.map((transaction) => {
+                          const isSelected = transaction.id === selectedTransaction?.id;
+                          const remaining = remainingAmount(transaction);
+                          return (
+                            <button
+                              key={transaction.id}
+                              type="button"
+                              className={`bank-transaction-card${isSelected ? " is-selected" : ""}`}
+                              onClick={() => selectTransaction(transaction)}
+                            >
+                              <span className="bank-transaction-card__main">
+                                <span className="bank-transaction-card__meta">
+                                  <Typography.Text strong>{dayjs(transaction.occurred_at).format("YYYY-MM-DD")}</Typography.Text>
+                                  <Tag color="orange">支出</Tag>
+                                  {transaction.ledger_period ? <Tag>{transaction.ledger_period}</Tag> : null}
+                                </span>
+                                <Typography.Text className="bank-transaction-card__summary" ellipsis>
+                                  {transaction.summary || transaction.counterparty_name || "无摘要"}
+                                </Typography.Text>
+                                <span className="bank-transaction-card__serial">
+                                  {transaction.bank_serial_no ? `流水号 ${transaction.bank_serial_no}` : "未填写流水号"}
+                                </span>
+                              </span>
+                              <span className="bank-transaction-card__amounts">
+                                <Typography.Text className="bank-transaction-card__amount">{formatMoney(transaction.amount)}</Typography.Text>
+                                <Typography.Text type="secondary">未匹配 {formatMoney(remaining)}</Typography.Text>
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={selectedStoreId ? "当前门店暂无待匹配流水" : "请先选择门店"} />
+                    )}
+                  </Card>
+                </Splitter.Panel>
+                <Splitter.Panel min="460px">
+                  <Card
+                    title={selectedTransaction ? `审批单候选：${formatMoney(bankRemaining)}` : "审批单候选"}
+                    extra={
+                      <Space>
+                        <Form form={filterForm} layout="inline" onFinish={(values) => selectedTransaction && selectedStoreId && loadCandidates(selectedTransaction, selectedStoreId, values)}>
+                          <Form.Item name="template_id">
+                            <Select
+                              allowClear
+                              placeholder="模板"
+                              style={{ width: 180 }}
+                              options={templates
+                                .filter((template) => template.is_enabled)
+                                .map((template) => ({ label: template.name, value: template.id }))}
+                            />
+                          </Form.Item>
+                          <Form.Item name="approval_no">
+                            <Input allowClear placeholder="审批编号" style={{ width: 160 }} />
+                          </Form.Item>
+                          <Button htmlType="submit">筛选</Button>
+                        </Form>
+                        <Button type="primary" disabled={!selectedCandidate || !selectedTransaction} onClick={openConfirm}>确认匹配</Button>
+                      </Space>
+                    }
+                    className="data-table-card approval-candidate-panel"
+                  >
+                    <Spin spinning={isLoading}>
+                      {candidates.length ? (
+                        <div className="approval-candidate-list">
+                          {candidates.map((candidate) => {
+                            const isSelected = candidate.expense_item.id === selectedCandidateId;
+                            const storeName = storesById.get(candidate.expense_item.store_id)?.name || candidate.approval_instance?.department_name || "-";
+                            return (
+                              <div
+                                key={candidate.expense_item.id}
+                                role="button"
+                                tabIndex={0}
+                                className={`approval-candidate-card${isSelected ? " is-selected" : ""}`}
+                                onClick={() => setSelectedCandidateId(candidate.expense_item.id)}
+                                onKeyDown={(event) => {
+                                  if (event.key === "Enter" || event.key === " ") setSelectedCandidateId(candidate.expense_item.id);
+                                }}
+                              >
+                                <div className="approval-candidate-card__score">
+                                  <span>{Number(candidate.score).toFixed(0)}</span>
+                                  <Typography.Text type="secondary">推荐</Typography.Text>
+                                </div>
+                                <div className="approval-candidate-card__main">
+                                  <Space size={6} wrap>
+                                    <Typography.Text strong copyable={{ text: approvalNoText(candidate) }}>
+                                      {approvalNoText(candidate)}
+                                    </Typography.Text>
+                                    <Tag color="blue">{candidate.template_name || "手工支出"}</Tag>
+                                    {candidate.expense_item.category_l2 ? <Tag>{candidate.expense_item.category_l2}</Tag> : <Tag>未归类</Tag>}
+                                  </Space>
+                                  <Typography.Text className="approval-candidate-card__title" ellipsis>
+                                    {candidate.expense_item.description}
+                                  </Typography.Text>
+                                  <Space size={[12, 4]} wrap className="approval-candidate-card__meta">
+                                    <span>部门/门店：{storeName}</span>
+                                    <span>业务日期：{candidate.expense_item.expense_date ? dayjs(candidate.expense_item.expense_date).format("YYYY-MM-DD") : "-"}</span>
+                                  </Space>
+                                  <div className="approval-candidate-card__fields">{displayFieldSummary(candidate.display_fields)}</div>
+                                </div>
+                                <div className="approval-candidate-card__aside">
+                                  <Typography.Text className="approval-candidate-card__amount">{formatMoney(candidate.expense_item.amount)}</Typography.Text>
+                                  <Typography.Text type="secondary">未匹配 {formatMoney(candidate.remaining_amount)}</Typography.Text>
+                                  <Button
+                                    size="small"
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      setDetailRecord(candidate);
+                                    }}
+                                  >
+                                    明细
+                                  </Button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={selectedTransaction ? "当前流水暂无候选审批单" : "请先选择银行流水"} />
+                      )}
+                    </Spin>
+                  </Card>
+                </Splitter.Panel>
+              </Splitter>
+            ),
+          },
+          {
+            key: "records",
+            label: `已对账记录 (${records.length})`,
+            children: (
+              <Card title="已对账记录" className="data-table-card reconciliation-record-card">
+                <Table rowKey={(record) => record.match.id} size="small" loading={isLoading} columns={recordColumns} dataSource={records} pagination={{ pageSize: 12 }} scroll={{ x: 1290, y: "calc(100vh - 430px)" }} sticky />
+              </Card>
+            ),
+          },
+        ]}
+      />
 
       <Modal title="确认匹配" open={isConfirmOpen} destroyOnHidden onCancel={() => setIsConfirmOpen(false)} onOk={() => confirmForm.submit()} confirmLoading={isSaving}>
         <Form form={confirmForm} layout="vertical" onFinish={submitConfirm}>
