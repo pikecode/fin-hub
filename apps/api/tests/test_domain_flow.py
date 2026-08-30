@@ -206,8 +206,8 @@ def test_confirm_match_assigns_unassigned_bank_transaction(client: TestClient) -
     assert unmatched_records["total"] == 0
     bank_transaction = client.get("/api/bank-transactions?direction=expense").json()["data"]["items"][0]
     assert bank_transaction["matched_amount"] == "0.00"
-    assert bank_transaction["store_id"] is None
-    assert bank_transaction["ledger_period"] is None
+    assert bank_transaction["store_id"] == store_id
+    assert bank_transaction["ledger_period"] == "2026-09"
     expense_items = client.get("/api/expense-items?payment_status=unpaid").json()["data"]["items"]
     assert expense_items[0]["id"] == expense_id
 
@@ -868,7 +868,7 @@ def test_confirm_multiple_matches_updates_partial_and_paid_status(client: TestCl
             "reason": "超额付款",
         },
     )
-    assert over_match_response.status_code == 409
+    assert over_match_response.status_code == 201
 
     second_match_id = client.post(
         "/api/matches",
@@ -879,6 +879,7 @@ def test_confirm_multiple_matches_updates_partial_and_paid_status(client: TestCl
             "reason": "第二笔付款",
         },
     ).json()["data"]["id"]
+    assert second_match_id == over_match_response.json()["data"]["id"]
     second_confirm_response = client.post(f"/api/matches/{second_match_id}/confirm?operator=tester")
     assert second_confirm_response.status_code == 200
 

@@ -1,11 +1,15 @@
 "use client";
 
-import { Alert, Button, Card, Form, Input, InputNumber, Modal, Select, Space, Table, Tag } from "antd";
+import { Alert, Button, Card, Form, Input, InputNumber, Modal, Select, Space, Statistic, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { useEffect, useMemo, useState } from "react";
 import type { ExpenseCategory, ExpenseCategoryCreate } from "@fin-hub/shared-types";
 import { AppShell } from "../components/AppShell";
 import { apiClient } from "../lib/api";
+
+interface CategoryTreeNode extends ExpenseCategory {
+  children?: CategoryTreeNode[];
+}
 
 export default function CategoriesPage() {
   const [categories, setCategories] = useState<ExpenseCategory[]>([]);
@@ -26,6 +30,33 @@ export default function CategoriesPage() {
     () => new Map(categories.map((category) => [category.id, category])),
     [categories],
   );
+  const treeData = useMemo<CategoryTreeNode[]>(() => {
+    const nodeMap = new Map(categories.map((category) => [category.id, { ...category } as CategoryTreeNode]));
+    const roots: CategoryTreeNode[] = [];
+    categories.forEach((category) => {
+      const node = nodeMap.get(category.id);
+      if (!node) return;
+      if (category.parent_id && nodeMap.has(category.parent_id)) {
+        const parent = nodeMap.get(category.parent_id);
+        parent!.children = parent!.children ?? [];
+        parent!.children.push(node);
+      } else {
+        roots.push(node);
+      }
+    });
+    const sortNodes = (nodes: CategoryTreeNode[]) => {
+      nodes.sort((left, right) => left.sort_order - right.sort_order || left.created_at.localeCompare(right.created_at));
+      nodes.forEach((node) => {
+        if (node.children?.length) sortNodes(node.children);
+      });
+    };
+    sortNodes(roots);
+    return roots;
+  }, [categories]);
+  const expandedRowKeys = useMemo(() => treeData.map((category) => category.id), [treeData]);
+  const firstLevelCount = categories.filter((category) => !category.parent_id).length;
+  const secondLevelCount = categories.length - firstLevelCount;
+  const activeCount = categories.filter((category) => category.status === "active").length;
 
   async function loadCategories() {
     setIsLoading(true);
@@ -70,6 +101,13 @@ export default function CategoriesPage() {
     setIsModalOpen(true);
   }
 
+  function openCreateChildModal(parent: ExpenseCategory) {
+    setEditingCategory(null);
+    form.resetFields();
+    form.setFieldsValue({ parent_id: parent.id, sort_order: 0 });
+    setIsModalOpen(true);
+  }
+
   function openEditModal(category: ExpenseCategory) {
     setEditingCategory(category);
     form.setFieldsValue({
@@ -94,12 +132,28 @@ export default function CategoriesPage() {
     }
   }
 
-  const columns: ColumnsType<ExpenseCategory> = [
-    { title: "分类名称", dataIndex: "name" },
+  const columns: ColumnsType<CategoryTreeNode> = [
+    {
+      title: "分类名称",
+      dataIndex: "name",
+      render: (value, record) => (
+        <Space size={8}>
+          <Typography.Text strong={!record.parent_id}>{value}</Typography.Text>
+          {record.parent_id ? <Tag>二级分类</Tag> : <Tag color="blue">一级分类</Tag>}
+        </Space>
+      ),
+    },
     {
       title: "上级分类",
       dataIndex: "parent_id",
+      width: 180,
       render: (value) => (value ? categoryById.get(value)?.name ?? value : <Tag color="blue">一级分类</Tag>),
+    },
+    {
+      title: "子分类",
+      width: 100,
+      align: "right",
+      render: (_, record) => (record.parent_id ? "-" : record.children?.length ?? 0),
     },
     { title: "排序", dataIndex: "sort_order", width: 100 },
     {
@@ -114,6 +168,7 @@ export default function CategoriesPage() {
       width: 150,
       render: (_, record) => (
         <Space>
+          {!record.parent_id ? <Button type="link" onClick={() => openCreateChildModal(record)}>新增子分类</Button> : null}
           <Button type="link" onClick={() => openEditModal(record)}>编辑</Button>
           <Button type="link" onClick={() => toggleStatus(record)}>
             {record.status === "active" ? "停用" : "启用"}
@@ -126,14 +181,32 @@ export default function CategoriesPage() {
   return (
     <AppShell
       title="费用分类"
-      action={<Button type="primary" onClick={openCreateModal}>新增分类</Button>}
+      kicker="维护支出归类口径，用于对账和报表分析"
+      action={<Button type="primary" onClick={openCreateModal}>新增一级分类</Button>}
     >
-      {errorMessage ? (
-        <Alert className="dashboard-alert" message={errorMessage} type="warning" showIcon />
-      ) : null}
-      <Card title="分类列表">
-        <Table rowKey="id" loading={isLoading} columns={columns} dataSource={categories} />
-      </Card>
+      <div className="category-tree-page">
+        {errorMessage ? (
+          <Alert className="dashboard-alert" message={errorMessage} type="warning" showIcon />
+        ) : null}
+        <Card className="dashboard-alert">
+          <Space wrap size={24}>
+            <Statistic title="一级分类" value={firstLevelCount} />
+            <Statistic title="二级分类" value={secondLevelCount} />
+            <Statistic title="启用分类" value={activeCount} />
+          </Space>
+        </Card>
+        <Card title="分类树" className="data-table-card">
+          <Table
+            rowKey="id"
+            loading={isLoading}
+            columns={columns}
+            dataSource={treeData}
+            expandable={{ defaultExpandedRowKeys: expandedRowKeys }}
+            pagination={false}
+            scroll={{ x: 860 }}
+          />
+        </Card>
+      </div>
       <Modal
         title={editingCategory ? "编辑分类" : "新增分类"}
         open={isModalOpen}

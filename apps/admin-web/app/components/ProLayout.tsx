@@ -8,10 +8,7 @@ import { usePathname, useRouter } from "next/navigation";
 import {
   DashboardOutlined,
   SwapOutlined,
-  RiseOutlined,
-  FallOutlined,
   BankOutlined,
-  BookOutlined,
   BarChartOutlined,
   ShopOutlined,
   TagsOutlined,
@@ -51,33 +48,6 @@ const menuItems: MenuProps["items"] = [
         key: "/finance/reconciliation",
         icon: <BankOutlined />,
         label: <Link href="/finance/reconciliation">财务对账</Link>,
-      },
-    ],
-  },
-  {
-    key: "business",
-    label: "业务管理",
-    type: "group",
-    children: [
-      {
-        key: "/revenue",
-        icon: <RiseOutlined />,
-        label: <Link href="/revenue">营业收入</Link>,
-      },
-      {
-        key: "/expenses",
-        icon: <FallOutlined />,
-        label: <Link href="/expenses">支出明细</Link>,
-      },
-      {
-        key: "/bank",
-        icon: <BankOutlined />,
-        label: <Link href="/bank">银行流水</Link>,
-      },
-      {
-        key: "/ledgers",
-        icon: <BookOutlined />,
-        label: <Link href="/ledgers">门店账套</Link>,
       },
     ],
   },

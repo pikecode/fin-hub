@@ -400,8 +400,6 @@ def refresh_bank_assignment(session: Session, bank_transaction: BankTransaction)
         .limit(1)
     ).first()
     if matched_expense is None:
-        bank_transaction.store_id = None
-        bank_transaction.ledger_period = None
         return
     match, expense = matched_expense
     bank_transaction.store_id = expense.store_id
@@ -637,12 +635,6 @@ def create_match_candidate(
     if bank_active_match is not None:
         raise HTTPException(status_code=409, detail="Bank transaction is already matched to another approval")
 
-    remaining_expense_amount = Decimal(expense_item.amount) - confirmed_expense_match_amount(session, expense_item.id)
-    if payload.amount > remaining_expense_amount:
-        raise HTTPException(status_code=409, detail="Match amount exceeds remaining expense amount")
-    remaining_bank_amount = Decimal(bank_transaction.amount) - Decimal(bank_transaction.matched_amount or 0)
-    if payload.amount > remaining_bank_amount:
-        raise HTTPException(status_code=409, detail="Match amount exceeds remaining bank amount")
     if payload.accounting_period and bank_transaction.ledger_period and payload.accounting_period != bank_transaction.ledger_period:
         raise HTTPException(status_code=409, detail="Accounting period does not match bank transaction period")
     payload_data = payload.model_dump(exclude={"category_l2"})
@@ -991,29 +983,10 @@ def update_reconciliation_record(
         if target_expense is None:
             raise HTTPException(status_code=404, detail="Expense item not found")
 
-    target_amount = Decimal(updates.get("amount", match.amount))
     target_period = updates.get("accounting_period", match.accounting_period) or target_expense.ledger_period
-    if target_amount > Decimal(bank_transaction.amount):
-        raise HTTPException(status_code=409, detail="Match amount exceeds bank transaction amount")
     bank_active_match = active_bank_expense_match(session, bank_transaction.id, exclude_match_id=match.id)
     if bank_active_match is not None:
         raise HTTPException(status_code=409, detail="Bank transaction is already matched to another approval")
-    confirmed_bank_amount = Decimal(
-        session.scalar(
-            select(func.coalesce(func.sum(ExpenseBankMatch.amount), Decimal("0.00"))).where(
-                ExpenseBankMatch.bank_transaction_id == bank_transaction.id,
-                ExpenseBankMatch.status == MatchStatus.CONFIRMED.value,
-                ExpenseBankMatch.id != match.id,
-            )
-        )
-        or 0
-    )
-    if confirmed_bank_amount + target_amount > Decimal(bank_transaction.amount):
-        raise HTTPException(status_code=409, detail="Match amount exceeds remaining bank amount")
-
-    confirmed_target_expense = confirmed_expense_match_amount(session, target_expense.id, exclude_match_id=match.id)
-    if confirmed_target_expense + target_amount > Decimal(target_expense.amount):
-        raise HTTPException(status_code=409, detail="Match amount exceeds remaining expense amount")
 
     other_expense_store_ids = {
         expense.store_id
@@ -1143,12 +1116,6 @@ def confirm_match(
     if bank_active_match is not None:
         raise HTTPException(status_code=409, detail="Bank transaction is already matched to another approval")
     confirmed_expense_amount = confirmed_expense_match_amount(session, expense_item.id, exclude_match_id=match.id)
-    remaining_expense_amount = Decimal(expense_item.amount) - confirmed_expense_amount
-    if match.amount > remaining_expense_amount:
-        raise HTTPException(status_code=409, detail="Match amount exceeds remaining expense amount")
-    remaining_bank_amount = Decimal(bank_transaction.amount) - Decimal(bank_transaction.matched_amount or 0)
-    if match.amount > remaining_bank_amount:
-        raise HTTPException(status_code=409, detail="Match amount exceeds remaining bank amount")
 
     match.status = MatchStatus.CONFIRMED.value
     match.confirmed_by = operator
