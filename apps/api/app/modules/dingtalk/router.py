@@ -40,6 +40,7 @@ from app.schemas import (
     ApprovalReparseResult,
     ApprovalTemplateCreate,
     ApprovalTemplateRead,
+    ApprovalTemplateUpdate,
     DingTalkConfigRead,
     DingTalkConfigUpdate,
     DingTalkDepartmentPullResult,
@@ -302,9 +303,23 @@ def list_templates(
     page_size: int = 50,
     session: Session = Depends(get_session),
 ) -> ApiEnvelope[Page[ApprovalTemplateRead]]:
-    query = select(ApprovalTemplate).order_by(ApprovalTemplate.created_at.desc())
+    query = select(ApprovalTemplate).order_by(
+        ApprovalTemplate.is_enabled.desc(),
+        ApprovalTemplate.created_at.desc(),
+    )
     items, total = paginate(session, query, page, page_size)
     return ApiEnvelope(data=Page(items=items, total=total, page=page, page_size=page_size))
+
+
+@router.get("/templates/{template_id}", response_model=ApiEnvelope[ApprovalTemplateRead])
+def get_template(
+    template_id: str,
+    session: Session = Depends(get_session),
+) -> ApiEnvelope[ApprovalTemplateRead]:
+    template = session.get(ApprovalTemplate, template_id)
+    if template is None:
+        raise HTTPException(status_code=404, detail="Template not found")
+    return ApiEnvelope(data=template)
 
 
 @router.post("/templates", response_model=ApiEnvelope[ApprovalTemplateRead], status_code=201)
@@ -328,6 +343,33 @@ def create_template(
         resource_type="approval_template",
         resource_id=template.id,
         summary=f"新增审批模板：{template.name}",
+    )
+    session.commit()
+    session.refresh(template)
+    return ApiEnvelope(data=template)
+
+
+@router.patch("/templates/{template_id}", response_model=ApiEnvelope[ApprovalTemplateRead])
+def update_template(
+    template_id: str,
+    payload: ApprovalTemplateUpdate,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+) -> ApiEnvelope[ApprovalTemplateRead]:
+    template = session.get(ApprovalTemplate, template_id)
+    if template is None:
+        raise HTTPException(status_code=404, detail="Template not found")
+    updates = payload.model_dump(exclude_unset=True)
+    for key, value in updates.items():
+        setattr(template, key, value)
+    write_audit_log(
+        session,
+        actor=audit_actor(current_user),
+        action="dingtalk.template.update",
+        resource_type="approval_template",
+        resource_id=template.id,
+        summary=f"更新审批模板：{template.name}",
+        metadata=updates,
     )
     session.commit()
     session.refresh(template)
@@ -1826,22 +1868,21 @@ def sync_real_instance(
         session.add(Ledger(store_id=store.id, period=period))
         session.flush()
 
-    rows_to_create = expense_rows or [
+    approval_total = amount or sum((Decimal(row["amount"]) for row in expense_rows), Decimal("0.00"))
+    rows_to_create = [
         {
-            "description": description,
-            "amount": amount,
+            "description": parse_text(raw_instance.get("title") or raw_instance.get("titleName"))
+            or description
+            or template.name,
+            "amount": approval_total,
             "category_l1": category_l1,
             "category_l2": parse_text(mapped.get("category_l2")),
             "supplier_name": parse_text(mapped.get("supplier_name")),
         }
     ]
     created_expense_ids: list[str] = []
-    for row_index, row in enumerate(rows_to_create, start=1):
-        source_document_id = (
-            instance.dingtalk_instance_id
-            if len(rows_to_create) == 1
-            else f"{instance.dingtalk_instance_id}:{row_index}"
-        )
+    for row in rows_to_create:
+        source_document_id = instance.dingtalk_instance_id
         exists_item = session.scalar(
             select(ExpenseItem).where(ExpenseItem.source_document_id == source_document_id)
         )
@@ -1879,7 +1920,7 @@ def sync_real_instance(
                 "originator_dept_id": originator_dept_id,
                 "originator_dept_name": originator_dept_name,
                 "resolved_store_id": store.id,
-                "expense_row_count": len(rows_to_create),
+                "expense_row_count": len(expense_rows) if expense_rows else 1,
                 "created_expense_ids": created_expense_ids,
             },
         },

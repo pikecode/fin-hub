@@ -7,6 +7,7 @@ import type {
   AttachmentAccessUrl,
   ApprovalTemplate,
   ApprovalTemplateCreate,
+  ApprovalTemplateUpdate,
   Attachment,
   AuditLog,
   AutoMatchResult,
@@ -38,6 +39,9 @@ import type {
   LedgerTrend,
   MatchCreate,
   Page,
+  ReconciliationCandidateResult,
+  ReconciliationRecord,
+  ReconciliationRecordUpdate,
   RevenueChannel,
   RevenueChannelCreate,
   RevenueChannelUpdate,
@@ -329,6 +333,19 @@ export function createApiClient(options: ApiClientOptions) {
         request<AutoMatchResult>(`/api/matches/auto-suggest${params}`, {
           method: "POST",
         }),
+      reconciliationCandidates: (params = "") =>
+        request<ReconciliationCandidateResult>(`/api/matches/reconciliation/candidates${params}`),
+      reconciliationRecords: (params = "") =>
+        request<Page<ReconciliationRecord>>(`/api/matches/reconciliation/records${params}`),
+      updateReconciliationRecord: (id: string, payload: ReconciliationRecordUpdate) =>
+        request<ExpenseBankMatch>(`/api/matches/reconciliation/records/${id}`, {
+          method: "PATCH",
+          body: JSON.stringify(payload),
+        }),
+      unmatchReconciliationRecord: (id: string) =>
+        request<ExpenseBankMatch>(`/api/matches/reconciliation/records/${id}/unmatch`, {
+          method: "POST",
+        }),
       confirm: (id: string, operator = "admin") =>
         request<ExpenseBankMatch>(`/api/matches/${id}/confirm?operator=${encodeURIComponent(operator)}`, {
           method: "POST",
@@ -374,6 +391,11 @@ export function createApiClient(options: ApiClientOptions) {
       createTemplate: (payload: ApprovalTemplateCreate) =>
         request<ApprovalTemplate>("/api/dingtalk/templates", {
           method: "POST",
+          body: JSON.stringify(payload),
+        }),
+      updateTemplate: (templateId: string, payload: ApprovalTemplateUpdate) =>
+        request<ApprovalTemplate>(`/api/dingtalk/templates/${templateId}`, {
+          method: "PATCH",
           body: JSON.stringify(payload),
         }),
       syncTemplates: () =>

@@ -329,8 +329,8 @@ export interface ExpenseItemUpdate {
 
 export interface BankTransaction {
   id: string;
-  store_id: string;
-  ledger_period: string;
+  store_id?: string | null;
+  ledger_period?: string | null;
   occurred_at: string;
   direction: MoneyDirection;
   amount: string;
@@ -344,8 +344,8 @@ export interface BankTransaction {
 }
 
 export interface BankTransactionCreate {
-  store_id: string;
-  ledger_period: string;
+  store_id?: string | null;
+  ledger_period?: string | null;
   occurred_at: string;
   direction: MoneyDirection;
   amount: string;
@@ -356,6 +356,8 @@ export interface BankTransactionCreate {
 }
 
 export interface BankTransactionUpdate {
+  store_id?: string | null;
+  ledger_period?: string | null;
   occurred_at?: string;
   direction?: MoneyDirection;
   amount?: string;
@@ -370,6 +372,8 @@ export interface ExpenseBankMatch {
   expense_item_id: string;
   bank_transaction_id: string;
   amount: string;
+  accounting_period?: string | null;
+  bank_occurred: boolean;
   status: MatchStatus;
   confidence?: string | null;
   reason?: string | null;
@@ -383,7 +387,19 @@ export interface MatchCreate {
   expense_item_id: string;
   bank_transaction_id: string;
   amount: string;
+  accounting_period?: string | null;
+  bank_occurred?: boolean;
+  category_l2?: string | null;
   confidence?: string | null;
+  reason?: string | null;
+}
+
+export interface ReconciliationRecordUpdate {
+  expense_item_id?: string | null;
+  amount?: string | null;
+  accounting_period?: string | null;
+  bank_occurred?: boolean | null;
+  category_l2?: string | null;
   reason?: string | null;
 }
 
@@ -391,6 +407,31 @@ export interface AutoMatchResult {
   created_count: number;
   skipped_count: number;
   matches: ExpenseBankMatch[];
+}
+
+export interface ReconciliationExpenseCandidate {
+  expense_item: ExpenseItem;
+  approval_instance?: ApprovalInstance | null;
+  template_name?: string | null;
+  display_fields: Record<string, unknown>;
+  remaining_amount: string;
+  score: string;
+  reason: string;
+}
+
+export interface ReconciliationCandidateResult {
+  bank_transaction: BankTransaction;
+  remaining_amount: string;
+  candidates: ReconciliationExpenseCandidate[];
+}
+
+export interface ReconciliationRecord {
+  match: ExpenseBankMatch;
+  bank_transaction: BankTransaction;
+  expense_item: ExpenseItem;
+  approval_instance?: ApprovalInstance | null;
+  template_name?: string | null;
+  display_fields: Record<string, unknown>;
 }
 
 export interface RevenueBankMatch {
@@ -447,6 +488,11 @@ export interface ApprovalTemplateCreate {
   process_code: string;
   name: string;
   is_enabled?: boolean;
+}
+
+export interface ApprovalTemplateUpdate {
+  name?: string | null;
+  is_enabled?: boolean | null;
 }
 
 export interface TemplateFieldMapping {

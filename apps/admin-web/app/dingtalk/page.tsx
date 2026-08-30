@@ -16,7 +16,6 @@ import {
   Select,
   Skeleton,
   Space,
-  Statistic,
   Switch,
   Table,
   Tabs,
@@ -41,6 +40,8 @@ import type {
   TemplateFieldMappingCreate,
 } from "@fin-hub/shared-types";
 import { AppShell } from "../components/AppShell";
+import { EnterpriseTable } from "../components/EnterpriseTable";
+import type { EnterpriseTableColumn } from "../components/EnterpriseTable";
 import { apiClient } from "../lib/api";
 
 interface DingTalkFormValues {
@@ -234,13 +235,6 @@ function renderFieldCandidateOption(candidate: TemplateFieldCandidate) {
   );
 }
 
-function approvalCountByTemplate(instances: ApprovalInstance[]) {
-  return instances.reduce<Record<string, number>>((result, instance) => {
-    result[instance.template_id] = (result[instance.template_id] ?? 0) + 1;
-    return result;
-  }, {});
-}
-
 function apiErrorMessage(error: unknown, fallback: string) {
   if (error && typeof error === "object" && "payload" in error) {
     const payload = (error as { payload?: unknown }).payload;
@@ -252,8 +246,24 @@ function apiErrorMessage(error: unknown, fallback: string) {
   return error instanceof Error ? error.message : fallback;
 }
 
+function isUnauthorizedError(error: unknown) {
+  return Boolean(error && typeof error === "object" && "status" in error && (error as { status?: unknown }).status === 401);
+}
+
+function dingtalkPageErrorMessage(error: unknown, fallback: string) {
+  if (isUnauthorizedError(error)) return "登录已失效或当前账号没有权限，请重新登录后再操作钉钉同步。";
+  return apiErrorMessage(error, fallback);
+}
+
 function isSeedTemplate(template: ApprovalTemplate) {
   return template.process_code.startsWith("seed-");
+}
+
+function sortTemplates(templates: ApprovalTemplate[]) {
+  return [...templates].sort((left, right) => {
+    if (left.is_enabled !== right.is_enabled) return left.is_enabled ? -1 : 1;
+    return right.created_at.localeCompare(left.created_at);
+  });
 }
 
 function formValueMapFromPayload(payload: unknown) {
@@ -404,7 +414,6 @@ export default function DingTalkPage() {
       }))
       .filter((table) => table.rows.length > 0);
   }, [selectedInstanceFields]);
-  const templateApprovalCounts = useMemo(() => approvalCountByTemplate(approvalInstances), [approvalInstances]);
   const detailDisplayMappings = mappings;
   const selectedTemplateSampleInstance = selectedTemplate
     ? approvalInstances.find((instance) => instance.template_id === selectedTemplate.id)
@@ -425,30 +434,57 @@ export default function DingTalkPage() {
   async function loadData() {
     setIsLoading(true);
     setErrorMessage(null);
-    try {
-      const [data, templatePage, jobPage, instancePage, departmentData] = await Promise.all([
-        apiClient.dingtalk.readConfig(),
-        apiClient.dingtalk.listTemplates("?page_size=200"),
-        apiClient.dingtalk.listSyncJobs("?page_size=20"),
-        apiClient.dingtalk.listApprovalInstances("?page_size=500"),
-        apiClient.dingtalk.previewDepartmentSync(),
-      ]);
+    const results = await Promise.allSettled([
+      apiClient.dingtalk.readConfig(),
+      apiClient.dingtalk.listTemplates("?page_size=200"),
+      apiClient.dingtalk.listSyncJobs("?page_size=20"),
+      apiClient.dingtalk.listApprovalInstances("?page_size=500"),
+      apiClient.dingtalk.previewDepartmentSync(),
+    ]);
+    const [configResult, templateResult, jobResult, instanceResult, departmentResult] = results;
+    const errors: string[] = [];
+
+    if (configResult.status === "fulfilled") {
+      const data = configResult.value;
       setConfig(data);
-      setTemplates(templatePage.items);
-      setSyncJobs(jobPage.items);
-      setApprovalInstances(instancePage.items);
-      setDepartmentPreview(departmentData);
       form.setFieldsValue({
         corp_id: data.corp_id ?? undefined,
         app_key: data.app_key ?? undefined,
         admin_user_id: data.admin_user_id ?? undefined,
         drive_union_id: data.drive_union_id ?? undefined,
       });
-    } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "无法读取钉钉配置");
-    } finally {
-      setIsLoading(false);
+    } else {
+      errors.push(dingtalkPageErrorMessage(configResult.reason, "无法读取钉钉配置"));
     }
+
+    if (templateResult.status === "fulfilled") {
+      setTemplates(sortTemplates(templateResult.value.items));
+    } else {
+      errors.push(dingtalkPageErrorMessage(templateResult.reason, "无法读取审批模板"));
+    }
+
+    if (jobResult.status === "fulfilled") {
+      setSyncJobs(jobResult.value.items);
+    } else {
+      errors.push(dingtalkPageErrorMessage(jobResult.reason, "无法读取同步任务"));
+    }
+
+    if (instanceResult.status === "fulfilled") {
+      setApprovalInstances(instanceResult.value.items);
+    } else {
+      errors.push(dingtalkPageErrorMessage(instanceResult.reason, "无法读取审批列表"));
+    }
+
+    if (departmentResult.status === "fulfilled") {
+      setDepartmentPreview(departmentResult.value);
+    } else {
+      errors.push(dingtalkPageErrorMessage(departmentResult.reason, "无法读取本地部门快照"));
+    }
+
+    if (errors.length) {
+      setErrorMessage(Array.from(new Set(errors)).join("；"));
+    }
+    setIsLoading(false);
   }
 
   useEffect(() => {
@@ -464,7 +500,7 @@ export default function DingTalkPage() {
       setIsConfigModalOpen(false);
       message.success("钉钉配置已保存");
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "无法保存钉钉配置");
+      setErrorMessage(dingtalkPageErrorMessage(error, "无法保存钉钉配置"));
     } finally {
       setIsLoading(false);
     }
@@ -477,7 +513,7 @@ export default function DingTalkPage() {
       await loadData();
       message.success(`模板增量同步完成：拉取 ${result.pulled} 个，新增 ${result.created} 个，更新 ${result.updated} 个`);
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "无法同步模板");
+      setErrorMessage(dingtalkPageErrorMessage(error, "无法同步模板"));
     } finally {
       setIsLoading(false);
     }
@@ -491,7 +527,7 @@ export default function DingTalkPage() {
       await loadData();
       message.success("钉钉连接正常");
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "无法连接钉钉 OpenAPI");
+      setErrorMessage(dingtalkPageErrorMessage(error, "无法连接钉钉 OpenAPI"));
     } finally {
       setIsLoading(false);
     }
@@ -505,7 +541,7 @@ export default function DingTalkPage() {
       setDepartmentPreview(preview);
       message.success("已刷新本地部门预览");
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "无法读取本地部门快照");
+      setErrorMessage(dingtalkPageErrorMessage(error, "无法读取本地部门快照"));
     } finally {
       setIsLoading(false);
     }
@@ -522,7 +558,7 @@ export default function DingTalkPage() {
         `部门增量同步完成：拉取 ${result.pulled_count} 个，新增 ${result.created_count} 个，更新 ${result.updated_count} 个`,
       );
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "无法从钉钉拉取部门");
+      setErrorMessage(dingtalkPageErrorMessage(error, "无法从钉钉拉取部门"));
     } finally {
       setIsLoading(false);
     }
@@ -537,7 +573,7 @@ export default function DingTalkPage() {
       setDepartmentPreview(preview);
       message.success(`门店落库完成：新增 ${result.created_count} 个，更新 ${result.updated_count} 个`);
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "无法同步钉钉门店部门");
+      setErrorMessage(dingtalkPageErrorMessage(error, "无法同步钉钉门店部门"));
     } finally {
       setIsLoading(false);
     }
@@ -566,7 +602,7 @@ export default function DingTalkPage() {
       const data = await apiClient.dingtalk.listMappings(templateId);
       setInstanceDisplayMappings(data);
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "无法加载模板显示字段");
+      setErrorMessage(dingtalkPageErrorMessage(error, "无法加载模板显示字段"));
     } finally {
       setIsLoading(false);
     }
@@ -597,7 +633,7 @@ export default function DingTalkPage() {
         message.success("审批列表增量同步完成");
       }
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "无法同步审批实例");
+      setErrorMessage(dingtalkPageErrorMessage(error, "无法同步审批实例"));
     } finally {
       setIsLoading(false);
     }
@@ -622,7 +658,7 @@ export default function DingTalkPage() {
         message.success("审批同步续跑完成");
       }
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "无法续跑审批同步");
+      setErrorMessage(dingtalkPageErrorMessage(error, "无法续跑审批同步"));
     } finally {
       setIsLoading(false);
     }
@@ -636,7 +672,24 @@ export default function DingTalkPage() {
       templateForm.resetFields();
       await loadData();
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "无法新增模板");
+      setErrorMessage(dingtalkPageErrorMessage(error, "无法新增模板"));
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  async function updateTemplateEnabled(template: ApprovalTemplate, isEnabled: boolean) {
+    setIsLoading(true);
+    setErrorMessage(null);
+    try {
+      const updated = await apiClient.dingtalk.updateTemplate(template.id, { is_enabled: isEnabled });
+      setTemplates((items) => sortTemplates(items.map((item) => (item.id === updated.id ? updated : item))));
+      if (!isEnabled && instanceTemplateFilterId === template.id) {
+        await changeInstanceTemplateFilter(undefined);
+      }
+      message.success(isEnabled ? "模板已启用，将参与同步和对账" : "模板已停用，将不参与同步和对账");
+    } catch (error) {
+      setErrorMessage(dingtalkPageErrorMessage(error, "无法更新模板启用状态"));
     } finally {
       setIsLoading(false);
     }
@@ -653,7 +706,7 @@ export default function DingTalkPage() {
       setMappings(data);
       setFieldCandidates(candidates);
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "无法加载字段映射");
+      setErrorMessage(dingtalkPageErrorMessage(error, "无法加载字段映射"));
     } finally {
       setIsLoading(false);
     }
@@ -742,7 +795,7 @@ export default function DingTalkPage() {
       await loadMappings(selectedTemplate);
       message.success("字段映射已删除");
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "无法删除字段映射");
+      setErrorMessage(dingtalkPageErrorMessage(error, "无法删除字段映射"));
     } finally {
       setIsLoading(false);
     }
@@ -801,7 +854,7 @@ export default function DingTalkPage() {
       mappingForm.resetFields();
       await loadMappings(selectedTemplate);
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "无法保存字段映射");
+      setErrorMessage(dingtalkPageErrorMessage(error, "无法保存字段映射"));
     } finally {
       setIsLoading(false);
     }
@@ -816,7 +869,7 @@ export default function DingTalkPage() {
       );
       setSelectedInstanceAttachments(data.items);
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "无法读取审批附件");
+      setErrorMessage(dingtalkPageErrorMessage(error, "无法读取审批附件"));
     }
   }
 
@@ -875,7 +928,7 @@ export default function DingTalkPage() {
       window.open(url, "_blank", "noopener,noreferrer");
       window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "无法打开附件");
+      setErrorMessage(dingtalkPageErrorMessage(error, "无法打开附件"));
     }
   }
 
@@ -891,12 +944,13 @@ export default function DingTalkPage() {
       }
       window.open(data.url, "_blank", "noopener,noreferrer");
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "无法获取钉钉附件链接");
+      setErrorMessage(dingtalkPageErrorMessage(error, "无法获取钉钉附件链接"));
     }
   }
 
-  const templateColumns: ColumnsType<ApprovalTemplate> = [
+  const templateColumns: EnterpriseTableColumn<ApprovalTemplate>[] = [
     {
+      key: "name",
       title: "模板名称",
       dataIndex: "name",
       render: (value, record) => (
@@ -906,22 +960,40 @@ export default function DingTalkPage() {
         </Space>
       ),
     },
-    { title: "Process Code", dataIndex: "process_code" },
+    { key: "process_code", title: "Process Code", dataIndex: "process_code" },
     {
+      key: "mapping_status",
       title: "映射状态",
       dataIndex: "mapping_status",
       render: (value) => (value === "mapped" ? <Tag color="green">已映射</Tag> : <Tag color="gold">未映射</Tag>),
     },
-    { title: "启用", dataIndex: "is_enabled", render: (value) => (value ? "是" : "否") },
     {
-      title: "本地审批数",
-      dataIndex: "id",
+      key: "is_enabled",
+      title: "启用",
+      dataIndex: "is_enabled",
       width: 110,
-      render: (value) => templateApprovalCounts[value] ?? 0,
+      render: (value, record) => (
+        <Switch
+          checked={value}
+          checkedChildren="启用"
+          unCheckedChildren="停用"
+          loading={isLoading}
+          onChange={(checked) => updateTemplateEnabled(record, checked)}
+        />
+      ),
     },
-    { title: "上次同步", dataIndex: "last_sync_at", render: (value) => value?.replace("T", " ").slice(0, 16) || "-" },
     {
+      key: "last_sync_at",
+      title: "上次同步",
+      dataIndex: "last_sync_at",
+      render: (value) => value?.replace("T", " ").slice(0, 16) || "-",
+    },
+    {
+      key: "actions",
       title: "操作",
+      fixed: "right",
+      width: 140,
+      className: "table-action-column",
       render: (_, record) => (
         <Space>
           <Button type="link" onClick={() => openMappingDrawer(record)}>
@@ -983,8 +1055,9 @@ export default function DingTalkPage() {
     },
   ];
 
-  const departmentColumns: ColumnsType<DingTalkDepartment> = [
+  const departmentColumns: EnterpriseTableColumn<DepartmentTreeNode>[] = [
     {
+      key: "name",
       title: "部门名称",
       dataIndex: "name",
       render: (value, record) => (
@@ -995,13 +1068,15 @@ export default function DingTalkPage() {
         </Space>
       ),
     },
-    { title: "部门 ID", dataIndex: "dept_id", width: 150 },
+    { key: "dept_id", title: "部门 ID", dataIndex: "dept_id", width: 150 },
     {
+      key: "path",
       title: "层级路径",
       dataIndex: "path",
       render: (value) => <span style={{ color: "#64748b" }}>{value}</span>,
     },
     {
+      key: "landing_status",
       title: "落地状态",
       dataIndex: "is_store_candidate",
       width: 120,
@@ -1011,12 +1086,13 @@ export default function DingTalkPage() {
         return <Tag color="gold">将新增</Tag>;
       },
     },
-    { title: "本地门店", dataIndex: "store_name", width: 180, render: (value) => value || "-" },
+    { key: "store_name", title: "本地门店", dataIndex: "store_name", width: 180, render: (value) => value || "-" },
   ];
 
-  const jobColumns: ColumnsType<SyncJob> = [
-    { title: "任务类型", dataIndex: "job_type" },
+  const jobColumns: EnterpriseTableColumn<SyncJob>[] = [
+    { key: "job_type", title: "任务类型", dataIndex: "job_type" },
     {
+      key: "status",
       title: "状态",
       dataIndex: "status",
       render: (value: SyncJob["status"], record) => {
@@ -1027,17 +1103,21 @@ export default function DingTalkPage() {
         return <Tag>等待中</Tag>;
       },
     },
-    { title: "处理", dataIndex: "processed_count" },
-    { title: "成功", dataIndex: "success_count" },
-    { title: "失败", dataIndex: "failed_count" },
-    { title: "开始窗口", dataIndex: "request_start_at", render: (value) => value?.replace("T", " ").slice(0, 16) || "-" },
-    { title: "结束窗口", dataIndex: "request_end_at", render: (value) => value?.replace("T", " ").slice(0, 16) || "-" },
-    { title: "游标", dataIndex: "next_cursor", render: (value) => value || "-" },
-    { title: "错误", dataIndex: "error_message", render: (value) => value || "-" },
-    { title: "发起人", dataIndex: "started_by", render: (value) => value || "-" },
-    { title: "完成时间", dataIndex: "finished_at", render: (value) => value?.replace("T", " ").slice(0, 16) || "-" },
+    { key: "processed_count", title: "处理", dataIndex: "processed_count" },
+    { key: "success_count", title: "成功", dataIndex: "success_count" },
+    { key: "failed_count", title: "失败", dataIndex: "failed_count" },
+    { key: "request_start_at", title: "开始窗口", dataIndex: "request_start_at", render: (value) => value?.replace("T", " ").slice(0, 16) || "-" },
+    { key: "request_end_at", title: "结束窗口", dataIndex: "request_end_at", render: (value) => value?.replace("T", " ").slice(0, 16) || "-" },
+    { key: "next_cursor", title: "游标", dataIndex: "next_cursor", render: (value) => value || "-" },
+    { key: "error_message", title: "错误", dataIndex: "error_message", render: (value) => value || "-" },
+    { key: "started_by", title: "发起人", dataIndex: "started_by", render: (value) => value || "-" },
+    { key: "finished_at", title: "完成时间", dataIndex: "finished_at", render: (value) => value?.replace("T", " ").slice(0, 16) || "-" },
     {
+      key: "actions",
       title: "操作",
+      fixed: "right",
+      width: 90,
+      className: "table-action-column",
       render: (_, record) =>
         record.next_cursor ? (
           <Button type="link" onClick={() => resumeApprovalSync(record)}>
@@ -1050,26 +1130,30 @@ export default function DingTalkPage() {
   ];
 
   const listDisplayMappings = instanceTemplateFilterId ? instanceDisplayMappings : [];
-  const instanceColumns: ColumnsType<ApprovalInstance> = [
-    { title: "审批编号", dataIndex: "approval_no", render: (value) => value || "-" },
-    ...listDisplayMappings.map((mapping): ColumnsType<ApprovalInstance>[number] => ({
+  const instanceColumns: EnterpriseTableColumn<ApprovalInstance>[] = [
+    { key: "approval_no", title: "审批编号", dataIndex: "approval_no", render: (value) => value || "-" },
+    ...listDisplayMappings.map((mapping): EnterpriseTableColumn<ApprovalInstance> => ({
       title: mappingDisplayLabel(mapping),
       key: `mapping-${mapping.id}`,
       width: 160,
       render: (_, record) => renderDingTalkValue(mappedDisplayValue(record, mapping)),
     })),
-    { title: "实例 ID", dataIndex: "dingtalk_instance_id" },
-    { title: "申请人", dataIndex: "applicant_name", render: (value) => value || "-" },
+    { key: "dingtalk_instance_id", title: "实例 ID", dataIndex: "dingtalk_instance_id" },
+    { key: "applicant_name", title: "申请人", dataIndex: "applicant_name", render: (value) => value || "-" },
     {
+      key: "approval_status",
       title: "状态",
       dataIndex: "approval_status",
       render: (value) => (value === "approved" ? <Tag color="green">已通过</Tag> : <Tag>{value}</Tag>),
     },
-    { title: "提交时间", dataIndex: "submit_at", render: (value) => value?.replace("T", " ").slice(0, 16) || "-" },
-    { title: "通过时间", dataIndex: "approved_at", render: (value) => value?.replace("T", " ").slice(0, 16) || "-" },
+    { key: "submit_at", title: "提交时间", dataIndex: "submit_at", render: (value) => value?.replace("T", " ").slice(0, 16) || "-" },
+    { key: "approved_at", title: "通过时间", dataIndex: "approved_at", render: (value) => value?.replace("T", " ").slice(0, 16) || "-" },
     {
+      key: "actions",
       title: "操作",
+      fixed: "right",
       width: 90,
+      className: "table-action-column",
       render: (_, record) => (
         <Button type="link" onClick={() => openInstanceDetail(record)}>
           详情
@@ -1098,22 +1182,6 @@ export default function DingTalkPage() {
       {errorMessage ? (
         <Alert className="dashboard-alert" message={errorMessage} type="warning" showIcon />
       ) : null}
-
-      <Card className="integration-overview">
-        <div className="integration-overview-grid">
-          <div>
-            <Typography.Text className="topbar-kicker">SYNC STATUS</Typography.Text>
-            <Typography.Title level={4}>钉钉数据同步</Typography.Title>
-            <Typography.Text type="secondary">
-              部门、审批模板、审批列表均先增量同步到本地数据库，再由业务流程消费本地数据。
-            </Typography.Text>
-          </div>
-          <Statistic title="凭证状态" value={credentialStatus} valueStyle={{ color: config?.status === "configured" ? "#059669" : "#d97706" }} />
-          <Statistic title="本地部门" value={departmentPreview?.departments.length ?? 0} />
-          <Statistic title="审批模板" value={templates.length} />
-          <Statistic title="审批实例" value={approvalInstances.length} />
-        </div>
-      </Card>
 
       <Tabs
         className="sync-tabs"
@@ -1150,12 +1218,14 @@ export default function DingTalkPage() {
                         上次同步 {lastDepartmentPulledAt ? lastDepartmentPulledAt.replace("T", " ").slice(0, 16) : "尚未同步"}
                       </Tag>
                     </Space>
-                    <Table
+                    <EnterpriseTable<DepartmentTreeNode>
                       rowKey="dept_id"
                       loading={isLoading}
                       columns={departmentColumns}
                       dataSource={departmentTree}
                       pagination={false}
+                      showDensityToggle
+                      fixedColumns={{ left: ["name"] }}
                       rowClassName={(record) => (record.is_store_candidate ? "store-candidate-row" : "")}
                       expandable={{ defaultExpandAllRows: true }}
                     />
@@ -1191,7 +1261,16 @@ export default function DingTalkPage() {
                     上次同步 {config?.last_template_sync_at ? config.last_template_sync_at.replace("T", " ").slice(0, 16) : "尚未同步"}
                   </Tag>
                 </Space>
-                <Table rowKey="id" loading={isLoading} columns={templateColumns} dataSource={templates} />
+                <EnterpriseTable<ApprovalTemplate>
+                  rowKey="id"
+                  loading={isLoading}
+                  columns={templateColumns}
+                  dataSource={templates}
+                  pagination={{ pageSize: 12 }}
+                  showDensityToggle
+                  showColumnSettings
+                  fixedColumns={{ left: ["name"], right: ["actions"] }}
+                />
               </Card>
             ),
           },
@@ -1215,6 +1294,7 @@ export default function DingTalkPage() {
                         options={templates.map((template) => ({
                           label: template.name,
                           value: template.id,
+                          disabled: !template.is_enabled,
                         }))}
                       />
                       <Button type="primary" onClick={openSyncModal} loading={isLoading}>
@@ -1233,21 +1313,27 @@ export default function DingTalkPage() {
                       上次同步 {config?.last_instance_sync_at ? config.last_instance_sync_at.replace("T", " ").slice(0, 16) : "尚未同步"}
                     </Tag>
                   </Space>
-                  <Table
+                  <EnterpriseTable<ApprovalInstance>
                     rowKey="id"
                     loading={isLoading}
                     columns={instanceColumns}
                     dataSource={displayedApprovalInstances}
                     pagination={{ pageSize: 8 }}
+                    showDensityToggle
+                    showColumnSettings
+                    fixedColumns={{ left: ["approval_no"], right: ["actions"] }}
                   />
                 </Card>
                 <Card title="同步任务">
-                  <Table
+                  <EnterpriseTable<SyncJob>
                     rowKey="id"
                     loading={isLoading}
                     columns={jobColumns}
                     dataSource={syncJobs}
                     pagination={{ pageSize: 5 }}
+                    showDensityToggle
+                    showColumnSettings
+                    fixedColumns={{ right: ["actions"] }}
                   />
                 </Card>
               </Space>
@@ -1544,7 +1630,9 @@ export default function DingTalkPage() {
             <Select
               allowClear
               placeholder="全部已启用模板"
-              options={templates.map((template) => ({
+              options={templates
+                .filter((template) => template.is_enabled)
+                .map((template) => ({
                 label: template.name,
                 value: template.id,
               }))}

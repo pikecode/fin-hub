@@ -101,7 +101,7 @@ export function TransactionList({ transactions, selectedId, onSelect, loading, s
             const isSelected = transaction.id === selectedId;
             const remainingAmount = Number(transaction.amount) - Number(transaction.matched_amount || 0);
             const isFullyMatched = remainingAmount === 0;
-            const storeName = stores.get(transaction.store_id)?.name || "未知门店";
+            const storeName = transaction.store_id ? stores.get(transaction.store_id)?.name || "未知门店" : "待归属";
 
             return (
               <div

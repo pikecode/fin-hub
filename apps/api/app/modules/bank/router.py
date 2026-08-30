@@ -37,6 +37,28 @@ def ensure_open_ledger(session: Session, store_id: str, period: str) -> None:
         raise HTTPException(status_code=409, detail="Ledger is closed")
 
 
+def ensure_open_or_create_ledger(session: Session, store_id: str, period: str) -> None:
+    ledger = session.scalar(select(Ledger).where(Ledger.store_id == store_id, Ledger.period == period))
+    if ledger is None:
+        session.add(Ledger(store_id=store_id, period=period))
+        session.flush()
+        return
+    if ledger.status == LedgerStatus.CLOSED.value:
+        raise HTTPException(status_code=409, detail="Ledger is closed")
+
+
+def normalize_bank_assignment(session: Session, payload: BankTransactionCreate) -> dict:
+    data = payload.model_dump()
+    if data["store_id"] and not data["ledger_period"]:
+        data["ledger_period"] = data["occurred_at"].strftime("%Y-%m")
+        ensure_open_or_create_ledger(session, data["store_id"], data["ledger_period"])
+    elif data["store_id"] and data["ledger_period"]:
+        ensure_open_ledger(session, data["store_id"], data["ledger_period"])
+    elif data["ledger_period"]:
+        raise HTTPException(status_code=422, detail="Store is required when ledger period is provided")
+    return data
+
+
 @router.get("", response_model=ApiEnvelope[Page[BankTransactionRead]])
 def list_bank_transactions(
     store_id: str | None = None,
@@ -63,8 +85,7 @@ def create_bank_transaction(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
 ) -> ApiEnvelope[BankTransactionRead]:
-    ensure_open_ledger(session, payload.store_id, payload.ledger_period)
-    transaction = BankTransaction(**payload.model_dump())
+    transaction = BankTransaction(**normalize_bank_assignment(session, payload))
     session.add(transaction)
     session.flush()
     write_audit_log(
@@ -95,9 +116,18 @@ def update_bank_transaction(
     transaction = session.get(BankTransaction, transaction_id)
     if transaction is None:
         raise HTTPException(status_code=404, detail="Bank transaction not found")
-    ensure_open_ledger(session, transaction.store_id, transaction.ledger_period)
 
     updates = payload.model_dump(exclude_unset=True)
+    target_store_id = updates.get("store_id", transaction.store_id)
+    target_ledger_period = updates.get("ledger_period", transaction.ledger_period)
+    if target_store_id and not target_ledger_period:
+        target_ledger_period = updates.get("occurred_at", transaction.occurred_at).strftime("%Y-%m")
+        updates["ledger_period"] = target_ledger_period
+        ensure_open_or_create_ledger(session, target_store_id, target_ledger_period)
+    elif target_store_id and target_ledger_period:
+        ensure_open_ledger(session, target_store_id, target_ledger_period)
+    elif target_ledger_period:
+        raise HTTPException(status_code=422, detail="Store is required when ledger period is provided")
     new_amount = updates.get("amount")
     if new_amount is not None and Decimal(new_amount) < Decimal(transaction.matched_amount or 0):
         raise HTTPException(status_code=409, detail="Amount cannot be lower than matched amount")
@@ -167,8 +197,8 @@ def transaction_exists(session: Session, payload: dict) -> bool:
         return exists is not None
     exists = session.scalar(
         select(BankTransaction).where(
-            BankTransaction.store_id == payload["store_id"],
-            BankTransaction.ledger_period == payload["ledger_period"],
+            BankTransaction.store_id == payload.get("store_id"),
+            BankTransaction.ledger_period == payload.get("ledger_period"),
             BankTransaction.occurred_at == payload["occurred_at"],
             BankTransaction.direction == payload["direction"],
             BankTransaction.amount == payload["amount"],
@@ -178,13 +208,14 @@ def transaction_exists(session: Session, payload: dict) -> bool:
     return exists is not None
 
 
-def parse_import_payload(row: dict[str, str | None], store_id: str, ledger_period: str) -> dict:
+def parse_import_payload(row: dict[str, str | None], store_id: str | None, ledger_period: str | None) -> dict:
     amount_text = pick(row, "amount", "金额", "交易金额")
+    occurred_at = parse_datetime(pick(row, "occurred_at", "发生时间", "交易时间", "日期"))
     return {
         "store_id": store_id,
-        "ledger_period": ledger_period,
-        "occurred_at": parse_datetime(pick(row, "occurred_at", "发生时间", "交易时间", "日期")),
-        "direction": parse_direction(pick(row, "direction", "方向", "收支方向")),
+        "ledger_period": ledger_period or (occurred_at.strftime("%Y-%m") if store_id else None),
+        "occurred_at": occurred_at,
+        "direction": parse_direction(pick(row, "direction", "方向", "收支方向", "收入还是支出")),
         "amount": Decimal(amount_text.replace(",", "")),
         "counterparty_name": pick(row, "counterparty_name", "对方户名", "交易对方") or None,
         "counterparty_account": pick(row, "counterparty_account", "对方账号") or None,
@@ -224,13 +255,16 @@ def read_import_rows(file_name: str | None, content: bytes) -> Iterable[tuple[in
 
 
 async def preview_bank_transactions_file(
-    store_id: str = Form(...),
-    ledger_period: str = Form(...),
+    store_id: str | None = Form(None),
+    ledger_period: str | None = Form(None),
     file: UploadFile = File(...),
     session: Session = Depends(get_session),
     _: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
 ) -> ApiEnvelope[BankImportPreviewResult]:
-    ensure_open_ledger(session, store_id, ledger_period)
+    if ledger_period and not store_id:
+        raise HTTPException(status_code=422, detail="Store is required when ledger period is provided")
+    if store_id and ledger_period:
+        ensure_open_ledger(session, store_id, ledger_period)
     content = await file.read()
 
     duplicate_count = 0
@@ -270,14 +304,17 @@ async def preview_bank_transactions_file(
 
 
 async def import_bank_transactions_file(
-    store_id: str = Form(...),
-    ledger_period: str = Form(...),
+    store_id: str | None = Form(None),
+    ledger_period: str | None = Form(None),
     started_by: str = Form("admin"),
     file: UploadFile = File(...),
     session: Session = Depends(get_session),
     current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
 ) -> ApiEnvelope[BankImportResult]:
-    ensure_open_ledger(session, store_id, ledger_period)
+    if ledger_period and not store_id:
+        raise HTTPException(status_code=422, detail="Store is required when ledger period is provided")
+    if store_id and ledger_period:
+        ensure_open_ledger(session, store_id, ledger_period)
     content = await file.read()
 
     job = SyncJob(
@@ -297,6 +334,8 @@ async def import_bank_transactions_file(
             job.processed_count += 1
             try:
                 payload = parse_import_payload(row, store_id, ledger_period)
+                if payload["store_id"] and payload["ledger_period"] and not ledger_period:
+                    ensure_open_or_create_ledger(session, payload["store_id"], payload["ledger_period"])
                 if transaction_exists(session, payload):
                     skipped_count += 1
                     continue

@@ -43,6 +43,51 @@ def test_import_bank_transactions_csv_and_skip_duplicates(client: TestClient) ->
     assert jobs_response.json()["data"]["total"] == 2
 
 
+def test_import_bank_transactions_without_store_assignment(client: TestClient) -> None:
+    csv_content = "\n".join(
+        [
+            "日期,收入还是支出,金额,备注",
+            "2026-08-20,支出,300.00,门店报销付款",
+        ]
+    )
+
+    response = client.post(
+        "/api/bank-transactions/import-csv",
+        data={"started_by": "tester"},
+        files={"file": ("bank.csv", csv_content.encode("utf-8"), "text/csv")},
+    )
+    assert response.status_code == 201
+    data = response.json()["data"]
+    assert data["created_count"] == 1
+
+    transactions = client.get("/api/bank-transactions?direction=expense").json()["data"]["items"]
+    assert transactions[0]["store_id"] is None
+    assert transactions[0]["ledger_period"] is None
+    assert transactions[0]["summary"] == "门店报销付款"
+
+
+def test_import_bank_transactions_for_store_derives_period_per_row(client: TestClient) -> None:
+    store_id = client.post("/api/stores", json={"name": "蘑说跨月流水店"}).json()["data"]["id"]
+    csv_content = "\n".join(
+        [
+            "日期,收入还是支出,金额,备注",
+            "2026/8/31,支出,12005,备注4",
+            "2026/9/1,支出,12006,备注5",
+        ]
+    )
+
+    response = client.post(
+        "/api/bank-transactions/import",
+        data={"store_id": store_id, "started_by": "tester"},
+        files={"file": ("bank.csv", csv_content.encode("utf-8"), "text/csv")},
+    )
+
+    assert response.status_code == 201
+    assert response.json()["data"]["created_count"] == 2
+    transactions = client.get(f"/api/bank-transactions?store_id={store_id}&page_size=10").json()["data"]["items"]
+    assert {transaction["ledger_period"] for transaction in transactions} == {"2026-08", "2026-09"}
+
+
 def test_preview_bank_transactions_import(client: TestClient) -> None:
     store_id = client.post("/api/stores", json={"name": "蘑说流水预览店"}).json()["data"]["id"]
     client.post("/api/ledgers", json={"store_id": store_id, "period": "2026-08"})

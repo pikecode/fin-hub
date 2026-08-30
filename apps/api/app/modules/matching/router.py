@@ -1,21 +1,27 @@
-from decimal import Decimal
+import json
+from datetime import datetime
+from decimal import Decimal, InvalidOperation
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.database import get_session
 from app.models import (
+    ApprovalInstance,
+    ApprovalTemplate,
     BankTransaction,
     ExpenseBankMatch,
     ExpenseItem,
     ExpensePaymentStatus,
+    Ledger,
     MasterDataStatus,
     MatchStatus,
     RevenueBankMatch,
     RevenueChannel,
     RevenueRecord,
+    TemplateFieldMapping,
     User,
     UserRole,
     utc_now,
@@ -29,6 +35,10 @@ from app.schemas import (
     MatchCreate,
     MatchRead,
     Page,
+    ReconciliationCandidateResult,
+    ReconciliationExpenseCandidate,
+    ReconciliationRecord,
+    ReconciliationRecordUpdate,
     RevenueMatchCreate,
     RevenueMatchRead,
 )
@@ -44,6 +54,306 @@ def confirmed_expense_match_amount(session: Session, expense_item_id: str, exclu
     if exclude_match_id:
         query = query.where(ExpenseBankMatch.id != exclude_match_id)
     return Decimal(session.scalar(query) or 0)
+
+
+def parse_raw_payload(raw_payload: str | None) -> dict:
+    if not raw_payload:
+        return {}
+    try:
+        parsed = json.loads(raw_payload)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def form_values(payload: dict) -> dict[str, object | None]:
+    values: dict[str, object | None] = {}
+    components = payload.get("form_component_values") or payload.get("formComponentValues") or []
+    if not isinstance(components, list):
+        return values
+    for component in components:
+        if not isinstance(component, dict):
+            continue
+        value = component.get("value", component.get("ext_value", component.get("extValue")))
+        for key_name in ("id", "name", "label"):
+            key = component.get(key_name)
+            if key:
+                values[str(key)] = value
+    return values
+
+
+def table_value(payload: dict, table_key: str, cell_key: str) -> object | None:
+    components = payload.get("form_component_values") or payload.get("formComponentValues") or []
+    if not isinstance(components, list):
+        return None
+    table = next(
+        (
+            component
+            for component in components
+            if isinstance(component, dict)
+            and any(str(component.get(key)) == table_key for key in ("id", "name", "label", "key") if component.get(key))
+        ),
+        None,
+    )
+    if not isinstance(table, dict):
+        return None
+    rows = table.get("value")
+    if isinstance(rows, str):
+        try:
+            rows = json.loads(rows)
+        except json.JSONDecodeError:
+            return None
+    if not isinstance(rows, list):
+        return None
+    values: list[object] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        cells = row.get("rowValue") or row.get("row_value") or []
+        if not isinstance(cells, list):
+            continue
+        for cell in cells:
+            if not isinstance(cell, dict):
+                continue
+            if any(str(cell.get(key)) == cell_key for key in ("key", "id", "name", "label", "title") if cell.get(key)):
+                value = cell.get("value", cell.get("ext_value", cell.get("extValue")))
+                if value not in (None, ""):
+                    values.append(value)
+    if not values:
+        return None
+    return values[0] if len(values) == 1 else values
+
+
+def mapped_display_value(payload: dict, mapping: TemplateFieldMapping) -> object | None:
+    if mapping.source_path and mapping.source_path.startswith("root:"):
+        return payload.get(mapping.source_path.removeprefix("root:"))
+    if mapping.source_path and mapping.source_path.startswith("table:"):
+        _, table_key, cell_key = mapping.source_path.split(":", 2)
+        return table_value(payload, table_key, cell_key)
+    values = form_values(payload)
+    if mapping.source_field_id and mapping.source_field_id in values:
+        return values[mapping.source_field_id]
+    return values.get(mapping.source_field_name)
+
+
+def parsed_decimal(value: object | None) -> Decimal | None:
+    if value in (None, "", "null"):
+        return None
+    if isinstance(value, list):
+        value = value[0] if value else None
+    if isinstance(value, dict):
+        value = value.get("value") or value.get("amount")
+    try:
+        return Decimal(str(value).replace(",", ""))
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def parsed_datetime(value: object | None):
+    if value in (None, "", "null"):
+        return None
+    if isinstance(value, list):
+        value = value[0] if value else None
+    if isinstance(value, dict):
+        value = value.get("value")
+    try:
+        return datetime.fromisoformat(str(value).replace("/", "-")[:19])
+    except ValueError:
+        return None
+
+
+def first_form_value(payload: dict, *names: str) -> object | None:
+    values = form_values(payload)
+    for name in names:
+        value = values.get(name)
+        if value not in (None, "", "null"):
+            return value
+    return None
+
+
+def ensure_approval_total_expense(session: Session, approval: ApprovalInstance) -> ExpenseItem | None:
+    existing = session.scalar(
+        select(ExpenseItem).where(ExpenseItem.source == "dingtalk", ExpenseItem.source_document_id == approval.dingtalk_instance_id)
+    )
+    if existing is not None:
+        return existing
+
+    payload = parse_raw_payload(approval.raw_payload)
+    amount = parsed_decimal(first_form_value(payload, "汇总金额（元）", "汇总金额", "金额", "报销金额"))
+    if amount is None:
+        amount = Decimal(
+            session.scalar(
+                select(func.coalesce(func.sum(ExpenseItem.amount), Decimal("0.00"))).where(
+                    ExpenseItem.source == "dingtalk",
+                    ExpenseItem.source_document_id.startswith(f"{approval.dingtalk_instance_id}:"),
+                )
+            )
+            or 0
+        )
+    if amount <= 0 or not approval.store_id:
+        return None
+
+    expense_at = (
+        parsed_datetime(first_form_value(payload, "报销日期", "支出日期", "费用日期", "日期"))
+        or approval.submit_at
+        or approval.approved_at
+    )
+    if expense_at is None:
+        return None
+    period = expense_at.strftime("%Y-%m")
+    if session.scalar(select(Ledger).where(Ledger.store_id == approval.store_id, Ledger.period == period)) is None:
+        session.add(Ledger(store_id=approval.store_id, period=period))
+        session.flush()
+
+    title = payload.get("title") or payload.get("titleName") or first_form_value(payload, "费用说明", "其他备注信息", "备注")
+    expense_item = ExpenseItem(
+        store_id=approval.store_id,
+        ledger_period=period,
+        expense_date=expense_at,
+        description=str(title or approval.approval_no or "钉钉审批单"),
+        amount=amount,
+        category_l1=str(first_form_value(payload, "支出类型", "费用类型", "一级分类") or "钉钉审批"),
+        payee_account=str(first_form_value(payload, "收款账户", "收款账号", "账户") or "") or None,
+        source="dingtalk",
+        source_document_id=approval.dingtalk_instance_id,
+    )
+    session.add(expense_item)
+    session.flush()
+    return expense_item
+
+
+def ensure_candidate_total_expenses(
+    session: Session,
+    template_id: str | None,
+    store_id: str | None,
+    approval_no: str | None,
+    page_size: int,
+) -> None:
+    approval_query = (
+        select(ApprovalInstance)
+        .join(ApprovalTemplate, ApprovalInstance.template_id == ApprovalTemplate.id)
+        .where(
+            ApprovalInstance.raw_payload.is_not(None),
+            ApprovalTemplate.is_enabled.is_(True),
+            func.lower(ApprovalInstance.approval_status).in_(["agree", "approved", "completed", "finish", "success"]),
+        )
+    )
+    if template_id:
+        approval_query = approval_query.where(ApprovalInstance.template_id == template_id)
+    if store_id:
+        approval_query = approval_query.where(ApprovalInstance.store_id == store_id)
+    if approval_no:
+        like = f"%{approval_no.strip()}%"
+        approval_query = approval_query.where(
+            (ApprovalInstance.approval_no.ilike(like))
+            | (ApprovalInstance.dingtalk_instance_id.ilike(like))
+        )
+    approval_query = approval_query.order_by(ApprovalInstance.submit_at.desc().nullslast(), ApprovalInstance.created_at.desc())
+    for approval in session.scalars(approval_query.limit(max(page_size * 3, 100))):
+        ensure_approval_total_expense(session, approval)
+
+
+def candidate_score(
+    bank_transaction: BankTransaction,
+    expense: ExpenseItem,
+    remaining_expense_amount: Decimal,
+) -> tuple[Decimal, str]:
+    score = Decimal("0.00")
+    reasons: list[str] = []
+    remaining_bank_amount = Decimal(bank_transaction.amount) - Decimal(bank_transaction.matched_amount or 0)
+    if remaining_expense_amount == remaining_bank_amount:
+        score += Decimal("60.00")
+        reasons.append("金额完全一致")
+    elif remaining_expense_amount and abs(remaining_expense_amount - remaining_bank_amount) <= Decimal("1.00"):
+        score += Decimal("35.00")
+        reasons.append("金额接近")
+
+    if expense.expense_date:
+        days = abs((bank_transaction.occurred_at.date() - expense.expense_date).days)
+        if days <= 1:
+            score += Decimal("20.00")
+            reasons.append("日期接近")
+        elif days <= 7:
+            score += Decimal("10.00")
+            reasons.append("日期在 7 天内")
+
+    if bank_transaction.store_id and bank_transaction.store_id == expense.store_id:
+        score += Decimal("10.00")
+        reasons.append("门店一致")
+    elif not bank_transaction.store_id:
+        score += Decimal("5.00")
+        reasons.append("流水待归属")
+
+    summary = (bank_transaction.summary or "").lower()
+    text_parts = [expense.description, expense.supplier_name or "", expense.payee_account or ""]
+    if summary and any(part and str(part).lower() in summary for part in text_parts):
+        score += Decimal("10.00")
+        reasons.append("备注命中")
+
+    if not reasons:
+        reasons.append("可人工核对")
+    return min(score, Decimal("100.00")), "、".join(reasons)
+
+
+def display_fields_for_instance(
+    mappings_by_template: dict[str, list[TemplateFieldMapping]],
+    approval_instance: ApprovalInstance | None,
+) -> dict[str, object | None]:
+    if approval_instance is None:
+        return {}
+    payload = parse_raw_payload(approval_instance.raw_payload)
+    fields: dict[str, object | None] = {}
+    for mapping in mappings_by_template.get(approval_instance.template_id, []):
+        label = mapping.display_label or mapping.source_field_name
+        fields[label] = mapped_display_value(payload, mapping)
+    return fields
+
+
+def refresh_expense_payment_status(session: Session, expense_item: ExpenseItem) -> None:
+    confirmed_amount = confirmed_expense_match_amount(session, expense_item.id)
+    if confirmed_amount <= 0:
+        expense_item.payment_status = ExpensePaymentStatus.UNPAID.value
+    elif confirmed_amount >= Decimal(expense_item.amount):
+        expense_item.payment_status = ExpensePaymentStatus.PAID.value
+    else:
+        expense_item.payment_status = ExpensePaymentStatus.PARTIAL_PAID.value
+
+
+def refresh_bank_matched_amount(session: Session, bank_transaction: BankTransaction) -> None:
+    total = session.scalar(
+        select(func.coalesce(func.sum(ExpenseBankMatch.amount), Decimal("0.00"))).where(
+            ExpenseBankMatch.bank_transaction_id == bank_transaction.id,
+            ExpenseBankMatch.status == MatchStatus.CONFIRMED.value,
+        )
+    )
+    bank_transaction.matched_amount = Decimal(total or 0)
+
+
+def refresh_bank_assignment(session: Session, bank_transaction: BankTransaction) -> None:
+    matched_expense = session.execute(
+        select(ExpenseBankMatch, ExpenseItem)
+        .join(ExpenseItem, ExpenseBankMatch.expense_item_id == ExpenseItem.id)
+        .where(
+            ExpenseBankMatch.bank_transaction_id == bank_transaction.id,
+            ExpenseBankMatch.status == MatchStatus.CONFIRMED.value,
+        )
+        .order_by(ExpenseBankMatch.confirmed_at.desc().nullslast(), ExpenseBankMatch.created_at.desc())
+        .limit(1)
+    ).first()
+    if matched_expense is None:
+        bank_transaction.store_id = None
+        bank_transaction.ledger_period = None
+        return
+    match, expense = matched_expense
+    bank_transaction.store_id = expense.store_id
+    bank_transaction.ledger_period = match.accounting_period or expense.ledger_period
+
+
+def approval_expense_join_condition():
+    return or_(
+        ExpenseItem.source_document_id == ApprovalInstance.dingtalk_instance_id,
+        ExpenseItem.source_document_id.like(ApprovalInstance.dingtalk_instance_id + ":%"),
+    )
 
 
 @router.get("", response_model=ApiEnvelope[Page[MatchRead]])
@@ -75,6 +385,8 @@ def list_revenue_matches(
 
 
 def revenue_range_total(session: Session, bank_transaction: BankTransaction, payload: RevenueMatchCreate) -> Decimal:
+    if not bank_transaction.store_id or not bank_transaction.ledger_period:
+        raise HTTPException(status_code=409, detail="Bank transaction has no store assignment")
     if payload.revenue_start_date > payload.revenue_end_date:
         raise HTTPException(status_code=422, detail="Revenue start date cannot be after end date")
     total = session.scalar(
@@ -225,9 +537,9 @@ def create_match_candidate(
         raise HTTPException(status_code=404, detail="Bank transaction not found")
     if bank_transaction.direction != "expense":
         raise HTTPException(status_code=409, detail="Bank transaction is not expense")
-    if expense_item.store_id != bank_transaction.store_id:
+    if bank_transaction.store_id and expense_item.store_id != bank_transaction.store_id:
         raise HTTPException(status_code=409, detail="Store mismatch")
-    if expense_item.ledger_period != bank_transaction.ledger_period:
+    if bank_transaction.ledger_period and expense_item.ledger_period != bank_transaction.ledger_period:
         raise HTTPException(status_code=409, detail="Ledger period mismatch")
     remaining_expense_amount = Decimal(expense_item.amount) - confirmed_expense_match_amount(session, expense_item.id)
     if payload.amount > remaining_expense_amount:
@@ -235,7 +547,12 @@ def create_match_candidate(
     remaining_bank_amount = Decimal(bank_transaction.amount) - Decimal(bank_transaction.matched_amount or 0)
     if payload.amount > remaining_bank_amount:
         raise HTTPException(status_code=409, detail="Match amount exceeds remaining bank amount")
-    match = ExpenseBankMatch(**payload.model_dump(), status=MatchStatus.CANDIDATE.value)
+    if payload.accounting_period and bank_transaction.ledger_period and payload.accounting_period != bank_transaction.ledger_period:
+        raise HTTPException(status_code=409, detail="Accounting period does not match bank transaction period")
+    payload_data = payload.model_dump(exclude={"category_l2"})
+    if payload.category_l2 is not None:
+        expense_item.category_l2 = payload.category_l2
+    match = ExpenseBankMatch(**payload_data, status=MatchStatus.CANDIDATE.value)
     session.add(match)
     session.flush()
     write_audit_log(
@@ -349,6 +666,350 @@ def auto_suggest_matches(
     )
 
 
+@router.get(
+    "/reconciliation/candidates",
+    response_model=ApiEnvelope[ReconciliationCandidateResult],
+)
+def list_reconciliation_candidates(
+    bank_transaction_id: str,
+    template_id: str | None = None,
+    store_id: str | None = None,
+    approval_no: str | None = None,
+    exclude_match_id: str | None = None,
+    page_size: int = 50,
+    session: Session = Depends(get_session),
+) -> ApiEnvelope[ReconciliationCandidateResult]:
+    bank_transaction = session.get(BankTransaction, bank_transaction_id)
+    if bank_transaction is None:
+        raise HTTPException(status_code=404, detail="Bank transaction not found")
+    if bank_transaction.direction != "expense":
+        raise HTTPException(status_code=409, detail="Only expense bank transactions can match approvals")
+
+    excluded_match = session.get(ExpenseBankMatch, exclude_match_id) if exclude_match_id else None
+    if excluded_match and excluded_match.bank_transaction_id != bank_transaction.id:
+        raise HTTPException(status_code=409, detail="Excluded match belongs to another bank transaction")
+    remaining_bank_amount = Decimal(bank_transaction.amount) - Decimal(bank_transaction.matched_amount or 0)
+    if excluded_match and excluded_match.status == MatchStatus.CONFIRMED.value:
+        remaining_bank_amount += Decimal(excluded_match.amount)
+    if remaining_bank_amount <= 0:
+        return ApiEnvelope(
+            data=ReconciliationCandidateResult(
+                bank_transaction=bank_transaction,
+                remaining_amount=Decimal("0.00"),
+                candidates=[],
+            )
+        )
+
+    ensure_candidate_total_expenses(session, template_id, store_id, approval_no, page_size)
+
+    query = (
+        select(ExpenseItem, ApprovalInstance, ApprovalTemplate)
+        .outerjoin(ApprovalInstance, approval_expense_join_condition())
+        .outerjoin(ApprovalTemplate, ApprovalInstance.template_id == ApprovalTemplate.id)
+        .where(
+            ExpenseItem.payment_status.in_(
+                [ExpensePaymentStatus.UNPAID.value, ExpensePaymentStatus.PARTIAL_PAID.value]
+            )
+        )
+        .where(
+            or_(
+                ExpenseItem.source != "dingtalk",
+                ExpenseItem.source_document_id.is_(None),
+                ~ExpenseItem.source_document_id.contains(":"),
+            )
+        )
+        .where(
+            or_(
+                ExpenseItem.source != "dingtalk",
+                ApprovalTemplate.is_enabled.is_(True),
+            )
+        )
+    )
+    if template_id:
+        query = query.where(ApprovalInstance.template_id == template_id)
+    if store_id:
+        query = query.where(ExpenseItem.store_id == store_id)
+    if approval_no:
+        like = f"%{approval_no.strip()}%"
+        query = query.where(
+            (ApprovalInstance.approval_no.ilike(like))
+            | (ApprovalInstance.dingtalk_instance_id.ilike(like))
+            | (ExpenseItem.source_document_id.ilike(like))
+        )
+
+    rows = session.execute(query.order_by(ExpenseItem.expense_date.desc(), ExpenseItem.created_at.desc())).all()
+    template_ids = {approval.template_id for _, approval, _ in rows if approval is not None}
+    mappings_by_template: dict[str, list[TemplateFieldMapping]] = {
+        current_template_id: list(
+            session.scalars(
+                select(TemplateFieldMapping)
+                .where(
+                    TemplateFieldMapping.template_id == current_template_id,
+                    TemplateFieldMapping.show_in_list.is_(True),
+                )
+                .order_by(TemplateFieldMapping.sort_order.asc(), TemplateFieldMapping.created_at.asc())
+            )
+        )
+        for current_template_id in template_ids
+    }
+
+    candidates: list[ReconciliationExpenseCandidate] = []
+    active_pairs = {
+        match.expense_item_id
+        for match in session.scalars(
+            select(ExpenseBankMatch).where(
+                ExpenseBankMatch.bank_transaction_id == bank_transaction.id,
+                ExpenseBankMatch.status != MatchStatus.REJECTED.value,
+                ExpenseBankMatch.id != exclude_match_id,
+            )
+        )
+    }
+    for expense, approval, template in rows:
+        if expense.id in active_pairs:
+            continue
+        remaining_expense_amount = Decimal(expense.amount) - confirmed_expense_match_amount(
+            session,
+            expense.id,
+            exclude_match_id=exclude_match_id,
+        )
+        if remaining_expense_amount <= 0:
+            continue
+        score, reason = candidate_score(bank_transaction, expense, remaining_expense_amount)
+        candidates.append(
+            ReconciliationExpenseCandidate(
+                expense_item=expense,
+                approval_instance=approval,
+                template_name=template.name if template else None,
+                display_fields=display_fields_for_instance(mappings_by_template, approval),
+                remaining_amount=remaining_expense_amount,
+                score=score,
+                reason=reason,
+            )
+        )
+
+    candidates.sort(key=lambda item: (item.score, item.expense_item.expense_date or item.expense_item.created_at.date()), reverse=True)
+    return ApiEnvelope(
+        data=ReconciliationCandidateResult(
+            bank_transaction=bank_transaction,
+            remaining_amount=remaining_bank_amount,
+            candidates=candidates[: min(page_size, 100)],
+        )
+    )
+
+
+@router.get(
+    "/reconciliation/records",
+    response_model=ApiEnvelope[Page[ReconciliationRecord]],
+)
+def list_reconciliation_records(
+    status: str = MatchStatus.CONFIRMED.value,
+    accounting_period: str | None = None,
+    store_id: str | None = None,
+    page: int = 1,
+    page_size: int = 50,
+    session: Session = Depends(get_session),
+) -> ApiEnvelope[Page[ReconciliationRecord]]:
+    query = (
+        select(ExpenseBankMatch, BankTransaction, ExpenseItem, ApprovalInstance, ApprovalTemplate)
+        .join(BankTransaction, ExpenseBankMatch.bank_transaction_id == BankTransaction.id)
+        .join(ExpenseItem, ExpenseBankMatch.expense_item_id == ExpenseItem.id)
+        .outerjoin(ApprovalInstance, approval_expense_join_condition())
+        .outerjoin(ApprovalTemplate, ApprovalInstance.template_id == ApprovalTemplate.id)
+        .where(ExpenseBankMatch.status == status)
+        .order_by(ExpenseBankMatch.confirmed_at.desc().nullslast(), ExpenseBankMatch.created_at.desc())
+    )
+    if accounting_period:
+        query = query.where(ExpenseBankMatch.accounting_period == accounting_period)
+    if store_id:
+        query = query.where(ExpenseItem.store_id == store_id)
+
+    page = max(page, 1)
+    page_size = min(max(page_size, 1), 200)
+    total = session.scalar(select(func.count()).select_from(query.subquery())) or 0
+    rows = session.execute(query.offset((page - 1) * page_size).limit(page_size)).all()
+    template_ids = {approval.template_id for _, _, _, approval, _ in rows if approval is not None}
+    mappings_by_template: dict[str, list[TemplateFieldMapping]] = {
+        current_template_id: list(
+            session.scalars(
+                select(TemplateFieldMapping)
+                .where(
+                    TemplateFieldMapping.template_id == current_template_id,
+                    TemplateFieldMapping.show_in_list.is_(True),
+                )
+                .order_by(TemplateFieldMapping.sort_order.asc(), TemplateFieldMapping.created_at.asc())
+            )
+        )
+        for current_template_id in template_ids
+    }
+    records = [
+        ReconciliationRecord(
+            match=match,
+            bank_transaction=bank_transaction,
+            expense_item=expense,
+            approval_instance=approval,
+            template_name=template.name if template else None,
+            display_fields=display_fields_for_instance(mappings_by_template, approval),
+        )
+        for match, bank_transaction, expense, approval, template in rows
+    ]
+    return ApiEnvelope(data=Page(items=records, total=total, page=page, page_size=page_size))
+
+
+@router.patch(
+    "/reconciliation/records/{match_id}",
+    response_model=ApiEnvelope[MatchRead],
+)
+def update_reconciliation_record(
+    match_id: str,
+    payload: ReconciliationRecordUpdate,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+) -> ApiEnvelope[MatchRead]:
+    match = session.get(ExpenseBankMatch, match_id)
+    if match is None:
+        raise HTTPException(status_code=404, detail="Match not found")
+    if match.status != MatchStatus.CONFIRMED.value:
+        raise HTTPException(status_code=409, detail="Only confirmed reconciliation records can be edited")
+
+    bank_transaction = session.get(BankTransaction, match.bank_transaction_id)
+    old_expense = session.get(ExpenseItem, match.expense_item_id)
+    if bank_transaction is None or old_expense is None:
+        raise HTTPException(status_code=409, detail="Matched source record is missing")
+
+    updates = payload.model_dump(exclude_unset=True)
+    target_expense = old_expense
+    if "expense_item_id" in updates and updates["expense_item_id"] != match.expense_item_id:
+        target_expense = session.get(ExpenseItem, updates["expense_item_id"])
+        if target_expense is None:
+            raise HTTPException(status_code=404, detail="Expense item not found")
+
+    target_amount = Decimal(updates.get("amount", match.amount))
+    target_period = updates.get("accounting_period", match.accounting_period) or target_expense.ledger_period
+    if target_amount > Decimal(bank_transaction.amount):
+        raise HTTPException(status_code=409, detail="Match amount exceeds bank transaction amount")
+    confirmed_bank_amount = Decimal(
+        session.scalar(
+            select(func.coalesce(func.sum(ExpenseBankMatch.amount), Decimal("0.00"))).where(
+                ExpenseBankMatch.bank_transaction_id == bank_transaction.id,
+                ExpenseBankMatch.status == MatchStatus.CONFIRMED.value,
+                ExpenseBankMatch.id != match.id,
+            )
+        )
+        or 0
+    )
+    if confirmed_bank_amount + target_amount > Decimal(bank_transaction.amount):
+        raise HTTPException(status_code=409, detail="Match amount exceeds remaining bank amount")
+
+    confirmed_target_expense = confirmed_expense_match_amount(session, target_expense.id, exclude_match_id=match.id)
+    if confirmed_target_expense + target_amount > Decimal(target_expense.amount):
+        raise HTTPException(status_code=409, detail="Match amount exceeds remaining expense amount")
+
+    other_expense_store_ids = {
+        expense.store_id
+        for expense in session.scalars(
+            select(ExpenseItem)
+            .join(ExpenseBankMatch, ExpenseBankMatch.expense_item_id == ExpenseItem.id)
+            .where(
+                ExpenseBankMatch.bank_transaction_id == bank_transaction.id,
+                ExpenseBankMatch.status == MatchStatus.CONFIRMED.value,
+                ExpenseBankMatch.id != match.id,
+            )
+        )
+    }
+    if other_expense_store_ids and other_expense_store_ids != {target_expense.store_id}:
+        raise HTTPException(status_code=409, detail="Bank transaction already matched to another store")
+
+    match.expense_item_id = target_expense.id
+    match.amount = target_amount
+    match.accounting_period = target_period
+    if "bank_occurred" in updates:
+        match.bank_occurred = updates["bank_occurred"]
+    if "reason" in updates:
+        match.reason = updates["reason"]
+    if "category_l2" in updates:
+        target_expense.category_l2 = updates["category_l2"]
+
+    bank_transaction.store_id = target_expense.store_id
+    bank_transaction.ledger_period = target_period
+
+    try:
+        session.flush()
+    except IntegrityError as exc:
+        session.rollback()
+        raise HTTPException(status_code=409, detail="Expense bank match already exists") from exc
+
+    refresh_bank_matched_amount(session, bank_transaction)
+    refresh_expense_payment_status(session, old_expense)
+    if target_expense.id != old_expense.id:
+        refresh_expense_payment_status(session, target_expense)
+
+    write_audit_log(
+        session,
+        actor=audit_actor(current_user),
+        action="match.reconciliation.update",
+        resource_type="expense_bank_match",
+        resource_id=match.id,
+        summary="更新对账记录",
+        metadata={
+            "expense_item_id": match.expense_item_id,
+            "bank_transaction_id": match.bank_transaction_id,
+            "amount": match.amount,
+            "accounting_period": match.accounting_period,
+            "bank_occurred": match.bank_occurred,
+        },
+    )
+    session.commit()
+    session.refresh(match)
+    return ApiEnvelope(data=match)
+
+
+@router.post(
+    "/reconciliation/records/{match_id}/unmatch",
+    response_model=ApiEnvelope[MatchRead],
+)
+def unmatch_reconciliation_record(
+    match_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+) -> ApiEnvelope[MatchRead]:
+    match = session.get(ExpenseBankMatch, match_id)
+    if match is None:
+        raise HTTPException(status_code=404, detail="Match not found")
+    if match.status != MatchStatus.CONFIRMED.value:
+        raise HTTPException(status_code=409, detail="Only confirmed reconciliation records can be unmatched")
+
+    bank_transaction = session.get(BankTransaction, match.bank_transaction_id)
+    expense_item = session.get(ExpenseItem, match.expense_item_id)
+    if bank_transaction is None or expense_item is None:
+        raise HTTPException(status_code=409, detail="Matched source record is missing")
+
+    match.status = MatchStatus.REJECTED.value
+    match.reason = f"{match.reason}\n解除匹配" if match.reason else "解除匹配"
+
+    session.flush()
+    refresh_bank_matched_amount(session, bank_transaction)
+    refresh_bank_assignment(session, bank_transaction)
+    refresh_expense_payment_status(session, expense_item)
+
+    write_audit_log(
+        session,
+        actor=audit_actor(current_user),
+        action="match.reconciliation.unmatch",
+        resource_type="expense_bank_match",
+        resource_id=match.id,
+        summary="解除对账匹配",
+        metadata={
+            "expense_item_id": match.expense_item_id,
+            "bank_transaction_id": match.bank_transaction_id,
+            "amount": match.amount,
+            "accounting_period": match.accounting_period,
+        },
+    )
+    session.commit()
+    session.refresh(match)
+    return ApiEnvelope(data=match)
+
+
 @router.post("/{match_id}/confirm", response_model=ApiEnvelope[MatchRead])
 def confirm_match(
     match_id: str,
@@ -378,6 +1039,11 @@ def confirm_match(
     match.status = MatchStatus.CONFIRMED.value
     match.confirmed_by = operator
     match.confirmed_at = utc_now()
+    if not bank_transaction.store_id and not bank_transaction.ledger_period:
+        bank_transaction.store_id = expense_item.store_id
+        bank_transaction.ledger_period = match.accounting_period or expense_item.ledger_period
+    if not match.accounting_period:
+        match.accounting_period = bank_transaction.ledger_period or expense_item.ledger_period
     bank_transaction.matched_amount = Decimal(bank_transaction.matched_amount or 0) + match.amount
     if confirmed_expense_amount + match.amount >= Decimal(expense_item.amount):
         expense_item.payment_status = ExpensePaymentStatus.PAID.value

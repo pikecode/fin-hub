@@ -1,6 +1,6 @@
 import { Table, Checkbox, Space, Button, Dropdown, Tag, Segmented } from "antd";
 import type { MenuProps } from "antd";
-import type { TableProps, ColumnsType } from "antd/es/table";
+import type { TableProps, ColumnsType, ColumnType } from "antd/es/table";
 import { DownloadOutlined, MoreOutlined, SettingOutlined } from "@ant-design/icons";
 import { useState, useMemo } from "react";
 import type { Key } from "react";
@@ -15,7 +15,7 @@ export interface BatchAction {
   onClick: (selectedKeys: Key[], selectedRows: any[]) => void;
 }
 
-export interface EnterpriseTableColumn<T> extends Omit<ColumnsType<T>[0], "key"> {
+export interface EnterpriseTableColumn<T> extends Omit<ColumnType<T>, "key"> {
   key: string;
   filterable?: boolean;
   filterType?: "text" | "select" | "range" | "date" | "checkbox";

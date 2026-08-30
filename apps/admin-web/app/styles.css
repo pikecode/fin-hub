@@ -397,6 +397,81 @@ body {
   width: 100%;
 }
 
+.app-header {
+  position: sticky;
+  top: 0;
+  z-index: 99;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  min-height: 64px;
+  height: auto;
+  padding: 10px 24px;
+  line-height: 1;
+  background: #ffffff;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.app-header-title-area {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 14px;
+}
+
+.app-header-collapse-button {
+  flex: 0 0 auto;
+  width: 36px;
+  height: 36px;
+  font-size: 16px;
+}
+
+.app-header-title-stack {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+}
+
+.app-header-kicker {
+  overflow: hidden;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-header-title {
+  overflow: hidden;
+  margin: 0;
+  color: #111827;
+  font-size: 20px;
+  font-weight: 650;
+  line-height: 24px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-header-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.app-header-user {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
 .matching-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -408,28 +483,18 @@ body {
   margin-top: 16px;
 }
 
-.integration-overview {
-  margin-bottom: 16px;
-}
-
-.integration-overview h4.ant-typography {
-  margin: 0 0 4px;
-}
-
-.integration-overview-grid {
-  display: grid;
-  grid-template-columns: minmax(280px, 1.7fr) repeat(4, minmax(120px, 1fr));
-  gap: 20px;
-  align-items: center;
-}
-
 .sync-tabs .ant-tabs-nav {
-  margin-bottom: 16px;
+  margin-bottom: 12px;
+  padding: 0 4px;
 }
 
 .sync-tabs .ant-tabs-tab {
-  padding: 12px 18px;
+  padding: 10px 16px;
   font-weight: 600;
+}
+
+.sync-tabs .ant-tabs-content-holder > .ant-tabs-content {
+  min-height: 560px;
 }
 
 .json-preview {
@@ -494,6 +559,51 @@ body {
 
 .filter-select {
   min-width: 180px;
+}
+
+.data-table-card .ant-table-wrapper {
+  margin: 0 -4px;
+}
+
+.data-table-card .ant-table-thead > tr > th {
+  white-space: nowrap;
+}
+
+.table-action-column {
+  white-space: nowrap;
+}
+
+.table-action-buttons {
+  flex-wrap: nowrap;
+}
+
+.ant-table-cell-fix-right-first::after,
+.ant-table-cell-fix-right-last::after {
+  box-shadow: inset -10px 0 8px -8px rgba(15, 23, 42, 0.16);
+}
+
+.ant-table-cell-fix-left-last::after {
+  box-shadow: inset 10px 0 8px -8px rgba(15, 23, 42, 0.14);
+}
+
+.ant-table-tbody > tr.ant-table-row:hover > td {
+  background: #f8fafc;
+}
+
+.ant-table-tbody > tr.selected-table-row > td {
+  background: #eef6ff;
+}
+
+.reconciliation-workbench {
+  min-height: 640px;
+}
+
+.reconciliation-workbench .ant-splitter-panel {
+  overflow: hidden;
+}
+
+.reconciliation-workbench .ant-table-row {
+  cursor: pointer;
 }
 
 .ant-layout {
@@ -623,6 +733,23 @@ body {
 @media (max-width: 720px) {
   .content {
     padding: 16px;
+  }
+
+  .app-header {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 10px;
+    padding: 12px 16px;
+  }
+
+  .app-header-title-area,
+  .app-header-actions {
+    width: 100%;
+  }
+
+  .app-header-actions {
+    justify-content: flex-start;
+    overflow-x: auto;
   }
 
   .table-filter-form .ant-form-item {

@@ -722,7 +722,9 @@ def test_real_approval_sync_persists_instance_when_expense_parse_is_incomplete(
     assert '"expense_parse_status": "skipped"' in instances[0]["raw_payload"]
 
 
-def test_real_approval_sync_splits_table_rows_and_resolves_store_path(client: TestClient, monkeypatch) -> None:
+def test_real_approval_sync_creates_one_expense_per_approval_and_resolves_store_path(
+    client: TestClient, monkeypatch
+) -> None:
     monkeypatch.setattr(settings, "dingtalk_sync_mode", "real")
     client.put(
         "/api/dingtalk/config",
@@ -745,6 +747,7 @@ def test_real_approval_sync_splits_table_rows_and_resolves_store_path(client: Te
             return {
                 "process_instance_id": instance_id,
                 "business_id": "NO-TABLE",
+                "title": "安少辉提交的门店支出报销",
                 "originator_dept_id": "1083312383",
                 "originator_dept_name": "门店运营部-江门区-菌山集开平东汇城店",
                 "status": "COMPLETED",
@@ -762,8 +765,11 @@ def test_real_approval_sync_splits_table_rows_and_resolves_store_path(client: Te
                         "value": (
                             '[{"rowValue":['
                             '{"label":"支出详情","value":"消杀"},'
-                            '{"label":"小项金额","value":"350"},'
+                            '{"label":"小项金额","value":"120"},'
                             '{"label":"报销凭证","value":"[\\"https://example.com/voucher.jpg\\"]"}'
+                            ']},{"rowValue":['
+                            '{"label":"支出详情","value":"维修"},'
+                            '{"label":"小项金额","value":"230"}'
                             "]}]"
                         ),
                     },
@@ -790,14 +796,14 @@ def test_real_approval_sync_splits_table_rows_and_resolves_store_path(client: Te
     expense_response = client.get(f"/api/expense-items?store_id={store_id}&ledger_period=2026-08&page_size=20")
     items = expense_response.json()["data"]["items"]
     assert len(items) == 1
-    assert items[0]["description"] == "消杀"
+    assert items[0]["description"] == "安少辉提交的门店支出报销"
     assert items[0]["amount"] == "350.00"
     assert items[0]["category_l1"] == "门店零星报销"
     assert items[0]["payee_account"] == "安少辉"
 
     instances = client.get(f"/api/dingtalk/approval-instances?template_id={template_id}").json()["data"]["items"]
     assert instances[0]["store_id"] == store_id
-    assert '"expense_row_count": 1' in instances[0]["raw_payload"]
+    assert '"expense_row_count": 2' in instances[0]["raw_payload"]
     attachments = client.get(
         f"/api/attachments?resource_type=approval_instance&resource_id={instances[0]['id']}&page_size=20"
     ).json()["data"]["items"]
@@ -808,9 +814,11 @@ def test_real_approval_sync_splits_table_rows_and_resolves_store_path(client: Te
     preview = preview_response.json()["data"]
     assert preview["can_create_expense"] is True
     assert preview["store_id"] == store_id
-    assert preview["expense_row_count"] == 1
+    assert preview["expense_row_count"] == 2
     assert preview["rows"][0]["description"] == "消杀"
-    assert preview["rows"][0]["amount"] == "350.00"
+    assert preview["rows"][0]["amount"] == "120.00"
+    assert preview["rows"][1]["description"] == "维修"
+    assert preview["rows"][1]["amount"] == "230.00"
     assert preview["voucher_count"] == 2
 
     reparse_response = client.post(
@@ -822,3 +830,28 @@ def test_real_approval_sync_splits_table_rows_and_resolves_store_path(client: Te
     assert reparse["processed_count"] == 1
     assert reparse["reparsed_count"] == 1
     assert reparse["created_expense_count"] == 1
+
+
+def test_disabled_template_cannot_be_selected_for_approval_sync(client: TestClient, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "dingtalk_sync_mode", "mock")
+    template_id = client.post(
+        "/api/dingtalk/templates",
+        json={"process_code": "PROC-DISABLED", "name": "停用模板", "is_enabled": False},
+    ).json()["data"]["id"]
+
+    response = client.post("/api/dingtalk/approval-sync", json={"template_id": template_id})
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "No enabled approval templates"
+
+
+def test_template_enabled_status_can_be_updated(client: TestClient) -> None:
+    template_id = client.post(
+        "/api/dingtalk/templates",
+        json={"process_code": "PROC-ENABLE-TOGGLE", "name": "启停模板", "is_enabled": True},
+    ).json()["data"]["id"]
+
+    response = client.patch(f"/api/dingtalk/templates/{template_id}", json={"is_enabled": False})
+
+    assert response.status_code == 200
+    assert response.json()["data"]["is_enabled"] is False

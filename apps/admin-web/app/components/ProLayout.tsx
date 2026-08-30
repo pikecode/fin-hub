@@ -47,6 +47,11 @@ const menuItems: MenuProps["items"] = [
         icon: <SwapOutlined />,
         label: <Link href="/matching">匹配工作台</Link>,
       },
+      {
+        key: "/finance/reconciliation",
+        icon: <BankOutlined />,
+        label: <Link href="/finance/reconciliation">财务对账</Link>,
+      },
     ],
   },
   {
@@ -246,46 +251,28 @@ export function ProLayout({ title, kicker, action, children }: ProLayoutProps) {
       </Sider>
       <Layout style={{ marginLeft: collapsed ? 80 : 240, transition: "all 0.2s" }}>
         <Header
-          style={{
-            padding: "0 24px",
-            background: "#fff",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            borderBottom: "1px solid #f0f0f0",
-            position: "sticky",
-            top: 0,
-            zIndex: 99,
-          }}
+          className="app-header"
         >
-          <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+          <div className="app-header-title-area">
             <Button
               type="text"
               icon={collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
               onClick={() => setCollapsed(!collapsed)}
-              style={{ fontSize: 16, width: 32, height: 32 }}
+              className="app-header-collapse-button"
             />
-            <div>
+            <div className="app-header-title-stack">
               {kicker && (
-                <div
-                  style={{
-                    fontSize: 12,
-                    color: "#999",
-                    textTransform: "uppercase",
-                    fontWeight: 600,
-                    letterSpacing: 0.5,
-                  }}
-                >
+                <div className="app-header-kicker">
                   {kicker}
                 </div>
               )}
-              <h1 style={{ margin: 0, fontSize: 20, fontWeight: 600 }}>{title}</h1>
+              <h1 className="app-header-title">{title}</h1>
             </div>
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+          <div className="app-header-actions">
             {action}
             <Dropdown menu={userMenu} placement="bottomRight">
-              <div style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+              <div className="app-header-user">
                 <Avatar
                   style={{ backgroundColor: "#14b8a6" }}
                   icon={!displayName ? <UserOutlined /> : undefined}

@@ -350,8 +350,8 @@ class AttachmentAccessUrl(BaseModel):
 
 
 class BankTransactionCreate(BaseModel):
-    store_id: str
-    ledger_period: str = Field(pattern=r"^\d{4}-\d{2}$")
+    store_id: str | None = None
+    ledger_period: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}$")
     occurred_at: datetime
     direction: str = Field(pattern=r"^(income|expense)$")
     amount: Decimal = Field(gt=0)
@@ -362,6 +362,8 @@ class BankTransactionCreate(BaseModel):
 
 
 class BankTransactionUpdate(BaseModel):
+    store_id: str | None = None
+    ledger_period: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}$")
     occurred_at: datetime | None = None
     direction: str | None = Field(default=None, pattern=r"^(income|expense)$")
     amount: Decimal | None = Field(default=None, gt=0)
@@ -384,6 +386,9 @@ class MatchCreate(BaseModel):
     expense_item_id: str
     bank_transaction_id: str
     amount: Decimal = Field(gt=0)
+    accounting_period: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}$")
+    bank_occurred: bool = True
+    category_l2: str | None = None
     confidence: Decimal | None = None
     reason: str | None = None
 
@@ -452,6 +457,11 @@ class ApprovalTemplateCreate(BaseModel):
     process_code: str = Field(min_length=1, max_length=160)
     name: str = Field(min_length=1, max_length=160)
     is_enabled: bool = True
+
+
+class ApprovalTemplateUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=160)
+    is_enabled: bool | None = None
 
 
 class ApprovalTemplateRead(ApprovalTemplateCreate):
@@ -692,6 +702,40 @@ class ApprovalInstanceRead(BaseModel):
     synced_job_id: str | None
     created_at: datetime
     updated_at: datetime
+
+
+class ReconciliationExpenseCandidate(BaseModel):
+    expense_item: ExpenseItemRead
+    approval_instance: ApprovalInstanceRead | None = None
+    template_name: str | None = None
+    display_fields: dict[str, object | None] = Field(default_factory=dict)
+    remaining_amount: Decimal
+    score: Decimal
+    reason: str
+
+
+class ReconciliationCandidateResult(BaseModel):
+    bank_transaction: BankTransactionRead
+    remaining_amount: Decimal
+    candidates: list[ReconciliationExpenseCandidate]
+
+
+class ReconciliationRecord(BaseModel):
+    match: MatchRead
+    bank_transaction: BankTransactionRead
+    expense_item: ExpenseItemRead
+    approval_instance: ApprovalInstanceRead | None = None
+    template_name: str | None = None
+    display_fields: dict[str, object | None] = Field(default_factory=dict)
+
+
+class ReconciliationRecordUpdate(BaseModel):
+    expense_item_id: str | None = None
+    amount: Decimal | None = Field(default=None, gt=0)
+    accounting_period: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}$")
+    bank_occurred: bool | None = None
+    category_l2: str | None = None
+    reason: str | None = None
 
 
 class TemplateSampleApprovalResult(BaseModel):

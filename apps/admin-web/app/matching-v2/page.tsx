@@ -373,7 +373,9 @@ export default function MatchingPageV2() {
             onManualSearch={handleManualSearch}
             onNext={handleNext}
             loading={isLoading}
-            storeName={selectedTransaction ? storesMap.get(selectedTransaction.store_id)?.name : undefined}
+            storeName={
+              selectedTransaction?.store_id ? storesMap.get(selectedTransaction.store_id)?.name : "待归属"
+            }
           />
         </div>
       </Spin>

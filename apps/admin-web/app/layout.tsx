@@ -7,6 +7,10 @@ import "./styles.css";
 export const metadata: Metadata = {
   title: "fin-hub 后台管理",
   description: "蘑说财务管理系统后台管理端",
+  icons: {
+    icon: "/icon.svg",
+    shortcut: "/icon.svg",
+  },
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
