@@ -53,7 +53,7 @@ export function EnterpriseTable<T extends Record<string, any>>({
   dataSource = [],
   batchActions,
   onBatchAction,
-  density = "default",
+  density,
   onDensityChange,
   showDensityToggle = true,
   exportable = false,
@@ -66,9 +66,11 @@ export function EnterpriseTable<T extends Record<string, any>>({
   const tableDataSource = Array.from(dataSource as readonly T[]);
   const [selectedRowKeys, setSelectedRowKeys] = useState<Key[]>([]);
   const [selectedRows, setSelectedRows] = useState<T[]>([]);
+  const [internalDensity, setInternalDensity] = useState<TableDensity>("default");
   const [visibleColumns, setVisibleColumns] = useState<Set<string>>(
     new Set(columns.map((col) => col.key))
   );
+  const activeDensity = density ?? internalDensity;
 
   // 处理固定列
   const processedColumns = useMemo(() => {
@@ -110,10 +112,17 @@ export function EnterpriseTable<T extends Record<string, any>>({
 
   // 根据密度调整表格大小
   const tableSize = useMemo(() => {
-    if (density === "compact") return "small";
-    if (density === "comfortable") return "large";
+    if (activeDensity === "compact") return "small";
+    if (activeDensity === "comfortable") return "large";
     return "middle";
-  }, [density]);
+  }, [activeDensity]);
+
+  function changeDensity(nextDensity: TableDensity) {
+    if (density === undefined) {
+      setInternalDensity(nextDensity);
+    }
+    onDensityChange?.(nextDensity);
+  }
 
   // 导出菜单
   const exportMenu: MenuProps = {
@@ -207,8 +216,8 @@ export function EnterpriseTable<T extends Record<string, any>>({
             {showDensityToggle && (
               <Segmented
                 size="small"
-                value={density}
-                onChange={(value) => onDensityChange?.(value as TableDensity)}
+                value={activeDensity}
+                onChange={(value) => changeDensity(value as TableDensity)}
                 options={[
                   { label: "紧凑", value: "compact" },
                   { label: "默认", value: "default" },

@@ -312,6 +312,12 @@ function approvalStatusMeta(status: string) {
   return statusMap[normalized] ?? { label: status || "-", color: "default" };
 }
 
+function tableFilters(values: Array<string | null | undefined>) {
+  return Array.from(new Set(values.filter((value): value is string => Boolean(value && value !== "-"))))
+    .sort((left, right) => left.localeCompare(right, "zh-CN"))
+    .map((value) => ({ text: value, value }));
+}
+
 function sortTemplates(templates: ApprovalTemplate[]) {
   return [...templates].sort((left, right) => {
     if (left.is_enabled !== right.is_enabled) return left.is_enabled ? -1 : 1;
@@ -485,11 +491,27 @@ export default function DingTalkPage() {
     ? approvalInstances.filter((instance) => instance.template_id === instanceTemplateFilterId)
     : approvalInstances;
   const approvalStatusFilters = useMemo(
-    () =>
-      Array.from(new Set(approvalInstances.map((item) => item.approval_status).filter(Boolean))).map((status) => ({
-        text: approvalStatusMeta(status).label,
-        value: status,
-      })),
+    () => {
+      const filters = new Map<string, { text: string; value: string }>();
+      approvalInstances.forEach((item) => {
+        if (!item.approval_status) return;
+        const meta = approvalStatusMeta(item.approval_status);
+        filters.set(meta.label, { text: meta.label, value: meta.label });
+      });
+      return Array.from(filters.values());
+    },
+    [approvalInstances],
+  );
+  const templateNameFilters = useMemo(
+    () => tableFilters(approvalInstances.map((item) => templateNameById.get(item.template_id))),
+    [approvalInstances, templateNameById],
+  );
+  const applicantFilters = useMemo(
+    () => tableFilters(approvalInstances.map((item) => applicantDisplayName(item))),
+    [approvalInstances],
+  );
+  const departmentFilters = useMemo(
+    () => tableFilters(approvalInstances.map((item) => approvalDepartmentName(item))),
     [approvalInstances],
   );
 
@@ -1157,6 +1179,7 @@ export default function DingTalkPage() {
     { key: "store_name", title: "本地门店", dataIndex: "store_name", width: 180, render: (value) => value || "-" },
   ];
 
+  const hasResumableSyncJob = syncJobs.some((job) => Boolean(job.next_cursor));
   const jobColumns: EnterpriseTableColumn<SyncJob>[] = [
     { key: "job_type", title: "任务类型", dataIndex: "job_type" },
     {
@@ -1180,30 +1203,48 @@ export default function DingTalkPage() {
     { key: "error_message", title: "错误", dataIndex: "error_message", render: (value) => value || "-" },
     { key: "started_by", title: "发起人", dataIndex: "started_by", render: (value) => value || "-" },
     { key: "finished_at", title: "完成时间", dataIndex: "finished_at", render: (value) => value?.replace("T", " ").slice(0, 16) || "-" },
-    {
-      key: "actions",
-      title: "操作",
-      fixed: "right",
-      width: 90,
-      className: "table-action-column",
-      render: (_, record) =>
-        record.next_cursor ? (
-          <Button type="link" onClick={() => resumeApprovalSync(record)}>
-            续跑
-          </Button>
-        ) : (
-          "-"
-        ),
-    },
+    ...(hasResumableSyncJob
+      ? [
+          {
+            key: "actions",
+            title: "操作",
+            fixed: "right" as const,
+            width: 90,
+            className: "table-action-column",
+            render: (_: unknown, record: SyncJob) =>
+              record.next_cursor ? (
+                <Button type="link" onClick={() => resumeApprovalSync(record)}>
+                  续跑
+                </Button>
+              ) : null,
+          },
+        ]
+      : []),
   ];
 
   const listDisplayMappings = instanceTemplateFilterId ? instanceDisplayMappings : [];
   const instanceColumns: EnterpriseTableColumn<ApprovalInstance>[] = [
-    { key: "approval_no", title: "审批编号", dataIndex: "approval_no", render: (value) => value || "-" },
+    {
+      key: "approval_no",
+      title: "审批编号",
+      dataIndex: "approval_no",
+      width: 170,
+      ellipsis: true,
+      render: (value) =>
+        value ? (
+          <Typography.Text code ellipsis={{ tooltip: value }} className="approval-no-cell">
+            {value}
+          </Typography.Text>
+        ) : (
+          "-"
+        ),
+    },
     {
       key: "template_name",
       title: "模板名称",
       width: 180,
+      filters: templateNameFilters,
+      onFilter: (value, record) => templateNameById.get(record.template_id) === value,
       render: (_, record) => templateNameById.get(record.template_id) || "-",
     },
     ...listDisplayMappings.map((mapping): EnterpriseTableColumn<ApprovalInstance> => ({
@@ -1217,6 +1258,8 @@ export default function DingTalkPage() {
       title: "申请人",
       dataIndex: "applicant_name",
       width: 150,
+      filters: applicantFilters,
+      onFilter: (value, record) => applicantDisplayName(record) === value,
       render: (_, record) => (
         <Space direction="vertical" size={0}>
           <Typography.Text>{applicantDisplayName(record)}</Typography.Text>
@@ -1232,6 +1275,8 @@ export default function DingTalkPage() {
       key: "department_name",
       title: "部门",
       width: 220,
+      filters: departmentFilters,
+      onFilter: (value, record) => approvalDepartmentName(record) === value,
       render: (_, record) => approvalDepartmentName(record),
     },
     {
@@ -1239,7 +1284,7 @@ export default function DingTalkPage() {
       title: "状态",
       dataIndex: "approval_status",
       filters: approvalStatusFilters,
-      onFilter: (value, record) => record.approval_status === value,
+      onFilter: (value, record) => approvalStatusMeta(record.approval_status).label === value,
       render: (value) => {
         const meta = approvalStatusMeta(value);
         return <Tag color={meta.color}>{meta.label}</Tag>;
@@ -1439,7 +1484,7 @@ export default function DingTalkPage() {
                     pagination={{ pageSize: 5 }}
                     showDensityToggle
                     showColumnSettings
-                    fixedColumns={{ right: ["actions"] }}
+                    fixedColumns={hasResumableSyncJob ? { right: ["actions"] } : undefined}
                   />
                 </Card>
               </Space>
