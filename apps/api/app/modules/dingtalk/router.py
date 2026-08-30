@@ -658,6 +658,75 @@ def save_sample_approval_instance(
     return instance
 
 
+def approval_raw_payload(instance: ApprovalInstance) -> dict[str, Any]:
+    if not instance.raw_payload:
+        return {}
+    try:
+        parsed = json.loads(instance.raw_payload)
+    except ValueError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def approval_originator_dept_id(payload: dict[str, Any]) -> str | None:
+    value = payload.get("originator_dept_id") or payload.get("originatorDeptId")
+    return parse_text(value)
+
+
+def approval_originator_dept_name(payload: dict[str, Any]) -> str | None:
+    value = payload.get("originator_dept_name") or payload.get("originatorDeptName")
+    if parse_text(value):
+        return parse_text(value)
+    parsed = payload.get("_fin_hub_parse")
+    if isinstance(parsed, dict):
+        return parse_text(parsed.get("originator_dept_name"))
+    return None
+
+
+def resolve_approval_department_name(session: Session, instance: ApprovalInstance) -> str | None:
+    payload = approval_raw_payload(instance)
+    direct_name = approval_originator_dept_name(payload)
+    if direct_name:
+        return direct_name
+
+    dept_id = approval_originator_dept_id(payload)
+    if dept_id:
+        department = session.scalar(
+            select(DingTalkDepartmentModel).where(DingTalkDepartmentModel.dept_id == dept_id)
+        )
+        if department is not None:
+            return department.path or department.name
+        store = session.scalar(select(Store).where(Store.dingtalk_dept_id == dept_id))
+        if store is not None:
+            return store.name
+
+    if instance.store_id:
+        store = session.get(Store, instance.store_id)
+        if store is not None:
+            return store.name
+    return None
+
+
+def approval_instance_read(session: Session, instance: ApprovalInstance) -> ApprovalInstanceRead:
+    return ApprovalInstanceRead(
+        id=instance.id,
+        template_id=instance.template_id,
+        dingtalk_instance_id=instance.dingtalk_instance_id,
+        approval_no=instance.approval_no,
+        store_id=instance.store_id,
+        department_name=resolve_approval_department_name(session, instance),
+        applicant_name=instance.applicant_name,
+        applicant_user_id=instance.applicant_user_id,
+        approval_status=instance.approval_status,
+        submit_at=instance.submit_at,
+        approved_at=instance.approved_at,
+        raw_payload=instance.raw_payload,
+        synced_job_id=instance.synced_job_id,
+        created_at=instance.created_at,
+        updated_at=instance.updated_at,
+    )
+
+
 def last_department_name(value: str | None) -> str | None:
     if not value:
         return None
@@ -1418,7 +1487,75 @@ def find_form_value(raw_instance: dict[str, Any], *names: str) -> Any:
     return None
 
 
-def mapped_value(mapping: TemplateFieldMapping, values: dict[str, Any]) -> Any:
+def raw_path_value(raw_instance: dict[str, Any], path: str | None) -> Any:
+    if not path:
+        return None
+    if path.startswith("root:"):
+        return raw_instance.get(path.removeprefix("root:"))
+    if path.startswith("field:"):
+        return field_value_from_raw_instance(raw_instance, path.removeprefix("field:"))
+    if path.startswith("table:"):
+        parts = path.split(":", 2)
+        if len(parts) != 3:
+            return None
+        _, table_key, cell_key = parts
+        return table_value_from_raw_instance(raw_instance, table_key, cell_key)
+    return None
+
+
+def field_value_from_raw_instance(raw_instance: dict[str, Any], field_key: str) -> Any:
+    for component in form_component_values(raw_instance):
+        if any(str(component.get(key)) == field_key for key in ("id", "name", "label", "key") if component.get(key)):
+            return component.get("value") or component.get("ext_value") or component.get("extValue")
+    return None
+
+
+def table_value_from_raw_instance(raw_instance: dict[str, Any], table_key: str, cell_key: str) -> Any:
+    components = raw_instance.get("form_component_values") or raw_instance.get("formComponentValues") or []
+    if not isinstance(components, list):
+        return None
+    table = next(
+        (
+            component
+            for component in components
+            if isinstance(component, dict)
+            and any(str(component.get(key)) == table_key for key in ("id", "name", "label", "key") if component.get(key))
+        ),
+        None,
+    )
+    if not isinstance(table, dict):
+        return None
+    rows = table.get("value")
+    if isinstance(rows, str):
+        try:
+            rows = json.loads(rows)
+        except ValueError:
+            return None
+    if not isinstance(rows, list):
+        return None
+    values: list[Any] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        cells = row.get("rowValue") or row.get("row_value") or []
+        if not isinstance(cells, list):
+            continue
+        for cell in cells:
+            if not isinstance(cell, dict):
+                continue
+            if any(str(cell.get(key)) == cell_key for key in ("key", "id", "name", "label", "title") if cell.get(key)):
+                value = cell.get("value") or cell.get("ext_value") or cell.get("extValue")
+                if value not in (None, ""):
+                    values.append(value)
+    if not values:
+        return None
+    return values[0] if len(values) == 1 else values
+
+
+def mapped_value(mapping: TemplateFieldMapping, values: dict[str, Any], raw_instance: dict[str, Any]) -> Any:
+    path_value = raw_path_value(raw_instance, mapping.source_path)
+    if path_value not in (None, ""):
+        return path_value
     if mapping.source_field_id and mapping.source_field_id in values:
         return values[mapping.source_field_id]
     return values.get(mapping.source_field_name)
@@ -1433,7 +1570,7 @@ def mapped_values_for_template(
     mappings = session.scalars(
         select(TemplateFieldMapping).where(TemplateFieldMapping.template_id == template_id)
     ).all()
-    return {mapping.standard_field: mapped_value(mapping, values) for mapping in mappings}
+    return {mapping.standard_field: mapped_value(mapping, values, raw_instance) for mapping in mappings}
 
 
 def mapped_or_form_value(
@@ -2204,4 +2341,11 @@ def list_approval_instances(
     if template_id:
         query = query.where(ApprovalInstance.template_id == template_id)
     items, total = paginate(session, query, page, page_size)
-    return ApiEnvelope(data=Page(items=items, total=total, page=page, page_size=page_size))
+    return ApiEnvelope(
+        data=Page(
+            items=[approval_instance_read(session, item) for item in items],
+            total=total,
+            page=page,
+            page_size=page_size,
+        )
+    )

@@ -1,8 +1,10 @@
+import json
+
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app.core.config import settings
-from app.models import ApprovalInstance, ApprovalTemplate, DingTalkConfig, ExpenseItem, SyncJob
+from app.models import ApprovalInstance, ApprovalTemplate, DingTalkConfig, DingTalkDepartment, ExpenseItem, SyncJob
 from app.modules.dingtalk.client import DingTalkClientError
 
 
@@ -165,6 +167,49 @@ def test_template_field_candidates_from_snapshot_and_instances(client: TestClien
     assert labels["表格.支出详情"]["sample_value"] == "灭火毯"
     assert labels["表格.小项金额"]["source_field_id"] == "field-line-amount"
     assert [item["source_field_name"] for item in candidates].count("金额") == 1
+
+
+def test_approval_instances_resolve_department_name_from_originator_dept_id(
+    client: TestClient,
+    session,
+) -> None:
+    template_id = client.post(
+        "/api/dingtalk/templates",
+        json={"process_code": "PROC-DEPT-NAME", "name": "部门名称模板", "is_enabled": True},
+    ).json()["data"]["id"]
+    session.add(
+        DingTalkDepartment(
+            dept_id="1083385181",
+            parent_id="1",
+            name="菌山集阳江新达城店",
+            path="门店运营部-江门区-菌山集阳江新达城店",
+            depth=3,
+            is_store_candidate=True,
+        )
+    )
+    session.add(
+        ApprovalInstance(
+            template_id=template_id,
+            dingtalk_instance_id="dept-id-only-instance",
+            approval_no="202608300099",
+            approval_status="agree",
+            raw_payload=json.dumps(
+                {
+                    "business_id": "202608300099",
+                    "originator_dept_id": "1083385181",
+                    "form_component_values": [],
+                },
+                ensure_ascii=False,
+            ),
+        )
+    )
+    session.commit()
+
+    response = client.get(f"/api/dingtalk/approval-instances?template_id={template_id}")
+
+    assert response.status_code == 200
+    instance = response.json()["data"]["items"][0]
+    assert instance["department_name"] == "门店运营部-江门区-菌山集阳江新达城店"
 
 
 def test_start_approval_sync_creates_job_instance_and_expense(client: TestClient) -> None:

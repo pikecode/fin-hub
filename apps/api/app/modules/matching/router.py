@@ -124,9 +124,23 @@ def table_value(payload: dict, table_key: str, cell_key: str) -> object | None:
     return values[0] if len(values) == 1 else values
 
 
+def field_value(payload: dict, field_key: str) -> object | None:
+    components = payload.get("form_component_values") or payload.get("formComponentValues") or []
+    if not isinstance(components, list):
+        return None
+    for component in components:
+        if not isinstance(component, dict):
+            continue
+        if any(str(component.get(key)) == field_key for key in ("id", "name", "label", "key") if component.get(key)):
+            return component.get("value", component.get("ext_value", component.get("extValue")))
+    return None
+
+
 def mapped_display_value(payload: dict, mapping: TemplateFieldMapping) -> object | None:
     if mapping.source_path and mapping.source_path.startswith("root:"):
         return payload.get(mapping.source_path.removeprefix("root:"))
+    if mapping.source_path and mapping.source_path.startswith("field:"):
+        return field_value(payload, mapping.source_path.removeprefix("field:"))
     if mapping.source_path and mapping.source_path.startswith("table:"):
         _, table_key, cell_key = mapping.source_path.split(":", 2)
         return table_value(payload, table_key, cell_key)
@@ -171,6 +185,25 @@ def first_form_value(payload: dict, *names: str) -> object | None:
     return None
 
 
+def mapped_values_for_approval(session: Session, approval: ApprovalInstance, payload: dict) -> dict[str, object | None]:
+    mappings = session.scalars(
+        select(TemplateFieldMapping).where(TemplateFieldMapping.template_id == approval.template_id)
+    ).all()
+    return {mapping.standard_field: mapped_display_value(payload, mapping) for mapping in mappings}
+
+
+def mapped_or_first_form_value(
+    mapped: dict[str, object | None],
+    payload: dict,
+    standard_field: str,
+    *fallback_names: str,
+) -> object | None:
+    value = mapped.get(standard_field)
+    if value not in (None, "", "null"):
+        return value
+    return first_form_value(payload, *fallback_names)
+
+
 def ensure_approval_total_expense(session: Session, approval: ApprovalInstance) -> ExpenseItem | None:
     existing = session.scalar(
         select(ExpenseItem).where(ExpenseItem.source == "dingtalk", ExpenseItem.source_document_id == approval.dingtalk_instance_id)
@@ -179,7 +212,10 @@ def ensure_approval_total_expense(session: Session, approval: ApprovalInstance) 
         return existing
 
     payload = parse_raw_payload(approval.raw_payload)
-    amount = parsed_decimal(first_form_value(payload, "汇总金额（元）", "汇总金额", "金额", "报销金额"))
+    mapped = mapped_values_for_approval(session, approval, payload)
+    amount = parsed_decimal(
+        mapped_or_first_form_value(mapped, payload, "amount", "汇总金额（元）", "汇总金额", "金额", "报销金额")
+    )
     if amount is None:
         amount = Decimal(
             session.scalar(
@@ -194,7 +230,9 @@ def ensure_approval_total_expense(session: Session, approval: ApprovalInstance) 
         return None
 
     expense_at = (
-        parsed_datetime(first_form_value(payload, "报销日期", "支出日期", "费用日期", "日期"))
+        parsed_datetime(
+            mapped_or_first_form_value(mapped, payload, "expense_date", "报销日期", "支出日期", "费用日期", "日期")
+        )
         or approval.submit_at
         or approval.approved_at
     )
@@ -205,15 +243,22 @@ def ensure_approval_total_expense(session: Session, approval: ApprovalInstance) 
         session.add(Ledger(store_id=approval.store_id, period=period))
         session.flush()
 
-    title = payload.get("title") or payload.get("titleName") or first_form_value(payload, "费用说明", "其他备注信息", "备注")
+    title = payload.get("title") or payload.get("titleName") or mapped_or_first_form_value(
+        mapped, payload, "description", "费用说明", "其他备注信息", "备注"
+    )
     expense_item = ExpenseItem(
         store_id=approval.store_id,
         ledger_period=period,
         expense_date=expense_at,
         description=str(title or approval.approval_no or "钉钉审批单"),
         amount=amount,
-        category_l1=str(first_form_value(payload, "支出类型", "费用类型", "一级分类") or "钉钉审批"),
-        payee_account=str(first_form_value(payload, "收款账户", "收款账号", "账户") or "") or None,
+        category_l1=str(
+            mapped_or_first_form_value(mapped, payload, "category_l1", "支出类型", "费用类型", "一级分类") or "钉钉审批"
+        ),
+        payee_account=str(
+            mapped_or_first_form_value(mapped, payload, "payee_account", "收款账户", "收款账号", "账户") or ""
+        )
+        or None,
         source="dingtalk",
         source_document_id=approval.dingtalk_instance_id,
     )

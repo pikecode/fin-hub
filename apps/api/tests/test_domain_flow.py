@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from openpyxl import load_workbook
 from sqlalchemy.orm import Session
 
-from app.models import ApprovalInstance, ApprovalTemplate, ExpenseItem
+from app.models import ApprovalInstance, ApprovalTemplate, ExpenseItem, TemplateFieldMapping
 
 
 def test_store_ledger_and_close_flow(client: TestClient) -> None:
@@ -293,6 +293,68 @@ def test_reconciliation_candidate_search_backfills_total_approval_expense(
     ).json()["data"]["candidates"]
     assert len(searched_candidates) == 1
     assert searched_candidates[0]["expense_item"]["id"] == candidates[0]["expense_item"]["id"]
+
+
+def test_reconciliation_candidate_backfill_uses_template_business_amount_mapping(
+    client: TestClient,
+    session: Session,
+) -> None:
+    store_id = client.post("/api/stores", json={"name": "筹建报销测试店"}).json()["data"]["id"]
+    client.post("/api/ledgers", json={"store_id": store_id, "period": "2026-08"})
+    template = ApprovalTemplate(process_code="PROC-BUILD-RECON", name="门店筹建报销")
+    session.add(template)
+    session.flush()
+    session.add(
+        TemplateFieldMapping(
+            template_id=template.id,
+            standard_field="amount",
+            display_label="单据总金额",
+            source_field_id="build-amount-field",
+            source_field_name="金额（元）",
+            source_path="field:build-amount-field",
+            field_type="MoneyField",
+            is_required=True,
+        )
+    )
+    approval = ApprovalInstance(
+        template_id=template.id,
+        dingtalk_instance_id="build-approval-instance",
+        approval_no="202608300088",
+        store_id=store_id,
+        approval_status="agree",
+        submit_at=datetime(2026, 8, 30, 10, 0, 0),
+        raw_payload=json.dumps(
+            {
+                "title": "张三提交的门店筹建报销",
+                "business_id": "202608300088",
+                "create_time": "2026-08-30 10:00:00",
+                "form_component_values": [
+                    {"name": "申请日期", "value": "2026-08-30"},
+                    {"id": "build-amount-field", "name": "金额（元）", "value": "1288.66"},
+                ],
+            },
+            ensure_ascii=False,
+        ),
+    )
+    session.add(approval)
+    session.commit()
+    bank_id = client.post(
+        "/api/bank-transactions",
+        json={
+            "occurred_at": "2026-08-30T11:30:00",
+            "direction": "expense",
+            "amount": "1288.66",
+            "summary": "筹建报销 202608300088",
+        },
+    ).json()["data"]["id"]
+
+    candidates = client.get(f"/api/matches/reconciliation/candidates?bank_transaction_id={bank_id}").json()["data"][
+        "candidates"
+    ]
+
+    assert len(candidates) == 1
+    assert candidates[0]["approval_instance"]["approval_no"] == "202608300088"
+    assert candidates[0]["remaining_amount"] == "1288.66"
 
 
 def test_reconciliation_candidates_ignore_disabled_approval_templates(

@@ -705,6 +705,7 @@ export interface ApprovalInstance {
   dingtalk_instance_id: string;
   approval_no?: string | null;
   store_id?: string | null;
+  department_name?: string | null;
   applicant_name?: string | null;
   applicant_user_id?: string | null;
   approval_status: string;

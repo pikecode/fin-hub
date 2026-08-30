@@ -64,6 +64,17 @@ interface MappingFormValues extends TemplateFieldMappingCreate {
   selected_field_key?: string;
 }
 
+type BusinessFieldOption = {
+  value: string;
+  label: string;
+  description: string;
+  required?: boolean;
+};
+
+type MappingModalMode =
+  | { type: "display" }
+  | { type: "business"; field: BusinessFieldOption };
+
 type DepartmentTreeNode = DingTalkDepartment & {
   children?: DepartmentTreeNode[];
 };
@@ -82,6 +93,28 @@ type ImagePreviewState = {
   title: string;
   url: string;
 };
+
+const BUSINESS_FIELD_OPTIONS: BusinessFieldOption[] = [
+  { value: "amount", label: "单据总金额", description: "对账时与银行流水金额匹配", required: true },
+  { value: "store", label: "门店/部门", description: "用于归属门店和门店维度分析", required: true },
+  { value: "expense_date", label: "业务日期", description: "用于入账期间和日期分析", required: true },
+  { value: "category_l1", label: "一级分类", description: "用于费用分类统计" },
+  { value: "payee_account", label: "收款账户", description: "用于辅助识别付款对象" },
+  { value: "description", label: "摘要说明", description: "用于候选匹配和列表识别" },
+  { value: "expense_table", label: "明细表格", description: "用于详情查看审批明细" },
+  { value: "voucher_images", label: "凭证图片", description: "用于凭证图片预览" },
+  { value: "voucher_files", label: "凭证文件", description: "用于凭证文件访问或下载" },
+];
+
+const BUSINESS_FIELD_SET = new Set(BUSINESS_FIELD_OPTIONS.map((item) => item.value));
+
+function isBusinessMapping(mapping: TemplateFieldMapping) {
+  return BUSINESS_FIELD_SET.has(mapping.standard_field);
+}
+
+function isDisplayMapping(mapping: TemplateFieldMapping) {
+  return mapping.standard_field.startsWith("display:");
+}
 
 function buildDepartmentTree(departments: DingTalkDepartment[]): DepartmentTreeNode[] {
   const nodeMap = new Map<string, DepartmentTreeNode>();
@@ -283,6 +316,7 @@ function applicantDisplayName(instance: ApprovalInstance) {
 }
 
 function approvalDepartmentName(instance: ApprovalInstance) {
+  if (instance.department_name) return instance.department_name;
   const payload = approvalPayload(instance);
   const directName = payload?.originator_dept_name ?? payload?.originatorDeptName;
   if (typeof directName === "string" && directName) return directName;
@@ -428,6 +462,7 @@ export default function DingTalkPage() {
   const [selectedInstance, setSelectedInstance] = useState<ApprovalInstance | null>(null);
   const [selectedInstanceAttachments, setSelectedInstanceAttachments] = useState<Attachment[]>([]);
   const [editingMapping, setEditingMapping] = useState<TemplateFieldMapping | null>(null);
+  const [mappingModalMode, setMappingModalMode] = useState<MappingModalMode>({ type: "display" });
   const [imagePreview, setImagePreview] = useState<ImagePreviewState | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isTemplateModalOpen, setIsTemplateModalOpen] = useState(false);
@@ -440,7 +475,6 @@ export default function DingTalkPage() {
   const [templateForm] = Form.useForm<ApprovalTemplateCreate>();
   const [mappingForm] = Form.useForm<MappingFormValues>();
   const [syncForm] = Form.useForm<ApprovalSyncFormValues>();
-  const selectedSourceFieldName = Form.useWatch("source_field_name", mappingForm);
   const departmentTree = useMemo(
     () => buildDepartmentTree(departmentPreview?.departments ?? []),
     [departmentPreview],
@@ -480,7 +514,9 @@ export default function DingTalkPage() {
       }))
       .filter((table) => table.rows.length > 0);
   }, [selectedInstanceFields]);
-  const detailDisplayMappings = mappings;
+  const businessMappings = useMemo(() => mappings.filter(isBusinessMapping), [mappings]);
+  const displayMappings = useMemo(() => mappings.filter(isDisplayMapping), [mappings]);
+  const detailDisplayMappings = displayMappings;
   const selectedTemplateSampleInstance = selectedTemplate
     ? approvalInstances.find((instance) => instance.template_id === selectedTemplate.id)
     : undefined;
@@ -690,7 +726,7 @@ export default function DingTalkPage() {
     setIsLoading(true);
     try {
       const data = await apiClient.dingtalk.listMappings(templateId);
-      setInstanceDisplayMappings(data);
+      setInstanceDisplayMappings(data.filter(isDisplayMapping));
     } catch (error) {
       setErrorMessage(dingtalkPageErrorMessage(error, "无法加载模板显示字段"));
     } finally {
@@ -713,7 +749,8 @@ export default function DingTalkPage() {
       setIsSyncModalOpen(false);
       await loadData();
       if (instanceTemplateFilterId) {
-        setInstanceDisplayMappings(await apiClient.dingtalk.listMappings(instanceTemplateFilterId));
+        const currentMappings = await apiClient.dingtalk.listMappings(instanceTemplateFilterId);
+        setInstanceDisplayMappings(currentMappings.filter(isDisplayMapping));
       }
       if (job.status === "failed") {
         message.error(job.error_message || "审批列表同步失败");
@@ -815,6 +852,13 @@ export default function DingTalkPage() {
     try {
       const result = await apiClient.dingtalk.pullTemplateSampleApproval(template.id);
       setFieldCandidates(result.field_candidates);
+      if (result.instance) {
+        setApprovalInstances((items) => {
+          const index = items.findIndex((item) => item.id === result.instance?.id);
+          if (index < 0) return [result.instance!, ...items];
+          return items.map((item) => (item.id === result.instance?.id ? result.instance! : item));
+        });
+      }
       if (result.pulled_count > 0) {
         message.success("已拉取一条真实审批样例，钉钉字段下拉已刷新");
       } else {
@@ -840,7 +884,12 @@ export default function DingTalkPage() {
     });
   }
 
-  function openMappingModal(candidate?: TemplateFieldCandidate, mapping?: TemplateFieldMapping) {
+  function openMappingModal(
+    candidate?: TemplateFieldCandidate,
+    mapping?: TemplateFieldMapping,
+    mode: MappingModalMode = { type: "display" },
+  ) {
+    setMappingModalMode(mode);
     setEditingMapping(mapping ?? null);
     mappingForm.resetFields();
     if (mapping) {
@@ -861,19 +910,63 @@ export default function DingTalkPage() {
       return;
     }
     mappingForm.setFieldsValue({
-      standard_field: candidate ? `display:${candidate.source_field_id || candidate.source_field_name}` : undefined,
-      display_label: candidate?.source_field_name,
+      standard_field:
+        mode.type === "business"
+          ? mode.field.value
+          : candidate
+            ? `display:${candidate.source_field_id || candidate.source_field_name}`
+            : undefined,
+      display_label: mode.type === "business" ? mode.field.label : candidate?.source_field_name,
       selected_field_key: candidate ? candidateKey(candidate) : undefined,
       source_field_name: candidate?.source_field_name,
       source_field_id: candidate?.source_field_id ?? undefined,
       source_path: candidate?.source_path ?? undefined,
       field_type: candidate?.field_type ?? undefined,
-      show_in_list: true,
-      show_in_detail: true,
-      is_required: false,
-      sort_order: mappings.length,
+      show_in_list: mode.type === "display",
+      show_in_detail: mode.type === "display",
+      is_required: mode.type === "business" ? Boolean(mode.field.required) : false,
+      sort_order: mode.type === "display" ? displayMappings.length : businessMappings.length,
     });
     setIsMappingModalOpen(true);
+  }
+
+  async function saveBusinessFieldMapping(field: BusinessFieldOption, fieldKey?: string) {
+    if (!selectedTemplate) return;
+    const existing = businessMappings.find((item) => item.standard_field === field.value);
+    if (!fieldKey) {
+      if (!existing) return;
+      await deleteMapping(existing);
+      return;
+    }
+    const candidate = fieldCandidates.find((item) => candidateKey(item) === fieldKey || item.source_field_name === fieldKey);
+    if (!candidate) return;
+    const payload: TemplateFieldMappingCreate = {
+      standard_field: field.value,
+      display_label: field.label,
+      source_field_name: candidate.source_field_name,
+      source_field_id: candidate.source_field_id ?? undefined,
+      source_path: candidate.source_path ?? undefined,
+      field_type: candidate.field_type ?? undefined,
+      show_in_list: false,
+      show_in_detail: false,
+      is_required: Boolean(field.required),
+      sort_order: existing?.sort_order ?? businessMappings.length,
+    };
+    setIsLoading(true);
+    setErrorMessage(null);
+    try {
+      if (existing) {
+        await apiClient.dingtalk.updateMapping(selectedTemplate.id, existing.id, payload);
+      } else {
+        await apiClient.dingtalk.upsertMapping(selectedTemplate.id, payload);
+      }
+      await loadMappings(selectedTemplate);
+      message.success(`${field.label}已更新`);
+    } catch (error) {
+      setErrorMessage(dingtalkPageErrorMessage(error, "无法保存对账字段"));
+    } finally {
+      setIsLoading(false);
+    }
   }
 
   async function deleteMapping(mapping: TemplateFieldMapping) {
@@ -893,25 +986,32 @@ export default function DingTalkPage() {
 
   async function moveMapping(mapping: TemplateFieldMapping, direction: "up" | "down") {
     if (!selectedTemplate) return;
-    const currentIndex = mappings.findIndex((item) => item.id === mapping.id);
+    const currentIndex = displayMappings.findIndex((item) => item.id === mapping.id);
     const targetIndex = direction === "up" ? currentIndex - 1 : currentIndex + 1;
-    if (currentIndex < 0 || targetIndex < 0 || targetIndex >= mappings.length) return;
-    const nextMappings = [...mappings];
-    [nextMappings[currentIndex], nextMappings[targetIndex]] = [nextMappings[targetIndex], nextMappings[currentIndex]];
+    if (currentIndex < 0 || targetIndex < 0 || targetIndex >= displayMappings.length) return;
+    const nextDisplayMappings = [...displayMappings];
+    [nextDisplayMappings[currentIndex], nextDisplayMappings[targetIndex]] = [
+      nextDisplayMappings[targetIndex],
+      nextDisplayMappings[currentIndex],
+    ];
+    const nextMappings = mappings.map((item) => {
+      const nextIndex = nextDisplayMappings.findIndex((displayItem) => displayItem.id === item.id);
+      return nextIndex >= 0 ? { ...item, sort_order: nextIndex } : item;
+    });
     const payload = {
       items: nextMappings.map((item, index) => ({
         id: item.id,
-        sort_order: index,
+        sort_order: isDisplayMapping(item) ? item.sort_order : index + 1000,
       })),
     };
-    setMappings(nextMappings.map((item, index) => ({ ...item, sort_order: index })));
+    setMappings(nextMappings);
     setIsLoading(true);
     setErrorMessage(null);
     try {
       const ordered = await apiClient.dingtalk.reorderMappings(selectedTemplate.id, payload);
       setMappings(ordered);
       if (instanceTemplateFilterId === selectedTemplate.id) {
-        setInstanceDisplayMappings(ordered);
+        setInstanceDisplayMappings(ordered.filter(isDisplayMapping));
       }
     } catch (error) {
       await loadMappings(selectedTemplate);
@@ -924,15 +1024,18 @@ export default function DingTalkPage() {
   async function submitMapping(values: MappingFormValues) {
     if (!selectedTemplate) return;
     const sourceKey = values.source_field_id || values.source_field_name;
+    const isBusinessField = BUSINESS_FIELD_SET.has(values.standard_field);
     setIsLoading(true);
     try {
       const payload = {
         ...values,
-        standard_field: values.standard_field || `display:${sourceKey}`,
+        standard_field: isBusinessField ? values.standard_field : values.standard_field || `display:${sourceKey}`,
         display_label: values.display_label || values.source_field_name,
-        show_in_detail: values.show_in_detail ?? true,
-        show_in_list: true,
-        is_required: false,
+        show_in_detail: isBusinessField ? false : (values.show_in_detail ?? true),
+        show_in_list: isBusinessField ? false : true,
+        is_required: isBusinessField
+          ? Boolean(BUSINESS_FIELD_OPTIONS.find((item) => item.value === values.standard_field)?.required)
+          : false,
       };
       if (editingMapping) {
         await apiClient.dingtalk.updateMapping(selectedTemplate.id, editingMapping.id, payload);
@@ -941,6 +1044,7 @@ export default function DingTalkPage() {
       }
       setIsMappingModalOpen(false);
       setEditingMapping(null);
+      setMappingModalMode({ type: "display" });
       mappingForm.resetFields();
       await loadMappings(selectedTemplate);
     } catch (error) {
@@ -1087,10 +1191,90 @@ export default function DingTalkPage() {
       render: (_, record) => (
         <Space>
           <Button type="link" onClick={() => openMappingDrawer(record)}>
-            字段显示配置
+            字段配置
           </Button>
         </Space>
       ),
+    },
+  ];
+
+  const businessMappingColumns: ColumnsType<BusinessFieldOption> = [
+    {
+      title: "系统字段",
+      dataIndex: "label",
+      width: 190,
+      render: (value, record) => (
+        <Space direction="vertical" size={0}>
+          <Space size={6}>
+            <Typography.Text strong>{value}</Typography.Text>
+            {record.required ? <Tag color="red">必配</Tag> : null}
+          </Space>
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            {record.description}
+          </Typography.Text>
+        </Space>
+      ),
+    },
+    {
+      title: "对应钉钉字段",
+      width: 320,
+      render: (_, record) => {
+        const mapping = businessMappings.find((item) => item.standard_field === record.value);
+        const currentValue = mapping ? mapping.source_field_id || mapping.source_field_name : undefined;
+        const options = fieldCandidates.map((candidate) => ({
+          label: renderFieldCandidateOption(candidate),
+          fieldName: candidate.source_field_name,
+          searchText: fieldCandidateSearchText(candidate),
+          value: candidateKey(candidate),
+        }));
+        if (mapping && currentValue && !options.some((item) => item.value === currentValue)) {
+          options.unshift({
+            label: renderFieldCandidateOption({
+              source_field_id: mapping.source_field_id,
+              source_field_name: mapping.source_field_name,
+              source_path: mapping.source_path,
+              field_type: mapping.field_type,
+              sample_value: selectedTemplateSampleInstance ? mappedDisplayValue(selectedTemplateSampleInstance, mapping) : undefined,
+            }),
+            fieldName: mapping.source_field_name,
+            searchText: [mapping.source_field_name, mapping.source_field_id, mapping.field_type].filter(Boolean).join(" "),
+            value: currentValue,
+          });
+        }
+        return (
+          <Select
+            allowClear={!record.required}
+            showSearch
+            value={currentValue}
+            placeholder={fieldCandidates.length ? "选择钉钉字段" : "先刷新可选字段"}
+            optionLabelProp="fieldName"
+            filterOption={(input, option) =>
+              String(option?.searchText ?? "").toLowerCase().includes(input.toLowerCase())
+            }
+            disabled={!fieldCandidates.length && !mapping}
+            options={options}
+            onChange={(value) => saveBusinessFieldMapping(record, value)}
+            style={{ width: "100%" }}
+          />
+        );
+      },
+    },
+    {
+      title: "当前样例",
+      render: (_, record) => {
+        const mapping = businessMappings.find((item) => item.standard_field === record.value);
+        if (!mapping || !selectedTemplateSampleInstance) return "-";
+        return renderDingTalkValue(mappedDisplayValue(selectedTemplateSampleInstance, mapping));
+      },
+    },
+    {
+      title: "状态",
+      width: 110,
+      render: (_, record) => {
+        const mapping = businessMappings.find((item) => item.standard_field === record.value);
+        if (mapping) return <Tag color="green">已配置</Tag>;
+        return <Tag color={record.required ? "red" : "default"}>{record.required ? "必填缺失" : "未配置"}</Tag>;
+      },
     },
   ];
 
@@ -1111,7 +1295,7 @@ export default function DingTalkPage() {
           <Button size="small" disabled={index === 0} onClick={() => moveMapping(record, "up")}>
             上移
           </Button>
-          <Button size="small" disabled={index === mappings.length - 1} onClick={() => moveMapping(record, "down")}>
+          <Button size="small" disabled={index === displayMappings.length - 1} onClick={() => moveMapping(record, "down")}>
             下移
           </Button>
           <Button size="small" onClick={() => openMappingModal(undefined, record)}>
@@ -1123,24 +1307,6 @@ export default function DingTalkPage() {
             </Button>
           </Popconfirm>
         </Space>
-      ),
-    },
-  ];
-
-  const fieldCandidateColumns: ColumnsType<TemplateFieldCandidate> = [
-    { title: "钉钉字段", dataIndex: "source_field_name", width: 150 },
-    {
-      title: "真实样例",
-      dataIndex: "sample_value",
-      render: renderDingTalkValue,
-    },
-    {
-      title: "操作",
-      width: 90,
-      render: (_, record) => (
-        <Button size="small" onClick={() => openMappingModal(record)}>
-          配置
-        </Button>
       ),
     },
   ];
@@ -1494,17 +1660,17 @@ export default function DingTalkPage() {
       />
 
       <Drawer
-        title={selectedTemplate ? `${selectedTemplate.name} 字段显示配置` : "字段显示配置"}
+        title={selectedTemplate ? `${selectedTemplate.name} 模板字段配置` : "模板字段配置"}
         open={isMappingDrawerOpen}
         onClose={() => setIsMappingDrawerOpen(false)}
         width={1040}
         extra={
           <Space>
             <Button disabled={!selectedTemplate} onClick={syncTemplateSample} loading={isLoading}>
-              拉取一条样例审批
+              刷新可选字段
             </Button>
             <Button type="primary" disabled={!selectedTemplate} onClick={() => openMappingModal()}>
-              新增字段
+              添加列表字段
             </Button>
           </Space>
         }
@@ -1513,35 +1679,39 @@ export default function DingTalkPage() {
           <Alert
             type="info"
             showIcon
-            message="字段显示配置用于从这个审批模板里挑选需要展示的字段。"
-            description="配置后，审批列表会按这些字段显示；其他业务场景选择这个审批模板数据时，也优先展示这些字段。完整原始数据仍可在详情里查看。"
+            message="先配置对账字段，再选择列表要展示的字段。"
+            description="金额、门店、业务日期会影响同步落库和银行流水匹配；列表字段只影响审批列表和对账选单时的展示。"
           />
-          <Card size="small" title="已选显示字段">
-            <Table rowKey="id" loading={isLoading} columns={mappingColumns} dataSource={mappings} pagination={false} />
-          </Card>
-          <Card size="small" title="可选钉钉字段样例">
-            {fieldCandidates.length ? (
-              <Table
-                size="small"
-                rowKey={(record, index) => `${record.source_field_name}-${record.source_field_id || index}`}
-                columns={fieldCandidateColumns}
-                dataSource={fieldCandidates}
-                pagination={{ pageSize: 8 }}
-                rowClassName={(record) => (record.source_field_name === selectedSourceFieldName ? "selected-candidate-row" : "")}
-              />
-            ) : (
+          <Card
+            size="small"
+            title="对账字段"
+            extra={
+              <Space size={8}>
+                <Tag color={fieldCandidates.length ? "blue" : "gold"}>可选字段 {fieldCandidates.length}</Tag>
+                {selectedTemplateSampleInstance ? <Tag color="green">已有样例</Tag> : <Tag>无样例</Tag>}
+              </Space>
+            }
+          >
+            {!fieldCandidates.length ? (
               <Alert
+                className="dashboard-alert"
                 type="warning"
                 showIcon
-                message="这个模板还没有可选字段"
-                description="字段下拉来自这个模板的真实审批数据。请先拉取一条样例审批，系统解析出字段后再配置显示名称。"
-                action={
-                  <Button size="small" type="primary" onClick={syncTemplateSample} loading={isLoading}>
-                    拉取样例
-                  </Button>
-                }
+                message="还没有可选择的钉钉字段"
+                description="点击右上角“刷新可选字段”，系统会从这个模板拉取一条真实审批作为字段来源。"
               />
-            )}
+            ) : null}
+            <Table
+              size="small"
+              rowKey="value"
+              loading={isLoading}
+              columns={businessMappingColumns}
+              dataSource={BUSINESS_FIELD_OPTIONS}
+              pagination={false}
+            />
+          </Card>
+          <Card size="small" title="列表显示字段">
+            <Table rowKey="id" loading={isLoading} columns={mappingColumns} dataSource={displayMappings} pagination={false} />
           </Card>
         </Space>
       </Drawer>
@@ -1823,11 +1993,18 @@ export default function DingTalkPage() {
         </Form>
       </Modal>
       <Modal
-        title={editingMapping ? "编辑显示字段" : "新增显示字段"}
+        title={
+          mappingModalMode.type === "business"
+            ? `${editingMapping ? "修改" : "配置"}业务字段：${mappingModalMode.field.label}`
+            : editingMapping
+              ? "编辑列表字段"
+              : "添加列表字段"
+        }
         open={isMappingModalOpen}
         onCancel={() => {
           setIsMappingModalOpen(false);
           setEditingMapping(null);
+          setMappingModalMode({ type: "display" });
         }}
         onOk={() => mappingForm.submit()}
         confirmLoading={isLoading}
@@ -1841,10 +2018,10 @@ export default function DingTalkPage() {
               type="warning"
               showIcon
               message="还没有可选择的钉钉字段"
-              description="字段必须从当前审批模板的真实审批数据解析出来。先拉取一条样例审批，成功后这里会变成下拉选择。"
+              description="字段必须从当前审批模板的真实审批数据解析出来。先刷新可选字段，成功后这里会变成下拉选择。"
               action={
                 <Button size="small" type="primary" onClick={syncTemplateSample} loading={isLoading}>
-                  拉取一条样例审批
+                  刷新可选字段
                 </Button>
               }
             />
@@ -1868,7 +2045,10 @@ export default function DingTalkPage() {
             />
           </Form.Item>
           <Form.Item name="display_label" label="显示名称" rules={[{ required: true }]}>
-            <Input placeholder="例如：门店、金额、凭证" />
+            <Input
+              placeholder="例如：门店、金额、凭证"
+              disabled={mappingModalMode.type === "business"}
+            />
           </Form.Item>
           <Form.Item name="standard_field" hidden>
             <Input />

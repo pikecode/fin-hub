@@ -693,6 +693,7 @@ class ApprovalInstanceRead(BaseModel):
     dingtalk_instance_id: str
     approval_no: str | None
     store_id: str | None
+    department_name: str | None = None
     applicant_name: str | None
     applicant_user_id: str | None
     approval_status: str
