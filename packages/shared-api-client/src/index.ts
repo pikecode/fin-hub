@@ -65,6 +65,7 @@ import type {
   TemplateFieldCandidateSampleRequest,
   TemplateFieldMapping,
   TemplateFieldMappingCreate,
+  TemplateFieldMappingReorderRequest,
   TemplateSampleApprovalResult,
   UserAccount,
   UserAccountCreate,
@@ -400,6 +401,11 @@ export function createApiClient(options: ApiClientOptions) {
       updateMapping: (templateId: string, mappingId: string, payload: TemplateFieldMappingCreate) =>
         request<TemplateFieldMapping>(`/api/dingtalk/templates/${templateId}/mappings/${mappingId}`, {
           method: "PATCH",
+          body: JSON.stringify(payload),
+        }),
+      reorderMappings: (templateId: string, payload: TemplateFieldMappingReorderRequest) =>
+        request<TemplateFieldMapping[]>(`/api/dingtalk/templates/${templateId}/mappings/reorder`, {
+          method: "POST",
           body: JSON.stringify(payload),
         }),
       deleteMapping: (templateId: string, mappingId: string) =>

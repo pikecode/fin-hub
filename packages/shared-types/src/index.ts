@@ -479,6 +479,15 @@ export interface TemplateFieldMappingCreate {
   sort_order?: number;
 }
 
+export interface TemplateFieldMappingReorderItem {
+  id: string;
+  sort_order: number;
+}
+
+export interface TemplateFieldMappingReorderRequest {
+  items: TemplateFieldMappingReorderItem[];
+}
+
 export interface TemplateFieldCandidate {
   source_field_id?: string | null;
   source_field_name: string;

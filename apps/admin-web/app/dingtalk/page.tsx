@@ -748,6 +748,36 @@ export default function DingTalkPage() {
     }
   }
 
+  async function moveMapping(mapping: TemplateFieldMapping, direction: "up" | "down") {
+    if (!selectedTemplate) return;
+    const currentIndex = mappings.findIndex((item) => item.id === mapping.id);
+    const targetIndex = direction === "up" ? currentIndex - 1 : currentIndex + 1;
+    if (currentIndex < 0 || targetIndex < 0 || targetIndex >= mappings.length) return;
+    const nextMappings = [...mappings];
+    [nextMappings[currentIndex], nextMappings[targetIndex]] = [nextMappings[targetIndex], nextMappings[currentIndex]];
+    const payload = {
+      items: nextMappings.map((item, index) => ({
+        id: item.id,
+        sort_order: index,
+      })),
+    };
+    setMappings(nextMappings.map((item, index) => ({ ...item, sort_order: index })));
+    setIsLoading(true);
+    setErrorMessage(null);
+    try {
+      const ordered = await apiClient.dingtalk.reorderMappings(selectedTemplate.id, payload);
+      setMappings(ordered);
+      if (instanceTemplateFilterId === selectedTemplate.id) {
+        setInstanceDisplayMappings(ordered);
+      }
+    } catch (error) {
+      await loadMappings(selectedTemplate);
+      setErrorMessage(apiErrorMessage(error, "无法调整字段顺序"));
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
   async function submitMapping(values: MappingFormValues) {
     if (!selectedTemplate) return;
     const sourceKey = values.source_field_id || values.source_field_name;
@@ -903,6 +933,7 @@ export default function DingTalkPage() {
   ];
 
   const mappingColumns: ColumnsType<TemplateFieldMapping> = [
+    { title: "顺序", width: 70, render: (_, __, index) => index + 1 },
     { title: "钉钉字段", dataIndex: "source_field_name" },
     { title: "显示名称", dataIndex: "display_label", render: (_, record) => mappingDisplayLabel(record) },
     {
@@ -912,9 +943,15 @@ export default function DingTalkPage() {
     },
     {
       title: "操作",
-      width: 120,
-      render: (_, record) => (
+      width: 210,
+      render: (_, record, index) => (
         <Space>
+          <Button size="small" disabled={index === 0} onClick={() => moveMapping(record, "up")}>
+            上移
+          </Button>
+          <Button size="small" disabled={index === mappings.length - 1} onClick={() => moveMapping(record, "down")}>
+            下移
+          </Button>
           <Button size="small" onClick={() => openMappingModal(undefined, record)}>
             编辑
           </Button>

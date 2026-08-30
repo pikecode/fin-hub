@@ -487,6 +487,15 @@ class TemplateFieldMappingRead(TemplateFieldMappingCreate):
     updated_at: datetime
 
 
+class TemplateFieldMappingReorderItem(BaseModel):
+    id: str
+    sort_order: int
+
+
+class TemplateFieldMappingReorderRequest(BaseModel):
+    items: list[TemplateFieldMappingReorderItem]
+
+
 class TemplateFieldCandidate(BaseModel):
     source_field_id: str | None = None
     source_field_name: str

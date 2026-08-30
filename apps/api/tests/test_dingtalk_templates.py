@@ -68,6 +68,53 @@ def test_sync_templates_and_upsert_mapping(client: TestClient) -> None:
     assert client.get(f"/api/dingtalk/templates/{template_id}/mappings").json()["data"] == []
 
 
+def test_reorder_template_mappings(client: TestClient) -> None:
+    template_id = client.post(
+        "/api/dingtalk/templates",
+        json={"process_code": "PROC-REORDER", "name": "字段排序模板", "is_enabled": True},
+    ).json()["data"]["id"]
+    first = client.post(
+        f"/api/dingtalk/templates/{template_id}/mappings",
+        json={
+            "standard_field": "display:first",
+            "source_field_name": "第一个字段",
+            "display_label": "第一个",
+            "sort_order": 0,
+        },
+    ).json()["data"]
+    second = client.post(
+        f"/api/dingtalk/templates/{template_id}/mappings",
+        json={
+            "standard_field": "display:second",
+            "source_field_name": "第二个字段",
+            "display_label": "第二个",
+            "sort_order": 1,
+        },
+    ).json()["data"]
+
+    response = client.post(
+        f"/api/dingtalk/templates/{template_id}/mappings/reorder",
+        json={"items": [{"id": second["id"], "sort_order": 0}, {"id": first["id"], "sort_order": 1}]},
+    )
+    assert response.status_code == 200
+    assert [item["id"] for item in response.json()["data"]] == [second["id"], first["id"]]
+
+    mappings = client.get(f"/api/dingtalk/templates/{template_id}/mappings").json()["data"]
+    assert [item["id"] for item in mappings] == [second["id"], first["id"]]
+
+    incomplete = client.post(
+        f"/api/dingtalk/templates/{template_id}/mappings/reorder",
+        json={"items": [{"id": second["id"], "sort_order": 0}]},
+    )
+    assert incomplete.status_code == 404
+
+    duplicate = client.post(
+        f"/api/dingtalk/templates/{template_id}/mappings/reorder",
+        json={"items": [{"id": second["id"], "sort_order": 0}, {"id": second["id"], "sort_order": 1}]},
+    )
+    assert duplicate.status_code == 400
+
+
 def test_template_field_candidates_from_snapshot_and_instances(client: TestClient, session) -> None:
     template_id = client.post(
         "/api/dingtalk/templates",

@@ -54,6 +54,7 @@ from app.schemas import (
     TemplateFieldCandidateSampleRequest,
     TemplateFieldMappingCreate,
     TemplateFieldMappingRead,
+    TemplateFieldMappingReorderRequest,
     TemplateSampleApprovalResult,
 )
 
@@ -1081,6 +1082,50 @@ def update_template_mapping(
     session.commit()
     session.refresh(mapping)
     return ApiEnvelope(data=mapping)
+
+
+@router.post(
+    "/templates/{template_id}/mappings/reorder",
+    response_model=ApiEnvelope[list[TemplateFieldMappingRead]],
+)
+def reorder_template_mappings(
+    template_id: str,
+    payload: TemplateFieldMappingReorderRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+) -> ApiEnvelope[list[TemplateFieldMappingRead]]:
+    template = session.get(ApprovalTemplate, template_id)
+    if template is None:
+        raise HTTPException(status_code=404, detail="Template not found")
+    mappings = session.scalars(
+        select(TemplateFieldMapping).where(TemplateFieldMapping.template_id == template_id)
+    ).all()
+    mappings_by_id = {mapping.id: mapping for mapping in mappings}
+    requested_ids = [item.id for item in payload.items]
+    requested_id_set = set(requested_ids)
+    if len(requested_ids) != len(requested_id_set):
+        raise HTTPException(status_code=400, detail="Duplicate template mapping ids")
+    if requested_id_set != set(mappings_by_id):
+        raise HTTPException(status_code=404, detail="Template mapping not found")
+    for item in payload.items:
+        mappings_by_id[item.id].sort_order = item.sort_order
+    session.flush()
+    write_audit_log(
+        session,
+        actor=audit_actor(current_user),
+        action="dingtalk.template_mapping.reorder",
+        resource_type="approval_template",
+        resource_id=template_id,
+        summary=f"调整审批字段显示顺序：{template.name}",
+        metadata={"mapping_ids": [item.id for item in payload.items]},
+    )
+    session.commit()
+    ordered = session.scalars(
+        select(TemplateFieldMapping)
+        .where(TemplateFieldMapping.template_id == template_id)
+        .order_by(TemplateFieldMapping.sort_order.asc(), TemplateFieldMapping.created_at.asc())
+    ).all()
+    return ApiEnvelope(data=ordered)
 
 
 @router.delete(
