@@ -4,7 +4,15 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app.core.config import settings
-from app.models import ApprovalInstance, ApprovalTemplate, DingTalkConfig, DingTalkDepartment, ExpenseItem, SyncJob
+from app.models import (
+    ApprovalInstance,
+    ApprovalTemplate,
+    DingTalkConfig,
+    DingTalkDepartment,
+    ExpenseItem,
+    SyncJob,
+    TemplateFieldMapping,
+)
 from app.modules.dingtalk.client import DingTalkClientError
 
 
@@ -68,6 +76,32 @@ def test_sync_templates_and_upsert_mapping(client: TestClient) -> None:
     assert delete_response.status_code == 200
     assert delete_response.json()["data"]["ok"] is True
     assert client.get(f"/api/dingtalk/templates/{template_id}/mappings").json()["data"] == []
+
+
+def test_template_mapping_status_is_derived_from_existing_mappings(client: TestClient, session) -> None:
+    template_id = client.post(
+        "/api/dingtalk/templates",
+        json={"process_code": "PROC-MAPPING-STATUS", "name": "映射状态模板", "is_enabled": True},
+    ).json()["data"]["id"]
+    template = session.get(ApprovalTemplate, template_id)
+    assert template is not None
+    template.mapping_status = "unmapped"
+    session.add(
+        TemplateFieldMapping(
+            template_id=template_id,
+            standard_field="amount",
+            display_label="单据总金额",
+            source_field_name="汇总金额（元）",
+        )
+    )
+    session.commit()
+
+    detail = client.get(f"/api/dingtalk/templates/{template_id}").json()["data"]
+    listing = client.get("/api/dingtalk/templates?page_size=200").json()["data"]["items"]
+    listed = next(item for item in listing if item["id"] == template_id)
+
+    assert detail["mapping_status"] == "mapped"
+    assert listed["mapping_status"] == "mapped"
 
 
 def test_reorder_template_mappings(client: TestClient) -> None:

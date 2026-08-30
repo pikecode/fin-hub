@@ -62,6 +62,27 @@ from app.schemas import (
 router = APIRouter(prefix="/dingtalk", tags=["dingtalk"])
 
 
+def template_mapping_status(session: Session, template_id: str) -> str:
+    mapping_exists = session.scalar(
+        select(TemplateFieldMapping.id).where(TemplateFieldMapping.template_id == template_id).limit(1)
+    )
+    return "mapped" if mapping_exists else "unmapped"
+
+
+def template_read(session: Session, template: ApprovalTemplate) -> ApprovalTemplateRead:
+    return ApprovalTemplateRead(
+        id=template.id,
+        process_code=template.process_code,
+        name=template.name,
+        is_enabled=template.is_enabled,
+        mapping_status=template_mapping_status(session, template.id),
+        last_sync_at=template.last_sync_at,
+        raw_snapshot=template.raw_snapshot,
+        created_at=template.created_at,
+        updated_at=template.updated_at,
+    )
+
+
 def mask_config(config: DingTalkConfig) -> DingTalkConfigRead:
     has_secret = bool(settings.dingtalk_app_secret or decrypt_secret(config.app_secret_encrypted))
     has_key = bool(settings.dingtalk_app_key or config.app_key)
@@ -308,7 +329,14 @@ def list_templates(
         ApprovalTemplate.created_at.desc(),
     )
     items, total = paginate(session, query, page, page_size)
-    return ApiEnvelope(data=Page(items=items, total=total, page=page, page_size=page_size))
+    return ApiEnvelope(
+        data=Page(
+            items=[template_read(session, item) for item in items],
+            total=total,
+            page=page,
+            page_size=page_size,
+        )
+    )
 
 
 @router.get("/templates/{template_id}", response_model=ApiEnvelope[ApprovalTemplateRead])
@@ -319,7 +347,7 @@ def get_template(
     template = session.get(ApprovalTemplate, template_id)
     if template is None:
         raise HTTPException(status_code=404, detail="Template not found")
-    return ApiEnvelope(data=template)
+    return ApiEnvelope(data=template_read(session, template))
 
 
 @router.post("/templates", response_model=ApiEnvelope[ApprovalTemplateRead], status_code=201)
@@ -346,7 +374,7 @@ def create_template(
     )
     session.commit()
     session.refresh(template)
-    return ApiEnvelope(data=template)
+    return ApiEnvelope(data=template_read(session, template))
 
 
 @router.patch("/templates/{template_id}", response_model=ApiEnvelope[ApprovalTemplateRead])
@@ -373,7 +401,7 @@ def update_template(
     )
     session.commit()
     session.refresh(template)
-    return ApiEnvelope(data=template)
+    return ApiEnvelope(data=template_read(session, template))
 
 
 @router.post("/templates/sync", response_model=ApiEnvelope[dict[str, int]])

@@ -822,6 +822,13 @@ export default function DingTalkPage() {
     }
   }
 
+  function updateTemplateMappingStatus(templateId: string, mappingStatus: ApprovalTemplate["mapping_status"]) {
+    setTemplates((items) =>
+      sortTemplates(items.map((item) => (item.id === templateId ? { ...item, mapping_status: mappingStatus } : item))),
+    );
+    setSelectedTemplate((current) => (current?.id === templateId ? { ...current, mapping_status: mappingStatus } : current));
+  }
+
   async function loadMappings(template: ApprovalTemplate) {
     setSelectedTemplate(template);
     setIsLoading(true);
@@ -832,8 +839,11 @@ export default function DingTalkPage() {
       ]);
       setMappings(data);
       setFieldCandidates(candidates);
+      updateTemplateMappingStatus(template.id, data.length ? "mapped" : "unmapped");
+      return data;
     } catch (error) {
       setErrorMessage(dingtalkPageErrorMessage(error, "无法加载字段映射"));
+      return [];
     } finally {
       setIsLoading(false);
     }
@@ -961,6 +971,7 @@ export default function DingTalkPage() {
         await apiClient.dingtalk.upsertMapping(selectedTemplate.id, payload);
       }
       await loadMappings(selectedTemplate);
+      updateTemplateMappingStatus(selectedTemplate.id, "mapped");
       message.success(`${field.label}已更新`);
     } catch (error) {
       setErrorMessage(dingtalkPageErrorMessage(error, "无法保存对账字段"));
@@ -975,7 +986,8 @@ export default function DingTalkPage() {
     setErrorMessage(null);
     try {
       await apiClient.dingtalk.deleteMapping(selectedTemplate.id, mapping.id);
-      await loadMappings(selectedTemplate);
+      const nextMappings = await loadMappings(selectedTemplate);
+      updateTemplateMappingStatus(selectedTemplate.id, nextMappings.length ? "mapped" : "unmapped");
       message.success("字段映射已删除");
     } catch (error) {
       setErrorMessage(dingtalkPageErrorMessage(error, "无法删除字段映射"));
@@ -1047,6 +1059,7 @@ export default function DingTalkPage() {
       setMappingModalMode({ type: "display" });
       mappingForm.resetFields();
       await loadMappings(selectedTemplate);
+      updateTemplateMappingStatus(selectedTemplate.id, "mapped");
     } catch (error) {
       setErrorMessage(dingtalkPageErrorMessage(error, "无法保存字段映射"));
     } finally {
