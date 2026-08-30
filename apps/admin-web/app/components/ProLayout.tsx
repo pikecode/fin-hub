@@ -1,22 +1,18 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Layout, Menu, Avatar, Dropdown, Button } from "antd";
+import { Layout, Menu, Avatar, Dropdown, Button, Breadcrumb } from "antd";
 import type { MenuProps } from "antd";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
   DashboardOutlined,
-  SwapOutlined,
   BankOutlined,
   BarChartOutlined,
   ShopOutlined,
   TagsOutlined,
-  TeamOutlined,
-  CreditCardOutlined,
   DingtalkOutlined,
   UserOutlined,
-  LockOutlined,
   FileTextOutlined,
   SettingOutlined,
   LogoutOutlined,
@@ -25,109 +21,117 @@ import {
 } from "@ant-design/icons";
 import { apiClient } from "../lib/api";
 
-const { Header, Sider, Content } = Layout;
+const { Sider, Content } = Layout;
 
-// 菜单配置
-const menuItems: MenuProps["items"] = [
+interface NavItem {
+  key: string;
+  label: string;
+  icon: React.ReactNode;
+}
+
+interface NavSection {
+  key: string;
+  label: string;
+  children: NavItem[];
+}
+
+const navigationSections: NavSection[] = [
   {
     key: "workspace",
     label: "工作台",
-    type: "group",
     children: [
       {
         key: "/",
         icon: <DashboardOutlined />,
-        label: <Link href="/">仪表盘</Link>,
-      },
-      {
-        key: "/matching",
-        icon: <SwapOutlined />,
-        label: <Link href="/matching">匹配工作台</Link>,
+        label: "仪表盘",
       },
       {
         key: "/finance/reconciliation",
         icon: <BankOutlined />,
-        label: <Link href="/finance/reconciliation">财务对账</Link>,
+        label: "财务对账",
+      },
+    ],
+  },
+  {
+    key: "sync",
+    label: "数据同步",
+    children: [
+      {
+        key: "/dingtalk",
+        icon: <DingtalkOutlined />,
+        label: "钉钉同步",
       },
     ],
   },
   {
     key: "reports",
     label: "报表分析",
-    type: "group",
     children: [
       {
         key: "/reports",
         icon: <BarChartOutlined />,
-        label: <Link href="/reports">财务报表</Link>,
-      },
-      {
-        key: "/dashboard",
-        icon: <DashboardOutlined />,
-        label: <Link href="/dashboard">数据分析</Link>,
+        label: "财务报表",
       },
     ],
   },
   {
     key: "master",
     label: "基础档案",
-    type: "group",
     children: [
       {
         key: "/stores",
         icon: <ShopOutlined />,
-        label: <Link href="/stores">门店管理</Link>,
+        label: "门店管理",
       },
       {
         key: "/categories",
         icon: <TagsOutlined />,
-        label: <Link href="/categories">费用分类</Link>,
-      },
-      {
-        key: "/suppliers",
-        icon: <TeamOutlined />,
-        label: <Link href="/suppliers">供应商档案</Link>,
-      },
-      {
-        key: "/revenue-channels",
-        icon: <CreditCardOutlined />,
-        label: <Link href="/revenue-channels">收入渠道</Link>,
+        label: "费用分类",
       },
     ],
   },
   {
     key: "system",
-    label: "系统设置",
-    type: "group",
+    label: "系统管理",
     children: [
-      {
-        key: "/dingtalk",
-        icon: <DingtalkOutlined />,
-        label: <Link href="/dingtalk">钉钉同步设置</Link>,
-      },
-      {
-        key: "/shareholder-grants",
-        icon: <LockOutlined />,
-        label: <Link href="/shareholder-grants">股东授权</Link>,
-      },
       {
         key: "/audit",
         icon: <FileTextOutlined />,
-        label: <Link href="/audit">操作日志</Link>,
+        label: "操作日志",
       },
       {
         key: "/users",
         icon: <UserOutlined />,
-        label: <Link href="/users">用户管理</Link>,
+        label: "用户管理",
       },
       {
         key: "/settings",
         icon: <SettingOutlined />,
-        label: <Link href="/settings">系统设置</Link>,
+        label: "系统设置",
       },
     ],
   },
 ];
+
+const menuItems: MenuProps["items"] = navigationSections.map((section) => ({
+  key: section.key,
+  label: section.label,
+  type: "group",
+  children: section.children.map((item) => ({
+    key: item.key,
+    icon: item.icon,
+    label: <Link href={item.key}>{item.label}</Link>,
+  })),
+}));
+
+function findActiveNav(pathname: string) {
+  const allItems = navigationSections.flatMap((section) =>
+    section.children.map((item) => ({ section: section.label, item })),
+  );
+  return allItems
+    .filter(({ item }) => item.key === "/" ? pathname === "/" : pathname.startsWith(item.key))
+    .sort((left, right) => right.item.key.length - left.item.key.length)[0];
+}
 
 interface ProLayoutProps {
   title: string;
@@ -141,6 +145,7 @@ export function ProLayout({ title, kicker, action, children }: ProLayoutProps) {
   const router = useRouter();
   const [collapsed, setCollapsed] = useState(false);
   const [displayName, setDisplayName] = useState<string | null>(null);
+  const activeNav = findActiveNav(pathname);
 
   useEffect(() => {
     const name = localStorage.getItem("user_name");
@@ -174,55 +179,28 @@ export function ProLayout({ title, kicker, action, children }: ProLayoutProps) {
   };
 
   return (
-    <Layout style={{ minHeight: "100vh" }}>
+    <Layout className="pro-layout">
       <Sider
+        className="sidebar"
         trigger={null}
         collapsible
         collapsed={collapsed}
         width={240}
-        style={{
-          overflow: "auto",
-          height: "100vh",
-          position: "fixed",
-          left: 0,
-          top: 0,
-          bottom: 0,
-          zIndex: 100,
-        }}
       >
-        <div
-          style={{
-            height: 64,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            background: "rgba(255, 255, 255, 0.05)",
-          }}
-        >
-          <h1
-            style={{
-              color: "white",
-              margin: 0,
-              fontSize: collapsed ? 18 : 20,
-              fontWeight: 700,
-              letterSpacing: collapsed ? 0 : 1,
-            }}
-          >
-            {collapsed ? "FH" : "fin-hub"}
-          </h1>
+        <div className="brand">
+          <h4>{collapsed ? "FH" : "Fin Hub"}</h4>
+          {!collapsed ? <span>Finance Operations</span> : null}
         </div>
         <Menu
-          theme="dark"
+          className="sidebar-menu"
+          theme="light"
           mode="inline"
           selectedKeys={[pathname]}
           items={menuItems}
-          style={{ borderRight: 0 }}
         />
       </Sider>
-      <Layout style={{ marginLeft: collapsed ? 80 : 240, transition: "all 0.2s" }}>
-        <Header
-          className="app-header"
-        >
+      <Layout className="app-main" style={{ marginLeft: collapsed ? 80 : 240 }}>
+        <div className="app-header">
           <div className="app-header-title-area">
             <Button
               type="text"
@@ -231,12 +209,15 @@ export function ProLayout({ title, kicker, action, children }: ProLayoutProps) {
               className="app-header-collapse-button"
             />
             <div className="app-header-title-stack">
-              {kicker && (
-                <div className="app-header-kicker">
-                  {kicker}
-                </div>
-              )}
+              <Breadcrumb
+                className="app-header-breadcrumb"
+                items={[
+                  { title: activeNav?.section ?? "后台管理" },
+                  { title: activeNav?.item.label ?? title },
+                ]}
+              />
               <h1 className="app-header-title">{title}</h1>
+              {kicker ? <div className="app-header-kicker">{kicker}</div> : null}
             </div>
           </div>
           <div className="app-header-actions">
@@ -244,6 +225,8 @@ export function ProLayout({ title, kicker, action, children }: ProLayoutProps) {
             <Dropdown menu={userMenu} placement="bottomRight">
               <div className="app-header-user">
                 <Avatar
+                  size={28}
+                  className="app-header-avatar"
                   style={{ backgroundColor: "#14b8a6" }}
                   icon={!displayName ? <UserOutlined /> : undefined}
                 >
@@ -253,13 +236,9 @@ export function ProLayout({ title, kicker, action, children }: ProLayoutProps) {
               </div>
             </Dropdown>
           </div>
-        </Header>
+        </div>
         <Content
-          style={{
-            margin: 24,
-            minHeight: "calc(100vh - 64px - 48px)",
-            background: "#f0f2f5",
-          }}
+          className="app-content"
         >
           {children}
         </Content>

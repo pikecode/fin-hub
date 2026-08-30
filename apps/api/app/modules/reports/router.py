@@ -316,24 +316,26 @@ def read_ledger_detail(
 ) -> ApiEnvelope[LedgerReportDetail]:
     store, ledger = read_ledger_for_report(session, store_id, period, shareholder_grant)
 
+    category_name = func.coalesce(ExpenseItem.category_l1, "未分类")
+    supplier_name = func.coalesce(ExpenseItem.supplier_name, "未关联供应商")
     category_rows = session.execute(
         select(
-            func.coalesce(ExpenseItem.category_l1, "未分类"),
+            category_name,
             func.sum(ExpenseItem.amount),
             func.count(),
         )
         .where(ExpenseItem.store_id == store_id, ExpenseItem.ledger_period == period)
-        .group_by(func.coalesce(ExpenseItem.category_l1, "未分类"))
+        .group_by(category_name)
         .order_by(func.sum(ExpenseItem.amount).desc())
     ).all()
     supplier_rows = session.execute(
         select(
-            func.coalesce(ExpenseItem.supplier_name, "未关联供应商"),
+            supplier_name,
             func.sum(ExpenseItem.amount),
             func.count(),
         )
         .where(ExpenseItem.store_id == store_id, ExpenseItem.ledger_period == period)
-        .group_by(func.coalesce(ExpenseItem.supplier_name, "未关联供应商"))
+        .group_by(supplier_name)
         .order_by(func.sum(ExpenseItem.amount).desc())
     ).all()
     pending_expense_items = session.scalars(

@@ -316,6 +316,7 @@ export default function FinanceReconciliationPage() {
   const [importPreview, setImportPreview] = useState<BankImportPreviewResult | null>(null);
   const [isConfirmOpen, setIsConfirmOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [isCandidateLoading, setIsCandidateLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [filterForm] = Form.useForm<CandidateFilters>();
@@ -399,14 +400,10 @@ export default function FinanceReconciliationPage() {
       const unmatched = bankPage.items.filter((item) => remainingAmount(item) > 0 && !activeMatchedBankIds.has(item.id));
       setTransactions(unmatched);
       setRecords(recordPage.items);
-      const nextTransaction = transaction && remainingAmount(transaction) > 0 ? transaction : unmatched[0] ?? null;
+      const nextTransaction = transaction && remainingAmount(transaction) > 0 ? transaction : null;
       setSelectedTransaction(nextTransaction);
-      if (nextTransaction) {
-        await loadCandidates(nextTransaction, storeId, filterForm.getFieldsValue());
-      } else {
-        setCandidates([]);
-        setSelectedCandidateId(undefined);
-      }
+      setCandidates([]);
+      setSelectedCandidateId(undefined);
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "无法加载门店对账数据");
     } finally {
@@ -415,6 +412,8 @@ export default function FinanceReconciliationPage() {
   }
 
   async function loadCandidates(transaction: BankTransaction, storeId: string, filters?: CandidateFilters) {
+    setIsCandidateLoading(true);
+    setErrorMessage(null);
     const params = new URLSearchParams({
       bank_transaction_id: transaction.id,
       store_id: storeId,
@@ -423,9 +422,15 @@ export default function FinanceReconciliationPage() {
     });
     if (filters?.template_id) params.set("template_id", filters.template_id);
     if (filters?.approval_no) params.set("approval_no", filters.approval_no);
-    const result = await apiClient.matches.reconciliationCandidates(`?${params.toString()}`);
-    setCandidates(result.candidates);
-    setSelectedCandidateId(undefined);
+    try {
+      const result = await apiClient.matches.reconciliationCandidates(`?${params.toString()}`);
+      setCandidates(result.candidates);
+      setSelectedCandidateId(undefined);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "无法加载审批单候选");
+    } finally {
+      setIsCandidateLoading(false);
+    }
   }
 
   useEffect(() => {
@@ -895,7 +900,7 @@ export default function FinanceReconciliationPage() {
                     }
                     className="data-table-card approval-candidate-panel"
                   >
-                    <Spin spinning={isLoading}>
+                    <Spin spinning={isCandidateLoading}>
                       {candidates.length ? (
                         <div className="approval-candidate-list">
                           {candidates.map((candidate) => {

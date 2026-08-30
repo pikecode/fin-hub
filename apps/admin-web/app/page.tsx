@@ -82,12 +82,6 @@ const columns: ColumnsType<LedgerSummary> = [
       </span>
     ),
   },
-  {
-    title: "操作",
-    fixed: 'right',
-    width: 100,
-    render: () => <Button type="link" style={{ padding: 0 }}>进入账套</Button>
-  },
 ];
 
 export default function HomePage() {
@@ -209,8 +203,8 @@ export default function HomePage() {
           unit="笔"
           status={metrics.pendingTransactionCount > 50 ? "warning" : "normal"}
           action={{
-            label: "去处理",
-            onClick: () => router.push("/matching"),
+            label: "去对账",
+            onClick: () => router.push("/finance/reconciliation"),
           }}
           loading={isLoading}
         />
@@ -221,8 +215,8 @@ export default function HomePage() {
           unit="条"
           status={metrics.unclassifiedExpenseItemCount > 30 ? "warning" : "normal"}
           action={{
-            label: "去分类",
-            onClick: () => router.push("/expenses"),
+            label: "看分类",
+            onClick: () => router.push("/categories"),
           }}
           loading={isLoading}
         />
@@ -233,8 +227,8 @@ export default function HomePage() {
           unit="条"
           status={metrics.missingSupplierCount > 20 ? "danger" : "normal"}
           action={{
-            label: "去关联",
-            onClick: () => router.push("/expenses"),
+            label: "去对账",
+            onClick: () => router.push("/finance/reconciliation"),
           }}
           loading={isLoading}
         />
@@ -244,19 +238,19 @@ export default function HomePage() {
           value={metrics.openLedgerCount}
           unit="个"
           action={{
-            label: "查看账套",
-            onClick: () => router.push("/ledgers"),
+            label: "看报表",
+            onClick: () => router.push("/reports"),
           }}
           loading={isLoading}
         />
       </Flex>
 
       <Card
-        title="门店账套"
+        title="门店对账概览"
         extra={
           <Space>
             <Badge status={errorMessage ? "warning" : "processing"} text="实时读取 API 数据" />
-            <Button onClick={() => router.push("/ledgers")}>查看全部</Button>
+            <Button onClick={() => router.push("/finance/reconciliation")}>进入对账</Button>
           </Space>
         }
       >
@@ -266,8 +260,8 @@ export default function HomePage() {
               title="暂无账套数据"
               description="请先创建门店账套开始做账"
               primaryAction={{
-                label: "创建账套",
-                onClick: () => router.push("/ledgers"),
+                label: "维护门店",
+                onClick: () => router.push("/stores"),
               }}
               secondaryAction={{
                 label: "查看文档",
