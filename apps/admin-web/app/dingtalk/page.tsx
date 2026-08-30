@@ -72,6 +72,7 @@ type DingTalkFormField = {
   id?: string;
   name?: string;
   componentType?: string;
+  component_type?: string;
   value?: unknown;
 };
 
@@ -259,6 +260,58 @@ function isSeedTemplate(template: ApprovalTemplate) {
   return template.process_code.startsWith("seed-");
 }
 
+function approvalPayload(instance: ApprovalInstance) {
+  if (!instance.raw_payload) return null;
+  try {
+    return JSON.parse(instance.raw_payload) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function approvalTitle(instance: ApprovalInstance) {
+  const payload = approvalPayload(instance);
+  const title = payload?.title ?? payload?.titleName;
+  return typeof title === "string" ? title : "";
+}
+
+function applicantDisplayName(instance: ApprovalInstance) {
+  if (instance.applicant_name) return instance.applicant_name;
+  const matched = approvalTitle(instance).match(/^(.+?)提交的/);
+  if (matched?.[1]) return matched[1];
+  return instance.applicant_user_id || "-";
+}
+
+function approvalDepartmentName(instance: ApprovalInstance) {
+  const payload = approvalPayload(instance);
+  const directName = payload?.originator_dept_name ?? payload?.originatorDeptName;
+  if (typeof directName === "string" && directName) return directName;
+  const parsed = payload?._fin_hub_parse;
+  if (parsed && typeof parsed === "object") {
+    const parsedName = (parsed as Record<string, unknown>).originator_dept_name;
+    if (typeof parsedName === "string" && parsedName) return parsedName;
+  }
+  return "-";
+}
+
+function approvalStatusMeta(status: string) {
+  const normalized = status.toUpperCase();
+  const statusMap: Record<string, { label: string; color: string }> = {
+    APPROVED: { label: "已通过", color: "green" },
+    AGREE: { label: "已通过", color: "green" },
+    COMPLETED: { label: "已完成", color: "green" },
+    TERMINATED: { label: "已撤销", color: "gold" },
+    CANCELED: { label: "已取消", color: "default" },
+    CANCELLED: { label: "已取消", color: "default" },
+    REJECTED: { label: "已拒绝", color: "red" },
+    REFUSE: { label: "已拒绝", color: "red" },
+    REFUSED: { label: "已拒绝", color: "red" },
+    RUNNING: { label: "审批中", color: "blue" },
+    NEW: { label: "审批中", color: "blue" },
+  };
+  return statusMap[normalized] ?? { label: status || "-", color: "default" };
+}
+
 function sortTemplates(templates: ApprovalTemplate[]) {
   return [...templates].sort((left, right) => {
     if (left.is_enabled !== right.is_enabled) return left.is_enabled ? -1 : 1;
@@ -386,6 +439,10 @@ export default function DingTalkPage() {
     () => buildDepartmentTree(departmentPreview?.departments ?? []),
     [departmentPreview],
   );
+  const templateNameById = useMemo(
+    () => new Map(templates.map((template) => [template.id, template.name])),
+    [templates],
+  );
   const lastDepartmentPulledAt = useMemo(() => {
     const timestamps = (departmentPreview?.departments ?? [])
       .map((department) => department.last_synced_at)
@@ -406,6 +463,9 @@ export default function DingTalkPage() {
     const fields = selectedInstancePayload?.form_component_values;
     return Array.isArray(fields) ? fields.filter((item) => item && typeof item === "object") : [];
   }, [selectedInstancePayload]);
+  const selectedInstanceBasicFields = useMemo(() => {
+    return selectedInstanceFields.filter((field) => (field.componentType ?? field.component_type) !== "TableField");
+  }, [selectedInstanceFields]);
   const selectedInstanceTables = useMemo(() => {
     return selectedInstanceFields
       .map((field) => ({
@@ -424,6 +484,14 @@ export default function DingTalkPage() {
   const displayedApprovalInstances = instanceTemplateFilterId
     ? approvalInstances.filter((instance) => instance.template_id === instanceTemplateFilterId)
     : approvalInstances;
+  const approvalStatusFilters = useMemo(
+    () =>
+      Array.from(new Set(approvalInstances.map((item) => item.approval_status).filter(Boolean))).map((status) => ({
+        text: approvalStatusMeta(status).label,
+        value: status,
+      })),
+    [approvalInstances],
+  );
 
   useEffect(() => {
     return () => {
@@ -1132,19 +1200,50 @@ export default function DingTalkPage() {
   const listDisplayMappings = instanceTemplateFilterId ? instanceDisplayMappings : [];
   const instanceColumns: EnterpriseTableColumn<ApprovalInstance>[] = [
     { key: "approval_no", title: "审批编号", dataIndex: "approval_no", render: (value) => value || "-" },
+    {
+      key: "template_name",
+      title: "模板名称",
+      width: 180,
+      render: (_, record) => templateNameById.get(record.template_id) || "-",
+    },
     ...listDisplayMappings.map((mapping): EnterpriseTableColumn<ApprovalInstance> => ({
       title: mappingDisplayLabel(mapping),
       key: `mapping-${mapping.id}`,
       width: 160,
       render: (_, record) => renderDingTalkValue(mappedDisplayValue(record, mapping)),
     })),
-    { key: "dingtalk_instance_id", title: "实例 ID", dataIndex: "dingtalk_instance_id" },
-    { key: "applicant_name", title: "申请人", dataIndex: "applicant_name", render: (value) => value || "-" },
+    {
+      key: "applicant_name",
+      title: "申请人",
+      dataIndex: "applicant_name",
+      width: 150,
+      render: (_, record) => (
+        <Space direction="vertical" size={0}>
+          <Typography.Text>{applicantDisplayName(record)}</Typography.Text>
+          {record.applicant_user_id ? (
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {record.applicant_user_id}
+            </Typography.Text>
+          ) : null}
+        </Space>
+      ),
+    },
+    {
+      key: "department_name",
+      title: "部门",
+      width: 220,
+      render: (_, record) => approvalDepartmentName(record),
+    },
     {
       key: "approval_status",
       title: "状态",
       dataIndex: "approval_status",
-      render: (value) => (value === "approved" ? <Tag color="green">已通过</Tag> : <Tag>{value}</Tag>),
+      filters: approvalStatusFilters,
+      onFilter: (value, record) => record.approval_status === value,
+      render: (value) => {
+        const meta = approvalStatusMeta(value);
+        return <Tag color={meta.color}>{meta.label}</Tag>;
+      },
     },
     { key: "submit_at", title: "提交时间", dataIndex: "submit_at", render: (value) => value?.replace("T", " ").slice(0, 16) || "-" },
     { key: "approved_at", title: "通过时间", dataIndex: "approved_at", render: (value) => value?.replace("T", " ").slice(0, 16) || "-" },
@@ -1306,7 +1405,14 @@ export default function DingTalkPage() {
                   <Space wrap className="dashboard-alert">
                     {instanceTemplateFilter ? <Tag color="blue">当前模板 {instanceTemplateFilter.name}</Tag> : <Tag>全部模板</Tag>}
                     <Tag>本地实例 {displayedApprovalInstances.length}</Tag>
-                    <Tag color="green">已通过 {displayedApprovalInstances.filter((item) => item.approval_status === "approved").length}</Tag>
+                    <Tag color="green">
+                      已通过{" "}
+                      {
+                        displayedApprovalInstances.filter((item) =>
+                          ["APPROVED", "AGREE", "COMPLETED"].includes(item.approval_status.toUpperCase()),
+                        ).length
+                      }
+                    </Tag>
                     {instanceTemplateFilter ? <Tag color="purple">显示字段 {instanceDisplayMappings.length}</Tag> : null}
                     <Tag color="blue">同步任务 {syncJobs.length}</Tag>
                     <Tag color="cyan">
@@ -1419,7 +1525,7 @@ export default function DingTalkPage() {
               <Descriptions.Item label="实例 ID" span={2}>
                 {selectedInstance.dingtalk_instance_id}
               </Descriptions.Item>
-              <Descriptions.Item label="申请人">{selectedInstance.applicant_name || "-"}</Descriptions.Item>
+              <Descriptions.Item label="申请人">{applicantDisplayName(selectedInstance)}</Descriptions.Item>
               <Descriptions.Item label="申请人 User ID">{selectedInstance.applicant_user_id || "-"}</Descriptions.Item>
               <Descriptions.Item label="本地门店 ID" span={2}>
                 {selectedInstance.store_id || "-"}
@@ -1474,10 +1580,10 @@ export default function DingTalkPage() {
                 size="small"
                 rowKey={(record, index) => `${record.name || record.id || "field"}-${index}`}
                 pagination={false}
-                dataSource={selectedInstanceFields}
+                dataSource={selectedInstanceBasicFields}
                 columns={[
                   { title: "字段", dataIndex: "name", width: 180, render: (value) => value || "-" },
-                  { title: "类型", dataIndex: "componentType", width: 140, render: (value) => value || "-" },
+                  { title: "类型", width: 140, render: (_, record) => record.componentType ?? record.component_type ?? "-" },
                   {
                     title: "值",
                     dataIndex: "value",
