@@ -552,6 +552,7 @@ class ApprovalInstance(Base):
     dingtalk_instance_id: Mapped[str] = mapped_column(String(160), nullable=False)
     approval_no: Mapped[str | None] = mapped_column(String(120))
     store_id: Mapped[str | None] = mapped_column(ForeignKey("stores.id"))
+    department_name: Mapped[str | None] = mapped_column(String(240))
     applicant_name: Mapped[str | None] = mapped_column(String(80))
     applicant_user_id: Mapped[str | None] = mapped_column(String(120))
     approval_status: Mapped[str] = mapped_column(String(32), nullable=False)

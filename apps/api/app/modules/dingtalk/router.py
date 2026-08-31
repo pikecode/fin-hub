@@ -704,6 +704,41 @@ def field_candidates_for_template(session: Session, template: ApprovalTemplate) 
         return []
 
 
+def applicant_name_from_raw(raw_instance: dict[str, Any]) -> str | None:
+    direct = parse_text(raw_instance.get("originator_user_name") or raw_instance.get("originatorUserName"))
+    if direct:
+        return direct
+    title = parse_text(raw_instance.get("title") or raw_instance.get("titleName"))
+    if title and "提交" in title:
+        name = title.split("提交", 1)[0].strip()
+        return name or None
+    return None
+
+
+def department_name_from_raw(
+    session: Session,
+    raw_instance: dict[str, Any],
+    store: Store | None = None,
+) -> str | None:
+    direct = parse_text(raw_instance.get("originator_dept_name") or raw_instance.get("originatorDeptName"))
+    if direct:
+        return direct
+    parsed = raw_instance.get("_fin_hub_parse")
+    if isinstance(parsed, dict):
+        parsed_name = parse_text(parsed.get("originator_dept_name"))
+        if parsed_name:
+            return parsed_name
+    dept_id = parse_text(raw_instance.get("originator_dept_id") or raw_instance.get("originatorDeptId"))
+    if dept_id:
+        department = session.scalar(select(DingTalkDepartmentModel).where(DingTalkDepartmentModel.dept_id == dept_id))
+        if department is not None:
+            return department.path or department.name
+        dept_store = session.scalar(select(Store).where(Store.dingtalk_dept_id == dept_id))
+        if dept_store is not None:
+            return dept_store.name
+    return store.name if store else None
+
+
 def save_sample_approval_instance(
     session: Session,
     template: ApprovalTemplate,
@@ -718,7 +753,8 @@ def save_sample_approval_instance(
         session.add(instance)
     instance.template_id = template.id
     instance.approval_no = parse_text(raw_instance.get("business_id") or raw_instance.get("businessId"))
-    instance.applicant_name = parse_text(raw_instance.get("originator_user_name") or raw_instance.get("originatorUserName"))
+    instance.department_name = department_name_from_raw(session, raw_instance)
+    instance.applicant_name = applicant_name_from_raw(raw_instance)
     instance.applicant_user_id = parse_text(raw_instance.get("originator_userid") or raw_instance.get("originatorUserId"))
     instance.approval_status = parse_text(raw_instance.get("result") or raw_instance.get("status")) or "unknown"
     instance.submit_at = DingTalkClient.parse_time(raw_instance.get("create_time") or raw_instance.get("createTime"))
@@ -754,6 +790,8 @@ def approval_originator_dept_name(payload: dict[str, Any]) -> str | None:
 
 
 def resolve_approval_department_name(session: Session, instance: ApprovalInstance) -> str | None:
+    if instance.department_name:
+        return instance.department_name
     payload = approval_raw_payload(instance)
     direct_name = approval_originator_dept_name(payload)
     if direct_name:
@@ -2033,7 +2071,8 @@ def sync_real_instance(
         session.add(instance)
     instance.approval_no = parse_text(raw_instance.get("business_id") or raw_instance.get("businessId"))
     instance.store_id = store.id if store is not None else None
-    instance.applicant_name = parse_text(raw_instance.get("originator_user_name") or raw_instance.get("originatorUserName"))
+    instance.department_name = department_name_from_raw(session, raw_instance, store)
+    instance.applicant_name = applicant_name_from_raw(raw_instance)
     instance.applicant_user_id = parse_text(raw_instance.get("originator_userid") or raw_instance.get("originatorUserId"))
     instance.approval_status = parse_text(raw_instance.get("result") or raw_instance.get("status")) or "unknown"
     instance.submit_at = DingTalkClient.parse_time(raw_instance.get("create_time") or raw_instance.get("createTime"))
@@ -2288,24 +2327,74 @@ def execute_auto_sync(
     )
     session.add(job)
     session.flush()
+    progress: dict[str, Any] = {"stages": []}
+
+    def update_progress(stage: str, status: str, **metadata: Any) -> None:
+        progress["current_stage"] = stage
+        progress["stages"].append(
+            {
+                "stage": stage,
+                "status": status,
+                "at": utc_now().isoformat(),
+                **metadata,
+            }
+        )
+        job.raw_summary = json.dumps(progress, ensure_ascii=False)
+        session.flush()
+        session.commit()
+        session.refresh(job)
+        session.refresh(setting)
 
     department_pull: DingTalkDepartmentPullResult | None = None
     department_sync: DingTalkDepartmentSyncResult | None = None
     template_sync: dict[str, int] | None = None
+    approval_sync_summary: dict[str, Any] | None = None
+
+    def department_pull_summary(result: DingTalkDepartmentPullResult | None) -> dict[str, int] | None:
+        if result is None:
+            return None
+        return {
+            "pulled_count": result.pulled_count,
+            "created_count": result.created_count,
+            "updated_count": result.updated_count,
+            "deactivated_count": result.deactivated_count,
+            "candidate_count": result.candidate_count,
+        }
+
     try:
+        update_progress("start", "running")
         if setting.sync_departments:
+            update_progress("departments_pull", "running", root_dept_id=setting.root_dept_id, max_depth=setting.max_depth)
             department_pull = pull_departments_core(
                 session,
                 root_dept_id=setting.root_dept_id,
                 max_depth=setting.max_depth,
             )
+            update_progress("departments_pull", "succeeded", pulled_count=department_pull.pulled_count)
+            update_progress("stores_sync", "running")
             department_sync = sync_departments_to_stores_core(session)
+            update_progress(
+                "stores_sync",
+                "succeeded",
+                created_count=department_sync.created_count,
+                updated_count=department_sync.updated_count,
+                skipped_count=department_sync.skipped_count,
+            )
 
         if setting.sync_templates:
+            update_progress("templates_sync", "running")
             template_sync = sync_templates_core(session)
             session.flush()
+            update_progress("templates_sync", "succeeded", **template_sync)
 
         if setting.sync_approvals:
+            update_progress(
+                "approvals_sync",
+                "running",
+                window_days=setting.window_days,
+                page_size=setting.page_size,
+                max_pages=setting.max_pages,
+            )
             end_at = utc_now()
             job.request_end_at = end_at
             job.request_start_at = end_at - timedelta(days=setting.window_days)
@@ -2326,13 +2415,23 @@ def execute_auto_sync(
                 max_pages=setting.max_pages,
                 skip_existing=setting.skip_existing,
             )
+            approval_sync_summary = json.loads(job.raw_summary) if job.raw_summary else None
+            update_progress(
+                "approvals_sync",
+                job.status,
+                processed_count=job.processed_count,
+                success_count=job.success_count,
+                failed_count=job.failed_count,
+                next_cursor=job.next_cursor,
+                error_message=job.error_message,
+            )
         else:
             job.status = SyncJobStatus.SUCCEEDED.value
             job.finished_at = utc_now()
 
         job.raw_summary = json.dumps(
             {
-                "department_pull": department_pull.model_dump(mode="json") if department_pull else None,
+                "department_pull": department_pull_summary(department_pull),
                 "department_sync": {
                     "created_count": department_sync.created_count,
                     "updated_count": department_sync.updated_count,
@@ -2341,7 +2440,8 @@ def execute_auto_sync(
                 if department_sync
                 else None,
                 "template_sync": template_sync,
-                "approval_sync": json.loads(job.raw_summary) if job.raw_summary else None,
+                "approval_sync": approval_sync_summary,
+                "progress": progress,
             },
             ensure_ascii=False,
         )
@@ -2351,7 +2451,9 @@ def execute_auto_sync(
         job.status = SyncJobStatus.FAILED.value
         job.error_message = str(getattr(exc, "detail", exc))
         job.finished_at = utc_now()
-        job.raw_summary = json.dumps({"error": job.error_message}, ensure_ascii=False)
+        progress["error"] = job.error_message
+        progress["current_stage"] = progress.get("current_stage") or "unknown"
+        job.raw_summary = json.dumps({"error": job.error_message, "progress": progress}, ensure_ascii=False)
         setting.last_status = job.status
         setting.last_error = job.error_message
     setting.last_run_at = utc_now()

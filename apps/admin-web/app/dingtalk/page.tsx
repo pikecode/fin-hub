@@ -352,6 +352,59 @@ function approvalStatusMeta(status: string) {
   return statusMap[normalized] ?? { label: status || "-", color: "default" };
 }
 
+function syncJobTypeLabel(type: string) {
+  const labels: Record<string, string> = {
+    dingtalk_auto_sync: "钉钉自动同步",
+    dingtalk_approval_sync: "审批列表同步",
+    dingtalk_approval_reparse: "审批重新解析",
+    bank_import: "银行流水导入",
+  };
+  return labels[type] ?? type;
+}
+
+function parseSyncJobSummary(job: SyncJob): Record<string, any> | null {
+  if (!job.raw_summary) return null;
+  try {
+    const parsed = JSON.parse(job.raw_summary);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function renderSyncJobSummary(job: SyncJob) {
+  const summary = parseSyncJobSummary(job);
+  if (!summary) return <Typography.Text type="secondary">-</Typography.Text>;
+  const tags = [];
+  const departmentPull = summary.department_pull;
+  const departmentSync = summary.department_sync;
+  const templateSync = summary.template_sync;
+  const approvalSync = summary.approval_sync;
+  const progress = summary.progress;
+
+  if (departmentPull?.pulled_count !== undefined) tags.push(<Tag key="departments">部门 {departmentPull.pulled_count}</Tag>);
+  if (departmentSync) {
+    tags.push(
+      <Tag key="stores" color="cyan">
+        门店 +{departmentSync.created_count ?? 0} / 更{departmentSync.updated_count ?? 0}
+      </Tag>,
+    );
+  }
+  if (templateSync) tags.push(<Tag key="templates" color="blue">模板 {templateSync.pulled ?? 0}</Tag>);
+  if (approvalSync?.templates) tags.push(<Tag key="approval-templates" color="purple">审批模板 {approvalSync.templates.length}</Tag>);
+  if (job.processed_count || job.success_count || job.failed_count) {
+    tags.push(
+      <Tag key="approval-count" color={job.failed_count ? "red" : "green"}>
+        审批 {job.success_count}/{job.processed_count}
+      </Tag>,
+    );
+  }
+  if (progress?.current_stage) tags.push(<Tag key="stage">阶段 {progress.current_stage}</Tag>);
+  if (summary.error) tags.push(<Tag key="error" color="red">有错误</Tag>);
+
+  return tags.length ? <Space size={[4, 4]} wrap>{tags}</Space> : <Typography.Text type="secondary">-</Typography.Text>;
+}
+
 function tableFilters(values: Array<string | null | undefined>) {
   return Array.from(new Set(values.filter((value): value is string => Boolean(value && value !== "-"))))
     .sort((left, right) => left.localeCompare(right, "zh-CN"))
@@ -1436,11 +1489,12 @@ export default function DingTalkPage() {
 
   const hasResumableSyncJob = syncJobs.some((job) => Boolean(job.next_cursor));
   const jobColumns: EnterpriseTableColumn<SyncJob>[] = [
-    { key: "job_type", title: "任务类型", dataIndex: "job_type" },
+    { key: "job_type", title: "任务类型", dataIndex: "job_type", width: 140, render: (value) => syncJobTypeLabel(value) },
     {
       key: "status",
       title: "状态",
       dataIndex: "status",
+      width: 90,
       render: (value: SyncJob["status"], record) => {
         if (value === "succeeded" && record.next_cursor) return <Tag color="blue">可续跑</Tag>;
         if (value === "succeeded") return <Tag color="green">成功</Tag>;
@@ -1449,15 +1503,22 @@ export default function DingTalkPage() {
         return <Tag>等待中</Tag>;
       },
     },
-    { key: "processed_count", title: "处理", dataIndex: "processed_count" },
-    { key: "success_count", title: "成功", dataIndex: "success_count" },
-    { key: "failed_count", title: "失败", dataIndex: "failed_count" },
-    { key: "request_start_at", title: "开始窗口", dataIndex: "request_start_at", render: (value) => value?.replace("T", " ").slice(0, 16) || "-" },
-    { key: "request_end_at", title: "结束窗口", dataIndex: "request_end_at", render: (value) => value?.replace("T", " ").slice(0, 16) || "-" },
-    { key: "next_cursor", title: "游标", dataIndex: "next_cursor", render: (value) => value || "-" },
-    { key: "error_message", title: "错误", dataIndex: "error_message", render: (value) => value || "-" },
-    { key: "started_by", title: "发起人", dataIndex: "started_by", render: (value) => value || "-" },
-    { key: "finished_at", title: "完成时间", dataIndex: "finished_at", render: (value) => value?.replace("T", " ").slice(0, 16) || "-" },
+    { key: "summary", title: "阶段摘要", width: 320, render: (_, record) => renderSyncJobSummary(record) },
+    { key: "processed_count", title: "处理", dataIndex: "processed_count", width: 70 },
+    { key: "success_count", title: "成功", dataIndex: "success_count", width: 70 },
+    { key: "failed_count", title: "失败", dataIndex: "failed_count", width: 70 },
+    { key: "request_start_at", title: "开始窗口", dataIndex: "request_start_at", width: 140, render: (value) => value?.replace("T", " ").slice(0, 16) || "-" },
+    { key: "request_end_at", title: "结束窗口", dataIndex: "request_end_at", width: 140, render: (value) => value?.replace("T", " ").slice(0, 16) || "-" },
+    { key: "next_cursor", title: "游标", dataIndex: "next_cursor", width: 120, ellipsis: true, render: (value) => value || "-" },
+    {
+      key: "error_message",
+      title: "错误",
+      dataIndex: "error_message",
+      width: 220,
+      render: (value) => (value ? <Typography.Text type="danger" ellipsis={{ tooltip: value }}>{value}</Typography.Text> : "-"),
+    },
+    { key: "started_by", title: "发起人", dataIndex: "started_by", width: 110, render: (value) => value || "-" },
+    { key: "finished_at", title: "完成时间", dataIndex: "finished_at", width: 140, render: (value) => value?.replace("T", " ").slice(0, 16) || "-" },
     ...(hasResumableSyncJob
       ? [
           {
