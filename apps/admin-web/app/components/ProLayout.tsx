@@ -19,6 +19,7 @@ import {
   MenuFoldOutlined,
   MenuUnfoldOutlined,
 } from "@ant-design/icons";
+import type { CurrentUser, PermissionKey } from "@fin-hub/shared-types";
 import { apiClient } from "../lib/api";
 
 const { Sider, Content } = Layout;
@@ -27,6 +28,7 @@ interface NavItem {
   key: string;
   label: string;
   icon: React.ReactNode;
+  permission: PermissionKey;
 }
 
 interface NavSection {
@@ -44,11 +46,13 @@ const navigationSections: NavSection[] = [
         key: "/",
         icon: <DashboardOutlined />,
         label: "仪表盘",
+        permission: "dashboard.view",
       },
       {
         key: "/finance/reconciliation",
         icon: <BankOutlined />,
         label: "财务对账",
+        permission: "reconciliation.view",
       },
     ],
   },
@@ -60,6 +64,7 @@ const navigationSections: NavSection[] = [
         key: "/dingtalk",
         icon: <DingtalkOutlined />,
         label: "钉钉同步",
+        permission: "dingtalk.view",
       },
     ],
   },
@@ -71,6 +76,7 @@ const navigationSections: NavSection[] = [
         key: "/reports",
         icon: <BarChartOutlined />,
         label: "财务报表",
+        permission: "reports.view",
       },
     ],
   },
@@ -82,11 +88,13 @@ const navigationSections: NavSection[] = [
         key: "/stores",
         icon: <ShopOutlined />,
         label: "门店管理",
+        permission: "stores.view",
       },
       {
         key: "/categories",
         icon: <TagsOutlined />,
         label: "费用分类",
+        permission: "categories.view",
       },
     ],
   },
@@ -98,34 +106,52 @@ const navigationSections: NavSection[] = [
         key: "/audit",
         icon: <FileTextOutlined />,
         label: "操作日志",
+        permission: "audit.view",
       },
       {
         key: "/users",
         icon: <UserOutlined />,
         label: "用户管理",
+        permission: "users.view",
       },
       {
         key: "/settings",
         icon: <SettingOutlined />,
         label: "系统设置",
+        permission: "settings.manage",
       },
     ],
   },
 ];
 
-const menuItems: MenuProps["items"] = navigationSections.map((section) => ({
-  key: section.key,
-  label: section.label,
-  type: "group",
-  children: section.children.map((item) => ({
-    key: item.key,
-    icon: item.icon,
-    label: <Link href={item.key}>{item.label}</Link>,
-  })),
-}));
+function visibleNavigationSections(currentUser: CurrentUser | null): NavSection[] {
+  if (!currentUser) {
+    return navigationSections;
+  }
+  const permissions = new Set(currentUser.permissions);
+  return navigationSections
+    .map((section) => ({
+      ...section,
+      children: section.children.filter((item) => permissions.has(item.permission)),
+    }))
+    .filter((section) => section.children.length > 0);
+}
 
-function findActiveNav(pathname: string) {
-  const allItems = navigationSections.flatMap((section) =>
+function menuItemsForSections(sections: NavSection[]): MenuProps["items"] {
+  return sections.map((section) => ({
+    key: section.key,
+    label: section.label,
+    type: "group",
+    children: section.children.map((item) => ({
+      key: item.key,
+      icon: item.icon,
+      label: <Link href={item.key}>{item.label}</Link>,
+    })),
+  }));
+}
+
+function findActiveNav(pathname: string, sections: NavSection[]) {
+  const allItems = sections.flatMap((section) =>
     section.children.map((item) => ({ section: section.label, item })),
   );
   return allItems
@@ -145,12 +171,24 @@ export function ProLayout({ title, kicker, action, children }: ProLayoutProps) {
   const router = useRouter();
   const [collapsed, setCollapsed] = useState(false);
   const [displayName, setDisplayName] = useState<string | null>(null);
-  const activeNav = findActiveNav(pathname);
+  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
+  const visibleSections = visibleNavigationSections(currentUser);
+  const activeNav = findActiveNav(pathname, visibleSections);
+  const menuItems = menuItemsForSections(visibleSections);
 
   useEffect(() => {
     const name = localStorage.getItem("user_name");
     setDisplayName(name);
-  }, []);
+    apiClient.auth.me()
+      .then((user) => {
+        setCurrentUser(user);
+        setDisplayName(user.display_name);
+        localStorage.setItem("user_name", user.display_name);
+      })
+      .catch(() => {
+        router.push("/login");
+      });
+  }, [router]);
 
   async function logout() {
     await apiClient.auth.logout();

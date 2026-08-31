@@ -9,9 +9,9 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.database import get_session
-from app.models import User, UserRole
+from app.models import User
 from app.modules.audit.service import write_audit_log
-from app.modules.auth.router import audit_actor, require_roles
+from app.modules.auth.router import audit_actor, require_permission
 from app.modules.dingtalk.router import dingtalk_credentials, get_or_create_config
 from app.schemas import (
     ApiEnvelope,
@@ -114,7 +114,7 @@ def build_system_readiness_report(session: Session) -> SystemReadinessReport:
 @router.get("/database-backup/status", response_model=ApiEnvelope[DatabaseBackupStatus])
 def read_database_backup_status(
     session: Session = Depends(get_session),
-    _: User = Depends(require_roles(UserRole.ADMIN)),
+    _: User = Depends(require_permission("settings.manage")),
 ) -> ApiEnvelope[DatabaseBackupStatus]:
     return ApiEnvelope(data=build_database_backup_status(session))
 
@@ -122,7 +122,7 @@ def read_database_backup_status(
 @router.get("/readiness", response_model=ApiEnvelope[SystemReadinessReport])
 def read_system_readiness(
     session: Session = Depends(get_session),
-    _: User = Depends(require_roles(UserRole.ADMIN)),
+    _: User = Depends(require_permission("settings.manage")),
 ) -> ApiEnvelope[SystemReadinessReport]:
     return ApiEnvelope(data=build_system_readiness_report(session))
 
@@ -130,7 +130,7 @@ def read_system_readiness(
 @router.get("/database-backup/download")
 def download_database_backup(
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_roles(UserRole.ADMIN)),
+    current_user: User = Depends(require_permission("settings.manage")),
 ) -> FileResponse:
     status = build_database_backup_status(session)
     if not status.supported or not status.database_path:

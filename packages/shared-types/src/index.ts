@@ -5,6 +5,21 @@ export type MatchStatus = "candidate" | "confirmed" | "rejected";
 export type AttachmentStatus = "stored" | "placeholder" | "failed";
 export type ExpensePaymentStatus = "unpaid" | "partial_paid" | "paid" | "no_bank_flow";
 export type UserRole = "admin" | "finance" | "viewer";
+export type PermissionKey =
+  | "dashboard.view"
+  | "reconciliation.view"
+  | "reconciliation.manage"
+  | "dingtalk.view"
+  | "dingtalk.manage"
+  | "reports.view"
+  | "stores.view"
+  | "stores.manage"
+  | "categories.view"
+  | "categories.manage"
+  | "users.view"
+  | "users.manage"
+  | "audit.view"
+  | "settings.manage";
 export type MasterDataStatus = "active" | "inactive";
 
 export interface Page<T> {
@@ -219,6 +234,8 @@ export interface UserAccount {
   last_login_at?: string | null;
   created_at: string;
   updated_at: string;
+  permissions: PermissionKey[];
+  store_ids: string[];
 }
 
 export interface UserAccountCreate {
@@ -226,6 +243,8 @@ export interface UserAccountCreate {
   display_name: string;
   password: string;
   role: UserRole;
+  permissions?: PermissionKey[];
+  store_ids?: string[];
 }
 
 export interface UserAccountUpdate {
@@ -233,6 +252,8 @@ export interface UserAccountUpdate {
   password?: string | null;
   role?: UserRole | null;
   status?: "active" | "disabled" | null;
+  permissions?: PermissionKey[] | null;
+  store_ids?: string[] | null;
 }
 
 export interface ShareholderAccessGrant {
@@ -790,4 +811,6 @@ export interface CurrentUser {
   username: string;
   display_name: string;
   role: UserRole;
+  permissions: PermissionKey[];
+  store_ids: string[];
 }

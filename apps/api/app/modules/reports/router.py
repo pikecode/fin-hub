@@ -18,6 +18,7 @@ from app.models import (
     Store,
     User,
 )
+from app.modules.auth.permissions import effective_store_ids, ensure_permission, ensure_store_access
 from app.modules.auth.router import get_optional_current_user
 from app.modules.shareholder_auth.service import grant_store_ids, require_shareholder_grant
 from app.schemas import (
@@ -49,6 +50,7 @@ def get_report_access(
     session: Session = Depends(get_session),
 ) -> ShareholderAccessGrant | None:
     if current_user is not None:
+        ensure_permission(session, current_user, "reports.view")
         return None
     token = read_bearer_token(authorization)
     if token is None:
@@ -56,11 +58,33 @@ def get_report_access(
     return require_shareholder_grant(session, token)
 
 
-def ensure_report_store_access(grant: ShareholderAccessGrant | None, store_id: str) -> None:
+def ensure_report_store_access(
+    session: Session,
+    grant: ShareholderAccessGrant | None,
+    current_user: User | None,
+    store_id: str,
+) -> None:
     if grant is None:
+        if current_user is not None:
+            ensure_store_access(session, current_user, store_id)
         return
     if store_id not in grant_store_ids(grant):
         raise HTTPException(status_code=403, detail="Store is not authorized")
+
+
+def filter_report_stores(
+    session: Session,
+    stores: list[Store],
+    shareholder_grant: ShareholderAccessGrant | None,
+    current_user: User | None,
+) -> list[Store]:
+    if shareholder_grant is not None:
+        allowed_store_ids = set(grant_store_ids(shareholder_grant))
+        return [store for store in stores if store.id in allowed_store_ids]
+    if current_user is None:
+        return stores
+    allowed_store_ids = set(effective_store_ids(session, current_user))
+    return [store for store in stores if store.id in allowed_store_ids]
 
 
 def ensure_shareholder_can_read_ledger(grant: ShareholderAccessGrant | None, ledger: Ledger) -> None:
@@ -135,8 +159,9 @@ def read_ledger_for_report(
     store_id: str,
     period: str,
     shareholder_grant: ShareholderAccessGrant | None,
+    current_user: User | None = None,
 ) -> tuple[Store, Ledger]:
-    ensure_report_store_access(shareholder_grant, store_id)
+    ensure_report_store_access(session, shareholder_grant, current_user, store_id)
     store = session.get(Store, store_id)
     if store is None:
         raise HTTPException(status_code=404, detail="Store not found")
@@ -174,11 +199,10 @@ def read_ledger_export_rows(
 def list_store_summaries(
     session: Session = Depends(get_session),
     shareholder_grant: ShareholderAccessGrant | None = Depends(get_report_access),
+    current_user: User | None = Depends(get_optional_current_user),
 ) -> ApiEnvelope[list[StoreReportSummary]]:
     stores = session.scalars(select(Store).order_by(Store.created_at.desc())).all()
-    if shareholder_grant is not None:
-        allowed_store_ids = set(grant_store_ids(shareholder_grant))
-        stores = [store for store in stores if store.id in allowed_store_ids]
+    stores = filter_report_stores(session, list(stores), shareholder_grant, current_user)
     summaries: list[StoreReportSummary] = []
     for store in stores:
         ledger_query = select(Ledger).where(Ledger.store_id == store.id)
@@ -199,8 +223,9 @@ def list_ledger_periods(
     store_id: str,
     session: Session = Depends(get_session),
     shareholder_grant: ShareholderAccessGrant | None = Depends(get_report_access),
+    current_user: User | None = Depends(get_optional_current_user),
 ) -> ApiEnvelope[list[LedgerPeriodOption]]:
-    ensure_report_store_access(shareholder_grant, store_id)
+    ensure_report_store_access(session, shareholder_grant, current_user, store_id)
     store = session.get(Store, store_id)
     if store is None:
         raise HTTPException(status_code=404, detail="Store not found")
@@ -227,16 +252,15 @@ def list_ledger_trends(
     limit: int = 6,
     session: Session = Depends(get_session),
     shareholder_grant: ShareholderAccessGrant | None = Depends(get_report_access),
+    current_user: User | None = Depends(get_optional_current_user),
 ) -> ApiEnvelope[list[LedgerTrend]]:
     limit = min(max(limit, 1), 24)
     stores_query = select(Store).order_by(Store.created_at.desc())
     if store_id:
-        ensure_report_store_access(shareholder_grant, store_id)
+        ensure_report_store_access(session, shareholder_grant, current_user, store_id)
         stores_query = stores_query.where(Store.id == store_id)
     stores = session.scalars(stores_query).all()
-    if shareholder_grant is not None:
-        allowed_store_ids = set(grant_store_ids(shareholder_grant))
-        stores = [store for store in stores if store.id in allowed_store_ids]
+    stores = filter_report_stores(session, list(stores), shareholder_grant, current_user)
 
     trends: list[LedgerTrend] = []
     for store in stores:
@@ -258,10 +282,13 @@ def read_store_comparison(
     period: str | None = None,
     session: Session = Depends(get_session),
     shareholder_grant: ShareholderAccessGrant | None = Depends(get_report_access),
+    current_user: User | None = Depends(get_optional_current_user),
 ) -> ApiEnvelope[StoreComparisonReport]:
     allowed_store_ids: set[str] | None = None
     if shareholder_grant is not None:
         allowed_store_ids = set(grant_store_ids(shareholder_grant))
+    elif current_user is not None:
+        allowed_store_ids = set(effective_store_ids(session, current_user))
 
     period_query = select(func.max(Ledger.period))
     if shareholder_grant is not None:
@@ -302,8 +329,9 @@ def read_ledger_summary(
     period: str,
     session: Session = Depends(get_session),
     shareholder_grant: ShareholderAccessGrant | None = Depends(get_report_access),
+    current_user: User | None = Depends(get_optional_current_user),
 ) -> ApiEnvelope[LedgerReportSummary]:
-    store, ledger = read_ledger_for_report(session, store_id, period, shareholder_grant)
+    store, ledger = read_ledger_for_report(session, store_id, period, shareholder_grant, current_user)
     return ApiEnvelope(data=build_report_summary(session, ledger, store))
 
 
@@ -313,8 +341,9 @@ def read_ledger_detail(
     period: str,
     session: Session = Depends(get_session),
     shareholder_grant: ShareholderAccessGrant | None = Depends(get_report_access),
+    current_user: User | None = Depends(get_optional_current_user),
 ) -> ApiEnvelope[LedgerReportDetail]:
-    store, ledger = read_ledger_for_report(session, store_id, period, shareholder_grant)
+    store, ledger = read_ledger_for_report(session, store_id, period, shareholder_grant, current_user)
 
     category_name = func.coalesce(ExpenseItem.category_l1, "未分类")
     supplier_name = func.coalesce(ExpenseItem.supplier_name, "未关联供应商")
@@ -389,8 +418,9 @@ def export_ledger_detail_csv(
     period: str,
     session: Session = Depends(get_session),
     shareholder_grant: ShareholderAccessGrant | None = Depends(get_report_access),
+    current_user: User | None = Depends(get_optional_current_user),
 ) -> StreamingResponse:
-    store, ledger = read_ledger_for_report(session, store_id, period, shareholder_grant)
+    store, ledger = read_ledger_for_report(session, store_id, period, shareholder_grant, current_user)
     revenue_records, expenses, bank_transactions = read_ledger_export_rows(session, store_id, period)
     summary = build_report_summary(session, ledger, store)
 
@@ -475,8 +505,9 @@ def export_ledger_detail_xlsx(
     period: str,
     session: Session = Depends(get_session),
     shareholder_grant: ShareholderAccessGrant | None = Depends(get_report_access),
+    current_user: User | None = Depends(get_optional_current_user),
 ) -> StreamingResponse:
-    store, ledger = read_ledger_for_report(session, store_id, period, shareholder_grant)
+    store, ledger = read_ledger_for_report(session, store_id, period, shareholder_grant, current_user)
     revenue_records, expenses, bank_transactions = read_ledger_export_rows(session, store_id, period)
     summary = build_report_summary(session, ledger, store)
 

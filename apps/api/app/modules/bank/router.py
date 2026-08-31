@@ -10,9 +10,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.database import get_session
-from app.models import BankTransaction, Ledger, LedgerStatus, SyncJob, SyncJobStatus, User, UserRole, utc_now
+from app.models import BankTransaction, Ledger, LedgerStatus, SyncJob, SyncJobStatus, User, utc_now
 from app.modules.audit.service import write_audit_log
-from app.modules.auth.router import audit_actor, require_roles
+from app.modules.auth.permissions import ensure_permission, ensure_store_access, scoped_store_condition
+from app.modules.auth.router import audit_actor, get_current_user
 from app.modules.common import paginate
 from app.schemas import (
     ApiEnvelope,
@@ -67,10 +68,15 @@ def list_bank_transactions(
     page: int = 1,
     page_size: int = 50,
     session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
 ) -> ApiEnvelope[Page[BankTransactionRead]]:
+    ensure_permission(session, current_user, "reconciliation.view")
     query = select(BankTransaction).order_by(BankTransaction.occurred_at.desc())
     if store_id:
+        ensure_store_access(session, current_user, store_id)
         query = query.where(BankTransaction.store_id == store_id)
+    else:
+        query = query.where(scoped_store_condition(session, current_user, BankTransaction.store_id))
     if ledger_period:
         query = query.where(BankTransaction.ledger_period == ledger_period)
     if direction:
@@ -83,8 +89,10 @@ def list_bank_transactions(
 def create_bank_transaction(
     payload: BankTransactionCreate,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+    current_user: User = Depends(get_current_user),
 ) -> ApiEnvelope[BankTransactionRead]:
+    ensure_permission(session, current_user, "reconciliation.manage")
+    ensure_store_access(session, current_user, payload.store_id)
     transaction = BankTransaction(**normalize_bank_assignment(session, payload))
     session.add(transaction)
     session.flush()
@@ -111,14 +119,17 @@ def update_bank_transaction(
     transaction_id: str,
     payload: BankTransactionUpdate,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+    current_user: User = Depends(get_current_user),
 ) -> ApiEnvelope[BankTransactionRead]:
+    ensure_permission(session, current_user, "reconciliation.manage")
     transaction = session.get(BankTransaction, transaction_id)
     if transaction is None:
         raise HTTPException(status_code=404, detail="Bank transaction not found")
+    ensure_store_access(session, current_user, transaction.store_id)
 
     updates = payload.model_dump(exclude_unset=True)
     target_store_id = updates.get("store_id", transaction.store_id)
+    ensure_store_access(session, current_user, target_store_id)
     target_ledger_period = updates.get("ledger_period", transaction.ledger_period)
     if target_store_id and not target_ledger_period:
         target_ledger_period = updates.get("occurred_at", transaction.occurred_at).strftime("%Y-%m")
@@ -259,8 +270,10 @@ async def preview_bank_transactions_file(
     ledger_period: str | None = Form(None),
     file: UploadFile = File(...),
     session: Session = Depends(get_session),
-    _: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+    current_user: User = Depends(get_current_user),
 ) -> ApiEnvelope[BankImportPreviewResult]:
+    ensure_permission(session, current_user, "reconciliation.manage")
+    ensure_store_access(session, current_user, store_id)
     if ledger_period and not store_id:
         raise HTTPException(status_code=422, detail="Store is required when ledger period is provided")
     if store_id and ledger_period:
@@ -309,8 +322,10 @@ async def import_bank_transactions_file(
     started_by: str = Form("admin"),
     file: UploadFile = File(...),
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+    current_user: User = Depends(get_current_user),
 ) -> ApiEnvelope[BankImportResult]:
+    ensure_permission(session, current_user, "reconciliation.manage")
+    ensure_store_access(session, current_user, store_id)
     if ledger_period and not store_id:
         raise HTTPException(status_code=422, detail="Store is required when ledger period is provided")
     if store_id and ledger_period:

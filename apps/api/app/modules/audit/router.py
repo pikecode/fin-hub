@@ -3,7 +3,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.database import get_session
-from app.models import AuditLog
+from app.models import AuditLog, User
+from app.modules.auth.router import require_permission
 from app.modules.common import paginate
 from app.schemas import ApiEnvelope, AuditLogRead, Page
 
@@ -18,6 +19,7 @@ def list_audit_logs(
     page: int = 1,
     page_size: int = 50,
     session: Session = Depends(get_session),
+    _: User = Depends(require_permission("audit.view")),
 ) -> ApiEnvelope[Page[AuditLogRead]]:
     query = select(AuditLog).order_by(AuditLog.created_at.desc())
     if actor:

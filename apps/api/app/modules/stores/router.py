@@ -3,9 +3,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.database import get_session
-from app.models import Store, User, UserRole
+from app.models import Store, User
 from app.modules.audit.service import write_audit_log
-from app.modules.auth.router import audit_actor, require_roles
+from app.modules.auth.permissions import ensure_permission, ensure_store_access, scoped_store_condition
+from app.modules.auth.router import audit_actor, get_current_user
 from app.modules.common import paginate
 from app.schemas import ApiEnvelope, Page, StoreCreate, StoreRead, StoreUpdate
 
@@ -17,8 +18,11 @@ def list_stores(
     page: int = 1,
     page_size: int = 50,
     session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
 ) -> ApiEnvelope[Page[StoreRead]]:
+    ensure_permission(session, current_user, "stores.view")
     query = select(Store).order_by(Store.created_at.desc())
+    query = query.where(scoped_store_condition(session, current_user, Store.id))
     items, total = paginate(session, query, page, page_size)
     return ApiEnvelope(data=Page(items=items, total=total, page=page, page_size=page_size))
 
@@ -27,8 +31,9 @@ def list_stores(
 def create_store(
     payload: StoreCreate,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+    current_user: User = Depends(get_current_user),
 ) -> ApiEnvelope[StoreRead]:
+    ensure_permission(session, current_user, "stores.manage")
     store = Store(**payload.model_dump())
     session.add(store)
     session.flush()
@@ -50,11 +55,13 @@ def update_store(
     store_id: str,
     payload: StoreUpdate,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+    current_user: User = Depends(get_current_user),
 ) -> ApiEnvelope[StoreRead]:
+    ensure_permission(session, current_user, "stores.manage")
     store = session.get(Store, store_id)
     if store is None:
         raise HTTPException(status_code=404, detail="Store not found")
+    ensure_store_access(session, current_user, store.id)
 
     changes = payload.model_dump(exclude_unset=True)
     for field, value in changes.items():

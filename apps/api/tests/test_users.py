@@ -57,3 +57,61 @@ def test_finance_user_cannot_manage_users(anonymous_client: TestClient, session:
 
     response = anonymous_client.get("/api/users")
     assert response.status_code == 403
+
+
+def test_user_permissions_and_store_scope_are_persisted(client: TestClient) -> None:
+    first_store_id = client.post("/api/stores", json={"name": "蘑说权限店 A"}).json()["data"]["id"]
+    client.post("/api/stores", json={"name": "蘑说权限店 B"})
+
+    create_response = client.post(
+        "/api/users",
+        json={
+            "username": "limited_finance",
+            "display_name": "受限财务",
+            "password": "secret123",
+            "role": "finance",
+            "permissions": ["stores.view", "reconciliation.view"],
+            "store_ids": [first_store_id],
+        },
+    )
+    assert create_response.status_code == 201
+    created_user = create_response.json()["data"]
+    assert created_user["permissions"] == ["categories.view", "dingtalk.view", "reconciliation.view", "stores.view"]
+    assert created_user["store_ids"] == [first_store_id]
+
+    login_response = client.post(
+        "/api/auth/login",
+        json={"username": "limited_finance", "password": "secret123"},
+    )
+    assert login_response.status_code == 200
+    current_user = client.get("/api/auth/me").json()["data"]
+    assert current_user["permissions"] == ["categories.view", "dingtalk.view", "reconciliation.view", "stores.view"]
+    assert current_user["store_ids"] == [first_store_id]
+
+    stores_response = client.get("/api/stores?page_size=20")
+    assert stores_response.status_code == 200
+    stores = stores_response.json()["data"]["items"]
+    assert [store["id"] for store in stores] == [first_store_id]
+
+
+def test_explicit_empty_permissions_do_not_fall_back_to_role_defaults(client: TestClient) -> None:
+    create_response = client.post(
+        "/api/users",
+        json={
+            "username": "no_permission_finance",
+            "display_name": "无权限财务",
+            "password": "secret123",
+            "role": "finance",
+            "permissions": [],
+            "store_ids": [],
+        },
+    )
+    assert create_response.status_code == 201
+
+    client.post(
+        "/api/auth/login",
+        json={"username": "no_permission_finance", "password": "secret123"},
+    )
+    current_user = client.get("/api/auth/me").json()["data"]
+    assert current_user["permissions"] == []
+    assert client.get("/api/stores").status_code == 403

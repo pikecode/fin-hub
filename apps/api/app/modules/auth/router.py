@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from app.core.database import get_session
 from app.core.security import create_session_token, decode_session_token, verify_password
 from app.models import User, UserRole, UserStatus, utc_now
+from app.modules.auth.permissions import effective_permissions, effective_store_ids, ensure_permission
 from app.schemas import ApiEnvelope, CurrentUser, LoginRequest
 
 SESSION_COOKIE_NAME = "fin_hub_session"
@@ -12,12 +13,14 @@ SESSION_COOKIE_NAME = "fin_hub_session"
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
-def to_current_user(user: User) -> CurrentUser:
+def to_current_user(session: Session, user: User) -> CurrentUser:
     return CurrentUser(
         id=user.id,
         username=user.username,
         display_name=user.display_name,
         role=user.role,
+        permissions=effective_permissions(session, user),
+        store_ids=effective_store_ids(session, user),
     )
 
 
@@ -64,6 +67,17 @@ def require_roles(*roles: UserRole):
     return dependency
 
 
+def require_permission(permission: str):
+    def dependency(
+        current_user: User = Depends(get_current_user),
+        session: Session = Depends(get_session),
+    ) -> User:
+        ensure_permission(session, current_user, permission)
+        return current_user
+
+    return dependency
+
+
 @router.post("/login", response_model=ApiEnvelope[CurrentUser])
 def login(
     payload: LoginRequest,
@@ -88,7 +102,7 @@ def login(
         max_age=60 * 60 * 12,
         path="/",
     )
-    return ApiEnvelope(data=to_current_user(user))
+    return ApiEnvelope(data=to_current_user(session, user))
 
 
 @router.post("/logout", response_model=ApiEnvelope[dict[str, bool]])
@@ -98,5 +112,8 @@ def logout(response: Response) -> ApiEnvelope[dict[str, bool]]:
 
 
 @router.get("/me", response_model=ApiEnvelope[CurrentUser])
-def me(current_user: User = Depends(get_current_user)) -> ApiEnvelope[CurrentUser]:
-    return ApiEnvelope(data=to_current_user(current_user))
+def me(
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> ApiEnvelope[CurrentUser]:
+    return ApiEnvelope(data=to_current_user(session, current_user))

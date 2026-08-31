@@ -39,6 +39,8 @@ class CurrentUser(BaseModel):
     username: str
     display_name: str
     role: UserRole
+    permissions: list[str] = []
+    store_ids: list[str] = []
 
 
 class UserCreate(BaseModel):
@@ -46,6 +48,8 @@ class UserCreate(BaseModel):
     display_name: str = Field(min_length=1, max_length=80)
     password: str = Field(min_length=8, max_length=120)
     role: UserRole = UserRole.FINANCE
+    permissions: list[str] | None = None
+    store_ids: list[str] = []
 
 
 class UserUpdate(BaseModel):
@@ -53,11 +57,11 @@ class UserUpdate(BaseModel):
     password: str | None = Field(default=None, min_length=8, max_length=120)
     role: UserRole | None = None
     status: str | None = Field(default=None, pattern=r"^(active|disabled)$")
+    permissions: list[str] | None = None
+    store_ids: list[str] | None = None
 
 
 class UserRead(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
     id: str
     username: str
     display_name: str
@@ -66,6 +70,8 @@ class UserRead(BaseModel):
     last_login_at: datetime | None
     created_at: datetime
     updated_at: datetime
+    permissions: list[str] = []
+    store_ids: list[str] = []
 
 
 class ShareholderAccessGrantCreate(BaseModel):

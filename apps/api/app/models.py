@@ -94,11 +94,39 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(240), nullable=False)
     role: Mapped[str] = mapped_column(String(24), default=UserRole.ADMIN.value, nullable=False)
     status: Mapped[str] = mapped_column(String(24), default=UserStatus.ACTIVE.value, nullable=False)
+    permissions_configured: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=utc_now, onupdate=utc_now, nullable=False
     )
+
+
+class UserPermission(Base):
+    __tablename__ = "user_permissions"
+    __table_args__ = (
+        UniqueConstraint("user_id", "permission", name="uq_user_permission"),
+        Index("ix_user_permissions_user_id", "user_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
+    permission: Mapped[str] = mapped_column(String(80), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+
+
+class UserStorePermission(Base):
+    __tablename__ = "user_store_permissions"
+    __table_args__ = (
+        UniqueConstraint("user_id", "store_id", name="uq_user_store_permission"),
+        Index("ix_user_store_permissions_user_id", "user_id"),
+        Index("ix_user_store_permissions_store_id", "store_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
+    store_id: Mapped[str] = mapped_column(ForeignKey("stores.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
 
 
 class Store(Base):

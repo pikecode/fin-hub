@@ -23,11 +23,11 @@ from app.models import (
     RevenueRecord,
     TemplateFieldMapping,
     User,
-    UserRole,
     utc_now,
 )
 from app.modules.audit.service import write_audit_log
-from app.modules.auth.router import audit_actor, require_roles
+from app.modules.auth.permissions import ensure_permission, ensure_store_access, scoped_store_condition
+from app.modules.auth.router import audit_actor, get_current_user
 from app.modules.common import paginate
 from app.schemas import (
     ApiEnvelope,
@@ -474,11 +474,13 @@ def revenue_range_total(session: Session, bank_transaction: BankTransaction, pay
 def create_revenue_match_candidate(
     payload: RevenueMatchCreate,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+    current_user: User = Depends(get_current_user),
 ) -> ApiEnvelope[RevenueMatchRead]:
+    ensure_permission(session, current_user, "reconciliation.manage")
     bank_transaction = session.get(BankTransaction, payload.bank_transaction_id)
     if bank_transaction is None:
         raise HTTPException(status_code=404, detail="Bank transaction not found")
+    ensure_store_access(session, current_user, bank_transaction.store_id)
     if bank_transaction.direction != "income":
         raise HTTPException(status_code=409, detail="Bank transaction is not income")
     channel = session.scalar(select(RevenueChannel).where(RevenueChannel.name == payload.channel))
@@ -528,14 +530,16 @@ def confirm_revenue_match(
     match_id: str,
     operator: str = "system",
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+    current_user: User = Depends(get_current_user),
 ) -> ApiEnvelope[RevenueMatchRead]:
+    ensure_permission(session, current_user, "reconciliation.manage")
     match = session.get(RevenueBankMatch, match_id)
     if match is None:
         raise HTTPException(status_code=404, detail="Revenue match not found")
     bank_transaction = session.get(BankTransaction, match.bank_transaction_id)
     if bank_transaction is None:
         raise HTTPException(status_code=409, detail="Matched bank transaction is missing")
+    ensure_store_access(session, current_user, bank_transaction.store_id)
     if match.status == MatchStatus.CONFIRMED.value:
         return ApiEnvelope(data=match)
     if match.status == MatchStatus.REJECTED.value:
@@ -571,11 +575,16 @@ def confirm_revenue_match(
 def reject_revenue_match(
     match_id: str,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+    current_user: User = Depends(get_current_user),
 ) -> ApiEnvelope[RevenueMatchRead]:
+    ensure_permission(session, current_user, "reconciliation.manage")
     match = session.get(RevenueBankMatch, match_id)
     if match is None:
         raise HTTPException(status_code=404, detail="Revenue match not found")
+    bank_transaction = session.get(BankTransaction, match.bank_transaction_id)
+    if bank_transaction is None:
+        raise HTTPException(status_code=409, detail="Matched bank transaction is missing")
+    ensure_store_access(session, current_user, bank_transaction.store_id)
     if match.status == MatchStatus.CONFIRMED.value:
         raise HTTPException(status_code=409, detail="Confirmed match cannot be rejected")
     match.status = MatchStatus.REJECTED.value
@@ -596,14 +605,17 @@ def reject_revenue_match(
 def create_match_candidate(
     payload: MatchCreate,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+    current_user: User = Depends(get_current_user),
 ) -> ApiEnvelope[MatchRead]:
+    ensure_permission(session, current_user, "reconciliation.manage")
     expense_item = session.get(ExpenseItem, payload.expense_item_id)
     if expense_item is None:
         raise HTTPException(status_code=404, detail="Expense item not found")
+    ensure_store_access(session, current_user, expense_item.store_id)
     bank_transaction = session.get(BankTransaction, payload.bank_transaction_id)
     if bank_transaction is None:
         raise HTTPException(status_code=404, detail="Bank transaction not found")
+    ensure_store_access(session, current_user, bank_transaction.store_id)
     if bank_transaction.direction != "expense":
         raise HTTPException(status_code=409, detail="Bank transaction is not expense")
     if bank_transaction.store_id and expense_item.store_id != bank_transaction.store_id:
@@ -666,8 +678,9 @@ def auto_suggest_matches(
     store_id: str | None = None,
     ledger_period: str | None = None,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+    current_user: User = Depends(get_current_user),
 ) -> ApiEnvelope[AutoMatchResult]:
+    ensure_permission(session, current_user, "reconciliation.manage")
     expense_query = select(ExpenseItem).where(
         ExpenseItem.payment_status.in_(
             [ExpensePaymentStatus.UNPAID.value, ExpensePaymentStatus.PARTIAL_PAID.value]
@@ -675,8 +688,12 @@ def auto_suggest_matches(
     )
     bank_query = select(BankTransaction).where(BankTransaction.direction == "expense")
     if store_id:
+        ensure_store_access(session, current_user, store_id)
         expense_query = expense_query.where(ExpenseItem.store_id == store_id)
         bank_query = bank_query.where(BankTransaction.store_id == store_id)
+    else:
+        expense_query = expense_query.where(scoped_store_condition(session, current_user, ExpenseItem.store_id))
+        bank_query = bank_query.where(scoped_store_condition(session, current_user, BankTransaction.store_id))
     if ledger_period:
         expense_query = expense_query.where(ExpenseItem.ledger_period == ledger_period)
         bank_query = bank_query.where(BankTransaction.ledger_period == ledger_period)
@@ -767,10 +784,14 @@ def list_reconciliation_candidates(
     approval_only: bool = False,
     page_size: int = 50,
     session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
 ) -> ApiEnvelope[ReconciliationCandidateResult]:
+    ensure_permission(session, current_user, "reconciliation.view")
     bank_transaction = session.get(BankTransaction, bank_transaction_id)
     if bank_transaction is None:
         raise HTTPException(status_code=404, detail="Bank transaction not found")
+    ensure_store_access(session, current_user, bank_transaction.store_id)
+    ensure_store_access(session, current_user, store_id)
     if bank_transaction.direction != "expense":
         raise HTTPException(status_code=409, detail="Only expense bank transactions can match approvals")
 
@@ -830,6 +851,8 @@ def list_reconciliation_candidates(
         query = query.where(*real_approval_candidate_filter())
     if store_id:
         query = query.where(ExpenseItem.store_id == store_id)
+    else:
+        query = query.where(scoped_store_condition(session, current_user, ExpenseItem.store_id))
     if approval_no:
         like = f"%{approval_no.strip()}%"
         query = query.where(
@@ -908,7 +931,9 @@ def list_reconciliation_records(
     page: int = 1,
     page_size: int = 50,
     session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
 ) -> ApiEnvelope[Page[ReconciliationRecord]]:
+    ensure_permission(session, current_user, "reconciliation.view")
     query = (
         select(ExpenseBankMatch, BankTransaction, ExpenseItem, ApprovalInstance, ApprovalTemplate)
         .join(BankTransaction, ExpenseBankMatch.bank_transaction_id == BankTransaction.id)
@@ -921,7 +946,10 @@ def list_reconciliation_records(
     if accounting_period:
         query = query.where(ExpenseBankMatch.accounting_period == accounting_period)
     if store_id:
+        ensure_store_access(session, current_user, store_id)
         query = query.where(ExpenseItem.store_id == store_id)
+    else:
+        query = query.where(scoped_store_condition(session, current_user, ExpenseItem.store_id))
 
     page = max(page, 1)
     page_size = min(max(page_size, 1), 200)
@@ -963,8 +991,9 @@ def update_reconciliation_record(
     match_id: str,
     payload: ReconciliationRecordUpdate,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+    current_user: User = Depends(get_current_user),
 ) -> ApiEnvelope[MatchRead]:
+    ensure_permission(session, current_user, "reconciliation.manage")
     match = session.get(ExpenseBankMatch, match_id)
     if match is None:
         raise HTTPException(status_code=404, detail="Match not found")
@@ -975,6 +1004,8 @@ def update_reconciliation_record(
     old_expense = session.get(ExpenseItem, match.expense_item_id)
     if bank_transaction is None or old_expense is None:
         raise HTTPException(status_code=409, detail="Matched source record is missing")
+    ensure_store_access(session, current_user, bank_transaction.store_id)
+    ensure_store_access(session, current_user, old_expense.store_id)
 
     updates = payload.model_dump(exclude_unset=True)
     target_expense = old_expense
@@ -982,7 +1013,9 @@ def update_reconciliation_record(
         target_expense = session.get(ExpenseItem, updates["expense_item_id"])
         if target_expense is None:
             raise HTTPException(status_code=404, detail="Expense item not found")
+        ensure_store_access(session, current_user, target_expense.store_id)
 
+    target_amount = updates.get("amount", match.amount)
     target_period = updates.get("accounting_period", match.accounting_period) or target_expense.ledger_period
     bank_active_match = active_bank_expense_match(session, bank_transaction.id, exclude_match_id=match.id)
     if bank_active_match is not None:
@@ -1014,7 +1047,6 @@ def update_reconciliation_record(
         target_expense.category_l2 = updates["category_l2"]
 
     bank_transaction.store_id = target_expense.store_id
-    bank_transaction.ledger_period = target_period
 
     try:
         session.flush()
@@ -1054,8 +1086,9 @@ def update_reconciliation_record(
 def unmatch_reconciliation_record(
     match_id: str,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+    current_user: User = Depends(get_current_user),
 ) -> ApiEnvelope[MatchRead]:
+    ensure_permission(session, current_user, "reconciliation.manage")
     match = session.get(ExpenseBankMatch, match_id)
     if match is None:
         raise HTTPException(status_code=404, detail="Match not found")
@@ -1066,6 +1099,8 @@ def unmatch_reconciliation_record(
     expense_item = session.get(ExpenseItem, match.expense_item_id)
     if bank_transaction is None or expense_item is None:
         raise HTTPException(status_code=409, detail="Matched source record is missing")
+    ensure_store_access(session, current_user, bank_transaction.store_id)
+    ensure_store_access(session, current_user, expense_item.store_id)
 
     match.status = MatchStatus.REJECTED.value
     match.reason = f"{match.reason}\n解除匹配" if match.reason else "解除匹配"
@@ -1099,8 +1134,9 @@ def confirm_match(
     match_id: str,
     operator: str = "system",
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+    current_user: User = Depends(get_current_user),
 ) -> ApiEnvelope[MatchRead]:
+    ensure_permission(session, current_user, "reconciliation.manage")
     match = session.get(ExpenseBankMatch, match_id)
     if match is None:
         raise HTTPException(status_code=404, detail="Match not found")
@@ -1108,6 +1144,8 @@ def confirm_match(
     bank_transaction = session.get(BankTransaction, match.bank_transaction_id)
     if expense_item is None or bank_transaction is None:
         raise HTTPException(status_code=409, detail="Matched source record is missing")
+    ensure_store_access(session, current_user, expense_item.store_id)
+    ensure_store_access(session, current_user, bank_transaction.store_id)
     if match.status == MatchStatus.CONFIRMED.value:
         return ApiEnvelope(data=match)
     if match.status == MatchStatus.REJECTED.value:
@@ -1152,11 +1190,18 @@ def confirm_match(
 def reject_match(
     match_id: str,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+    current_user: User = Depends(get_current_user),
 ) -> ApiEnvelope[MatchRead]:
+    ensure_permission(session, current_user, "reconciliation.manage")
     match = session.get(ExpenseBankMatch, match_id)
     if match is None:
         raise HTTPException(status_code=404, detail="Match not found")
+    expense_item = session.get(ExpenseItem, match.expense_item_id)
+    bank_transaction = session.get(BankTransaction, match.bank_transaction_id)
+    if expense_item is None or bank_transaction is None:
+        raise HTTPException(status_code=409, detail="Matched source record is missing")
+    ensure_store_access(session, current_user, expense_item.store_id)
+    ensure_store_access(session, current_user, bank_transaction.store_id)
     if match.status == MatchStatus.CONFIRMED.value:
         raise HTTPException(status_code=409, detail="Confirmed match cannot be rejected")
     match.status = MatchStatus.REJECTED.value

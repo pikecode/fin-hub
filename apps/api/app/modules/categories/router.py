@@ -4,9 +4,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.database import get_session
-from app.models import ExpenseCategory, User, UserRole
+from app.models import ExpenseCategory, User
 from app.modules.audit.service import write_audit_log
-from app.modules.auth.router import audit_actor, require_roles
+from app.modules.auth.permissions import ensure_permission
+from app.modules.auth.router import audit_actor, get_current_user
 from app.modules.common import paginate
 from app.schemas import ApiEnvelope, ExpenseCategoryCreate, ExpenseCategoryRead, ExpenseCategoryUpdate, Page
 
@@ -19,7 +20,9 @@ def list_categories(
     page: int = 1,
     page_size: int = 100,
     session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
 ) -> ApiEnvelope[Page[ExpenseCategoryRead]]:
+    ensure_permission(session, current_user, "categories.view")
     query = select(ExpenseCategory).order_by(ExpenseCategory.sort_order.asc(), ExpenseCategory.created_at.asc())
     if parent_id is not None:
         query = query.where(ExpenseCategory.parent_id == parent_id)
@@ -31,8 +34,9 @@ def list_categories(
 def create_category(
     payload: ExpenseCategoryCreate,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+    current_user: User = Depends(get_current_user),
 ) -> ApiEnvelope[ExpenseCategoryRead]:
+    ensure_permission(session, current_user, "categories.manage")
     if payload.parent_id is not None and session.get(ExpenseCategory, payload.parent_id) is None:
         raise HTTPException(status_code=404, detail="Parent category not found")
     exists = session.scalar(
@@ -70,8 +74,9 @@ def update_category(
     category_id: str,
     payload: ExpenseCategoryUpdate,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+    current_user: User = Depends(get_current_user),
 ) -> ApiEnvelope[ExpenseCategoryRead]:
+    ensure_permission(session, current_user, "categories.manage")
     category = session.get(ExpenseCategory, category_id)
     if category is None:
         raise HTTPException(status_code=404, detail="Category not found")

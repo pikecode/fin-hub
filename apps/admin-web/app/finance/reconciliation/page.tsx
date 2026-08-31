@@ -369,17 +369,33 @@ export default function FinanceReconciliationPage() {
     setIsLoading(true);
     setErrorMessage(null);
     try {
-      const [storePage, templatePage, categoryPage] = await Promise.all([
+      const [storeResult, templateResult, categoryResult] = await Promise.allSettled([
         apiClient.stores.list("?page_size=500"),
         apiClient.dingtalk.listTemplates("?page_size=500"),
         apiClient.categories.list("?page_size=500"),
       ]);
-      setStores(storePage.items);
-      setTemplates(sortTemplates(templatePage.items));
-      setCategories(categoryPage.items);
-      if (!selectedStoreId && storePage.items[0]) setSelectedStoreId(storePage.items[0].id);
-    } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "无法加载基础数据");
+      const errors: string[] = [];
+      if (storeResult.status === "fulfilled") {
+        setStores(storeResult.value.items);
+        if (!selectedStoreId && storeResult.value.items[0]) setSelectedStoreId(storeResult.value.items[0].id);
+      } else {
+        errors.push("门店");
+      }
+      if (templateResult.status === "fulfilled") {
+        setTemplates(sortTemplates(templateResult.value.items));
+      } else {
+        setTemplates([]);
+        errors.push("审批模版");
+      }
+      if (categoryResult.status === "fulfilled") {
+        setCategories(categoryResult.value.items);
+      } else {
+        setCategories([]);
+        errors.push("费用分类");
+      }
+      if (errors.length) {
+        setErrorMessage(`部分基础数据加载失败：${errors.join("、")}。请检查当前用户权限。`);
+      }
     } finally {
       setIsLoading(false);
     }

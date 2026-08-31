@@ -25,11 +25,10 @@ from app.models import (
     SyncJobStatus,
     TemplateFieldMapping,
     User,
-    UserRole,
     utc_now,
 )
 from app.modules.audit.service import write_audit_log
-from app.modules.auth.router import audit_actor, require_roles
+from app.modules.auth.router import audit_actor, require_permission
 from app.modules.common import paginate
 from app.modules.dingtalk.client import DingTalkClient, DingTalkClientError, DingTalkCredentials
 from app.schemas import (
@@ -59,7 +58,11 @@ from app.schemas import (
     TemplateSampleApprovalResult,
 )
 
-router = APIRouter(prefix="/dingtalk", tags=["dingtalk"])
+router = APIRouter(
+    prefix="/dingtalk",
+    tags=["dingtalk"],
+    dependencies=[Depends(require_permission("dingtalk.view"))],
+)
 
 
 def template_mapping_status(session: Session, template_id: str) -> str:
@@ -141,7 +144,7 @@ def read_config(session: Session = Depends(get_session)) -> ApiEnvelope[DingTalk
 def update_config(
     payload: DingTalkConfigUpdate,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+    current_user: User = Depends(require_permission("dingtalk.manage")),
 ) -> ApiEnvelope[DingTalkConfigRead]:
     config = get_or_create_config(session)
     values = payload.model_dump(exclude_unset=True)
@@ -168,7 +171,7 @@ def update_config(
 @router.post("/connection-test", response_model=ApiEnvelope[dict[str, str]])
 def test_connection(
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+    current_user: User = Depends(require_permission("dingtalk.manage")),
 ) -> ApiEnvelope[dict[str, str]]:
     config = get_or_create_config(session)
     try:
@@ -191,7 +194,7 @@ def test_connection(
 def list_departments(
     include_inactive: bool = False,
     session: Session = Depends(get_session),
-    _: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+    _: User = Depends(require_permission("dingtalk.view")),
 ) -> ApiEnvelope[list[DingTalkDepartmentRead]]:
     return ApiEnvelope(data=load_local_departments(session, include_inactive=include_inactive))
 
@@ -201,7 +204,7 @@ def pull_departments(
     root_dept_id: str = "1",
     max_depth: int = 6,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+    current_user: User = Depends(require_permission("dingtalk.manage")),
 ) -> ApiEnvelope[DingTalkDepartmentPullResult]:
     config = get_or_create_config(session)
     try:
@@ -250,7 +253,7 @@ def pull_departments(
 @router.get("/departments/sync-preview", response_model=ApiEnvelope[DingTalkDepartmentSyncPreview])
 def preview_department_sync(
     session: Session = Depends(get_session),
-    _: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+    _: User = Depends(require_permission("dingtalk.view")),
 ) -> ApiEnvelope[DingTalkDepartmentSyncPreview]:
     departments = load_local_departments(session)
     return ApiEnvelope(data=build_department_sync_preview(session, departments))
@@ -259,7 +262,7 @@ def preview_department_sync(
 @router.post("/departments/sync", response_model=ApiEnvelope[DingTalkDepartmentSyncResult])
 def sync_departments_to_stores(
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+    current_user: User = Depends(require_permission("dingtalk.manage")),
 ) -> ApiEnvelope[DingTalkDepartmentSyncResult]:
     departments = load_local_departments(session)
 
@@ -354,7 +357,7 @@ def get_template(
 def create_template(
     payload: ApprovalTemplateCreate,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+    current_user: User = Depends(require_permission("dingtalk.manage")),
 ) -> ApiEnvelope[ApprovalTemplateRead]:
     exists = session.scalar(
         select(ApprovalTemplate).where(ApprovalTemplate.process_code == payload.process_code)
@@ -382,7 +385,7 @@ def update_template(
     template_id: str,
     payload: ApprovalTemplateUpdate,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+    current_user: User = Depends(require_permission("dingtalk.manage")),
 ) -> ApiEnvelope[ApprovalTemplateRead]:
     template = session.get(ApprovalTemplate, template_id)
     if template is None:
@@ -407,7 +410,7 @@ def update_template(
 @router.post("/templates/sync", response_model=ApiEnvelope[dict[str, int]])
 def sync_templates(
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+    current_user: User = Depends(require_permission("dingtalk.manage")),
 ) -> ApiEnvelope[dict[str, int]]:
     config = get_or_create_config(session)
     if should_use_real_dingtalk():
@@ -1035,7 +1038,7 @@ def list_template_field_candidates(
 def pull_template_sample_approval(
     template_id: str,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+    current_user: User = Depends(require_permission("dingtalk.manage")),
 ) -> ApiEnvelope[TemplateSampleApprovalResult]:
     template = session.get(ApprovalTemplate, template_id)
     if template is None:
@@ -1117,7 +1120,7 @@ def use_approval_instance_as_field_candidate_sample(
     template_id: str,
     payload: TemplateFieldCandidateSampleRequest,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+    current_user: User = Depends(require_permission("dingtalk.manage")),
 ) -> ApiEnvelope[TemplateSampleApprovalResult]:
     template = session.get(ApprovalTemplate, template_id)
     if template is None:
@@ -1155,7 +1158,7 @@ def upsert_template_mapping(
     template_id: str,
     payload: TemplateFieldMappingCreate,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+    current_user: User = Depends(require_permission("dingtalk.manage")),
 ) -> ApiEnvelope[TemplateFieldMappingRead]:
     template = session.get(ApprovalTemplate, template_id)
     if template is None:
@@ -1197,7 +1200,7 @@ def update_template_mapping(
     mapping_id: str,
     payload: TemplateFieldMappingCreate,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+    current_user: User = Depends(require_permission("dingtalk.manage")),
 ) -> ApiEnvelope[TemplateFieldMappingRead]:
     template = session.get(ApprovalTemplate, template_id)
     if template is None:
@@ -1231,7 +1234,7 @@ def reorder_template_mappings(
     template_id: str,
     payload: TemplateFieldMappingReorderRequest,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+    current_user: User = Depends(require_permission("dingtalk.manage")),
 ) -> ApiEnvelope[list[TemplateFieldMappingRead]]:
     template = session.get(ApprovalTemplate, template_id)
     if template is None:
@@ -1275,7 +1278,7 @@ def delete_template_mapping(
     template_id: str,
     mapping_id: str,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+    current_user: User = Depends(require_permission("dingtalk.manage")),
 ) -> ApiEnvelope[dict[str, bool]]:
     template = session.get(ApprovalTemplate, template_id)
     if template is None:
@@ -1332,7 +1335,7 @@ def reparse_template_instances(
     template_id: str,
     payload: ApprovalReparseRequest,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+    current_user: User = Depends(require_permission("dingtalk.manage")),
 ) -> ApiEnvelope[ApprovalReparseResult]:
     template = session.get(ApprovalTemplate, template_id)
     if template is None:
@@ -2203,7 +2206,7 @@ def run_approval_sync(
 def start_approval_sync(
     payload: StartApprovalSyncRequest,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+    current_user: User = Depends(require_permission("dingtalk.manage")),
 ) -> ApiEnvelope[SyncJobRead]:
     query = select(ApprovalTemplate).where(ApprovalTemplate.is_enabled.is_(True))
     if payload.template_id:
@@ -2271,7 +2274,7 @@ def resume_approval_sync(
     job_id: str,
     payload: ResumeApprovalSyncRequest,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+    current_user: User = Depends(require_permission("dingtalk.manage")),
 ) -> ApiEnvelope[SyncJobRead]:
     previous_job = session.get(SyncJob, job_id)
     if previous_job is None:
