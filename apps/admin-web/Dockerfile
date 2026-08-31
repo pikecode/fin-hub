@@ -9,6 +9,8 @@ RUN pnpm install --filter @fin-hub/admin-web... --frozen-lockfile=false
 FROM node:22-slim AS build
 WORKDIR /repo
 RUN corepack enable
+ARG NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
+ENV NEXT_PUBLIC_API_BASE_URL=$NEXT_PUBLIC_API_BASE_URL
 COPY --from=deps /repo/node_modules ./node_modules
 COPY --from=deps /repo/packages ./packages
 COPY --from=deps /repo/apps/admin-web/node_modules ./apps/admin-web/node_modules

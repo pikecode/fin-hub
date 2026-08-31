@@ -1,0 +1,16 @@
+.git
+.next
+.turbo
+node_modules
+**/node_modules
+**/.next
+**/.venv
+**/__pycache__
+**/.pytest_cache
+**/dist
+data
+apps/api/data
+.env
+.env.*
+*.log
+coverage
