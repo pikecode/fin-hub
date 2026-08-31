@@ -13,23 +13,65 @@ import "./index.css";
 
 type ReportTab = "revenue" | "category" | "supplier" | "pendingExpense" | "pendingBank";
 
-function BreakdownList({ title, items }: { title: string; items: ExpenseBreakdownItem[] }) {
+interface AlertItem {
+  key: string;
+  tone: "warning" | "danger" | "info";
+  title: string;
+  description: string;
+}
+
+function BreakdownRanking({ title, items }: { title: string; items: ExpenseBreakdownItem[] }) {
+  const totalAmount = items.reduce((sum, item) => sum + Number(item.amount), 0);
+  const maxAmount = Math.max(...items.map((item) => Number(item.amount)), 1);
+
   return (
     <View className="section">
       <Text className="section-title">{title}</Text>
       {items.length ? (
         items.map((item) => (
-          <View key={item.name} className="row">
-            <View>
-              <Text className="row-main">{item.name}</Text>
-              <Text className="row-sub">{item.item_count} 笔</Text>
+          <View key={item.name} className="ranking-row">
+            <View className="ranking-head">
+              <View>
+                <Text className="row-main">{item.name}</Text>
+                <Text className="row-sub">
+                  {item.item_count} 笔，占比{" "}
+                  {totalAmount > 0 ? `${((Number(item.amount) / totalAmount) * 100).toFixed(1)}%` : "-"}
+                </Text>
+              </View>
+              <Text className="row-amount">{formatMoney(item.amount)}</Text>
             </View>
-            <Text className="row-amount">{formatMoney(item.amount)}</Text>
+            <View className="ranking-track">
+              <View
+                className="ranking-bar"
+                style={{ width: `${Math.max((Number(item.amount) / maxAmount) * 100, 4).toFixed(2)}%` }}
+              />
+            </View>
           </View>
         ))
       ) : (
         <Text className="empty">暂无数据</Text>
       )}
+    </View>
+  );
+}
+
+function AlertList({ alerts }: { alerts: AlertItem[] }) {
+  if (!alerts.length) {
+    return (
+      <View className="alert-card stable">
+        <Text className="alert-title">经营状态平稳</Text>
+        <Text className="alert-desc">当前账期未发现需要特别关注的报表项。</Text>
+      </View>
+    );
+  }
+  return (
+    <View className="alert-section">
+      {alerts.map((alert) => (
+        <View key={alert.key} className={`alert-card ${alert.tone}`}>
+          <Text className="alert-title">{alert.title}</Text>
+          <Text className="alert-desc">{alert.description}</Text>
+        </View>
+      ))}
     </View>
   );
 }
@@ -148,6 +190,48 @@ export default function ReportPage() {
     ].join("\n");
   }
 
+  const profitRate =
+    report && Number(report.income_amount) > 0 ? (Number(report.profit_amount) / Number(report.income_amount)) * 100 : 0;
+  const expenseRate =
+    report && Number(report.income_amount) > 0 ? (Number(report.expense_amount) / Number(report.income_amount)) * 100 : 0;
+  const alerts = useMemo<AlertItem[]>(() => {
+    if (!report) return [];
+    const items: AlertItem[] = [];
+    if (Number(report.profit_amount) < 0) {
+      items.push({
+        key: "negative-profit",
+        tone: "danger",
+        title: "本期利润为负",
+        description: `利润 ${formatMoney(report.profit_amount)}，建议重点查看费用分类和供应商支出。`,
+      });
+    }
+    if (expenseRate >= 85) {
+      items.push({
+        key: "high-expense-rate",
+        tone: "warning",
+        title: "支出占比较高",
+        description: `支出占收入 ${expenseRate.toFixed(1)}%，需要关注成本结构。`,
+      });
+    }
+    if (report.pending_expense_count > 0) {
+      items.push({
+        key: "pending-expense",
+        tone: "info",
+        title: "存在待处理支出",
+        description: `还有 ${report.pending_expense_count} 笔支出未完成付款处理。`,
+      });
+    }
+    if (report.pending_bank_transaction_count > 0) {
+      items.push({
+        key: "pending-bank",
+        tone: "warning",
+        title: "存在未匹配流水",
+        description: `还有 ${report.pending_bank_transaction_count} 笔银行流水未匹配。`,
+      });
+    }
+    return items;
+  }, [expenseRate, report]);
+
   async function copyReportSummary() {
     await Taro.setClipboardData({ data: reportShareText() });
     Taro.showToast({ title: "已复制摘要", icon: "success" });
@@ -155,10 +239,11 @@ export default function ReportPage() {
 
   return (
     <View className="page">
-      <View className="header">
+      <View className="hero">
         <View>
+          <Text className="eyebrow">门店报表</Text>
           <Text className="title">{report?.store_name ?? "门店报表"}</Text>
-          <Text className="muted">{statusText || formatPeriod(report?.period ?? selectedPeriod)}</Text>
+          <Text className="hero-subtitle">{statusText || formatPeriod(report?.period ?? selectedPeriod)}</Text>
         </View>
         <Text className={report?.ledger_status === "closed" ? "status closed" : "status open"}>
           {report?.ledger_status === "closed" ? "已封账" : "做账中"}
@@ -191,16 +276,25 @@ export default function ReportPage() {
           <Text className="value">{formatMoney(report?.profit_amount ?? 0)}</Text>
         </View>
       </View>
-      <View className="risk-strip">
-        <View className="risk-item">
-          <Text className="label">待处理支出</Text>
-          <Text className="risk-value">{report?.pending_expense_count ?? 0}</Text>
+      <View className="insight-strip">
+        <View className="insight-item">
+          <Text className="label">利润率</Text>
+          <Text className="insight-value">{profitRate.toFixed(1)}%</Text>
         </View>
-        <View className="risk-item">
-          <Text className="label">未匹配流水</Text>
-          <Text className="risk-value">{report?.pending_bank_transaction_count ?? 0}</Text>
+        <View className="insight-item">
+          <Text className="label">支出占比</Text>
+          <Text className="insight-value amber">{expenseRate.toFixed(1)}%</Text>
+        </View>
+        <View className="insight-item">
+          <Text className="label">待处理</Text>
+          <Text className="insight-value">{report?.pending_expense_count ?? 0}</Text>
+        </View>
+        <View className="insight-item">
+          <Text className="label">未匹配</Text>
+          <Text className="insight-value amber">{report?.pending_bank_transaction_count ?? 0}</Text>
         </View>
       </View>
+      <AlertList alerts={alerts} />
       <View className="section">
         <View className="section-heading">
           <Text className="section-title">最近账期趋势</Text>
@@ -276,8 +370,8 @@ export default function ReportPage() {
           )}
         </View>
       ) : null}
-      {activeTab === "category" ? <BreakdownList title="费用分类" items={detail?.category_breakdown ?? []} /> : null}
-      {activeTab === "supplier" ? <BreakdownList title="供应商支出" items={detail?.supplier_breakdown ?? []} /> : null}
+      {activeTab === "category" ? <BreakdownRanking title="费用分类排行" items={detail?.category_breakdown ?? []} /> : null}
+      {activeTab === "supplier" ? <BreakdownRanking title="供应商支出排行" items={detail?.supplier_breakdown ?? []} /> : null}
       {activeTab === "pendingExpense" ? (
         <View className="section">
           <Text className="section-title">待处理支出</Text>

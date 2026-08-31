@@ -66,8 +66,11 @@ export const api = {
   shareholderMe: () => request<ShareholderAccessGrant>("/api/shareholder-auth/me"),
   ledgerPeriods: (storeId: string) =>
     request<LedgerPeriodOption[]>(`/api/reports/ledger-periods?store_id=${encodeURIComponent(storeId)}`),
-  ledgerTrends: (storeId: string) =>
-    request<LedgerTrend[]>(`/api/reports/ledger-trends?store_id=${encodeURIComponent(storeId)}&limit=6`),
+  ledgerTrends: (storeId?: string, limit = 6) => {
+    const params = [`limit=${encodeURIComponent(String(limit))}`];
+    if (storeId) params.unshift(`store_id=${encodeURIComponent(storeId)}`);
+    return request<LedgerTrend[]>(`/api/reports/ledger-trends?${params.join("&")}`);
+  },
   ledgerSummary: (storeId: string, period: string) =>
     request<LedgerReportSummary>(
       `/api/reports/ledger-summary?store_id=${encodeURIComponent(storeId)}&period=${encodeURIComponent(period)}`,

@@ -44,6 +44,8 @@ pnpm dev:admin
 pnpm dev:miniapp
 ```
 
+微信开发者工具可从仓库根目录导入项目，根目录 `project.config.json` 会指向 `apps/shareholder-miniapp/dist/`。正式调试前需要把其中的 `appid` 从 `touristappid` 替换为真实小程序 AppID。
+
 默认地址：
 
 - 后台：`http://localhost:3000`
@@ -88,6 +90,7 @@ pnpm --filter @fin-hub/admin-web build
 
 ```bash
 pnpm --filter @fin-hub/shareholder-miniapp typecheck
+pnpm --filter @fin-hub/shareholder-miniapp build
 ```
 
 上线前本地验收：
@@ -121,8 +124,8 @@ scripts/preflight.sh
 ## 当前小程序页面
 
 - `pages/shareholder-login/index`：股东授权码登录
-- `pages/stores/index`：授权门店列表、授权信息、刷新、退出
-- `pages/report/index`：门店账套报表详情、分类支出、供应商支出、待处理支出、未匹配流水
+- `pages/stores/index`：授权门店经营概览、整体趋势、门店排行、账期切换、搜索、排序、刷新、退出
+- `pages/report/index`：门店账套报表详情、经营提醒、利润率、支出占比、趋势、分类/供应商支出排行、待处理支出、未匹配流水
 - `pages/report/index` 同时展示营业收入明细
 
 ## 关键 API 模块

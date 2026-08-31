@@ -29,19 +29,26 @@ export default function ShareholderLoginPage() {
 
   return (
     <View className="page">
-      <Text className="title">股东授权</Text>
-      <Text className="muted">输入财务后台发放的授权码查看门店报表</Text>
-      <Input
-        className="input"
-        password
-        placeholder="请输入授权码"
-        value={accessCode}
-        onInput={(event) => setAccessCode(event.detail.value)}
-      />
-      {statusText ? <Text className="error">{statusText}</Text> : null}
-      <Button className="login-button" loading={isLoading} onClick={login}>
-        进入报表
-      </Button>
+      <View className="brand">
+        <Text className="brand-mark">FIN</Text>
+        <Text className="eyebrow">蘑说财务</Text>
+        <Text className="title">股东报表</Text>
+        <Text className="muted">输入财务后台发放的授权码，查看授权门店的已封账报表。</Text>
+      </View>
+      <View className="login-panel">
+        <Text className="field-label">授权码</Text>
+        <Input
+          className="input"
+          password
+          placeholder="请输入授权码"
+          value={accessCode}
+          onInput={(event) => setAccessCode(event.detail.value)}
+        />
+        {statusText ? <Text className="error">{statusText}</Text> : null}
+        <Button className="login-button" loading={isLoading} onClick={login}>
+          进入报表
+        </Button>
+      </View>
     </View>
   );
 }
