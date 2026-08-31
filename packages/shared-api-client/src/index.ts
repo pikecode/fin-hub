@@ -94,6 +94,11 @@ export interface LoginRequest {
   password: string;
 }
 
+export interface ChangePasswordRequest {
+  current_password: string;
+  new_password: string;
+}
+
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -151,6 +156,11 @@ export function createApiClient(options: ApiClientOptions) {
           body: JSON.stringify(payload),
         }),
       logout: () => request<{ ok: boolean }>("/api/auth/logout", { method: "POST" }),
+      changePassword: (payload: ChangePasswordRequest) =>
+        request<{ ok: boolean }>("/api/auth/change-password", {
+          method: "POST",
+          body: JSON.stringify(payload),
+        }),
       me: () => request<CurrentUser>("/api/auth/me"),
     },
     system: {

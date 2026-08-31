@@ -1,6 +1,6 @@
 "use client";
 
-import { Alert, Button, Card, Descriptions, Space, Table, Tag, Typography } from "antd";
+import { Alert, Button, Card, Descriptions, Form, Input, Modal, Space, Table, Tag, Typography, message } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { useEffect, useState } from "react";
 import type { DatabaseBackupStatus, DingTalkConfig, SystemReadinessCheck, SystemReadinessReport } from "@fin-hub/shared-types";
@@ -15,7 +15,9 @@ export default function SettingsPage() {
   const [readiness, setReadiness] = useState<SystemReadinessReport | null>(null);
   const [healthStatus, setHealthStatus] = useState<"ok" | "failed" | "checking">("checking");
   const [isLoading, setIsLoading] = useState(false);
+  const [isPasswordModalOpen, setIsPasswordModalOpen] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [passwordForm] = Form.useForm();
 
   async function loadData() {
     setIsLoading(true);
@@ -58,6 +60,25 @@ export default function SettingsPage() {
       await loadData();
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "无法导出数据库备份");
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  async function changePassword() {
+    const values = await passwordForm.validateFields();
+    setIsLoading(true);
+    setErrorMessage(null);
+    try {
+      await apiClient.auth.changePassword({
+        current_password: values.current_password,
+        new_password: values.new_password,
+      });
+      message.success("密码已修改");
+      passwordForm.resetFields();
+      setIsPasswordModalOpen(false);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "修改密码失败");
     } finally {
       setIsLoading(false);
     }
@@ -109,6 +130,21 @@ export default function SettingsPage() {
           </Descriptions.Item>
           <Descriptions.Item label="数据库类型">{backupStatus?.backend || "未检查"}</Descriptions.Item>
         </Descriptions>
+      </Card>
+
+      <Card
+        title="账户安全"
+        className="section-card"
+        extra={
+          <Button type="primary" onClick={() => setIsPasswordModalOpen(true)}>
+            修改密码
+          </Button>
+        }
+      >
+        <Space direction="vertical" size={4}>
+          <Typography.Text>当前登录用户可以修改自己的登录密码。</Typography.Text>
+          <Typography.Text type="secondary">修改后请使用新密码登录，旧密码会立即失效。</Typography.Text>
+        </Space>
       </Card>
 
       <Card
@@ -164,6 +200,52 @@ export default function SettingsPage() {
           <Typography.Text>股东授权码可在“股东授权”页面禁用或重置，禁用后已签发 Token 立即失效。</Typography.Text>
         </Space>
       </Card>
+
+      <Modal
+        title="修改密码"
+        open={isPasswordModalOpen}
+        onCancel={() => {
+          setIsPasswordModalOpen(false);
+          passwordForm.resetFields();
+        }}
+        onOk={changePassword}
+        confirmLoading={isLoading}
+        okText="保存"
+        cancelText="取消"
+        destroyOnHidden
+      >
+        <Form form={passwordForm} layout="vertical">
+          <Form.Item name="current_password" label="当前密码" rules={[{ required: true, message: "请输入当前密码" }]}>
+            <Input.Password autoComplete="current-password" />
+          </Form.Item>
+          <Form.Item
+            name="new_password"
+            label="新密码"
+            rules={[
+              { required: true, message: "请输入新密码" },
+              { min: 8, message: "新密码至少 8 位" },
+            ]}
+          >
+            <Input.Password autoComplete="new-password" />
+          </Form.Item>
+          <Form.Item
+            name="confirm_password"
+            label="确认新密码"
+            dependencies={["new_password"]}
+            rules={[
+              { required: true, message: "请再次输入新密码" },
+              ({ getFieldValue }) => ({
+                validator(_, value) {
+                  if (!value || getFieldValue("new_password") === value) return Promise.resolve();
+                  return Promise.reject(new Error("两次输入的新密码不一致"));
+                },
+              }),
+            ]}
+          >
+            <Input.Password autoComplete="new-password" />
+          </Form.Item>
+        </Form>
+      </Modal>
     </AppShell>
   );
 }

@@ -3,10 +3,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.database import get_session
-from app.core.security import create_session_token, decode_session_token, verify_password
+from app.core.security import create_session_token, decode_session_token, hash_password, verify_password
 from app.models import User, UserRole, UserStatus, utc_now
 from app.modules.auth.permissions import effective_permissions, effective_store_ids, ensure_permission
-from app.schemas import ApiEnvelope, CurrentUser, LoginRequest
+from app.schemas import ApiEnvelope, ChangePasswordRequest, CurrentUser, LoginRequest
 
 SESSION_COOKIE_NAME = "fin_hub_session"
 
@@ -108,6 +108,21 @@ def login(
 @router.post("/logout", response_model=ApiEnvelope[dict[str, bool]])
 def logout(response: Response) -> ApiEnvelope[dict[str, bool]]:
     response.delete_cookie(key=SESSION_COOKIE_NAME, path="/")
+    return ApiEnvelope(data={"ok": True})
+
+
+@router.post("/change-password", response_model=ApiEnvelope[dict[str, bool]])
+def change_password(
+    payload: ChangePasswordRequest,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> ApiEnvelope[dict[str, bool]]:
+    if not verify_password(payload.current_password, current_user.password_hash):
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+    if verify_password(payload.new_password, current_user.password_hash):
+        raise HTTPException(status_code=400, detail="New password must be different from current password")
+    current_user.password_hash = hash_password(payload.new_password)
+    session.commit()
     return ApiEnvelope(data={"ok": True})
 
 
