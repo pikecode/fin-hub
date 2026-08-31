@@ -840,7 +840,7 @@ class ReconciliationExpenseCandidate(BaseModel):
 
 
 class ReconciliationCandidateResult(BaseModel):
-    bank_transaction: BankTransactionRead
+    bank_transaction: BankTransactionRead | None = None
     remaining_amount: Decimal
     candidates: list[ReconciliationExpenseCandidate]
 

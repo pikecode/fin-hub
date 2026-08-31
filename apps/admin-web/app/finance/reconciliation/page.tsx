@@ -420,6 +420,7 @@ export default function FinanceReconciliationPage() {
       setSelectedTransaction(nextTransaction);
       setCandidates([]);
       setSelectedCandidateId(undefined);
+      await loadCandidates(nextTransaction, storeId, filterForm.getFieldsValue());
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "无法加载门店对账数据");
     } finally {
@@ -427,15 +428,15 @@ export default function FinanceReconciliationPage() {
     }
   }
 
-  async function loadCandidates(transaction: BankTransaction, storeId: string, filters?: CandidateFilters) {
+  async function loadCandidates(transaction: BankTransaction | null, storeId: string, filters?: CandidateFilters) {
     setIsCandidateLoading(true);
     setErrorMessage(null);
     const params = new URLSearchParams({
-      bank_transaction_id: transaction.id,
       store_id: storeId,
       approval_only: "true",
       page_size: "100",
     });
+    if (transaction) params.set("bank_transaction_id", transaction.id);
     if (filters?.template_id) params.set("template_id", filters.template_id);
     if (filters?.approval_no) params.set("approval_no", filters.approval_no);
     try {
@@ -895,7 +896,7 @@ export default function FinanceReconciliationPage() {
                     title={selectedTransaction ? `审批单候选：${formatMoney(bankRemaining)}` : "审批单候选"}
                     extra={
                       <Space>
-                        <Form form={filterForm} layout="inline" onFinish={(values) => selectedTransaction && selectedStoreId && loadCandidates(selectedTransaction, selectedStoreId, values)}>
+                        <Form form={filterForm} layout="inline" onFinish={(values) => selectedStoreId && loadCandidates(selectedTransaction, selectedStoreId, values)}>
                           <Form.Item name="template_id">
                             <Select
                               allowClear
@@ -972,7 +973,7 @@ export default function FinanceReconciliationPage() {
                           })}
                         </div>
                       ) : (
-                        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={selectedTransaction ? "当前流水暂无候选审批单" : "请先选择银行流水"} />
+                        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={selectedStoreId ? "当前门店暂无候选审批单" : "请先选择门店"} />
                       )}
                     </Spin>
                   </Card>

@@ -441,7 +441,7 @@ export interface ReconciliationExpenseCandidate {
 }
 
 export interface ReconciliationCandidateResult {
-  bank_transaction: BankTransaction;
+  bank_transaction?: BankTransaction | null;
   remaining_amount: string;
   candidates: ReconciliationExpenseCandidate[];
 }

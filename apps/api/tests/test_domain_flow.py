@@ -495,6 +495,49 @@ def test_reconciliation_candidate_search_backfills_total_approval_expense(
     assert searched_candidates == []
 
 
+def test_reconciliation_candidates_can_list_store_approvals_without_bank_transaction(
+    client: TestClient,
+    session: Session,
+) -> None:
+    store_id = client.post("/api/stores", json={"name": "无流水候选门店"}).json()["data"]["id"]
+    client.post("/api/ledgers", json={"store_id": store_id, "period": "2026-08"})
+    template = ApprovalTemplate(process_code="PROC-NO-BANK-RECON", name="门店支出报销")
+    session.add(template)
+    session.flush()
+    approval = ApprovalInstance(
+        template_id=template.id,
+        dingtalk_instance_id="approval-no-bank-candidate",
+        approval_no="202608319900",
+        store_id=store_id,
+        approval_status="agree",
+        submit_at=datetime(2026, 8, 31, 10, 0, 0),
+        raw_payload=json.dumps(
+            {
+                "title": "李四提交的门店支出报销",
+                "business_id": "202608319900",
+                "create_time": "2026-08-31 10:00:00",
+                "form_component_values": [
+                    {"name": "报销日期", "value": "2026-08-31"},
+                    {"name": "汇总金额（元）", "value": "388.00"},
+                ],
+            },
+            ensure_ascii=False,
+        ),
+    )
+    session.add(approval)
+    session.commit()
+
+    response = client.get(f"/api/matches/reconciliation/candidates?store_id={store_id}&approval_only=true")
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["bank_transaction"] is None
+    assert data["remaining_amount"] == "0.00"
+    assert len(data["candidates"]) == 1
+    assert data["candidates"][0]["approval_instance"]["approval_no"] == "202608319900"
+    assert data["candidates"][0]["expense_item"]["amount"] == "388.00"
+
+
 def test_reconciliation_candidate_backfill_uses_template_business_amount_mapping(
     client: TestClient,
     session: Session,

@@ -313,12 +313,23 @@ def ensure_candidate_total_expenses(
 
 
 def candidate_score(
-    bank_transaction: BankTransaction,
+    bank_transaction: BankTransaction | None,
     expense: ExpenseItem,
     remaining_expense_amount: Decimal,
 ) -> tuple[Decimal, str]:
     score = Decimal("0.00")
     reasons: list[str] = []
+    if bank_transaction is None:
+        if expense.store_id:
+            score += Decimal("10.00")
+            reasons.append("门店候选")
+        if expense.expense_date:
+            score += Decimal("5.00")
+            reasons.append("可按日期核对")
+        if not reasons:
+            reasons.append("可人工核对")
+        return min(score, Decimal("100.00")), "、".join(reasons)
+
     remaining_bank_amount = Decimal(bank_transaction.amount) - Decimal(bank_transaction.matched_amount or 0)
     if remaining_expense_amount == remaining_bank_amount:
         score += Decimal("60.00")
@@ -776,7 +787,7 @@ def auto_suggest_matches(
     response_model=ApiEnvelope[ReconciliationCandidateResult],
 )
 def list_reconciliation_candidates(
-    bank_transaction_id: str,
+    bank_transaction_id: str | None = None,
     template_id: str | None = None,
     store_id: str | None = None,
     approval_no: str | None = None,
@@ -787,37 +798,42 @@ def list_reconciliation_candidates(
     current_user: User = Depends(get_current_user),
 ) -> ApiEnvelope[ReconciliationCandidateResult]:
     ensure_permission(session, current_user, "reconciliation.view")
-    bank_transaction = session.get(BankTransaction, bank_transaction_id)
-    if bank_transaction is None:
+    bank_transaction = session.get(BankTransaction, bank_transaction_id) if bank_transaction_id else None
+    if bank_transaction_id and bank_transaction is None:
         raise HTTPException(status_code=404, detail="Bank transaction not found")
-    ensure_store_access(session, current_user, bank_transaction.store_id)
+    if bank_transaction is not None:
+        ensure_store_access(session, current_user, bank_transaction.store_id)
     ensure_store_access(session, current_user, store_id)
-    if bank_transaction.direction != "expense":
+    if bank_transaction is not None and bank_transaction.direction != "expense":
         raise HTTPException(status_code=409, detail="Only expense bank transactions can match approvals")
 
     excluded_match = session.get(ExpenseBankMatch, exclude_match_id) if exclude_match_id else None
-    if excluded_match and excluded_match.bank_transaction_id != bank_transaction.id:
+    if excluded_match and bank_transaction is None:
+        raise HTTPException(status_code=409, detail="Exclude match requires bank transaction")
+    if excluded_match and bank_transaction is not None and excluded_match.bank_transaction_id != bank_transaction.id:
         raise HTTPException(status_code=409, detail="Excluded match belongs to another bank transaction")
-    remaining_bank_amount = Decimal(bank_transaction.amount) - Decimal(bank_transaction.matched_amount or 0)
-    if excluded_match and excluded_match.status == MatchStatus.CONFIRMED.value:
-        remaining_bank_amount += Decimal(excluded_match.amount)
-    active_bank_match = active_bank_expense_match(session, bank_transaction.id, exclude_match_id)
-    if active_bank_match is not None:
-        return ApiEnvelope(
-            data=ReconciliationCandidateResult(
-                bank_transaction=bank_transaction,
-                remaining_amount=Decimal("0.00"),
-                candidates=[],
+    remaining_bank_amount = Decimal("0.00")
+    if bank_transaction is not None:
+        remaining_bank_amount = Decimal(bank_transaction.amount) - Decimal(bank_transaction.matched_amount or 0)
+        if excluded_match and excluded_match.status == MatchStatus.CONFIRMED.value:
+            remaining_bank_amount += Decimal(excluded_match.amount)
+        active_bank_match = active_bank_expense_match(session, bank_transaction.id, exclude_match_id)
+        if active_bank_match is not None:
+            return ApiEnvelope(
+                data=ReconciliationCandidateResult(
+                    bank_transaction=bank_transaction,
+                    remaining_amount=Decimal("0.00"),
+                    candidates=[],
+                )
             )
-        )
-    if remaining_bank_amount <= 0:
-        return ApiEnvelope(
-            data=ReconciliationCandidateResult(
-                bank_transaction=bank_transaction,
-                remaining_amount=Decimal("0.00"),
-                candidates=[],
+        if remaining_bank_amount <= 0:
+            return ApiEnvelope(
+                data=ReconciliationCandidateResult(
+                    bank_transaction=bank_transaction,
+                    remaining_amount=Decimal("0.00"),
+                    candidates=[],
+                )
             )
-        )
 
     ensure_candidate_total_expenses(session, template_id, store_id, approval_no, page_size)
     session.commit()
