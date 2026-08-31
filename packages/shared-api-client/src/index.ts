@@ -18,6 +18,9 @@ import type {
   BankTransactionUpdate,
   CurrentUser,
   DatabaseBackupStatus,
+  DingTalkAutoSyncRunResult,
+  DingTalkAutoSyncSetting,
+  DingTalkAutoSyncSettingUpdate,
   DingTalkConfig,
   DingTalkDepartment,
   DingTalkDepartmentPullResult,
@@ -30,6 +33,8 @@ import type {
   ExpenseItem,
   ExpenseItemCreate,
   ExpenseItemUpdate,
+  FinancialAnalyticsReport,
+  FinancialAnalyticsDetailReport,
   Ledger,
   LedgerCloseCheck,
   LedgerCreate,
@@ -376,6 +381,17 @@ export function createApiClient(options: ApiClientOptions) {
           method: "PUT",
           body: JSON.stringify(payload),
         }),
+      readAutoSyncSetting: () =>
+        request<DingTalkAutoSyncSetting>("/api/dingtalk/auto-sync/settings"),
+      updateAutoSyncSetting: (payload: DingTalkAutoSyncSettingUpdate) =>
+        request<DingTalkAutoSyncSetting>("/api/dingtalk/auto-sync/settings", {
+          method: "PUT",
+          body: JSON.stringify(payload),
+        }),
+      runAutoSync: () =>
+        request<DingTalkAutoSyncRunResult>("/api/dingtalk/auto-sync/run", {
+          method: "POST",
+        }),
       testConnection: () =>
         request<{ status: string; access_token_prefix: string }>("/api/dingtalk/connection-test", {
           method: "POST",
@@ -456,6 +472,9 @@ export function createApiClient(options: ApiClientOptions) {
         request<Page<ApprovalInstance>>(`/api/dingtalk/approval-instances${params}`),
     },
     reports: {
+      analytics: (params = "") => request<FinancialAnalyticsReport>(`/api/reports/analytics${params}`),
+      analyticsDetails: (params = "") =>
+        request<FinancialAnalyticsDetailReport>(`/api/reports/analytics/details${params}`),
       storeSummaries: () => request<StoreReportSummary[]>("/api/reports/store-summaries"),
       ledgerPeriods: (storeId: string) =>
         request<LedgerPeriodOption[]>(`/api/reports/ledger-periods?store_id=${encodeURIComponent(storeId)}`),

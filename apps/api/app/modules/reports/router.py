@@ -1,18 +1,23 @@
 import csv
 import io
+from datetime import datetime
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import StreamingResponse
 from openpyxl import Workbook
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.database import get_session
 from app.models import (
+    ApprovalInstance,
+    ApprovalTemplate,
     BankTransaction,
+    ExpenseBankMatch,
     ExpenseItem,
     Ledger,
+    MatchStatus,
     RevenueRecord,
     ShareholderAccessGrant,
     Store,
@@ -24,10 +29,19 @@ from app.modules.shareholder_auth.service import grant_store_ids, require_shareh
 from app.schemas import (
     ApiEnvelope,
     ExpenseBreakdownItem,
+    FinancialAnalyticsCategoryItem,
+    FinancialAnalyticsDetailReport,
+    FinancialAnalyticsMetrics,
+    FinancialAnalyticsReconciliationItem,
+    FinancialAnalyticsReport,
+    FinancialAnalyticsStoreItem,
+    FinancialAnalyticsTemplateItem,
+    FinancialAnalyticsTrendItem,
     LedgerPeriodOption,
     LedgerReportDetail,
     LedgerReportSummary,
     LedgerTrend,
+    ReconciliationRecord,
     StoreComparisonReport,
     StoreReportSummary,
 )
@@ -193,6 +207,500 @@ def read_ledger_export_rows(
         .order_by(BankTransaction.occurred_at.asc())
     ).all()
     return list(revenue_records), list(expenses), list(bank_transactions)
+
+
+def apply_period_range(query, column, period_start: str | None, period_end: str | None):
+    if period_start:
+        query = query.where(column >= period_start)
+    if period_end:
+        query = query.where(column <= period_end)
+    return query
+
+
+def parse_period_start(period: str) -> datetime:
+    try:
+        return datetime.strptime(period, "%Y-%m")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Invalid period format, expected YYYY-MM") from exc
+
+
+def next_period_start(period: str) -> datetime:
+    current = parse_period_start(period)
+    if current.month == 12:
+        return current.replace(year=current.year + 1, month=1)
+    return current.replace(month=current.month + 1)
+
+
+def apply_datetime_period_range(query, column, period_start: str | None, period_end: str | None):
+    if period_start:
+        query = query.where(column >= parse_period_start(period_start))
+    if period_end:
+        query = query.where(column < next_period_start(period_end))
+    return query
+
+
+def source_document_filter(document_ids: list[str]):
+    return or_(
+        ExpenseItem.source_document_id.in_(document_ids),
+        *(ExpenseItem.source_document_id.startswith(f"{document_id}:", autoescape=True) for document_id in document_ids),
+    )
+
+
+def empty_financial_analytics_report() -> FinancialAnalyticsReport:
+    return FinancialAnalyticsReport(
+        metrics=FinancialAnalyticsMetrics(
+            store_count=0,
+            period_count=0,
+            total_income_amount=Decimal("0.00"),
+            total_expense_amount=Decimal("0.00"),
+            total_profit_amount=Decimal("0.00"),
+            bank_expense_amount=Decimal("0.00"),
+            matched_expense_amount=Decimal("0.00"),
+            unmatched_bank_amount=Decimal("0.00"),
+            unmatched_bank_count=0,
+            pending_expense_amount=Decimal("0.00"),
+            pending_expense_count=0,
+            confirmed_match_count=0,
+            pending_match_count=0,
+            bank_not_occurred_count=0,
+        ),
+        trends=[],
+        stores=[],
+        categories=[],
+        templates=[],
+        reconciliation=[],
+    )
+
+
+def authorized_report_store_ids(
+    session: Session,
+    shareholder_grant: ShareholderAccessGrant | None,
+    current_user: User | None,
+    store_id: str | None = None,
+) -> list[str]:
+    stores_query = select(Store).order_by(Store.created_at.desc())
+    if store_id:
+        ensure_report_store_access(session, shareholder_grant, current_user, store_id)
+        stores_query = stores_query.where(Store.id == store_id)
+    stores = filter_report_stores(session, list(session.scalars(stores_query)), shareholder_grant, current_user)
+    return [store.id for store in stores]
+
+
+@router.get("/analytics", response_model=ApiEnvelope[FinancialAnalyticsReport])
+def read_financial_analytics(
+    store_id: str | None = None,
+    period_start: str | None = None,
+    period_end: str | None = None,
+    session: Session = Depends(get_session),
+    shareholder_grant: ShareholderAccessGrant | None = Depends(get_report_access),
+    current_user: User | None = Depends(get_optional_current_user),
+) -> ApiEnvelope[FinancialAnalyticsReport]:
+    store_ids = authorized_report_store_ids(session, shareholder_grant, current_user, store_id)
+    stores = list(session.scalars(select(Store).where(Store.id.in_(store_ids)))) if store_ids else []
+    if not store_ids:
+        return ApiEnvelope(data=empty_financial_analytics_report())
+
+    revenue_query = select(RevenueRecord).where(RevenueRecord.store_id.in_(store_ids))
+    revenue_query = apply_period_range(revenue_query, RevenueRecord.ledger_period, period_start, period_end)
+    expense_query = select(ExpenseItem).where(ExpenseItem.store_id.in_(store_ids))
+    expense_query = apply_period_range(expense_query, ExpenseItem.ledger_period, period_start, period_end)
+    bank_query = select(BankTransaction).where(BankTransaction.store_id.in_(store_ids))
+    bank_query = apply_period_range(bank_query, BankTransaction.ledger_period, period_start, period_end)
+
+    revenue_rows = session.scalars(revenue_query).all()
+    expense_rows = session.scalars(expense_query).all()
+    bank_rows = session.scalars(bank_query).all()
+    match_rows = session.execute(
+        select(ExpenseBankMatch, ExpenseItem)
+        .join(ExpenseItem, ExpenseBankMatch.expense_item_id == ExpenseItem.id)
+        .where(ExpenseItem.store_id.in_(store_ids))
+    ).all()
+    match_rows = [
+        (match, expense)
+        for match, expense in match_rows
+        if (not period_start or (match.accounting_period or expense.ledger_period or "") >= period_start)
+        and (not period_end or (match.accounting_period or expense.ledger_period or "") <= period_end)
+    ]
+
+    total_income_amount = sum((Decimal(record.gross_amount) for record in revenue_rows), Decimal("0.00"))
+    total_expense_amount = sum((Decimal(item.amount) for item in expense_rows), Decimal("0.00"))
+    bank_expense_amount = sum(
+        (Decimal(transaction.amount) for transaction in bank_rows if transaction.direction == "expense"),
+        Decimal("0.00"),
+    )
+    matched_expense_amount = sum(
+        (Decimal(match.amount) for match, _expense in match_rows if match.status == MatchStatus.CONFIRMED.value),
+        Decimal("0.00"),
+    )
+    unmatched_bank_rows = [
+        transaction
+        for transaction in bank_rows
+        if transaction.direction == "expense" and Decimal(transaction.amount) > Decimal(transaction.matched_amount or 0)
+    ]
+    unmatched_bank_amount = sum(
+        (Decimal(transaction.amount) - Decimal(transaction.matched_amount or 0) for transaction in unmatched_bank_rows),
+        Decimal("0.00"),
+    )
+    pending_expense_rows = [
+        item
+        for item in expense_rows
+        if item.payment_status in {"unpaid", "partial_paid", "no_bank_flow"}
+    ]
+    pending_expense_amount = sum((Decimal(item.amount) for item in pending_expense_rows), Decimal("0.00"))
+
+    periods = sorted(
+        {
+            *(record.ledger_period for record in revenue_rows if record.ledger_period),
+            *(item.ledger_period for item in expense_rows if item.ledger_period),
+            *(transaction.ledger_period for transaction in bank_rows if transaction.ledger_period),
+        }
+    )
+    trend_items: list[FinancialAnalyticsTrendItem] = []
+    for period in periods[-12:]:
+        period_income = sum(
+            (Decimal(record.gross_amount) for record in revenue_rows if record.ledger_period == period),
+            Decimal("0.00"),
+        )
+        period_expense = sum(
+            (Decimal(item.amount) for item in expense_rows if item.ledger_period == period),
+            Decimal("0.00"),
+        )
+        period_bank_expense = sum(
+            (
+                Decimal(transaction.amount)
+                for transaction in bank_rows
+                if transaction.ledger_period == period and transaction.direction == "expense"
+            ),
+            Decimal("0.00"),
+        )
+        period_matched = sum(
+            (
+                Decimal(match.amount)
+                for match, expense in match_rows
+                if match.status == MatchStatus.CONFIRMED.value
+                and (match.accounting_period or expense.ledger_period) == period
+            ),
+            Decimal("0.00"),
+        )
+        period_unmatched = sum(
+            (
+                Decimal(transaction.amount) - Decimal(transaction.matched_amount or 0)
+                for transaction in unmatched_bank_rows
+                if transaction.ledger_period == period
+            ),
+            Decimal("0.00"),
+        )
+        trend_items.append(
+            FinancialAnalyticsTrendItem(
+                period=period,
+                income_amount=period_income,
+                expense_amount=period_expense,
+                profit_amount=period_income - period_expense,
+                bank_expense_amount=period_bank_expense,
+                matched_expense_amount=period_matched,
+                unmatched_bank_amount=period_unmatched,
+            )
+        )
+
+    store_items: list[FinancialAnalyticsStoreItem] = []
+    for store in stores:
+        store_income = sum(
+            (Decimal(record.gross_amount) for record in revenue_rows if record.store_id == store.id),
+            Decimal("0.00"),
+        )
+        store_expense = sum(
+            (Decimal(item.amount) for item in expense_rows if item.store_id == store.id),
+            Decimal("0.00"),
+        )
+        store_bank_expense = sum(
+            (
+                Decimal(transaction.amount)
+                for transaction in bank_rows
+                if transaction.store_id == store.id and transaction.direction == "expense"
+            ),
+            Decimal("0.00"),
+        )
+        store_matched = sum(
+            (
+                Decimal(match.amount)
+                for match, expense in match_rows
+                if expense.store_id == store.id and match.status == MatchStatus.CONFIRMED.value
+            ),
+            Decimal("0.00"),
+        )
+        store_unmatched_rows = [transaction for transaction in unmatched_bank_rows if transaction.store_id == store.id]
+        store_pending_expense_rows = [item for item in pending_expense_rows if item.store_id == store.id]
+        store_items.append(
+            FinancialAnalyticsStoreItem(
+                store_id=store.id,
+                store_name=store.name,
+                income_amount=store_income,
+                expense_amount=store_expense,
+                profit_amount=store_income - store_expense,
+                bank_expense_amount=store_bank_expense,
+                matched_expense_amount=store_matched,
+                unmatched_bank_amount=sum(
+                    (Decimal(item.amount) - Decimal(item.matched_amount or 0) for item in store_unmatched_rows),
+                    Decimal("0.00"),
+                ),
+                unmatched_bank_count=len(store_unmatched_rows),
+                pending_expense_amount=sum((Decimal(item.amount) for item in store_pending_expense_rows), Decimal("0.00")),
+                pending_expense_count=len(store_pending_expense_rows),
+            )
+        )
+    store_items.sort(key=lambda item: item.expense_amount, reverse=True)
+
+    category_bucket: dict[tuple[str, str | None], tuple[Decimal, int]] = {}
+    for item in expense_rows:
+        key = (item.category_l1 or "未分类", item.category_l2)
+        amount, count = category_bucket.get(key, (Decimal("0.00"), 0))
+        category_bucket[key] = (amount + Decimal(item.amount), count + 1)
+    category_items = [
+        FinancialAnalyticsCategoryItem(category_l1=key[0], category_l2=key[1], amount=value[0], item_count=value[1])
+        for key, value in category_bucket.items()
+    ]
+    category_items.sort(key=lambda item: item.amount, reverse=True)
+
+    approval_instances_query = (
+        select(ApprovalInstance, ApprovalTemplate)
+        .join(ApprovalTemplate, ApprovalInstance.template_id == ApprovalTemplate.id)
+        .where(ApprovalInstance.store_id.in_(store_ids))
+    )
+    approval_instances_query = apply_datetime_period_range(
+        approval_instances_query,
+        ApprovalInstance.submit_at,
+        period_start,
+        period_end,
+    )
+    approval_instances = session.execute(approval_instances_query).all()
+    approvals_by_document_id = {
+        approval.dingtalk_instance_id: (approval, template)
+        for approval, template in approval_instances
+    }
+    template_approval_counts: dict[str, tuple[str, int]] = {}
+    for approval, template in approval_instances:
+        count = template_approval_counts.get(template.id, (template.name, 0))[1]
+        template_approval_counts[template.id] = (template.name, count + 1)
+
+    expense_ids_by_template: dict[str, set[str]] = {}
+    expense_amount_by_template: dict[str, Decimal] = {}
+    for item in expense_rows:
+        document_id = item.source_document_id.split(":", 1)[0] if item.source_document_id else None
+        if not document_id or document_id not in approvals_by_document_id:
+            continue
+        _approval, template = approvals_by_document_id[document_id]
+        expense_ids_by_template.setdefault(template.id, set()).add(item.id)
+        expense_amount_by_template[template.id] = expense_amount_by_template.get(template.id, Decimal("0.00")) + Decimal(item.amount)
+
+    matched_amount_by_template: dict[str, Decimal] = {}
+    for match, expense in match_rows:
+        if match.status != MatchStatus.CONFIRMED.value:
+            continue
+        for current_template_id, expense_ids in expense_ids_by_template.items():
+            if expense.id in expense_ids:
+                matched_amount_by_template[current_template_id] = (
+                    matched_amount_by_template.get(current_template_id, Decimal("0.00")) + Decimal(match.amount)
+                )
+                break
+
+    template_items: list[FinancialAnalyticsTemplateItem] = []
+    for template_id, (template_name, approval_count) in template_approval_counts.items():
+        template_items.append(
+            FinancialAnalyticsTemplateItem(
+                template_id=template_id,
+                template_name=template_name,
+                approval_count=approval_count,
+                expense_amount=expense_amount_by_template.get(template_id, Decimal("0.00")),
+                matched_amount=matched_amount_by_template.get(template_id, Decimal("0.00")),
+            )
+        )
+    template_items.sort(key=lambda item: item.approval_count, reverse=True)
+
+    reconciliation_items = [
+        FinancialAnalyticsReconciliationItem(
+            status=status,
+            count=sum(1 for match, _expense in match_rows if match.status == status),
+            amount=sum(
+                (Decimal(match.amount) for match, _expense in match_rows if match.status == status),
+                Decimal("0.00"),
+            ),
+        )
+        for status in (MatchStatus.CONFIRMED.value, MatchStatus.CANDIDATE.value, MatchStatus.REJECTED.value)
+    ]
+
+    report = FinancialAnalyticsReport(
+        metrics=FinancialAnalyticsMetrics(
+            store_count=len(stores),
+            period_count=len(periods),
+            total_income_amount=total_income_amount,
+            total_expense_amount=total_expense_amount,
+            total_profit_amount=total_income_amount - total_expense_amount,
+            bank_expense_amount=bank_expense_amount,
+            matched_expense_amount=matched_expense_amount,
+            unmatched_bank_amount=unmatched_bank_amount,
+            unmatched_bank_count=len(unmatched_bank_rows),
+            pending_expense_amount=pending_expense_amount,
+            pending_expense_count=len(pending_expense_rows),
+            confirmed_match_count=sum(1 for match, _expense in match_rows if match.status == MatchStatus.CONFIRMED.value),
+            pending_match_count=sum(1 for match, _expense in match_rows if match.status == MatchStatus.CANDIDATE.value),
+            bank_not_occurred_count=sum(
+                1 for match, _expense in match_rows if match.status == MatchStatus.CONFIRMED.value and not match.bank_occurred
+            ),
+        ),
+        trends=trend_items,
+        stores=store_items[:20],
+        categories=category_items[:20],
+        templates=template_items[:20],
+        reconciliation=reconciliation_items,
+    )
+    return ApiEnvelope(data=report)
+
+
+@router.get("/analytics/details", response_model=ApiEnvelope[FinancialAnalyticsDetailReport])
+def read_financial_analytics_details(
+    detail_type: str,
+    store_id: str | None = None,
+    period_start: str | None = None,
+    period_end: str | None = None,
+    category_l1: str | None = None,
+    category_l2: str | None = None,
+    template_id: str | None = None,
+    match_status: str | None = None,
+    page_size: int = 100,
+    session: Session = Depends(get_session),
+    shareholder_grant: ShareholderAccessGrant | None = Depends(get_report_access),
+    current_user: User | None = Depends(get_optional_current_user),
+) -> ApiEnvelope[FinancialAnalyticsDetailReport]:
+    page_size = min(max(page_size, 1), 500)
+    store_ids = authorized_report_store_ids(session, shareholder_grant, current_user, store_id)
+    if not store_ids:
+        return ApiEnvelope(data=FinancialAnalyticsDetailReport(title="暂无授权门店"))
+
+    expense_query = select(ExpenseItem).where(ExpenseItem.store_id.in_(store_ids))
+    expense_query = apply_period_range(expense_query, ExpenseItem.ledger_period, period_start, period_end)
+    bank_query = select(BankTransaction).where(BankTransaction.store_id.in_(store_ids))
+    bank_query = apply_period_range(bank_query, BankTransaction.ledger_period, period_start, period_end)
+    approval_query = select(ApprovalInstance).where(ApprovalInstance.store_id.in_(store_ids))
+    approval_query = apply_datetime_period_range(approval_query, ApprovalInstance.submit_at, period_start, period_end)
+
+    title = "统计明细"
+    expense_items: list[ExpenseItem] = []
+    bank_transactions: list[BankTransaction] = []
+    approval_instances: list[ApprovalInstance] = []
+    reconciliation_records: list[ReconciliationRecord] = []
+
+    if detail_type == "unmatched_bank":
+        title = "未对账银行流水"
+        bank_transactions = list(
+            session.scalars(
+                bank_query.where(
+                    BankTransaction.direction == "expense",
+                    BankTransaction.matched_amount < BankTransaction.amount,
+                )
+                .order_by(BankTransaction.occurred_at.desc())
+                .limit(page_size)
+            )
+        )
+    elif detail_type == "pending_expense":
+        title = "未付款审批支出"
+        expense_items = list(
+            session.scalars(
+                expense_query.where(ExpenseItem.payment_status.in_(["unpaid", "partial_paid", "no_bank_flow"]))
+                .order_by(ExpenseItem.expense_date.desc().nullslast(), ExpenseItem.created_at.desc())
+                .limit(page_size)
+            )
+        )
+    elif detail_type == "store":
+        title = "门店经营明细"
+        expense_items = list(
+            session.scalars(
+                expense_query.order_by(ExpenseItem.expense_date.desc().nullslast(), ExpenseItem.created_at.desc()).limit(page_size)
+            )
+        )
+        bank_transactions = list(
+            session.scalars(bank_query.order_by(BankTransaction.occurred_at.desc()).limit(page_size))
+        )
+        approval_instances = list(
+            session.scalars(approval_query.order_by(ApprovalInstance.created_at.desc()).limit(page_size))
+        )
+    elif detail_type == "category":
+        title = "费用分类明细"
+        if category_l1:
+            expense_query = expense_query.where(ExpenseItem.category_l1 == category_l1)
+        if category_l2:
+            expense_query = expense_query.where(ExpenseItem.category_l2 == category_l2)
+        expense_items = list(
+            session.scalars(
+                expense_query.order_by(ExpenseItem.expense_date.desc().nullslast(), ExpenseItem.created_at.desc()).limit(page_size)
+            )
+        )
+    elif detail_type == "template":
+        title = "审批模版明细"
+        if not template_id:
+            raise HTTPException(status_code=422, detail="template_id is required")
+        approval_instances = list(
+            session.scalars(
+                approval_query.where(ApprovalInstance.template_id == template_id)
+                .order_by(ApprovalInstance.created_at.desc())
+                .limit(page_size)
+            )
+        )
+        document_ids = [instance.dingtalk_instance_id for instance in approval_instances]
+        if document_ids:
+            expense_items = list(
+                session.scalars(
+                    expense_query.where(source_document_filter(document_ids))
+                    .order_by(ExpenseItem.expense_date.desc().nullslast(), ExpenseItem.created_at.desc())
+                    .limit(page_size)
+                )
+            )
+    elif detail_type == "reconciliation":
+        title = "对账记录明细"
+        target_status = match_status or MatchStatus.CONFIRMED.value
+        rows = session.execute(
+            select(ExpenseBankMatch, BankTransaction, ExpenseItem, ApprovalInstance, ApprovalTemplate)
+            .join(BankTransaction, ExpenseBankMatch.bank_transaction_id == BankTransaction.id)
+            .join(ExpenseItem, ExpenseBankMatch.expense_item_id == ExpenseItem.id)
+            .outerjoin(
+                ApprovalInstance,
+                (ExpenseItem.source_document_id == ApprovalInstance.dingtalk_instance_id)
+                | (
+                    func.substr(
+                        ExpenseItem.source_document_id,
+                        1,
+                        func.length(ApprovalInstance.dingtalk_instance_id) + 1,
+                    )
+                    == ApprovalInstance.dingtalk_instance_id + ":"
+                ),
+            )
+            .outerjoin(ApprovalTemplate, ApprovalInstance.template_id == ApprovalTemplate.id)
+            .where(ExpenseItem.store_id.in_(store_ids), ExpenseBankMatch.status == target_status)
+            .order_by(ExpenseBankMatch.created_at.desc())
+            .limit(page_size)
+        ).all()
+        reconciliation_records = [
+            ReconciliationRecord(
+                match=match,
+                bank_transaction=bank_transaction,
+                expense_item=expense,
+                approval_instance=approval,
+                template_name=template.name if template else None,
+                display_fields={},
+            )
+            for match, bank_transaction, expense, approval, template in rows
+        ]
+    else:
+        raise HTTPException(status_code=422, detail="Unknown detail type")
+
+    return ApiEnvelope(
+        data=FinancialAnalyticsDetailReport(
+            title=title,
+            expense_items=expense_items,
+            bank_transactions=bank_transactions,
+            approval_instances=approval_instances,
+            reconciliation_records=reconciliation_records,
+        )
+    )
 
 
 @router.get("/store-summaries", response_model=ApiEnvelope[list[StoreReportSummary]])

@@ -7,6 +7,7 @@ from app.core.config import settings
 from app.models import (
     ApprovalInstance,
     ApprovalTemplate,
+    DingTalkAutoSyncSetting,
     DingTalkConfig,
     DingTalkDepartment,
     ExpenseItem,
@@ -76,6 +77,47 @@ def test_sync_templates_and_upsert_mapping(client: TestClient) -> None:
     assert delete_response.status_code == 200
     assert delete_response.json()["data"]["ok"] is True
     assert client.get(f"/api/dingtalk/templates/{template_id}/mappings").json()["data"] == []
+
+
+def test_auto_sync_setting_and_manual_run(client: TestClient, session) -> None:
+    store_id = client.post("/api/stores", json={"name": "蘑说自动同步店"}).json()["data"]["id"]
+    client.post("/api/ledgers", json={"store_id": store_id, "period": "2026-08"})
+
+    setting_response = client.get("/api/dingtalk/auto-sync/settings")
+    assert setting_response.status_code == 200
+    assert setting_response.json()["data"]["enabled"] is False
+
+    update_response = client.put(
+        "/api/dingtalk/auto-sync/settings",
+        json={
+            "enabled": True,
+            "interval_minutes": 30,
+            "window_days": 14,
+            "sync_departments": False,
+            "sync_templates": True,
+            "sync_approvals": True,
+            "page_size": 10,
+            "max_pages": 5,
+        },
+    )
+    assert update_response.status_code == 200
+    setting = update_response.json()["data"]
+    assert setting["enabled"] is True
+    assert setting["interval_minutes"] == 30
+    assert setting["sync_departments"] is False
+
+    run_response = client.post("/api/dingtalk/auto-sync/run")
+    assert run_response.status_code == 201
+    result = run_response.json()["data"]
+    assert result["job"]["job_type"] == "dingtalk_auto_sync"
+    assert result["job"]["status"] == "succeeded"
+    assert result["template_sync"]["created"] == 2
+    assert result["job"]["success_count"] == 2
+
+    saved_setting = session.scalar(select(DingTalkAutoSyncSetting))
+    assert saved_setting is not None
+    assert saved_setting.last_job_id == result["job"]["id"]
+    assert saved_setting.last_status == "succeeded"
 
 
 def test_template_mapping_status_is_derived_from_existing_mappings(client: TestClient, session) -> None:

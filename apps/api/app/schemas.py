@@ -459,6 +459,44 @@ class DingTalkConfigUpdate(BaseModel):
     drive_union_id: str | None = None
 
 
+class DingTalkAutoSyncSettingRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    enabled: bool
+    interval_minutes: int
+    window_days: int
+    root_dept_id: str
+    max_depth: int
+    page_size: int
+    max_pages: int
+    skip_existing: bool
+    sync_departments: bool
+    sync_templates: bool
+    sync_approvals: bool
+    next_run_at: datetime | None
+    last_run_at: datetime | None
+    last_job_id: str | None
+    last_status: str | None
+    last_error: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class DingTalkAutoSyncSettingUpdate(BaseModel):
+    enabled: bool | None = None
+    interval_minutes: int | None = Field(default=None, ge=5, le=1440)
+    window_days: int | None = Field(default=None, ge=1, le=365)
+    root_dept_id: str | None = Field(default=None, min_length=1, max_length=120)
+    max_depth: int | None = Field(default=None, ge=1, le=8)
+    page_size: int | None = Field(default=None, ge=1, le=100)
+    max_pages: int | None = Field(default=None, ge=1, le=500)
+    skip_existing: bool | None = None
+    sync_departments: bool | None = None
+    sync_templates: bool | None = None
+    sync_approvals: bool | None = None
+
+
 class ApprovalTemplateCreate(BaseModel):
     process_code: str = Field(min_length=1, max_length=160)
     name: str = Field(min_length=1, max_length=160)
@@ -612,6 +650,77 @@ class StoreComparisonReport(BaseModel):
     total_profit_amount: Decimal
 
 
+class FinancialAnalyticsMetrics(BaseModel):
+    store_count: int
+    period_count: int
+    total_income_amount: Decimal
+    total_expense_amount: Decimal
+    total_profit_amount: Decimal
+    bank_expense_amount: Decimal
+    matched_expense_amount: Decimal
+    unmatched_bank_amount: Decimal
+    unmatched_bank_count: int
+    pending_expense_amount: Decimal
+    pending_expense_count: int
+    confirmed_match_count: int
+    pending_match_count: int
+    bank_not_occurred_count: int
+
+
+class FinancialAnalyticsTrendItem(BaseModel):
+    period: str
+    income_amount: Decimal
+    expense_amount: Decimal
+    profit_amount: Decimal
+    bank_expense_amount: Decimal
+    matched_expense_amount: Decimal
+    unmatched_bank_amount: Decimal
+
+
+class FinancialAnalyticsStoreItem(BaseModel):
+    store_id: str
+    store_name: str
+    income_amount: Decimal
+    expense_amount: Decimal
+    profit_amount: Decimal
+    bank_expense_amount: Decimal
+    matched_expense_amount: Decimal
+    unmatched_bank_amount: Decimal
+    unmatched_bank_count: int
+    pending_expense_amount: Decimal
+    pending_expense_count: int
+
+
+class FinancialAnalyticsCategoryItem(BaseModel):
+    category_l1: str
+    category_l2: str | None = None
+    amount: Decimal
+    item_count: int
+
+
+class FinancialAnalyticsTemplateItem(BaseModel):
+    template_id: str
+    template_name: str
+    approval_count: int
+    expense_amount: Decimal
+    matched_amount: Decimal
+
+
+class FinancialAnalyticsReconciliationItem(BaseModel):
+    status: str
+    count: int
+    amount: Decimal
+
+
+class FinancialAnalyticsReport(BaseModel):
+    metrics: FinancialAnalyticsMetrics
+    trends: list[FinancialAnalyticsTrendItem]
+    stores: list[FinancialAnalyticsStoreItem]
+    categories: list[FinancialAnalyticsCategoryItem]
+    templates: list[FinancialAnalyticsTemplateItem]
+    reconciliation: list[FinancialAnalyticsReconciliationItem]
+
+
 class StartApprovalSyncRequest(BaseModel):
     template_id: str | None = None
     started_by: str = Field(default="system", max_length=80)
@@ -648,6 +757,15 @@ class SyncJobRead(BaseModel):
     raw_summary: str | None
     created_at: datetime
     updated_at: datetime
+
+
+class DingTalkAutoSyncRunResult(BaseModel):
+    job: SyncJobRead
+    setting: DingTalkAutoSyncSettingRead
+    department_pull: DingTalkDepartmentPullResult | None = None
+    department_sync: DingTalkDepartmentSyncResult | None = None
+    template_sync: dict[str, int] | None = None
+    approval_sync: SyncJobRead | None = None
 
 
 class ApprovalParseExpenseRow(BaseModel):
@@ -743,6 +861,14 @@ class ReconciliationRecordUpdate(BaseModel):
     bank_occurred: bool | None = None
     category_l2: str | None = None
     reason: str | None = None
+
+
+class FinancialAnalyticsDetailReport(BaseModel):
+    title: str
+    expense_items: list[ExpenseItemRead] = Field(default_factory=list)
+    bank_transactions: list[BankTransactionRead] = Field(default_factory=list)
+    approval_instances: list[ApprovalInstanceRead] = Field(default_factory=list)
+    reconciliation_records: list[ReconciliationRecord] = Field(default_factory=list)
 
 
 class TemplateSampleApprovalResult(BaseModel):

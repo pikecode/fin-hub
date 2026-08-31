@@ -1,122 +1,202 @@
 "use client";
 
-import { Alert, Badge, Button, Card, Flex, Space, Spin, Table, Typography } from "antd";
-import type { ColumnsType } from "antd/es/table";
+import {
+  Alert,
+  Badge,
+  Button,
+  Card,
+  Col,
+  Empty,
+  Flex,
+  List,
+  Progress,
+  Row,
+  Space,
+  Spin,
+  Tag,
+  Typography,
+} from "antd";
+import {
+  BankOutlined,
+  CheckCircleOutlined,
+  CloudSyncOutlined,
+  FileSearchOutlined,
+  RightOutlined,
+  ShopOutlined,
+  WarningOutlined,
+} from "@ant-design/icons";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import type { BankTransaction, ExpenseBankMatch, ExpenseItem, Ledger, LedgerSummary, Store } from "@fin-hub/shared-types";
-import { formatPeriod } from "@fin-hub/shared-utils";
+import type {
+  FinancialAnalyticsReport,
+  FinancialAnalyticsStoreItem,
+  ReconciliationRecord,
+  Store,
+  SyncJob,
+} from "@fin-hub/shared-types";
 import { apiClient } from "./lib/api";
 import { AppShell } from "./components/AppShell";
-import { MetricCard } from "./components/MetricCard";
-import { StatusBadge } from "./components/StatusBadge";
-import { EmptyState } from "./components/EmptyState";
 
-interface DashboardData {
+interface WorkbenchData {
+  analytics: FinancialAnalyticsReport | null;
   stores: Store[];
-  ledgers: Ledger[];
-  expenseItems: ExpenseItem[];
-  bankTransactions: BankTransaction[];
-  matches: ExpenseBankMatch[];
+  syncJobs: SyncJob[];
+  recentMatches: ReconciliationRecord[];
 }
 
-const emptyDashboard: DashboardData = {
+const emptyData: WorkbenchData = {
+  analytics: null,
   stores: [],
-  ledgers: [],
-  expenseItems: [],
-  bankTransactions: [],
-  matches: [],
+  syncJobs: [],
+  recentMatches: [],
 };
 
-const columns: ColumnsType<LedgerSummary> = [
-  {
-    title: "门店",
-    dataIndex: "storeName",
-    width: 180,
-    fixed: 'left',
-  },
-  {
-    title: "账期",
-    dataIndex: "period",
-    render: (value: string) => formatPeriod(value),
-    width: 120,
-  },
-  {
-    title: "状态",
-    dataIndex: "status",
-    render: (value: LedgerSummary["status"]) => (
-      <StatusBadge status={value === "closed" ? "closed" : "open"} />
-    ),
-    width: 100,
-  },
-  {
-    title: "待匹配流水",
-    dataIndex: "pendingTransactionCount",
-    align: "right",
-    width: 120,
-    render: (value: number) => (
-      <span style={{ fontWeight: value > 0 ? 600 : 400, color: value > 0 ? '#f59e0b' : '#9ca3af' }}>
-        {value}
+const syncStatusColor: Record<SyncJob["status"], string> = {
+  pending: "default",
+  running: "processing",
+  succeeded: "success",
+  failed: "error",
+};
+
+const syncStatusText: Record<SyncJob["status"], string> = {
+  pending: "等待中",
+  running: "同步中",
+  succeeded: "成功",
+  failed: "失败",
+};
+
+function money(value?: string | number | null) {
+  const amount = Number(value ?? 0);
+  return amount.toLocaleString("zh-CN", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
+function shortDate(value?: string | null) {
+  if (!value) return "-";
+  return value.replace("T", " ").slice(0, 16);
+}
+
+function topActionStores(stores: FinancialAnalyticsStoreItem[]) {
+  return [...stores]
+    .sort((left, right) => {
+      const leftScore = left.unmatched_bank_count * 3 + left.pending_expense_count;
+      const rightScore = right.unmatched_bank_count * 3 + right.pending_expense_count;
+      return rightScore - leftScore;
+    })
+    .slice(0, 6);
+}
+
+interface WorkbenchMetricProps {
+  title: string;
+  value: string | number;
+  unit: string;
+  description: string;
+  icon: React.ReactNode;
+  tone?: "normal" | "warning" | "danger" | "success";
+  actionLabel: string;
+  onClick: () => void;
+}
+
+function WorkbenchMetricCard({
+  title,
+  value,
+  unit,
+  description,
+  icon,
+  tone = "normal",
+  actionLabel,
+  onClick,
+}: WorkbenchMetricProps) {
+  return (
+    <Card className={`workbench-metric-card ${tone}`}>
+      <Flex vertical gap={14} className="full-width">
+        <Flex align="flex-start" justify="space-between" gap={12}>
+          <div>
+            <Typography.Text className="workbench-metric-title">{title}</Typography.Text>
+            <div className="workbench-metric-value-row">
+              <span className="workbench-metric-value">{value}</span>
+              <span className="workbench-metric-unit">{unit}</span>
+            </div>
+          </div>
+          <span className="workbench-metric-icon">{icon}</span>
+        </Flex>
+        <Flex align="center" justify="space-between" gap={10}>
+          <Typography.Text className="workbench-metric-desc">{description}</Typography.Text>
+          <Button type="link" size="small" className="workbench-metric-action" onClick={onClick}>
+            {actionLabel}
+          </Button>
+        </Flex>
+      </Flex>
+    </Card>
+  );
+}
+
+function StoreActionRow({
+  store,
+  onOpen,
+}: {
+  store: FinancialAnalyticsStoreItem;
+  onOpen: () => void;
+}) {
+  const workload = store.unmatched_bank_count + store.pending_expense_count;
+  return (
+    <button className="workbench-store-row" type="button" onClick={onOpen}>
+      <span className="workbench-list-icon">
+        <ShopOutlined />
       </span>
-    ),
-  },
-  {
-    title: "未分类明细",
-    dataIndex: "unclassifiedExpenseItemCount",
-    align: "right",
-    width: 120,
-    render: (value: number) => (
-      <span style={{ fontWeight: value > 0 ? 600 : 400, color: value > 0 ? '#f59e0b' : '#9ca3af' }}>
-        {value}
+      <span className="workbench-store-main">
+        <span className="workbench-store-name">{store.store_name}</span>
+        <span className="workbench-store-tags">
+          <Tag color={store.unmatched_bank_count > 0 ? "orange" : "default"}>待对账 {store.unmatched_bank_count}</Tag>
+          <Tag color={store.pending_expense_count > 0 ? "blue" : "default"}>未付款 {store.pending_expense_count}</Tag>
+        </span>
       </span>
-    ),
-  },
-  {
-    title: "缺供应商",
-    dataIndex: "missingSupplierCount",
-    align: "right",
-    width: 100,
-    render: (value: number) => (
-      <span style={{ fontWeight: value > 0 ? 600 : 400, color: value > 0 ? '#dc2626' : '#9ca3af' }}>
-        {value}
+      <span className="workbench-store-side">
+        <span className="workbench-store-amount">{money(store.expense_amount)} 元</span>
+        <span className="workbench-store-label">审批支出</span>
       </span>
-    ),
-  },
-];
+      <RightOutlined className="workbench-store-arrow" />
+      <span
+        className={`workbench-store-bar ${workload > 5 ? "danger" : workload > 0 ? "warning" : "normal"}`}
+        style={{ width: `${Math.min(workload * 10, 100)}%` }}
+      />
+    </button>
+  );
+}
 
 export default function HomePage() {
   const router = useRouter();
-  const [dashboardData, setDashboardData] = useState<DashboardData>(emptyDashboard);
+  const [data, setData] = useState<WorkbenchData>(emptyData);
   const [isLoading, setIsLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   useEffect(() => {
     let ignore = false;
 
-    async function loadDashboard() {
+    async function loadWorkbench() {
       setIsLoading(true);
       setErrorMessage(null);
       try {
-        const [stores, ledgers, expenseItems, bankTransactions, matches] = await Promise.all([
-          apiClient.stores.list("?page_size=200"),
-          apiClient.ledgers.list("?page_size=200"),
-          apiClient.expenseItems.list("?page_size=500"),
-          apiClient.bankTransactions.list("?page_size=500"),
-          apiClient.matches.list("?page_size=500"),
+        const [analytics, stores, syncJobs, recentMatches] = await Promise.all([
+          apiClient.reports.analytics(),
+          apiClient.stores.list("?page_size=500"),
+          apiClient.dingtalk.listSyncJobs("?page_size=5"),
+          apiClient.matches.reconciliationRecords("?status=confirmed&page_size=5"),
         ]);
         if (!ignore) {
-          setDashboardData({
+          setData({
+            analytics,
             stores: stores.items,
-            ledgers: ledgers.items,
-            expenseItems: expenseItems.items,
-            bankTransactions: bankTransactions.items,
-            matches: matches.items,
+            syncJobs: syncJobs.items,
+            recentMatches: recentMatches.items,
           });
         }
       } catch (error) {
         if (!ignore) {
-          setDashboardData(emptyDashboard);
-          setErrorMessage(error instanceof Error ? error.message : "无法加载首页数据");
+          setData(emptyData);
+          setErrorMessage(error instanceof Error ? error.message : "无法加载工作台数据");
         }
       } finally {
         if (!ignore) {
@@ -125,169 +205,209 @@ export default function HomePage() {
       }
     }
 
-    loadDashboard();
+    loadWorkbench();
     return () => {
       ignore = true;
     };
   }, []);
 
-  const ledgerSummaries = useMemo(() => {
-    const storesById = new Map(dashboardData.stores.map((store) => [store.id, store]));
-    const confirmedBankIds = new Set(
-      dashboardData.matches
-        .filter((match) => match.status === "confirmed")
-        .map((match) => match.bank_transaction_id),
-    );
-
-    return dashboardData.ledgers.map((ledger) => {
-      const expenseItems = dashboardData.expenseItems.filter(
-        (item) => item.store_id === ledger.store_id && item.ledger_period === ledger.period,
-      );
-      const bankTransactions = dashboardData.bankTransactions.filter(
-        (transaction) =>
-          transaction.store_id === ledger.store_id &&
-          transaction.ledger_period === ledger.period &&
-          transaction.direction === "expense" &&
-          !confirmedBankIds.has(transaction.id),
-      );
-
-      return {
-        id: ledger.id,
-        storeId: ledger.store_id,
-        storeName: storesById.get(ledger.store_id)?.name ?? "未知门店",
-        period: ledger.period,
-        status: ledger.status,
-        pendingTransactionCount: bankTransactions.length,
-        unclassifiedExpenseItemCount: expenseItems.filter((item) => !item.category_l1).length,
-        missingSupplierCount: expenseItems.filter((item) => !item.supplier_name).length,
-      } satisfies LedgerSummary;
-    });
-  }, [dashboardData]);
-
-  const metrics = useMemo(
-    () => ({
-      pendingTransactionCount: ledgerSummaries.reduce(
-        (total, ledger) => total + ledger.pendingTransactionCount,
-        0,
-      ),
-      unclassifiedExpenseItemCount: ledgerSummaries.reduce(
-        (total, ledger) => total + ledger.unclassifiedExpenseItemCount,
-        0,
-      ),
-      missingSupplierCount: ledgerSummaries.reduce(
-        (total, ledger) => total + ledger.missingSupplierCount,
-        0,
-      ),
-      openLedgerCount: ledgerSummaries.filter((ledger) => ledger.status === "open").length,
-    }),
-    [ledgerSummaries],
-  );
+  const metrics = data.analytics?.metrics;
+  const actionStores = useMemo(() => topActionStores(data.analytics?.stores ?? []), [data.analytics]);
+  const latestSyncJob = data.syncJobs[0];
+  const syncFailedCount = data.syncJobs.filter((job) => job.status === "failed").length;
+  const reconciliationProgress = metrics
+    ? Math.round(
+        (Number(metrics.matched_expense_amount) /
+          Math.max(Number(metrics.matched_expense_amount) + Number(metrics.unmatched_bank_amount), 1)) *
+          100,
+      )
+    : 0;
 
   return (
-    <AppShell title="首页仪表盘">
-      {errorMessage && (
+    <AppShell
+      title="财务工作台"
+      kicker="聚焦今天需要处理的对账、同步和门店异常"
+      action={<Button onClick={() => router.push("/reports")}>查看统计报表</Button>}
+    >
+      {errorMessage ? (
         <Alert
           className="dashboard-alert"
-          message="API 数据暂不可用"
-          description={`请确认 API 服务已启动并允许 ${process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000"} 访问。错误：${errorMessage}`}
+          message="工作台数据暂不可用"
+          description={errorMessage}
           type="warning"
           showIcon
           closable
+          onClose={() => setErrorMessage(null)}
         />
-      )}
+      ) : null}
 
-      <Flex gap={16} wrap="wrap" className="metrics">
-        <MetricCard
-          title="待匹配流水"
-          value={metrics.pendingTransactionCount}
-          unit="笔"
-          status={metrics.pendingTransactionCount > 50 ? "warning" : "normal"}
-          action={{
-            label: "去对账",
-            onClick: () => router.push("/finance/reconciliation"),
-          }}
-          loading={isLoading}
-        />
-
-        <MetricCard
-          title="未分类明细"
-          value={metrics.unclassifiedExpenseItemCount}
-          unit="条"
-          status={metrics.unclassifiedExpenseItemCount > 30 ? "warning" : "normal"}
-          action={{
-            label: "看分类",
-            onClick: () => router.push("/categories"),
-          }}
-          loading={isLoading}
-        />
-
-        <MetricCard
-          title="缺供应商"
-          value={metrics.missingSupplierCount}
-          unit="条"
-          status={metrics.missingSupplierCount > 20 ? "danger" : "normal"}
-          action={{
-            label: "去对账",
-            onClick: () => router.push("/finance/reconciliation"),
-          }}
-          loading={isLoading}
-        />
-
-        <MetricCard
-          title="待封账账套"
-          value={metrics.openLedgerCount}
-          unit="个"
-          action={{
-            label: "看报表",
-            onClick: () => router.push("/reports"),
-          }}
-          loading={isLoading}
-        />
-      </Flex>
-
-      <Card
-        title="门店对账概览"
-        extra={
-          <Space>
-            <Badge status={errorMessage ? "warning" : "processing"} text="实时读取 API 数据" />
-            <Button onClick={() => router.push("/finance/reconciliation")}>进入对账</Button>
-          </Space>
-        }
-      >
-        <Spin spinning={isLoading}>
-          {!isLoading && ledgerSummaries.length === 0 && !errorMessage ? (
-            <EmptyState
-              title="暂无账套数据"
-              description="请先创建门店账套开始做账"
-              primaryAction={{
-                label: "维护门店",
-                onClick: () => router.push("/stores"),
-              }}
-              secondaryAction={{
-                label: "查看文档",
-                onClick: () => window.open("/docs", "_blank"),
-              }}
+      <Spin spinning={isLoading}>
+        <Space direction="vertical" size={16} className="full-width">
+          <Flex gap={16} wrap="wrap" className="metrics">
+            <WorkbenchMetricCard
+              title="待对账流水"
+              value={metrics?.unmatched_bank_count ?? 0}
+              unit="笔"
+              description="银行支出尚未匹配审批单"
+              icon={<BankOutlined />}
+              tone={(metrics?.unmatched_bank_count ?? 0) > 0 ? "warning" : "normal"}
+              actionLabel="进入对账"
+              onClick={() => router.push("/finance/reconciliation")}
             />
-          ) : errorMessage ? (
-            <EmptyState
-              type="error"
-              description={errorMessage}
-              primaryAction={{
-                label: "重新加载",
-                onClick: () => window.location.reload(),
-              }}
+            <WorkbenchMetricCard
+              title="未付款审批"
+              value={metrics?.pending_expense_count ?? 0}
+              unit="单"
+              description="审批通过但付款状态待确认"
+              icon={<FileSearchOutlined />}
+              tone={(metrics?.pending_expense_count ?? 0) > 0 ? "warning" : "success"}
+              actionLabel="查看审批"
+              onClick={() => router.push("/dingtalk")}
             />
-          ) : (
-            <Table
-              rowKey="id"
-              columns={columns}
-              dataSource={ledgerSummaries}
-              pagination={ledgerSummaries.length > 10 ? { pageSize: 10, showSizeChanger: true } : false}
-              scroll={{ x: 1000 }}
+            <WorkbenchMetricCard
+              title="未对账金额"
+              value={money(metrics?.unmatched_bank_amount)}
+              unit="元"
+              description="需要人工确认归属的流水金额"
+              icon={<WarningOutlined />}
+              tone={Number(metrics?.unmatched_bank_amount ?? 0) > 0 ? "danger" : "success"}
+              actionLabel="处理差异"
+              onClick={() => router.push("/finance/reconciliation")}
             />
-          )}
-        </Spin>
-      </Card>
+            <WorkbenchMetricCard
+              title="授权门店"
+              value={metrics?.store_count ?? data.stores.length}
+              unit="家"
+              description="当前账号可查看和维护的门店"
+              icon={<ShopOutlined />}
+              actionLabel="门店档案"
+              onClick={() => router.push("/stores")}
+            />
+          </Flex>
+
+          <Row gutter={[16, 16]}>
+            <Col xs={24} xl={15}>
+              <Card
+                title="门店待处理"
+                extra={<Button type="link" onClick={() => router.push("/finance/reconciliation")}>去对账</Button>}
+              >
+                {actionStores.length === 0 ? (
+                  <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前没有待处理门店" />
+                ) : (
+                  <div className="workbench-store-list">
+                    {actionStores.map((store) => (
+                      <StoreActionRow
+                        key={store.store_id}
+                        store={store}
+                        onOpen={() => router.push(`/finance/reconciliation?store_id=${store.store_id}`)}
+                      />
+                    ))}
+                  </div>
+                )}
+              </Card>
+            </Col>
+
+            <Col xs={24} xl={9}>
+              <Space direction="vertical" size={16} className="full-width">
+                <Card title="数据同步状态" extra={<Button type="link" onClick={() => router.push("/dingtalk")}>查看同步</Button>}>
+                  {latestSyncJob ? (
+                    <Space direction="vertical" size={12} className="full-width">
+                      <Flex justify="space-between" align="center">
+                        <Space>
+                          <CloudSyncOutlined className="workbench-status-icon" />
+                          <Typography.Text strong>{latestSyncJob.job_type}</Typography.Text>
+                        </Space>
+                        <Tag color={syncStatusColor[latestSyncJob.status]}>{syncStatusText[latestSyncJob.status]}</Tag>
+                      </Flex>
+                      <Typography.Text type="secondary">
+                        最近完成：{shortDate(latestSyncJob.finished_at ?? latestSyncJob.updated_at)}
+                      </Typography.Text>
+                      <Flex gap={8} wrap="wrap">
+                        <Tag>处理 {latestSyncJob.processed_count}</Tag>
+                        <Tag color="green">成功 {latestSyncJob.success_count}</Tag>
+                        <Tag color={latestSyncJob.failed_count > 0 ? "red" : "default"}>
+                          失败 {latestSyncJob.failed_count}
+                        </Tag>
+                      </Flex>
+                      {syncFailedCount > 0 ? (
+                        <Alert type="warning" showIcon message={`最近 ${syncFailedCount} 个同步任务失败，需要检查钉钉配置或权限。`} />
+                      ) : null}
+                    </Space>
+                  ) : (
+                    <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无同步任务" />
+                  )}
+                </Card>
+
+                <Card title="对账进度">
+                  <Space direction="vertical" size={12} className="full-width">
+                    <Progress percent={reconciliationProgress} strokeColor="#14b8a6" />
+                    <Flex justify="space-between">
+                      <Typography.Text type="secondary">已对账 {money(metrics?.matched_expense_amount)} 元</Typography.Text>
+                      <Typography.Text type="secondary">未对账 {money(metrics?.unmatched_bank_amount)} 元</Typography.Text>
+                    </Flex>
+                  </Space>
+                </Card>
+              </Space>
+            </Col>
+          </Row>
+
+          <Row gutter={[16, 16]}>
+            <Col xs={24} xl={15}>
+              <Card title="最近对账记录" extra={<Button type="link" onClick={() => router.push("/finance/reconciliation")}>全部记录</Button>}>
+                {data.recentMatches.length === 0 ? (
+                  <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无已确认对账记录" />
+                ) : (
+                  <List
+                    dataSource={data.recentMatches}
+                    renderItem={(record) => (
+                      <List.Item>
+                        <List.Item.Meta
+                          avatar={<CheckCircleOutlined className="workbench-list-icon success" />}
+                          title={
+                            <Space wrap>
+                              <Typography.Text strong>
+                                {record.approval_instance?.approval_no ?? record.expense_item.source_document_id ?? "审批单"}
+                              </Typography.Text>
+                              <Tag color="green">已确认</Tag>
+                            </Space>
+                          }
+                          description={
+                            <Space wrap>
+                              <Typography.Text>{record.expense_item.description}</Typography.Text>
+                              <Typography.Text type="secondary">流水 {shortDate(record.bank_transaction.occurred_at)}</Typography.Text>
+                              <Typography.Text type="secondary">入账 {record.match.accounting_period ?? "-"}</Typography.Text>
+                            </Space>
+                          }
+                        />
+                        <Typography.Text strong>{money(record.match.amount)} 元</Typography.Text>
+                      </List.Item>
+                    )}
+                  />
+                )}
+              </Card>
+            </Col>
+
+            <Col xs={24} xl={9}>
+              <Card title="常用操作">
+                <Space direction="vertical" size={10} className="full-width">
+                  <Button block icon={<BankOutlined />} onClick={() => router.push("/finance/reconciliation")}>
+                    导入流水并对账
+                  </Button>
+                  <Button block icon={<CloudSyncOutlined />} onClick={() => router.push("/dingtalk")}>
+                    同步钉钉审批
+                  </Button>
+                  <Button block icon={<FileSearchOutlined />} onClick={() => router.push("/reports")}>
+                    查看统计报表
+                  </Button>
+                  <Button block icon={<WarningOutlined />} onClick={() => router.push("/categories")}>
+                    维护费用分类
+                  </Button>
+                </Space>
+              </Card>
+            </Col>
+          </Row>
+        </Space>
+      </Spin>
     </AppShell>
   );
 }

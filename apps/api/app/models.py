@@ -421,6 +421,32 @@ class DingTalkConfig(Base):
     )
 
 
+class DingTalkAutoSyncSetting(Base):
+    __tablename__ = "dingtalk_auto_sync_settings"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    interval_minutes: Mapped[int] = mapped_column(default=60, nullable=False)
+    window_days: Mapped[int] = mapped_column(default=7, nullable=False)
+    root_dept_id: Mapped[str] = mapped_column(String(120), default="1", nullable=False)
+    max_depth: Mapped[int] = mapped_column(default=6, nullable=False)
+    page_size: Mapped[int] = mapped_column(default=20, nullable=False)
+    max_pages: Mapped[int] = mapped_column(default=20, nullable=False)
+    skip_existing: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    sync_departments: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    sync_templates: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    sync_approvals: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    next_run_at: Mapped[datetime | None] = mapped_column(DateTime)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime)
+    last_job_id: Mapped[str | None] = mapped_column(ForeignKey("sync_jobs.id"))
+    last_status: Mapped[str | None] = mapped_column(String(24))
+    last_error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+
 class DingTalkDepartment(Base):
     __tablename__ = "dingtalk_departments"
 

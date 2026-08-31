@@ -493,6 +493,51 @@ export interface DingTalkConfig {
   last_instance_sync_at?: string | null;
 }
 
+export interface DingTalkAutoSyncSetting {
+  id: string;
+  enabled: boolean;
+  interval_minutes: number;
+  window_days: number;
+  root_dept_id: string;
+  max_depth: number;
+  page_size: number;
+  max_pages: number;
+  skip_existing: boolean;
+  sync_departments: boolean;
+  sync_templates: boolean;
+  sync_approvals: boolean;
+  next_run_at?: string | null;
+  last_run_at?: string | null;
+  last_job_id?: string | null;
+  last_status?: string | null;
+  last_error?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DingTalkAutoSyncSettingUpdate {
+  enabled?: boolean;
+  interval_minutes?: number;
+  window_days?: number;
+  root_dept_id?: string;
+  max_depth?: number;
+  page_size?: number;
+  max_pages?: number;
+  skip_existing?: boolean;
+  sync_departments?: boolean;
+  sync_templates?: boolean;
+  sync_approvals?: boolean;
+}
+
+export interface DingTalkAutoSyncRunResult {
+  job: SyncJob;
+  setting: DingTalkAutoSyncSetting;
+  department_pull?: DingTalkDepartmentPullResult | null;
+  department_sync?: DingTalkDepartmentSyncResult | null;
+  template_sync?: { pulled: number; created: number; updated: number } | null;
+  approval_sync?: SyncJob | null;
+}
+
 export interface ApprovalTemplate {
   id: string;
   process_code: string;
@@ -788,6 +833,85 @@ export interface StoreComparisonReport {
   total_income_amount: string;
   total_expense_amount: string;
   total_profit_amount: string;
+}
+
+export interface FinancialAnalyticsMetrics {
+  store_count: number;
+  period_count: number;
+  total_income_amount: string;
+  total_expense_amount: string;
+  total_profit_amount: string;
+  bank_expense_amount: string;
+  matched_expense_amount: string;
+  unmatched_bank_amount: string;
+  unmatched_bank_count: number;
+  pending_expense_amount: string;
+  pending_expense_count: number;
+  confirmed_match_count: number;
+  pending_match_count: number;
+  bank_not_occurred_count: number;
+}
+
+export interface FinancialAnalyticsTrendItem {
+  period: string;
+  income_amount: string;
+  expense_amount: string;
+  profit_amount: string;
+  bank_expense_amount: string;
+  matched_expense_amount: string;
+  unmatched_bank_amount: string;
+}
+
+export interface FinancialAnalyticsStoreItem {
+  store_id: string;
+  store_name: string;
+  income_amount: string;
+  expense_amount: string;
+  profit_amount: string;
+  bank_expense_amount: string;
+  matched_expense_amount: string;
+  unmatched_bank_amount: string;
+  unmatched_bank_count: number;
+  pending_expense_amount: string;
+  pending_expense_count: number;
+}
+
+export interface FinancialAnalyticsCategoryItem {
+  category_l1: string;
+  category_l2?: string | null;
+  amount: string;
+  item_count: number;
+}
+
+export interface FinancialAnalyticsTemplateItem {
+  template_id: string;
+  template_name: string;
+  approval_count: number;
+  expense_amount: string;
+  matched_amount: string;
+}
+
+export interface FinancialAnalyticsReconciliationItem {
+  status: MatchStatus;
+  count: number;
+  amount: string;
+}
+
+export interface FinancialAnalyticsReport {
+  metrics: FinancialAnalyticsMetrics;
+  trends: FinancialAnalyticsTrendItem[];
+  stores: FinancialAnalyticsStoreItem[];
+  categories: FinancialAnalyticsCategoryItem[];
+  templates: FinancialAnalyticsTemplateItem[];
+  reconciliation: FinancialAnalyticsReconciliationItem[];
+}
+
+export interface FinancialAnalyticsDetailReport {
+  title: string;
+  expense_items: ExpenseItem[];
+  bank_transactions: BankTransaction[];
+  approval_instances: ApprovalInstance[];
+  reconciliation_records: ReconciliationRecord[];
 }
 
 export interface LedgerSummary {

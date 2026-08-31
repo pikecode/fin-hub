@@ -15,6 +15,7 @@ from app.models import (
     ApprovalTemplate,
     Attachment,
     AttachmentStatus,
+    DingTalkAutoSyncSetting,
     DingTalkConfig,
     DingTalkDepartment as DingTalkDepartmentModel,
     ExpenseBankMatch,
@@ -40,6 +41,9 @@ from app.schemas import (
     ApprovalTemplateCreate,
     ApprovalTemplateRead,
     ApprovalTemplateUpdate,
+    DingTalkAutoSyncRunResult,
+    DingTalkAutoSyncSettingRead,
+    DingTalkAutoSyncSettingUpdate,
     DingTalkConfigRead,
     DingTalkConfigUpdate,
     DingTalkDepartmentPullResult,
@@ -110,6 +114,21 @@ def get_or_create_config(session: Session) -> DingTalkConfig:
         session.commit()
         session.refresh(config)
     return config
+
+
+def get_or_create_auto_sync_setting(session: Session) -> DingTalkAutoSyncSetting:
+    setting = session.scalar(select(DingTalkAutoSyncSetting).order_by(DingTalkAutoSyncSetting.created_at.asc()))
+    if setting is None:
+        now = utc_now()
+        setting = DingTalkAutoSyncSetting(next_run_at=now + timedelta(minutes=60))
+        session.add(setting)
+        session.commit()
+        session.refresh(setting)
+    return setting
+
+
+def refresh_auto_sync_next_run(setting: DingTalkAutoSyncSetting) -> None:
+    setting.next_run_at = utc_now() + timedelta(minutes=setting.interval_minutes)
 
 
 def dingtalk_credentials(config: DingTalkConfig) -> DingTalkCredentials | None:
@@ -199,13 +218,12 @@ def list_departments(
     return ApiEnvelope(data=load_local_departments(session, include_inactive=include_inactive))
 
 
-@router.post("/departments/pull", response_model=ApiEnvelope[DingTalkDepartmentPullResult])
-def pull_departments(
+def pull_departments_core(
+    session: Session,
+    *,
     root_dept_id: str = "1",
     max_depth: int = 6,
-    session: Session = Depends(get_session),
-    current_user: User = Depends(require_permission("dingtalk.manage")),
-) -> ApiEnvelope[DingTalkDepartmentPullResult]:
+) -> DingTalkDepartmentPullResult:
     config = get_or_create_config(session)
     try:
         pulled_departments = build_department_tree(
@@ -221,33 +239,46 @@ def pull_departments(
         root_dept_id=root_dept_id,
         max_depth=max_depth,
     )
+    departments = load_local_departments(session)
+    return DingTalkDepartmentPullResult(
+        departments=departments,
+        pulled_count=result["pulled_count"],
+        created_count=result["created_count"],
+        updated_count=result["updated_count"],
+        deactivated_count=result["deactivated_count"],
+        candidate_count=len([department for department in departments if department.is_store_candidate]),
+    )
+
+
+@router.post("/departments/pull", response_model=ApiEnvelope[DingTalkDepartmentPullResult])
+def pull_departments(
+    root_dept_id: str = "1",
+    max_depth: int = 6,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_permission("dingtalk.manage")),
+) -> ApiEnvelope[DingTalkDepartmentPullResult]:
+    result = pull_departments_core(
+        session,
+        root_dept_id=root_dept_id,
+        max_depth=max_depth,
+    )
     write_audit_log(
         session,
         actor=audit_actor(current_user),
         action="dingtalk.departments.pull",
         resource_type="dingtalk_department",
         summary=(
-            f"拉取钉钉部门：拉取 {result['pulled_count']} 个，"
-            f"新增 {result['created_count']} 个，更新 {result['updated_count']} 个"
+            f"拉取钉钉部门：拉取 {result.pulled_count} 个，"
+            f"新增 {result.created_count} 个，更新 {result.updated_count} 个"
         ),
         metadata={
             "root_dept_id": root_dept_id,
             "max_depth": max_depth,
-            "deactivated_count": result["deactivated_count"],
+            "deactivated_count": result.deactivated_count,
         },
     )
     session.commit()
-    departments = load_local_departments(session)
-    return ApiEnvelope(
-        data=DingTalkDepartmentPullResult(
-            departments=departments,
-            pulled_count=result["pulled_count"],
-            created_count=result["created_count"],
-            updated_count=result["updated_count"],
-            deactivated_count=result["deactivated_count"],
-            candidate_count=len([department for department in departments if department.is_store_candidate]),
-        )
-    )
+    return ApiEnvelope(data=result)
 
 
 @router.get("/departments/sync-preview", response_model=ApiEnvelope[DingTalkDepartmentSyncPreview])
@@ -259,13 +290,8 @@ def preview_department_sync(
     return ApiEnvelope(data=build_department_sync_preview(session, departments))
 
 
-@router.post("/departments/sync", response_model=ApiEnvelope[DingTalkDepartmentSyncResult])
-def sync_departments_to_stores(
-    session: Session = Depends(get_session),
-    current_user: User = Depends(require_permission("dingtalk.manage")),
-) -> ApiEnvelope[DingTalkDepartmentSyncResult]:
+def sync_departments_to_stores_core(session: Session) -> DingTalkDepartmentSyncResult:
     departments = load_local_departments(session)
-
     created_count = 0
     updated_count = 0
     skipped_count = 0
@@ -300,25 +326,32 @@ def sync_departments_to_stores(
             department_model.store_id = store.id
         synced_stores.append(store)
     session.flush()
+    for store in synced_stores:
+        session.refresh(store)
+    return DingTalkDepartmentSyncResult(
+        created_count=created_count,
+        updated_count=updated_count,
+        skipped_count=skipped_count,
+        stores=synced_stores,
+    )
+
+
+@router.post("/departments/sync", response_model=ApiEnvelope[DingTalkDepartmentSyncResult])
+def sync_departments_to_stores(
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_permission("dingtalk.manage")),
+) -> ApiEnvelope[DingTalkDepartmentSyncResult]:
+    result = sync_departments_to_stores_core(session)
     write_audit_log(
         session,
         actor=audit_actor(current_user),
         action="dingtalk.departments.sync",
         resource_type="store",
-        summary=f"同步钉钉门店部门：新增 {created_count} 个，更新 {updated_count} 个",
-        metadata={"skipped_count": skipped_count},
+        summary=f"同步钉钉门店部门：新增 {result.created_count} 个，更新 {result.updated_count} 个",
+        metadata={"skipped_count": result.skipped_count},
     )
     session.commit()
-    for store in synced_stores:
-        session.refresh(store)
-    return ApiEnvelope(
-        data=DingTalkDepartmentSyncResult(
-            created_count=created_count,
-            updated_count=updated_count,
-            skipped_count=skipped_count,
-            stores=synced_stores,
-        )
-    )
+    return ApiEnvelope(data=result)
 
 
 @router.get("/templates", response_model=ApiEnvelope[Page[ApprovalTemplateRead]])
@@ -407,11 +440,7 @@ def update_template(
     return ApiEnvelope(data=template_read(session, template))
 
 
-@router.post("/templates/sync", response_model=ApiEnvelope[dict[str, int]])
-def sync_templates(
-    session: Session = Depends(get_session),
-    current_user: User = Depends(require_permission("dingtalk.manage")),
-) -> ApiEnvelope[dict[str, int]]:
+def sync_templates_core(session: Session) -> dict[str, int]:
     config = get_or_create_config(session)
     if should_use_real_dingtalk():
         if not config.admin_user_id:
@@ -457,16 +486,26 @@ def sync_templates(
             template.raw_snapshot = raw_snapshot
             template.last_sync_at = now
     config.last_template_sync_at = now
+    return {"pulled": len(samples), "created": created, "updated": updated}
+
+
+@router.post("/templates/sync", response_model=ApiEnvelope[dict[str, int]])
+def sync_templates(
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_permission("dingtalk.manage")),
+) -> ApiEnvelope[dict[str, int]]:
+    config = get_or_create_config(session)
+    result = sync_templates_core(session)
     write_audit_log(
         session,
         actor=audit_actor(current_user),
         action="dingtalk.templates.sync",
         resource_type="dingtalk_config",
         resource_id=config.id,
-        summary=f"同步钉钉模板：拉取 {len(samples)} 个，新增 {created} 个，更新 {updated} 个",
+        summary=f"同步钉钉模板：拉取 {result['pulled']} 个，新增 {result['created']} 个，更新 {result['updated']} 个",
     )
     session.commit()
-    return ApiEnvelope(data={"pulled": len(samples), "created": created, "updated": updated})
+    return ApiEnvelope(data=result)
 
 
 @router.get(
@@ -2200,6 +2239,177 @@ def run_approval_sync(
     job.raw_summary = json.dumps({"templates": template_summaries}, ensure_ascii=False)
     config = get_or_create_config(session)
     config.last_instance_sync_at = utc_now()
+
+
+@router.get("/auto-sync/settings", response_model=ApiEnvelope[DingTalkAutoSyncSettingRead])
+def read_auto_sync_setting(
+    session: Session = Depends(get_session),
+    _: User = Depends(require_permission("dingtalk.view")),
+) -> ApiEnvelope[DingTalkAutoSyncSettingRead]:
+    return ApiEnvelope(data=get_or_create_auto_sync_setting(session))
+
+
+@router.put("/auto-sync/settings", response_model=ApiEnvelope[DingTalkAutoSyncSettingRead])
+def update_auto_sync_setting(
+    payload: DingTalkAutoSyncSettingUpdate,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_permission("dingtalk.manage")),
+) -> ApiEnvelope[DingTalkAutoSyncSettingRead]:
+    setting = get_or_create_auto_sync_setting(session)
+    updates = payload.model_dump(exclude_unset=True)
+    for key, value in updates.items():
+        setattr(setting, key, value)
+    refresh_auto_sync_next_run(setting)
+    write_audit_log(
+        session,
+        actor=audit_actor(current_user),
+        action="dingtalk.auto_sync.settings.update",
+        resource_type="dingtalk_auto_sync_setting",
+        resource_id=setting.id,
+        summary="更新钉钉自动同步设置",
+        metadata=updates,
+    )
+    session.commit()
+    session.refresh(setting)
+    return ApiEnvelope(data=setting)
+
+
+def execute_auto_sync(
+    session: Session,
+    setting: DingTalkAutoSyncSetting,
+    *,
+    started_by: str,
+) -> DingTalkAutoSyncRunResult:
+    job = SyncJob(
+        job_type="dingtalk_auto_sync",
+        status=SyncJobStatus.RUNNING.value,
+        started_by=started_by,
+        started_at=utc_now(),
+    )
+    session.add(job)
+    session.flush()
+
+    department_pull: DingTalkDepartmentPullResult | None = None
+    department_sync: DingTalkDepartmentSyncResult | None = None
+    template_sync: dict[str, int] | None = None
+    try:
+        if setting.sync_departments:
+            department_pull = pull_departments_core(
+                session,
+                root_dept_id=setting.root_dept_id,
+                max_depth=setting.max_depth,
+            )
+            department_sync = sync_departments_to_stores_core(session)
+
+        if setting.sync_templates:
+            template_sync = sync_templates_core(session)
+            session.flush()
+
+        if setting.sync_approvals:
+            end_at = utc_now()
+            job.request_end_at = end_at
+            job.request_start_at = end_at - timedelta(days=setting.window_days)
+            templates = list(
+                session.scalars(
+                    select(ApprovalTemplate)
+                    .where(ApprovalTemplate.is_enabled.is_(True))
+                    .order_by(ApprovalTemplate.created_at.asc())
+                )
+            )
+            if not templates:
+                raise HTTPException(status_code=404, detail="No enabled approval templates")
+            run_approval_sync(
+                session,
+                job=job,
+                templates=templates,
+                page_size=setting.page_size,
+                max_pages=setting.max_pages,
+                skip_existing=setting.skip_existing,
+            )
+        else:
+            job.status = SyncJobStatus.SUCCEEDED.value
+            job.finished_at = utc_now()
+
+        job.raw_summary = json.dumps(
+            {
+                "department_pull": department_pull.model_dump(mode="json") if department_pull else None,
+                "department_sync": {
+                    "created_count": department_sync.created_count,
+                    "updated_count": department_sync.updated_count,
+                    "skipped_count": department_sync.skipped_count,
+                }
+                if department_sync
+                else None,
+                "template_sync": template_sync,
+                "approval_sync": json.loads(job.raw_summary) if job.raw_summary else None,
+            },
+            ensure_ascii=False,
+        )
+        setting.last_status = job.status
+        setting.last_error = job.error_message
+    except Exception as exc:
+        job.status = SyncJobStatus.FAILED.value
+        job.error_message = str(getattr(exc, "detail", exc))
+        job.finished_at = utc_now()
+        job.raw_summary = json.dumps({"error": job.error_message}, ensure_ascii=False)
+        setting.last_status = job.status
+        setting.last_error = job.error_message
+    setting.last_run_at = utc_now()
+    setting.last_job_id = job.id
+    refresh_auto_sync_next_run(setting)
+    write_audit_log(
+        session,
+        actor=started_by,
+        action="dingtalk.auto_sync.run",
+        resource_type="sync_job",
+        resource_id=job.id,
+        summary=f"执行钉钉自动同步：{job.status}",
+    )
+    session.commit()
+    session.refresh(job)
+    session.refresh(setting)
+    return DingTalkAutoSyncRunResult(
+        job=job,
+        setting=setting,
+        department_pull=department_pull,
+        department_sync=department_sync,
+        template_sync=template_sync,
+        approval_sync=job,
+    )
+
+
+def run_due_auto_sync_jobs(session: Session) -> list[DingTalkAutoSyncRunResult]:
+    now = utc_now()
+    settings_rows = list(
+        session.scalars(
+            select(DingTalkAutoSyncSetting).where(
+                DingTalkAutoSyncSetting.enabled.is_(True),
+                (DingTalkAutoSyncSetting.next_run_at.is_(None))
+                | (DingTalkAutoSyncSetting.next_run_at <= now),
+            )
+        )
+    )
+    results: list[DingTalkAutoSyncRunResult] = []
+    for setting in settings_rows:
+        running_job = session.scalar(
+            select(SyncJob).where(
+                SyncJob.job_type == "dingtalk_auto_sync",
+                SyncJob.status == SyncJobStatus.RUNNING.value,
+            )
+        )
+        if running_job is not None:
+            continue
+        results.append(execute_auto_sync(session, setting, started_by="auto-sync"))
+    return results
+
+
+@router.post("/auto-sync/run", response_model=ApiEnvelope[DingTalkAutoSyncRunResult], status_code=201)
+def run_auto_sync_now(
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_permission("dingtalk.manage")),
+) -> ApiEnvelope[DingTalkAutoSyncRunResult]:
+    setting = get_or_create_auto_sync_setting(session)
+    return ApiEnvelope(data=execute_auto_sync(session, setting, started_by=audit_actor(current_user)))
 
 
 @router.post("/approval-sync", response_model=ApiEnvelope[SyncJobRead], status_code=201)

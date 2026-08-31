@@ -4,6 +4,7 @@ import {
   Alert,
   Button,
   Card,
+  Col,
   DatePicker,
   Descriptions,
   Drawer,
@@ -13,6 +14,7 @@ import {
   InputNumber,
   Modal,
   Popconfirm,
+  Row,
   Select,
   Skeleton,
   Space,
@@ -31,6 +33,8 @@ import type {
   ApprovalTemplateCreate,
   ApprovalInstance,
   Attachment,
+  DingTalkAutoSyncSetting,
+  DingTalkAutoSyncSettingUpdate,
   DingTalkConfig,
   DingTalkDepartment,
   DingTalkDepartmentSyncPreview,
@@ -59,6 +63,8 @@ interface ApprovalSyncFormValues {
   max_pages?: number;
   skip_existing?: boolean;
 }
+
+interface AutoSyncFormValues extends DingTalkAutoSyncSettingUpdate {}
 
 interface MappingFormValues extends TemplateFieldMappingCreate {
   selected_field_key?: string;
@@ -450,6 +456,7 @@ function candidateKey(candidate: TemplateFieldCandidate) {
 
 export default function DingTalkPage() {
   const [config, setConfig] = useState<DingTalkConfig | null>(null);
+  const [autoSyncSetting, setAutoSyncSetting] = useState<DingTalkAutoSyncSetting | null>(null);
   const [templates, setTemplates] = useState<ApprovalTemplate[]>([]);
   const [mappings, setMappings] = useState<TemplateFieldMapping[]>([]);
   const [fieldCandidates, setFieldCandidates] = useState<TemplateFieldCandidate[]>([]);
@@ -475,6 +482,7 @@ export default function DingTalkPage() {
   const [templateForm] = Form.useForm<ApprovalTemplateCreate>();
   const [mappingForm] = Form.useForm<MappingFormValues>();
   const [syncForm] = Form.useForm<ApprovalSyncFormValues>();
+  const [autoSyncForm] = Form.useForm<AutoSyncFormValues>();
   const departmentTree = useMemo(
     () => buildDepartmentTree(departmentPreview?.departments ?? []),
     [departmentPreview],
@@ -562,12 +570,13 @@ export default function DingTalkPage() {
     setErrorMessage(null);
     const results = await Promise.allSettled([
       apiClient.dingtalk.readConfig(),
+      apiClient.dingtalk.readAutoSyncSetting(),
       apiClient.dingtalk.listTemplates("?page_size=200"),
       apiClient.dingtalk.listSyncJobs("?page_size=20"),
       apiClient.dingtalk.listApprovalInstances("?page_size=500"),
       apiClient.dingtalk.previewDepartmentSync(),
     ]);
-    const [configResult, templateResult, jobResult, instanceResult, departmentResult] = results;
+    const [configResult, autoSyncResult, templateResult, jobResult, instanceResult, departmentResult] = results;
     const errors: string[] = [];
 
     if (configResult.status === "fulfilled") {
@@ -581,6 +590,26 @@ export default function DingTalkPage() {
       });
     } else {
       errors.push(dingtalkPageErrorMessage(configResult.reason, "无法读取钉钉配置"));
+    }
+
+    if (autoSyncResult.status === "fulfilled") {
+      const data = autoSyncResult.value;
+      setAutoSyncSetting(data);
+      autoSyncForm.setFieldsValue({
+        enabled: data.enabled,
+        interval_minutes: data.interval_minutes,
+        window_days: data.window_days,
+        root_dept_id: data.root_dept_id,
+        max_depth: data.max_depth,
+        page_size: data.page_size,
+        max_pages: data.max_pages,
+        skip_existing: data.skip_existing,
+        sync_departments: data.sync_departments,
+        sync_templates: data.sync_templates,
+        sync_approvals: data.sync_approvals,
+      });
+    } else {
+      errors.push(dingtalkPageErrorMessage(autoSyncResult.reason, "无法读取自动同步设置"));
     }
 
     if (templateResult.status === "fulfilled") {
@@ -654,6 +683,53 @@ export default function DingTalkPage() {
       message.success("钉钉连接正常");
     } catch (error) {
       setErrorMessage(dingtalkPageErrorMessage(error, "无法连接钉钉 OpenAPI"));
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  async function submitAutoSyncSetting(values: AutoSyncFormValues) {
+    setIsLoading(true);
+    setErrorMessage(null);
+    try {
+      const setting = await apiClient.dingtalk.updateAutoSyncSetting(values);
+      setAutoSyncSetting(setting);
+      autoSyncForm.setFieldsValue({
+        enabled: setting.enabled,
+        interval_minutes: setting.interval_minutes,
+        window_days: setting.window_days,
+        root_dept_id: setting.root_dept_id,
+        max_depth: setting.max_depth,
+        page_size: setting.page_size,
+        max_pages: setting.max_pages,
+        skip_existing: setting.skip_existing,
+        sync_departments: setting.sync_departments,
+        sync_templates: setting.sync_templates,
+        sync_approvals: setting.sync_approvals,
+      });
+      message.success("自动同步设置已保存");
+    } catch (error) {
+      setErrorMessage(dingtalkPageErrorMessage(error, "无法保存自动同步设置"));
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  async function runAutoSync() {
+    setIsLoading(true);
+    setErrorMessage(null);
+    try {
+      const result = await apiClient.dingtalk.runAutoSync();
+      await loadData();
+      if (result.job.status === "failed") {
+        message.error(result.job.error_message || "自动同步执行失败");
+      } else {
+        message.success(
+          `自动同步完成：审批处理 ${result.job.processed_count} 条，成功 ${result.job.success_count} 条，失败 ${result.job.failed_count} 条`,
+        );
+      }
+    } catch (error) {
+      setErrorMessage(dingtalkPageErrorMessage(error, "无法执行自动同步"));
     } finally {
       setIsLoading(false);
     }
@@ -1509,6 +1585,126 @@ export default function DingTalkPage() {
       <Tabs
         className="sync-tabs"
         items={[
+          {
+            key: "auto-sync",
+            label: "自动同步",
+            children: (
+              <Card
+                title="自动同步任务"
+                extra={
+                  <Space>
+                    <Tag color={autoSyncSetting?.enabled ? "green" : "default"}>
+                      {autoSyncSetting?.enabled ? "已启用" : "未启用"}
+                    </Tag>
+                    <Button onClick={runAutoSync} loading={isLoading}>
+                      立即执行
+                    </Button>
+                    <Button type="primary" onClick={() => autoSyncForm.submit()} loading={isLoading}>
+                      保存设置
+                    </Button>
+                  </Space>
+                }
+              >
+                <Space direction="vertical" size={16} className="full-width">
+                  <Space wrap>
+                    <Tag color="cyan">
+                      上次执行 {autoSyncSetting?.last_run_at ? autoSyncSetting.last_run_at.replace("T", " ").slice(0, 16) : "尚未执行"}
+                    </Tag>
+                    <Tag color={autoSyncSetting?.last_status === "failed" ? "red" : "green"}>
+                      上次状态 {autoSyncSetting?.last_status ?? "-"}
+                    </Tag>
+                    <Tag>
+                      下次计划 {autoSyncSetting?.next_run_at ? autoSyncSetting.next_run_at.replace("T", " ").slice(0, 16) : "-"}
+                    </Tag>
+                    {autoSyncSetting?.last_error ? <Tag color="red">{autoSyncSetting.last_error}</Tag> : null}
+                  </Space>
+
+                  <Alert
+                    type="info"
+                    showIcon
+                    message="自动同步会按配置顺序执行：拉取部门快照、同步门店、同步审批模板、同步审批列表。只有启用的审批模板会参与审批同步。"
+                  />
+
+                  <Form
+                    form={autoSyncForm}
+                    layout="vertical"
+                    onFinish={submitAutoSyncSetting}
+                    initialValues={{
+                      enabled: false,
+                      interval_minutes: 60,
+                      window_days: 7,
+                      root_dept_id: "1",
+                      max_depth: 6,
+                      page_size: 20,
+                      max_pages: 20,
+                      skip_existing: true,
+                      sync_departments: true,
+                      sync_templates: true,
+                      sync_approvals: true,
+                    }}
+                  >
+                    <Row gutter={[16, 0]}>
+                      <Col xs={24} md={8}>
+                        <Form.Item name="enabled" label="启用计划任务" valuePropName="checked">
+                          <Switch />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={24} md={8}>
+                        <Form.Item name="interval_minutes" label="同步间隔（分钟）" rules={[{ required: true }]}>
+                          <InputNumber min={5} max={1440} className="full-width" />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={24} md={8}>
+                        <Form.Item name="window_days" label="审批同步窗口（天）" rules={[{ required: true }]}>
+                          <InputNumber min={1} max={365} className="full-width" />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={24} md={8}>
+                        <Form.Item name="root_dept_id" label="部门根节点" rules={[{ required: true }]}>
+                          <Input />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={24} md={8}>
+                        <Form.Item name="max_depth" label="部门最大深度" rules={[{ required: true }]}>
+                          <InputNumber min={1} max={8} className="full-width" />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={24} md={8}>
+                        <Form.Item name="page_size" label="审批每页数量" rules={[{ required: true }]}>
+                          <InputNumber min={1} max={100} className="full-width" />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={24} md={8}>
+                        <Form.Item name="max_pages" label="审批最大页数" rules={[{ required: true }]}>
+                          <InputNumber min={1} max={500} className="full-width" />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={24} md={8}>
+                        <Form.Item name="skip_existing" label="跳过已有审批" valuePropName="checked">
+                          <Switch />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={24} md={8}>
+                        <Form.Item name="sync_departments" label="同步部门和门店" valuePropName="checked">
+                          <Switch />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={24} md={8}>
+                        <Form.Item name="sync_templates" label="同步审批模板" valuePropName="checked">
+                          <Switch />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={24} md={8}>
+                        <Form.Item name="sync_approvals" label="同步审批列表" valuePropName="checked">
+                          <Switch />
+                        </Form.Item>
+                      </Col>
+                    </Row>
+                  </Form>
+                </Space>
+              </Card>
+            ),
+          },
           {
             key: "departments",
             label: "部门",
