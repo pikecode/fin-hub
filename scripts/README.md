@@ -59,7 +59,51 @@ scripts/preflight.sh
 scripts/preflight.sh --skip-admin-build --skip-miniapp-build --smoke
 ```
 
+## 诊断排障
+
+### `clean-admin-next-artifacts.sh`
+
+清理后台 Next.js 生成物和历史备份目录：
+
+```bash
+scripts/clean-admin-next-artifacts.sh
+```
+
+清理范围仅限：
+
+- `apps/admin-web/.next`
+- `apps/admin-web/.next.bak-*`
+- `apps/admin-web/.next-build-backup-*`
+
+这些路径已经在 `.gitignore` 中忽略。执行清理前应先停止后台 dev server，清理后重新启动 `pnpm --filter @fin-hub/admin-web dev`。
+
+### `export-diagnostics.sh`
+
+导出脱敏诊断包：
+
+```bash
+scripts/export-diagnostics.sh
+```
+
+默认输出：
+
+```text
+reports/diagnostics/fin-hub-diagnostics-YYYYMMDDHHMMSS.tar.gz
+```
+
+采集内容：
+
+- 系统时间、项目路径、API / 后台地址。
+- Git 分支和工作区状态。
+- 主要工具版本。
+- 项目 package / pyproject 配置。
+- Alembic 当前版本、heads 和迁移历史。
+- API 健康接口、后台登录页和 OpenAPI 摘要。
+- `/tmp/fin-hub-api.log` 和 `/tmp/fin-hub-admin-web.log` 最近 200 行。
+- `8000`、`3000` 端口监听状态。
+
+脚本会对常见密钥字段做脱敏，包括 `SECRET_KEY`、`DINGTALK_APP_SECRET`、`DATABASE_URL`、`REDIS_URL`、`POSTGRES_PASSWORD`、`token`、`authorization`、`password` 和 `access_code`。
+
 ## 后续可补
 
 - 旧 SQLite 数据迁移脚本。
-- 脱敏诊断包导出脚本。

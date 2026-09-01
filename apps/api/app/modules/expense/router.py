@@ -1,3 +1,5 @@
+import json
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -24,6 +26,7 @@ def ensure_open_ledger(session: Session, store_id: str, period: str) -> None:
 def list_expense_items(
     store_id: str | None = None,
     ledger_period: str | None = None,
+    approval_instance_id: str | None = None,
     payment_status: str | None = None,
     page: int = 1,
     page_size: int = 50,
@@ -34,6 +37,8 @@ def list_expense_items(
         query = query.where(ExpenseItem.store_id == store_id)
     if ledger_period:
         query = query.where(ExpenseItem.ledger_period == ledger_period)
+    if approval_instance_id:
+        query = query.where(ExpenseItem.approval_instance_id == approval_instance_id)
     if payment_status:
         payment_statuses = [status.strip() for status in payment_status.split(",") if status.strip()]
         if len(payment_statuses) == 1:
@@ -83,6 +88,19 @@ def update_expense_item(
     changes = payload.model_dump(exclude_unset=True)
     for field, value in changes.items():
         setattr(item, field, value)
+    if item.source == "dingtalk" and changes:
+        edited_fields: set[str] = set()
+        if item.user_edited_fields_json:
+            try:
+                decoded = json.loads(item.user_edited_fields_json)
+                if isinstance(decoded, list):
+                    edited_fields = {str(field) for field in decoded}
+            except ValueError:
+                edited_fields = set()
+        item.user_edited_fields_json = json.dumps(
+            sorted(edited_fields | set(changes.keys())),
+            ensure_ascii=False,
+        )
 
     write_audit_log(
         session,

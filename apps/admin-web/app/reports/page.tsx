@@ -16,6 +16,7 @@ import type {
   Ledger,
   LedgerReportDetail,
   LedgerTrend,
+  RevenueChannelBreakdownItem,
   RevenueRecord,
   Store,
   StoreReportSummary,
@@ -41,6 +42,10 @@ const matchStatusLabels: Record<string, string> = {
 
 function toNumber(value: string | number | null | undefined) {
   return Number(value ?? 0);
+}
+
+function formatPercent(value: string | number | null | undefined) {
+  return `${Number(value ?? 0).toFixed(2)}%`;
 }
 
 function buildAnalyticsParams(values: ReportFilterValues) {
@@ -264,6 +269,19 @@ export default function ReportsPage() {
     { title: "渠道", dataIndex: "channel" },
     { title: "经营收入", dataIndex: "gross_amount", render: (value: string) => formatMoney(value) },
     { title: "实收金额", dataIndex: "net_amount", render: (value: string) => formatMoney(value) },
+    { title: "手续费", dataIndex: "fee_amount", render: (value: string) => formatMoney(value) },
+  ];
+
+  const revenueChannelColumns: ColumnsType<RevenueChannelBreakdownItem> = [
+    { title: "渠道", dataIndex: "channel" },
+    { title: "经营收入", dataIndex: "gross_amount", render: (value: string) => formatMoney(value) },
+    { title: "实收金额", dataIndex: "net_amount", render: (value: string) => formatMoney(value) },
+    { title: "手续费", dataIndex: "fee_amount", render: (value: string) => formatMoney(value) },
+    { title: "费率", dataIndex: "fee_rate", render: (value: string) => formatPercent(value) },
+    { title: "已对账", dataIndex: "matched_amount", render: (value: string) => formatMoney(value) },
+    { title: "未对账", dataIndex: "unmatched_amount", render: (value: string) => formatMoney(value) },
+    { title: "对账完成率", dataIndex: "reconciliation_rate", render: (value: string) => formatPercent(value) },
+    { title: "记录数", dataIndex: "record_count" },
   ];
 
   const trendColumns: ColumnsType<LedgerReportDetail["summary"]> = [
@@ -464,6 +482,16 @@ export default function ReportsPage() {
                     </Card>
                     <Card title="营业收入明细" className="data-table-card">
                       <Table rowKey="id" loading={isLoading} columns={revenueColumns} dataSource={selectedDetail.revenue_records} pagination={{ pageSize: 6 }} />
+                    </Card>
+                    <Card title="收入渠道分析" className="data-table-card">
+                      <Table
+                        rowKey="channel"
+                        loading={isLoading}
+                        columns={revenueChannelColumns}
+                        dataSource={selectedDetail.revenue_channel_breakdown}
+                        scroll={{ x: 980 }}
+                        pagination={false}
+                      />
                     </Card>
                     <div className="analytics-table-grid">
                       <Card title="费用分类" className="data-table-card">

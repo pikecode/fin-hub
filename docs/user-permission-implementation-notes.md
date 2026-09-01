@@ -87,6 +87,7 @@
 | 模块 | 权限控制 |
 | --- | --- |
 | 登录态 `/auth/me` | 返回当前用户功能权限和门店范围 |
+| 当前用户门店 `/auth/me/stores` | 返回当前用户可维护门店；管理员为全部门店，非管理员为授权门店 |
 | 用户管理 | `users.view` / `users.manage` |
 | 门店管理 | `stores.view` / `stores.manage` + 门店范围 |
 | 银行流水 | `reconciliation.view` / `reconciliation.manage` + 门店范围 |

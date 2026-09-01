@@ -139,6 +139,10 @@ def test_shareholder_reports_only_include_closed_ledgers(
     assert periods_response.status_code == 200
     assert [item["period"] for item in periods_response.json()["data"]] == ["2026-08"]
 
+    report_periods_response = anonymous_client.get("/api/reports/periods", headers=headers)
+    assert report_periods_response.status_code == 200
+    assert report_periods_response.json()["data"] == [{"period": "2026-08", "store_count": 1}]
+
     open_detail_response = anonymous_client.get(
         f"/api/reports/ledger-detail?store_id={store_id}&period=2026-09",
         headers=headers,
@@ -148,6 +152,13 @@ def test_shareholder_reports_only_include_closed_ledgers(
     admin_periods_response = client.get(f"/api/reports/ledger-periods?store_id={store_id}")
     assert admin_periods_response.status_code == 200
     assert [item["period"] for item in admin_periods_response.json()["data"]] == ["2026-09", "2026-08"]
+
+    admin_report_periods_response = client.get("/api/reports/periods")
+    assert admin_report_periods_response.status_code == 200
+    assert admin_report_periods_response.json()["data"] == [
+        {"period": "2026-09", "store_count": 1},
+        {"period": "2026-08", "store_count": 1},
+    ]
 
     trends_response = anonymous_client.get(
         f"/api/reports/ledger-trends?store_id={store_id}",

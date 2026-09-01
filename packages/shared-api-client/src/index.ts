@@ -13,6 +13,7 @@ import type {
   AutoMatchResult,
   BankImportPreviewResult,
   BankImportResult,
+  BankImportRollbackResult,
   BankTransaction,
   BankTransactionCreate,
   BankTransactionUpdate,
@@ -47,6 +48,7 @@ import type {
   ReconciliationCandidateResult,
   ReconciliationRecord,
   ReconciliationRecordUpdate,
+  ReportPeriodOption,
   RevenueChannel,
   RevenueChannelCreate,
   RevenueChannelUpdate,
@@ -63,6 +65,7 @@ import type {
   StoreComparisonReport,
   StoreCreate,
   StoreUpdate,
+  StoreLedgerWorkspace,
   StoreReportSummary,
   StartApprovalSyncRequest,
   Supplier,
@@ -162,6 +165,7 @@ export function createApiClient(options: ApiClientOptions) {
           body: JSON.stringify(payload),
         }),
       me: () => request<CurrentUser>("/api/auth/me"),
+      myStores: () => request<Store[]>("/api/auth/me/stores"),
     },
     system: {
       databaseBackupStatus: () =>
@@ -178,6 +182,10 @@ export function createApiClient(options: ApiClientOptions) {
           method: "PATCH",
           body: JSON.stringify(payload),
         }),
+    },
+    storeLedgers: {
+      workspace: (storeId: string, params = "") =>
+        request<StoreLedgerWorkspace>(`/api/store-ledgers/${storeId}/workspace${params}`),
     },
     ledgers: {
       list: (params = "") => request<Page<Ledger>>(`/api/ledgers${params}`),
@@ -330,6 +338,12 @@ export function createApiClient(options: ApiClientOptions) {
           body: payload,
           headers: {},
         }),
+      downloadImportTemplate: () => requestBlob("/api/bank-transactions/import/template.csv"),
+      rollbackImport: (jobId: string, operator = "admin") =>
+        request<BankImportRollbackResult>(
+          `/api/bank-transactions/imports/${jobId}/rollback?operator=${encodeURIComponent(operator)}`,
+          { method: "POST" },
+        ),
       importCsv: (payload: FormData) =>
         request<BankImportResult>("/api/bank-transactions/import-csv", {
           method: "POST",
@@ -486,6 +500,7 @@ export function createApiClient(options: ApiClientOptions) {
       analyticsDetails: (params = "") =>
         request<FinancialAnalyticsDetailReport>(`/api/reports/analytics/details${params}`),
       storeSummaries: () => request<StoreReportSummary[]>("/api/reports/store-summaries"),
+      reportPeriods: () => request<ReportPeriodOption[]>("/api/reports/periods"),
       ledgerPeriods: (storeId: string) =>
         request<LedgerPeriodOption[]>(`/api/reports/ledger-periods?store_id=${encodeURIComponent(storeId)}`),
       ledgerTrends: (params = "") => request<LedgerTrend[]>(`/api/reports/ledger-trends${params}`),

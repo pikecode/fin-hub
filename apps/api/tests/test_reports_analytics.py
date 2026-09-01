@@ -4,7 +4,13 @@ from decimal import Decimal
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from app.models import ApprovalInstance, ApprovalTemplate, BankTransaction, ExpenseItem, RevenueRecord
+from app.models import (
+    ApprovalInstance,
+    ApprovalTemplate,
+    BankTransaction,
+    ExpenseItem,
+    RevenueRecord,
+)
 
 
 def test_financial_analytics_uses_real_report_rows(client: TestClient, session: Session) -> None:

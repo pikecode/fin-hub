@@ -43,7 +43,9 @@ import type {
 } from "@fin-hub/shared-types";
 import { formatMoney } from "@fin-hub/shared-utils";
 import { AppShell } from "../../components/AppShell";
+import { StoreLedgerWorkspaceNav } from "../../components/StoreLedgerWorkspaceNav";
 import { apiClient } from "../../lib/api";
+import { useClientSearchParams } from "../../lib/searchParams";
 
 type ImportMode = "grid" | "file" | "paste";
 type ApprovalLike = ReconciliationExpenseCandidate | ReconciliationRecord;
@@ -65,15 +67,14 @@ interface CandidateFilters {
 }
 
 interface ConfirmValues {
+  amount?: string;
   accounting_month?: dayjs.Dayjs;
   bank_occurred?: boolean;
   category_path?: string[];
   reason?: string;
 }
 
-interface EditValues extends ConfirmValues {
-  amount?: string;
-}
+type EditValues = ConfirmValues;
 
 function remainingAmount(transaction: BankTransaction) {
   return Number(transaction.amount) - Number(transaction.matched_amount || 0);
@@ -296,6 +297,10 @@ function sortTemplates(templates: ApprovalTemplate[]) {
 }
 
 export default function FinanceReconciliationPage() {
+  const searchParams = useClientSearchParams();
+  const initialStoreId = searchParams.get("store_id") ?? undefined;
+  const initialLedgerPeriod = searchParams.get("ledger_period") ?? undefined;
+  const initialApprovalNo = searchParams.get("approval_no") ?? undefined;
   const [stores, setStores] = useState<Store[]>([]);
   const [templates, setTemplates] = useState<ApprovalTemplate[]>([]);
   const [categories, setCategories] = useState<ExpenseCategory[]>([]);
@@ -325,6 +330,7 @@ export default function FinanceReconciliationPage() {
   const [importForm] = Form.useForm<{ ledger_period?: string }>();
 
   const storesById = useMemo(() => new Map(stores.map((store) => [store.id, store])), [stores]);
+  const currentStore = selectedStoreId ? storesById.get(selectedStoreId) : undefined;
   const activeCategories = categories.filter((category) => category.status === "active");
   const categoriesById = useMemo(() => new Map(activeCategories.map((category) => [category.id, category])), [activeCategories]);
   const categoryOptions = useMemo(
@@ -344,6 +350,7 @@ export default function FinanceReconciliationPage() {
   );
   const selectedCandidate = candidates.find((candidate) => candidate.expense_item.id === selectedCandidateId);
   const bankRemaining = selectedTransaction ? remainingAmount(selectedTransaction) : 0;
+  const defaultMatchAmount = selectedCandidate ? Math.min(bankRemaining, Number(selectedCandidate.remaining_amount || 0)) : bankRemaining;
   const detailPayload = useMemo(() => parseApprovalPayload(detailRecord?.approval_instance), [detailRecord]);
   const detailFields = useMemo<DingTalkField[]>(() => {
     const fields = detailPayload?.form_component_values ?? detailPayload?.formComponentValues;
@@ -377,7 +384,12 @@ export default function FinanceReconciliationPage() {
       const errors: string[] = [];
       if (storeResult.status === "fulfilled") {
         setStores(storeResult.value.items);
-        if (!selectedStoreId && storeResult.value.items[0]) setSelectedStoreId(storeResult.value.items[0].id);
+        if (!selectedStoreId) {
+          const defaultStoreId = initialStoreId && storeResult.value.items.some((store) => store.id === initialStoreId)
+            ? initialStoreId
+            : storeResult.value.items[0]?.id;
+          if (defaultStoreId) setSelectedStoreId(defaultStoreId);
+        }
       } else {
         errors.push("门店");
       }
@@ -453,6 +465,12 @@ export default function FinanceReconciliationPage() {
   useEffect(() => {
     void loadBaseData();
   }, []);
+
+  useEffect(() => {
+    if (initialApprovalNo) {
+      filterForm.setFieldsValue({ approval_no: initialApprovalNo });
+    }
+  }, [filterForm, initialApprovalNo]);
 
   useEffect(() => {
     if (selectedStoreId) void loadStoreWorkspace(selectedStoreId);
@@ -591,6 +609,7 @@ export default function FinanceReconciliationPage() {
       return;
     }
     confirmForm.setFieldsValue({
+      amount: defaultMatchAmount.toFixed(2),
       accounting_month: dayjs(selectedTransaction.ledger_period || selectedTransaction.occurred_at.slice(0, 7)),
       bank_occurred: true,
       category_path: categoryPathForName(selectedCandidate.expense_item.category_l2),
@@ -607,9 +626,10 @@ export default function FinanceReconciliationPage() {
       const match = await apiClient.matches.create({
         bank_transaction_id: selectedTransaction.id,
         expense_item_id: selectedCandidate.expense_item.id,
-        amount: bankRemaining.toFixed(2),
+        amount: values.amount || defaultMatchAmount.toFixed(2),
         accounting_period: accountingPeriod,
         bank_occurred: values.bank_occurred ?? true,
+        category_l1: values.category_path?.[0] || null,
         category_l2: values.category_path?.at(-1) || null,
         confidence: selectedCandidate.score,
         reason: values.reason || selectedCandidate.reason,
@@ -645,6 +665,7 @@ export default function FinanceReconciliationPage() {
         amount: values.amount || editingRecord.match.amount,
         accounting_period: values.accounting_month?.format("YYYY-MM") || editingRecord.match.accounting_period,
         bank_occurred: values.bank_occurred ?? true,
+        category_l1: values.category_path?.[0] || null,
         category_l2: values.category_path?.at(-1) || null,
         reason: values.reason || null,
       });
@@ -811,6 +832,15 @@ export default function FinanceReconciliationPage() {
       title="财务对账"
       kicker="按门店录入银行流水，并匹配钉钉审批单"
     >
+      {initialStoreId ? (
+        <StoreLedgerWorkspaceNav
+          storeId={selectedStoreId ?? initialStoreId}
+          storeName={currentStore?.name}
+          period={initialLedgerPeriod}
+          statusLabel={currentStore?.status === "active" ? "启用门店" : currentStore ? "停用门店" : undefined}
+          activeKey="matching"
+        />
+      ) : null}
       {errorMessage ? <Alert className="dashboard-alert" type="warning" showIcon message={errorMessage} closable onClose={() => setErrorMessage(null)} /> : null}
 
       <Card className="reconciliation-summary-card">
@@ -896,7 +926,7 @@ export default function FinanceReconciliationPage() {
                     title={selectedTransaction ? `审批单候选：${formatMoney(bankRemaining)}` : "审批单候选"}
                     extra={
                       <Space>
-                        <Form form={filterForm} layout="inline" onFinish={(values) => selectedStoreId && loadCandidates(selectedTransaction, selectedStoreId, values)}>
+                        <Form form={filterForm} layout="inline" initialValues={{ approval_no: initialApprovalNo }} onFinish={(values) => selectedStoreId && loadCandidates(selectedTransaction, selectedStoreId, values)}>
                           <Form.Item name="template_id">
                             <Select
                               allowClear
@@ -944,7 +974,11 @@ export default function FinanceReconciliationPage() {
                                       {approvalNoText(candidate)}
                                     </Typography.Text>
                                     <Tag color="blue">{candidate.template_name || "手工支出"}</Tag>
-                                    {candidate.expense_item.category_l2 ? <Tag>{candidate.expense_item.category_l2}</Tag> : <Tag>未归类</Tag>}
+                                    {candidate.expense_item.category_l2 ? (
+                                      <Tag>{candidate.expense_item.category_l1 ? `${candidate.expense_item.category_l1} / ` : ""}{candidate.expense_item.category_l2}</Tag>
+                                    ) : (
+                                      <Tag color="orange">待分类</Tag>
+                                    )}
                                   </Space>
                                   <Typography.Text className="approval-candidate-card__title" ellipsis>
                                     {candidate.expense_item.description}
@@ -993,19 +1027,43 @@ export default function FinanceReconciliationPage() {
         ]}
       />
 
-      <Modal title="确认匹配" open={isConfirmOpen} destroyOnHidden onCancel={() => setIsConfirmOpen(false)} onOk={() => confirmForm.submit()} confirmLoading={isSaving}>
+      <Modal
+        title="匹配并分类"
+        open={isConfirmOpen}
+        destroyOnHidden
+        onCancel={() => setIsConfirmOpen(false)}
+        onOk={() => confirmForm.submit()}
+        okText="确认匹配"
+        confirmLoading={isSaving}
+        width={720}
+      >
         <Form form={confirmForm} layout="vertical" onFinish={submitConfirm}>
           <Alert
             className="dashboard-alert"
             type="info"
             showIcon
-            message={`匹配金额 ${formatMoney(bankRemaining)}`}
-            description={`流水未匹配 ${selectedTransaction ? formatMoney(bankRemaining) : "-"}，审批单未匹配 ${selectedCandidate ? formatMoney(selectedCandidate.remaining_amount) : "-"}`}
+            message={`建议匹配金额 ${formatMoney(defaultMatchAmount)}`}
+            description={`确认后会把当前银行流水关联到所选审批明细，并把下面的费用分类写入该明细，供后续报表统计使用。流水未匹配 ${selectedTransaction ? formatMoney(bankRemaining) : "-"}，审批明细未匹配 ${selectedCandidate ? formatMoney(selectedCandidate.remaining_amount) : "-"}。`}
           />
+          <div className="reconciliation-confirm-summary">
+            <div>
+              <Typography.Text type="secondary">银行流水</Typography.Text>
+              <Typography.Text strong>{selectedTransaction?.summary || "-"}</Typography.Text>
+              <Typography.Text>{selectedTransaction ? `${dayjs(selectedTransaction.occurred_at).format("YYYY-MM-DD")} · ${formatMoney(selectedTransaction.amount)}` : "-"}</Typography.Text>
+            </div>
+            <div>
+              <Typography.Text type="secondary">审批明细</Typography.Text>
+              <Typography.Text strong>{selectedCandidate?.expense_item.description || "-"}</Typography.Text>
+              <Typography.Text>{selectedCandidate ? `${approvalNoText(selectedCandidate)} · ${formatMoney(selectedCandidate.expense_item.amount)}` : "-"}</Typography.Text>
+            </div>
+          </div>
           <Form.Item name="accounting_month" label="入账月份" rules={[{ required: true }]}>
             <DatePicker picker="month" style={{ width: "100%" }} />
           </Form.Item>
-          <Form.Item name="category_path" label="费用分类" rules={[{ required: true, message: "请选择费用分类" }]}>
+          <Form.Item name="amount" label="匹配金额" rules={[{ required: true, message: "请输入匹配金额" }]}>
+            <Input />
+          </Form.Item>
+          <Form.Item name="category_path" label="审批明细费用分类" rules={[{ required: true, message: "请选择费用分类" }]}>
             <Cascader
               options={categoryOptions}
               placeholder="选择一级 / 二级分类"

@@ -17,12 +17,20 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 
+def _column_names(table_name: str) -> set[str]:
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    return {column["name"] for column in inspector.get_columns(table_name)}
+
+
 def upgrade() -> None:
-    op.add_column(
-        "users",
-        sa.Column("permissions_configured", sa.Boolean(), nullable=False, server_default=sa.false()),
-    )
-    op.alter_column("users", "permissions_configured", server_default=None)
+    if "permissions_configured" not in _column_names("users"):
+        op.add_column(
+            "users",
+            sa.Column("permissions_configured", sa.Boolean(), nullable=False, server_default=sa.false()),
+        )
+    if op.get_context().dialect.name != "sqlite":
+        op.alter_column("users", "permissions_configured", server_default=None)
 
 
 def downgrade() -> None:

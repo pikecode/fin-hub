@@ -1,4 +1,5 @@
 import json
+from datetime import datetime
 
 from fastapi.testclient import TestClient
 from sqlalchemy import select
@@ -7,10 +8,13 @@ from app.core.config import settings
 from app.models import (
     ApprovalInstance,
     ApprovalTemplate,
+    BankTransaction,
     DingTalkAutoSyncSetting,
     DingTalkConfig,
     DingTalkDepartment,
+    ExpenseBankMatch,
     ExpenseItem,
+    MatchStatus,
     SyncJob,
     TemplateFieldMapping,
 )
@@ -141,6 +145,127 @@ def test_template_mapping_status_is_derived_from_existing_mappings(client: TestC
 
     assert detail["mapping_status"] == "mapped"
     assert listed["mapping_status"] == "mapped"
+
+
+def test_list_approval_instances_filters_by_store(client: TestClient, session) -> None:
+    store_a = client.post("/api/stores", json={"name": "蘑说审批筛选 A 店"}).json()["data"]["id"]
+    store_b = client.post("/api/stores", json={"name": "蘑说审批筛选 B 店"}).json()["data"]["id"]
+    template_id = client.post(
+        "/api/dingtalk/templates",
+        json={"process_code": "PROC-APPROVAL-STORE-FILTER", "name": "审批门店筛选模板", "is_enabled": True},
+    ).json()["data"]["id"]
+    session.add_all(
+        [
+            ApprovalInstance(
+                template_id=template_id,
+                dingtalk_instance_id="approval-store-a",
+                approval_status="approved",
+                store_id=store_a,
+                submit_at=datetime(2026, 9, 1, 10, 0, 0),
+            ),
+            ApprovalInstance(
+                template_id=template_id,
+                dingtalk_instance_id="approval-store-b",
+                approval_status="approved",
+                store_id=store_b,
+                submit_at=datetime(2026, 9, 1, 10, 0, 0),
+            ),
+        ]
+    )
+    session.commit()
+
+    response = client.get(f"/api/dingtalk/approval-instances?store_id={store_a}&page_size=20")
+
+    assert response.status_code == 200
+    items = response.json()["data"]["items"]
+    assert [item["store_id"] for item in items] == [store_a]
+
+
+def test_list_approval_instances_returns_expense_aggregation(client: TestClient, session) -> None:
+    store_id = client.post("/api/stores", json={"name": "蘑说审批聚合店"}).json()["data"]["id"]
+    template_id = client.post(
+        "/api/dingtalk/templates",
+        json={"process_code": "PROC-APPROVAL-AGG", "name": "审批聚合模板", "is_enabled": True},
+    ).json()["data"]["id"]
+    approval = ApprovalInstance(
+        template_id=template_id,
+        dingtalk_instance_id="approval-aggregation",
+        approval_no="AGG-001",
+        approval_status="approved",
+        store_id=store_id,
+        submit_at=datetime(2026, 9, 1, 10, 0, 0),
+    )
+    session.add(approval)
+    session.flush()
+    paid_item = ExpenseItem(
+        store_id=store_id,
+        ledger_period="2026-09",
+        description="已匹配明细",
+        amount="120.00",
+        category_l1="日常支出",
+        category_l2="物料",
+        approval_instance_id=approval.id,
+        payment_status="paid",
+    )
+    pending_item = ExpenseItem(
+        store_id=store_id,
+        ledger_period="2026-09",
+        description="待匹配明细",
+        amount="80.00",
+        category_l1="日常支出",
+        approval_instance_id=approval.id,
+    )
+    confirmed_bank = BankTransaction(
+        store_id=store_id,
+        ledger_period="2026-09",
+        occurred_at=datetime(2026, 9, 2, 10, 0, 0),
+        direction="expense",
+        amount="120.00",
+        matched_amount="120.00",
+        summary="已匹配付款",
+    )
+    candidate_bank = BankTransaction(
+        store_id=store_id,
+        ledger_period="2026-09",
+        occurred_at=datetime(2026, 9, 3, 10, 0, 0),
+        direction="expense",
+        amount="80.00",
+        summary="候选付款",
+    )
+    session.add_all([paid_item, pending_item, confirmed_bank, candidate_bank])
+    session.flush()
+    session.add_all(
+        [
+            ExpenseBankMatch(
+                expense_item_id=paid_item.id,
+                bank_transaction_id=confirmed_bank.id,
+                amount="120.00",
+                accounting_period="2026-09",
+                status=MatchStatus.CONFIRMED.value,
+            ),
+            ExpenseBankMatch(
+                expense_item_id=pending_item.id,
+                bank_transaction_id=candidate_bank.id,
+                amount="80.00",
+                accounting_period="2026-09",
+                status=MatchStatus.CANDIDATE.value,
+            ),
+        ]
+    )
+    session.commit()
+
+    response = client.get(f"/api/dingtalk/approval-instances?store_id={store_id}&page_size=20")
+
+    assert response.status_code == 200
+    item = response.json()["data"]["items"][0]
+    assert item["expense_item_count"] == 2
+    assert item["classified_expense_item_count"] == 2
+    assert item["matched_expense_item_count"] == 1
+    assert item["pending_expense_item_count"] == 1
+    assert item["total_expense_amount"] == "200.00"
+    assert item["confirmed_match_amount"] == "120.00"
+    assert item["candidate_match_count"] == 1
+    assert item["processing_status"] == "partial_matched"
 
 
 def test_reorder_template_mappings(client: TestClient) -> None:
@@ -840,7 +965,7 @@ def test_real_approval_sync_persists_instance_when_expense_parse_is_incomplete(
     assert '"expense_parse_status": "skipped"' in instances[0]["raw_payload"]
 
 
-def test_real_approval_sync_creates_one_expense_per_approval_and_resolves_store_path(
+def test_real_approval_sync_creates_one_expense_per_approval_line_and_resolves_store_path(
     client: TestClient, monkeypatch
 ) -> None:
     monkeypatch.setattr(settings, "dingtalk_sync_mode", "real")
@@ -856,6 +981,7 @@ def test_real_approval_sync_creates_one_expense_per_approval_and_resolves_store_
         "/api/dingtalk/templates",
         json={"process_code": "PROC-TABLE", "name": "门店支出报销", "is_enabled": True},
     ).json()["data"]["id"]
+    dingtalk_payload = {"total_amount": "350", "second_line_amount": "230"}
 
     class FakeDingTalkClient:
         def list_process_instance_ids(self, process_code, start_time_ms, end_time_ms, cursor=0, size=20):
@@ -876,7 +1002,7 @@ def test_real_approval_sync_creates_one_expense_per_approval_and_resolves_store_
                     {"name": "报销日期", "value": "2026-08-29"},
                     {"name": "支出门店", "value": "门店运营部-江门区-菌山集开平东汇城店"},
                     {"name": "支出类型", "value": "门店零星报销"},
-                    {"name": "汇总金额（元）", "value": "350"},
+                    {"name": "汇总金额（元）", "value": dingtalk_payload["total_amount"]},
                     {"name": "收款账户", "value": "安少辉"},
                     {
                         "name": "表格",
@@ -887,7 +1013,7 @@ def test_real_approval_sync_creates_one_expense_per_approval_and_resolves_store_
                             '{"label":"报销凭证","value":"[\\"https://example.com/voucher.jpg\\"]"}'
                             ']},{"rowValue":['
                             '{"label":"支出详情","value":"维修"},'
-                            '{"label":"小项金额","value":"230"}'
+                            f'{{"label":"小项金额","value":"{dingtalk_payload["second_line_amount"]}"}}'
                             "]}]"
                         ),
                     },
@@ -912,16 +1038,28 @@ def test_real_approval_sync_creates_one_expense_per_approval_and_resolves_store_
     assert response.json()["data"]["status"] == "succeeded"
 
     expense_response = client.get(f"/api/expense-items?store_id={store_id}&ledger_period=2026-08&page_size=20")
-    items = expense_response.json()["data"]["items"]
-    assert len(items) == 1
-    assert items[0]["description"] == "安少辉提交的门店支出报销"
-    assert items[0]["amount"] == "350.00"
-    assert items[0]["category_l1"] == "门店零星报销"
-    assert items[0]["payee_account"] == "安少辉"
-
     instances = client.get(f"/api/dingtalk/approval-instances?template_id={template_id}").json()["data"]["items"]
     assert instances[0]["store_id"] == store_id
     assert '"expense_row_count": 2' in instances[0]["raw_payload"]
+    items = sorted(expense_response.json()["data"]["items"], key=lambda item: item["approval_line_no"])
+    assert len(items) == 2
+    assert items[0]["description"] == "消杀"
+    assert items[0]["amount"] == "120.00"
+    assert items[0]["category_l1"] == "门店零星报销"
+    assert items[0]["payee_account"] == "安少辉"
+    assert items[0]["approval_instance_id"] == instances[0]["id"]
+    assert items[0]["approval_line_no"] == 1
+    assert items[0]["approval_line_key"] == "line-1"
+    assert items[0]["parse_status"] == "parsed"
+    assert items[1]["description"] == "维修"
+    assert items[1]["amount"] == "230.00"
+    assert items[1]["approval_instance_id"] == instances[0]["id"]
+    assert items[1]["approval_line_no"] == 2
+    assert items[1]["approval_line_key"] == "line-2"
+    detail_items = client.get(
+        f"/api/expense-items?approval_instance_id={instances[0]['id']}&page_size=20"
+    ).json()["data"]["items"]
+    assert {item["id"] for item in detail_items} == {item["id"] for item in items}
     attachments = client.get(
         f"/api/attachments?resource_type=approval_instance&resource_id={instances[0]['id']}&page_size=20"
     ).json()["data"]["items"]
@@ -939,6 +1077,12 @@ def test_real_approval_sync_creates_one_expense_per_approval_and_resolves_store_
     assert preview["rows"][1]["amount"] == "230.00"
     assert preview["voucher_count"] == 2
 
+    edit_response = client.patch(
+        f"/api/expense-items/{items[0]['id']}",
+        json={"category_l1": "人工分类", "remark": "财务已核对"},
+    )
+    assert edit_response.status_code == 200
+
     reparse_response = client.post(
         f"/api/dingtalk/templates/{template_id}/reparse",
         json={"instance_id": instances[0]["id"], "limit": 10, "started_by": "tester"},
@@ -947,7 +1091,103 @@ def test_real_approval_sync_creates_one_expense_per_approval_and_resolves_store_
     reparse = reparse_response.json()["data"]
     assert reparse["processed_count"] == 1
     assert reparse["reparsed_count"] == 1
-    assert reparse["created_expense_count"] == 1
+    assert reparse["created_expense_count"] == 0
+    reparsed_items = sorted(
+        client.get(f"/api/expense-items?store_id={store_id}&ledger_period=2026-08&page_size=20").json()["data"]["items"],
+        key=lambda item: item["approval_line_no"],
+    )
+    assert [item["approval_line_no"] for item in reparsed_items] == [1, 2]
+    assert reparsed_items[0]["category_l1"] == "人工分类"
+    assert reparsed_items[0]["remark"] == "财务已核对"
+    assert json.loads(reparsed_items[0]["user_edited_fields_json"]) == ["category_l1", "remark"]
+
+    dingtalk_payload["total_amount"] = "380"
+    dingtalk_payload["second_line_amount"] = "260"
+    incremental_response = client.post(
+        "/api/dingtalk/approval-sync",
+        json={
+            "template_id": template_id,
+            "started_by": "tester",
+            "start_at": "2026-08-01T00:00:00",
+            "end_at": "2026-08-31T23:59:59",
+            "skip_existing": False,
+        },
+    )
+    assert incremental_response.status_code == 201
+    incrementally_synced_items = sorted(
+        client.get(f"/api/expense-items?store_id={store_id}&ledger_period=2026-08&page_size=20").json()["data"]["items"],
+        key=lambda item: item["approval_line_no"],
+    )
+    assert incrementally_synced_items[0]["category_l1"] == "人工分类"
+    assert incrementally_synced_items[0]["sync_conflict_status"] == "none"
+    assert incrementally_synced_items[1]["amount"] == "260.00"
+    assert incrementally_synced_items[1]["sync_conflict_status"] == "source_changed"
+
+
+def test_real_approval_sync_creates_installment_expense_lines(client: TestClient, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "dingtalk_sync_mode", "real")
+    client.put(
+        "/api/dingtalk/config",
+        json={"app_key": "ding-app-key", "app_secret": "super-secret"},
+    )
+    store_id = client.post(
+        "/api/stores",
+        json={"name": "蘑说旧洲优越城店", "dingtalk_dept_id": "dept-installment"},
+    ).json()["data"]["id"]
+    template_id = client.post(
+        "/api/dingtalk/templates",
+        json={"process_code": "PROC-INSTALLMENT", "name": "门店筹建报销", "is_enabled": True},
+    ).json()["data"]["id"]
+
+    class FakeDingTalkClient:
+        def list_process_instance_ids(self, process_code, start_time_ms, end_time_ms, cursor=0, size=20):
+            return ["installment-instance-1"], None
+
+        def get_process_instance(self, instance_id):
+            return {
+                "process_instance_id": instance_id,
+                "business_id": "NO-INSTALLMENT",
+                "title": "郭伟裕提交的门店筹建报销",
+                "originator_dept_id": "dept-installment",
+                "originator_dept_name": "门店运营部-蘑说旧洲优越城店",
+                "status": "COMPLETED",
+                "result": "agree",
+                "create_time": "2026-06-26 09:00:00",
+                "finish_time": "2026-06-26 18:00:00",
+                "form_component_values": [
+                    {"name": "日期", "value": "2026-06-26"},
+                    {"name": "报销门店", "value": "蘑说旧洲优越城店"},
+                    {"name": "支出类别", "value": "营销费用"},
+                    {"name": "金额（元）", "value": "50000"},
+                    {"name": "是否分期付款", "value": "是"},
+                    {"name": "首期费用", "value": "25000"},
+                    {"name": "第二期费用", "value": "25000"},
+                    {"name": "第三期费用", "value": "0"},
+                    {"name": "支出详情", "value": "抖音宣传"},
+                    {"name": "收款账户", "value": "楼秦 招商银行 6214855748609852"},
+                ],
+            }
+
+    monkeypatch.setattr("app.modules.dingtalk.router.dingtalk_client", lambda config: FakeDingTalkClient())
+    response = client.post(
+        "/api/dingtalk/approval-sync",
+        json={
+            "template_id": template_id,
+            "started_by": "tester",
+            "start_at": "2026-06-01T00:00:00",
+            "end_at": "2026-06-30T23:59:59",
+        },
+    )
+    assert response.status_code == 201
+    items = sorted(
+        client.get(f"/api/expense-items?store_id={store_id}&ledger_period=2026-06&page_size=20").json()["data"]["items"],
+        key=lambda item: item["approval_line_key"],
+    )
+    assert len(items) == 2
+    assert [item["approval_line_source_type"] for item in items] == ["installment", "installment"]
+    assert [item["approval_line_key"] for item in items] == ["installment-1", "installment-2"]
+    assert [item["amount"] for item in items] == ["25000.00", "25000.00"]
+    assert items[0]["payee_name"] == "楼秦 招商银行 6214855748609852"
 
 
 def test_disabled_template_cannot_be_selected_for_approval_sync(client: TestClient, monkeypatch) -> None:

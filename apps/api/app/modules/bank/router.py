@@ -1,18 +1,33 @@
 import csv
 import io
+from collections.abc import Iterable
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
-from collections.abc import Iterable
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi.responses import StreamingResponse
 from openpyxl import load_workbook
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.database import get_session
-from app.models import BankTransaction, Ledger, LedgerStatus, SyncJob, SyncJobStatus, User, utc_now
+from app.models import (
+    BankTransaction,
+    ExpenseBankMatch,
+    Ledger,
+    LedgerStatus,
+    RevenueBankMatch,
+    SyncJob,
+    SyncJobStatus,
+    User,
+    utc_now,
+)
 from app.modules.audit.service import write_audit_log
-from app.modules.auth.permissions import ensure_permission, ensure_store_access, scoped_store_condition
+from app.modules.auth.permissions import (
+    ensure_permission,
+    ensure_store_access,
+    scoped_store_condition,
+)
 from app.modules.auth.router import audit_actor, get_current_user
 from app.modules.common import paginate
 from app.schemas import (
@@ -20,6 +35,7 @@ from app.schemas import (
     BankImportPreviewResult,
     BankImportPreviewRow,
     BankImportResult,
+    BankImportRollbackResult,
     BankImportRowError,
     BankTransactionCreate,
     BankTransactionRead,
@@ -28,6 +44,12 @@ from app.schemas import (
 )
 
 router = APIRouter(prefix="/bank-transactions", tags=["bank"])
+
+BANK_IMPORT_TEMPLATE_HEADERS = ["发生时间", "方向", "金额", "对方户名", "对方账号", "摘要", "流水号"]
+BANK_IMPORT_TEMPLATE_ROWS = [
+    ["2026-08-20 10:00:00", "收入", "1200.00", "门店营业款", "1001", "营业款", "BANK-EXAMPLE-001"],
+    ["2026-08-21 11:30:00", "支出", "300.00", "物料供应商", "2002", "物料款", "BANK-EXAMPLE-002"],
+]
 
 
 def ensure_open_ledger(session: Session, store_id: str, period: str) -> None:
@@ -112,6 +134,25 @@ def create_bank_transaction(
     session.commit()
     session.refresh(transaction)
     return ApiEnvelope(data=transaction)
+
+
+@router.get("/import/template.csv")
+def download_bank_import_template(
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> StreamingResponse:
+    ensure_permission(session, current_user, "reconciliation.manage")
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(BANK_IMPORT_TEMPLATE_HEADERS)
+    writer.writerows(BANK_IMPORT_TEMPLATE_ROWS)
+    content = "\ufeff" + output.getvalue()
+    filename = "bank-import-template.csv"
+    return StreamingResponse(
+        iter([content.encode("utf-8")]),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.patch("/{transaction_id}", response_model=ApiEnvelope[BankTransactionRead])
@@ -354,6 +395,7 @@ async def import_bank_transactions_file(
                 if transaction_exists(session, payload):
                     skipped_count += 1
                     continue
+                payload["import_job_id"] = job.id
                 session.add(BankTransaction(**payload))
                 created_count += 1
             except (ValueError, InvalidOperation) as exc:
@@ -402,3 +444,56 @@ router.post("/import", response_model=ApiEnvelope[BankImportResult], status_code
 router.post("/import-csv", response_model=ApiEnvelope[BankImportResult], status_code=201)(
     import_bank_transactions_file
 )
+
+
+@router.post("/imports/{job_id}/rollback", response_model=ApiEnvelope[BankImportRollbackResult])
+def rollback_bank_import(
+    job_id: str,
+    operator: str = "admin",
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> ApiEnvelope[BankImportRollbackResult]:
+    ensure_permission(session, current_user, "reconciliation.manage")
+    job = session.get(SyncJob, job_id)
+    if job is None or job.job_type != "bank_transaction_import":
+        raise HTTPException(status_code=404, detail="Bank import job not found")
+
+    transactions = list(
+        session.scalars(select(BankTransaction).where(BankTransaction.import_job_id == job_id))
+    )
+    if not transactions:
+        return ApiEnvelope(data=BankImportRollbackResult(job=job, deleted_count=0))
+    store_ids = {transaction.store_id for transaction in transactions if transaction.store_id}
+    for store_id in store_ids:
+        ensure_store_access(session, current_user, store_id)
+    transaction_ids = [transaction.id for transaction in transactions]
+    matched_transactions = [transaction for transaction in transactions if Decimal(transaction.matched_amount or 0) > 0]
+    if matched_transactions:
+        raise HTTPException(status_code=409, detail="Imported transactions already matched")
+    has_expense_match = session.scalar(
+        select(ExpenseBankMatch).where(ExpenseBankMatch.bank_transaction_id.in_(transaction_ids)).limit(1)
+    )
+    has_revenue_match = session.scalar(
+        select(RevenueBankMatch).where(RevenueBankMatch.bank_transaction_id.in_(transaction_ids)).limit(1)
+    )
+    if has_expense_match or has_revenue_match:
+        raise HTTPException(status_code=409, detail="Imported transactions already have match records")
+
+    deleted_count = len(transactions)
+    for transaction in transactions:
+        session.delete(transaction)
+    job.status = SyncJobStatus.FAILED.value
+    job.error_message = "Rolled back by operator"
+    job.finished_at = utc_now()
+    write_audit_log(
+        session,
+        actor=audit_actor(current_user, operator),
+        action="bank_transaction_import.rollback",
+        resource_type="sync_job",
+        resource_id=job.id,
+        summary=f"回滚银行流水导入：删除 {deleted_count} 条",
+        metadata={"deleted_count": deleted_count},
+    )
+    session.commit()
+    session.refresh(job)
+    return ApiEnvelope(data=BankImportRollbackResult(job=job, deleted_count=deleted_count))

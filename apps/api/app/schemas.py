@@ -171,6 +171,8 @@ class LedgerCloseCheck(BaseModel):
     unmatched_bank_transaction_count: int
     candidate_match_count: int
     revenue_record_count: int = 0
+    unmatched_revenue_record_count: int = 0
+    unmatched_revenue_amount: Decimal = Decimal("0.00")
     issues: list[str]
     warnings: list[str] = Field(default_factory=list)
 
@@ -318,6 +320,7 @@ class ExpenseItemCreate(BaseModel):
     category_l2: str | None = None
     supplier_name: str | None = None
     payee_account: str | None = None
+    remark: str | None = None
 
 
 class ExpenseItemUpdate(BaseModel):
@@ -328,12 +331,29 @@ class ExpenseItemUpdate(BaseModel):
     category_l2: str | None = None
     supplier_name: str | None = None
     payee_account: str | None = None
+    remark: str | None = None
 
 
 class ExpenseItemRead(ExpenseItemCreate):
     model_config = ConfigDict(from_attributes=True)
 
     id: str
+    approval_instance_id: str | None
+    approval_line_no: int | None
+    approval_line_key: str | None
+    approval_line_source_type: str | None
+    parse_status: str | None
+    source_sync_hash: str | None
+    source_snapshot_json: str | None
+    user_edited_fields_json: str | None
+    sync_conflict_status: str | None
+    payee_name: str | None
+    payee_bank_name: str | None
+    payee_bank_branch: str | None
+    payee_account_no: str | None
+    payee_account_type: str | None
+    payee_account_verify_status: str | None
+    payee_account_snapshot_json: str | None
     payment_status: ExpensePaymentStatus
     source: str
     source_document_id: str | None
@@ -393,6 +413,7 @@ class BankTransactionRead(BankTransactionCreate):
 
     id: str
     matched_amount: Decimal
+    import_job_id: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -403,6 +424,7 @@ class MatchCreate(BaseModel):
     amount: Decimal = Field(gt=0)
     accounting_period: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}$")
     bank_occurred: bool = True
+    category_l1: str | None = None
     category_l2: str | None = None
     confidence: Decimal | None = None
     reason: str | None = None
@@ -625,15 +647,33 @@ class LedgerPeriodOption(BaseModel):
     ledger_status: LedgerStatus
 
 
+class ReportPeriodOption(BaseModel):
+    period: str
+    store_count: int
+
+
 class ExpenseBreakdownItem(BaseModel):
     name: str
     amount: Decimal
     item_count: int
 
 
+class RevenueChannelBreakdownItem(BaseModel):
+    channel: str
+    gross_amount: Decimal
+    net_amount: Decimal
+    fee_amount: Decimal
+    fee_rate: Decimal
+    matched_amount: Decimal
+    unmatched_amount: Decimal
+    reconciliation_rate: Decimal
+    record_count: int
+
+
 class LedgerReportDetail(BaseModel):
     summary: LedgerReportSummary
     revenue_records: list[RevenueRecordRead]
+    revenue_channel_breakdown: list[RevenueChannelBreakdownItem] = Field(default_factory=list)
     category_breakdown: list[ExpenseBreakdownItem]
     supplier_breakdown: list[ExpenseBreakdownItem]
     pending_expense_items: list[ExpenseItemRead]
@@ -652,6 +692,32 @@ class StoreComparisonReport(BaseModel):
     total_income_amount: Decimal
     total_expense_amount: Decimal
     total_profit_amount: Decimal
+
+
+class StoreLedgerWorkspaceMetrics(BaseModel):
+    revenue_record_count: int
+    income_amount: Decimal
+    net_income_amount: Decimal
+    fee_amount: Decimal
+    bank_transaction_count: int
+    unmatched_bank_transaction_count: int
+    approval_count: int
+    pending_approval_count: int
+    revenue_match_count: int
+    pending_revenue_match_count: int
+
+
+class StoreLedgerWorkspaceRead(BaseModel):
+    store: StoreRead
+    period: str
+    ledgers: list[LedgerRead]
+    selected_ledger: LedgerRead | None
+    close_check: LedgerCloseCheck | None = None
+    metrics: StoreLedgerWorkspaceMetrics
+    bank_transactions: list[BankTransactionRead]
+    revenue_records: list[RevenueRecordRead]
+    approval_instances: list["ApprovalInstanceRead"]
+    revenue_matches: list["RevenueMatchRead"]
 
 
 class FinancialAnalyticsMetrics(BaseModel):
@@ -829,6 +895,15 @@ class ApprovalInstanceRead(BaseModel):
     approved_at: datetime | None
     raw_payload: str | None
     synced_job_id: str | None
+    expense_item_count: int = 0
+    classified_expense_item_count: int = 0
+    matched_expense_item_count: int = 0
+    pending_expense_item_count: int = 0
+    sync_conflict_expense_item_count: int = 0
+    total_expense_amount: Decimal = Decimal("0.00")
+    confirmed_match_amount: Decimal = Decimal("0.00")
+    candidate_match_count: int = 0
+    processing_status: str = "unparsed"
     created_at: datetime
     updated_at: datetime
 
@@ -863,6 +938,7 @@ class ReconciliationRecordUpdate(BaseModel):
     amount: Decimal | None = Field(default=None, gt=0)
     accounting_period: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}$")
     bank_occurred: bool | None = None
+    category_l1: str | None = None
     category_l2: str | None = None
     reason: str | None = None
 
@@ -895,6 +971,11 @@ class BankImportResult(BaseModel):
     created_count: int
     skipped_count: int
     row_errors: list[BankImportRowError] = Field(default_factory=list)
+
+
+class BankImportRollbackResult(BaseModel):
+    job: SyncJobRead
+    deleted_count: int
 
 
 class BankImportPreviewRow(BaseModel):

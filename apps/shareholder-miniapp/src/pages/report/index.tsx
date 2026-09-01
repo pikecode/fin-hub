@@ -6,12 +6,13 @@ import type {
   LedgerPeriodOption,
   LedgerReportDetail,
   LedgerTrend,
+  RevenueChannelBreakdownItem,
 } from "@fin-hub/shared-types";
 import { formatMoney, formatPeriod } from "@fin-hub/shared-utils";
 import { api, clearShareholderToken, MiniappApiError } from "../../lib/api";
 import "./index.css";
 
-type ReportTab = "revenue" | "category" | "supplier" | "pendingExpense" | "pendingBank";
+type ReportTab = "revenue" | "revenueChannel" | "category" | "supplier" | "pendingExpense" | "pendingBank";
 
 interface AlertItem {
   key: string;
@@ -89,6 +90,39 @@ function directionText(direction?: string) {
   return direction || "-";
 }
 
+function percentText(value?: string | number | null) {
+  return `${Number(value ?? 0).toFixed(1)}%`;
+}
+
+function RevenueChannelList({ items }: { items: RevenueChannelBreakdownItem[] }) {
+  return (
+    <View className="section">
+      <Text className="section-title">收入渠道分析</Text>
+      {items.length ? (
+        items.map((item) => (
+          <View key={item.channel} className="row channel-row">
+            <View>
+              <Text className="row-main">{item.channel}</Text>
+              <Text className="row-sub">
+                实收 {formatMoney(item.net_amount)} 手续费 {formatMoney(item.fee_amount)} 费率 {percentText(item.fee_rate)}
+              </Text>
+              <Text className="row-sub">
+                已对账 {formatMoney(item.matched_amount)} 未对账 {formatMoney(item.unmatched_amount)}
+              </Text>
+            </View>
+            <View className="channel-rate">
+              <Text className="rate-value">{percentText(item.reconciliation_rate)}</Text>
+              <Text className="rate-label">对账率</Text>
+            </View>
+          </View>
+        ))
+      ) : (
+        <Text className="empty">暂无渠道分析</Text>
+      )}
+    </View>
+  );
+}
+
 export default function ReportPage() {
   const router = Taro.useRouter();
   const storeId = router.params.storeId ?? "";
@@ -160,6 +194,7 @@ export default function ReportPage() {
   );
   const tabs: Array<{ key: ReportTab; label: string; count: number }> = [
     { key: "revenue", label: "收入", count: detail?.revenue_records.length ?? 0 },
+    { key: "revenueChannel", label: "渠道", count: detail?.revenue_channel_breakdown.length ?? 0 },
     { key: "category", label: "分类", count: detail?.category_breakdown.length ?? 0 },
     { key: "supplier", label: "供应商", count: detail?.supplier_breakdown.length ?? 0 },
     { key: "pendingExpense", label: "待付", count: detail?.pending_expense_items.length ?? 0 },
@@ -370,6 +405,7 @@ export default function ReportPage() {
           )}
         </View>
       ) : null}
+      {activeTab === "revenueChannel" ? <RevenueChannelList items={detail?.revenue_channel_breakdown ?? []} /> : null}
       {activeTab === "category" ? <BreakdownRanking title="费用分类排行" items={detail?.category_breakdown ?? []} /> : null}
       {activeTab === "supplier" ? <BreakdownRanking title="供应商支出排行" items={detail?.supplier_breakdown ?? []} /> : null}
       {activeTab === "pendingExpense" ? (

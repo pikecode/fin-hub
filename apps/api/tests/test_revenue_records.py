@@ -42,10 +42,22 @@ def test_create_update_revenue_record_and_report(client: TestClient) -> None:
     report = report_response.json()["data"]
     assert report["summary"]["income_amount"] == "1100.00"
     assert report["revenue_records"][0]["channel"] == "美团"
+    assert report["revenue_channel_breakdown"][0] == {
+        "channel": "美团",
+        "gross_amount": "1100.00",
+        "net_amount": "1060.00",
+        "fee_amount": "40.00",
+        "fee_rate": "3.64",
+        "matched_amount": "0.00",
+        "unmatched_amount": "1060.00",
+        "reconciliation_rate": "0.00",
+        "record_count": 1,
+    }
 
     csv_response = client.get(f"/api/reports/ledger-detail.csv?store_id={store_id}&period=2026-08")
     assert csv_response.status_code == 200
     assert "营业收入" in csv_response.text
+    assert "收入渠道汇总" in csv_response.text
     assert "美团" in csv_response.text
 
     logs = client.get("/api/audit-logs?resource_type=revenue_record&page_size=20").json()["data"]["items"]
@@ -150,6 +162,65 @@ def test_ledger_close_check_warns_when_revenue_is_missing(client: TestClient) ->
     assert check["warnings"] == ["当前账期没有营业收入记录"]
 
 
+def test_ledger_close_check_blocks_required_revenue_without_bank_match(client: TestClient) -> None:
+    store_id = client.post("/api/stores", json={"name": "蘑说收入未对账封账店"}).json()["data"]["id"]
+    ledger_id = client.post("/api/ledgers", json={"store_id": store_id, "period": "2026-08"}).json()["data"]["id"]
+    client.post(
+        "/api/revenue-channels",
+        json={"name": "封账扫码收入", "sort_order": 40, "requires_bank_match": True},
+    )
+    client.post(
+        "/api/revenue-records",
+        json={
+            "store_id": store_id,
+            "ledger_period": "2026-08",
+            "revenue_date": "2026-08-20",
+            "channel": "封账扫码收入",
+            "gross_amount": "1000.00",
+            "net_amount": "970.00",
+            "fee_amount": "30.00",
+        },
+    )
+
+    check_response = client.get(f"/api/ledgers/{ledger_id}/close-check")
+    assert check_response.status_code == 200
+    check = check_response.json()["data"]
+    assert check["can_close"] is False
+    assert check["unmatched_revenue_record_count"] == 1
+    assert check["unmatched_revenue_amount"] == "970.00"
+    assert any("营业收入未关联银行流水" in issue for issue in check["issues"])
+
+    close_response = client.post(f"/api/ledgers/{ledger_id}/close", json={"operator": "tester"})
+    assert close_response.status_code == 409
+
+
+def test_ledger_close_check_ignores_revenue_channel_without_bank_match_requirement(client: TestClient) -> None:
+    store_id = client.post("/api/stores", json={"name": "蘑说现金收入封账店"}).json()["data"]["id"]
+    ledger_id = client.post("/api/ledgers", json={"store_id": store_id, "period": "2026-08"}).json()["data"]["id"]
+    client.post(
+        "/api/revenue-channels",
+        json={"name": "封账现金收入", "sort_order": 41, "requires_bank_match": False},
+    )
+    client.post(
+        "/api/revenue-records",
+        json={
+            "store_id": store_id,
+            "ledger_period": "2026-08",
+            "revenue_date": "2026-08-20",
+            "channel": "封账现金收入",
+            "gross_amount": "100.00",
+            "net_amount": "100.00",
+        },
+    )
+
+    check_response = client.get(f"/api/ledgers/{ledger_id}/close-check")
+    assert check_response.status_code == 200
+    check = check_response.json()["data"]
+    assert check["can_close"] is True
+    assert check["unmatched_revenue_record_count"] == 0
+    assert check["unmatched_revenue_amount"] == "0.00"
+
+
 def test_revenue_records_respect_user_store_scope(client: TestClient) -> None:
     first_store_id = client.post("/api/stores", json={"name": "蘑说收入权限店 A"}).json()["data"]["id"]
     second_store_id = client.post("/api/stores", json={"name": "蘑说收入权限店 B"}).json()["data"]["id"]
@@ -237,7 +308,7 @@ def test_revenue_channel_update_and_record_validation(client: TestClient) -> Non
 
 def test_revenue_match_confirms_income_bank_transaction(client: TestClient) -> None:
     store_id = client.post("/api/stores", json={"name": "蘑说收入匹配店"}).json()["data"]["id"]
-    client.post("/api/ledgers", json={"store_id": store_id, "period": "2026-08"})
+    ledger_id = client.post("/api/ledgers", json={"store_id": store_id, "period": "2026-08"}).json()["data"]["id"]
     client.post("/api/revenue-channels", json={"name": "美团", "sort_order": 10, "requires_bank_match": True})
     client.post(
         "/api/revenue-records",
@@ -285,12 +356,115 @@ def test_revenue_match_confirms_income_bank_transaction(client: TestClient) -> N
     bank_transaction = client.get(f"/api/bank-transactions?store_id={store_id}&direction=income").json()["data"]["items"][0]
     assert bank_transaction["matched_amount"] == "970.00"
 
+    report = client.get(f"/api/reports/ledger-detail?store_id={store_id}&period=2026-08").json()["data"]
+    assert report["revenue_channel_breakdown"][0]["matched_amount"] == "970.00"
+    assert report["revenue_channel_breakdown"][0]["unmatched_amount"] == "0.00"
+    assert report["revenue_channel_breakdown"][0]["reconciliation_rate"] == "100.00"
+
+    check = client.get(f"/api/ledgers/{ledger_id}/close-check").json()["data"]
+    assert check["unmatched_revenue_record_count"] == 0
+    assert check["unmatched_revenue_amount"] == "0.00"
+
     reject_response = client.post(f"/api/matches/revenue/{match_id}/reject")
     assert reject_response.status_code == 409
 
     logs = client.get("/api/audit-logs?resource_type=revenue_bank_match&page_size=20").json()["data"]["items"]
     assert any(log["action"] == "revenue_match.create" and log["resource_id"] == match_id for log in logs)
     assert any(log["action"] == "revenue_match.confirm" and log["resource_id"] == match_id for log in logs)
+
+
+def test_list_revenue_matches_filters_by_store_and_period(client: TestClient) -> None:
+    store_a = client.post("/api/stores", json={"name": "蘑说收入匹配筛选店 A"}).json()["data"]["id"]
+    store_b = client.post("/api/stores", json={"name": "蘑说收入匹配筛选店 B"}).json()["data"]["id"]
+    client.post("/api/ledgers", json={"store_id": store_a, "period": "2026-08"})
+    client.post("/api/ledgers", json={"store_id": store_b, "period": "2026-08"})
+    client.post("/api/revenue-channels", json={"name": "筛选渠道", "sort_order": 10, "requires_bank_match": True})
+    for store_id, amount in ((store_a, "88.00"), (store_b, "99.00")):
+        client.post(
+            "/api/revenue-records",
+            json={
+                "store_id": store_id,
+                "ledger_period": "2026-08",
+                "revenue_date": "2026-08-20",
+                "channel": "筛选渠道",
+                "gross_amount": amount,
+                "net_amount": amount,
+            },
+        )
+        bank_id = client.post(
+            "/api/bank-transactions",
+            json={
+                "store_id": store_id,
+                "ledger_period": "2026-08",
+                "occurred_at": "2026-08-21T10:30:00",
+                "direction": "income",
+                "amount": amount,
+            },
+        ).json()["data"]["id"]
+        client.post(
+            "/api/matches/revenue",
+            json={
+                "bank_transaction_id": bank_id,
+                "channel": "筛选渠道",
+                "revenue_start_date": "2026-08-20",
+                "revenue_end_date": "2026-08-20",
+                "amount": amount,
+            },
+        )
+
+    response = client.get(f"/api/matches/revenue?store_id={store_a}&ledger_period=2026-08&page_size=20")
+    assert response.status_code == 200
+    items = response.json()["data"]["items"]
+    assert len(items) == 1
+    assert items[0]["amount"] == "88.00"
+
+
+def test_revenue_match_rejects_overlapping_revenue_range(client: TestClient) -> None:
+    store_id = client.post("/api/stores", json={"name": "蘑说收入重复匹配店"}).json()["data"]["id"]
+    client.post("/api/ledgers", json={"store_id": store_id, "period": "2026-08"})
+    client.post("/api/revenue-channels", json={"name": "重复渠道", "sort_order": 10, "requires_bank_match": True})
+    client.post(
+        "/api/revenue-records",
+        json={
+            "store_id": store_id,
+            "ledger_period": "2026-08",
+            "revenue_date": "2026-08-20",
+            "channel": "重复渠道",
+            "gross_amount": "100.00",
+            "net_amount": "100.00",
+        },
+    )
+    first_bank_id = client.post(
+        "/api/bank-transactions",
+        json={
+            "store_id": store_id,
+            "ledger_period": "2026-08",
+            "occurred_at": "2026-08-21T10:30:00",
+            "direction": "income",
+            "amount": "100.00",
+        },
+    ).json()["data"]["id"]
+    second_bank_id = client.post(
+        "/api/bank-transactions",
+        json={
+            "store_id": store_id,
+            "ledger_period": "2026-08",
+            "occurred_at": "2026-08-22T10:30:00",
+            "direction": "income",
+            "amount": "100.00",
+        },
+    ).json()["data"]["id"]
+    payload = {
+        "channel": "重复渠道",
+        "revenue_start_date": "2026-08-20",
+        "revenue_end_date": "2026-08-20",
+        "amount": "100.00",
+    }
+    assert client.post("/api/matches/revenue", json={**payload, "bank_transaction_id": first_bank_id}).status_code == 201
+
+    duplicate_response = client.post("/api/matches/revenue", json={**payload, "bank_transaction_id": second_bank_id})
+    assert duplicate_response.status_code == 409
+    assert duplicate_response.json()["detail"] == "Revenue records already matched for selected range"
 
 
 def test_revenue_match_candidate_blocks_ledger_close(client: TestClient) -> None:

@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -12,6 +14,7 @@ from app.models import (
     LedgerStatus,
     MatchStatus,
     RevenueBankMatch,
+    RevenueChannel,
     RevenueRecord,
     Store,
     User,
@@ -21,7 +24,14 @@ from app.models import (
 from app.modules.audit.service import write_audit_log
 from app.modules.auth.router import audit_actor, require_roles
 from app.modules.common import paginate
-from app.schemas import ApiEnvelope, LedgerCloseCheck, LedgerCreate, LedgerRead, LedgerStatusChange, Page
+from app.schemas import (
+    ApiEnvelope,
+    LedgerCloseCheck,
+    LedgerCreate,
+    LedgerRead,
+    LedgerStatusChange,
+    Page,
+)
 
 router = APIRouter(prefix="/ledgers", tags=["ledgers"])
 
@@ -94,6 +104,46 @@ def build_close_check(session: Session, ledger: Ledger) -> LedgerCloseCheck:
             )
         )
     )
+    required_channel_names = set(
+        session.scalars(
+            select(RevenueChannel.name).where(RevenueChannel.requires_bank_match.is_(True))
+        ).all()
+    )
+    revenue_records_requiring_match = [
+        record
+        for record in session.scalars(
+            select(RevenueRecord).where(
+                RevenueRecord.store_id == ledger.store_id,
+                RevenueRecord.ledger_period == ledger.period,
+            )
+        )
+        if record.channel in required_channel_names
+    ]
+    confirmed_revenue_matches = list(
+        session.scalars(
+            select(RevenueBankMatch)
+            .join(BankTransaction, RevenueBankMatch.bank_transaction_id == BankTransaction.id)
+            .where(
+                BankTransaction.store_id == ledger.store_id,
+                BankTransaction.ledger_period == ledger.period,
+                RevenueBankMatch.status == MatchStatus.CONFIRMED.value,
+            )
+        )
+    )
+    unmatched_revenue_records = [
+        record
+        for record in revenue_records_requiring_match
+        if not any(
+            match.channel == record.channel
+            and match.revenue_start_date <= record.revenue_date <= match.revenue_end_date
+            for match in confirmed_revenue_matches
+        )
+    ]
+    unmatched_revenue_record_count = len(unmatched_revenue_records)
+    unmatched_revenue_amount = sum(
+        (record.net_amount for record in unmatched_revenue_records),
+        start=Decimal("0.00"),
+    )
 
     issues: list[str] = []
     warnings: list[str] = []
@@ -101,6 +151,11 @@ def build_close_check(session: Session, ledger: Ledger) -> LedgerCloseCheck:
         issues.append(f"存在 {unpaid_expense_count} 条未付款或部分付款支出")
     if unmatched_bank_transaction_count:
         issues.append(f"存在 {unmatched_bank_transaction_count} 条未完全匹配的银行流水")
+    if unmatched_revenue_record_count:
+        issues.append(
+            f"存在 {unmatched_revenue_record_count} 条需要对账的营业收入未关联银行流水，"
+            f"未对账实收金额 {unmatched_revenue_amount:.2f}"
+        )
     if candidate_match_count:
         issues.append(f"存在 {candidate_match_count} 条待确认候选匹配")
     if not revenue_record_count:
@@ -111,6 +166,8 @@ def build_close_check(session: Session, ledger: Ledger) -> LedgerCloseCheck:
         unmatched_bank_transaction_count=unmatched_bank_transaction_count,
         candidate_match_count=candidate_match_count,
         revenue_record_count=revenue_record_count,
+        unmatched_revenue_record_count=unmatched_revenue_record_count,
+        unmatched_revenue_amount=unmatched_revenue_amount,
         issues=issues,
         warnings=warnings,
     )

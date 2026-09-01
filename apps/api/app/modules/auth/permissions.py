@@ -5,7 +5,6 @@ from sqlalchemy.sql.elements import ColumnElement
 
 from app.models import Store, User, UserPermission, UserRole, UserStorePermission
 
-
 ALL_PERMISSIONS: tuple[str, ...] = (
     "dashboard.view",
     "reconciliation.view",

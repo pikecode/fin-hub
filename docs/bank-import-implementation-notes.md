@@ -23,9 +23,17 @@
 - `POST /api/bank-transactions/import/preview`
 - `POST /api/bank-transactions/import`
 - `POST /api/bank-transactions/import-csv`
+- `GET /api/bank-transactions/import/template.csv`
+- `POST /api/bank-transactions/imports/{job_id}/rollback`
 - `PATCH /api/bank-transactions/{transaction_id}`
 
 `import-csv` 为兼容旧前端保留，新开发优先使用 `import`。
+
+`import/template.csv` 返回 UTF-8 BOM 编码的标准模板，表头为：
+
+```text
+发生时间,方向,金额,对方户名,对方账号,摘要,流水号
+```
 
 `import/preview` 用于导入前校验：
 
@@ -35,6 +43,13 @@
 - 返回全部行级错误。
 - 标记已存在重复流水。
 - 使用与正式导入相同的解析规则。
+
+`imports/{job_id}/rollback` 用于撤回误导入的银行流水批次：
+
+- 只支持 `bank_transaction_import` 类型的 `sync_jobs`。
+- 只删除该批次导入时写入 `import_job_id` 的银行流水。
+- 如果该批次任意流水已参与对账，或仍存在候选/确认/拒绝的匹配记录，接口返回 `409`，不做部分回滚。
+- 回滚成功后批次状态标记为 `failed`，错误信息写入 `Rolled back by operator`，并记录审计日志 `bank_transaction_import.rollback`。
 
 编辑字段：
 
@@ -100,9 +115,12 @@
 - 手工新增银行流水。
 - 编辑银行流水基础信息。
 - 选择 CSV / XLSX 文件。
+- 下载标准 CSV 模板。
 - 预览导入结果。
 - 上传导入。
 - 显示导入条数和跳过重复条数。
+- 查看最近导入批次，并对未参与对账的批次执行回滚。
+- 任务中心可按 `bank_transaction_import` 查看导入批次状态和导入摘要。
 - 显示行级错误明细。
 
 ## 5. 行级错误
@@ -127,6 +145,4 @@
 
 ## 6. 下一步
 
-1. 增加导入预览和字段映射。
-2. 增加导入批次回滚。
-3. 把银行流水导入任务从 `sync_jobs` 抽象为统一任务中心页面。
+1. 增加导入字段映射。

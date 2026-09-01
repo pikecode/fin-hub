@@ -1,6 +1,7 @@
 from fastapi.testclient import TestClient
 
 from app.core.config import settings
+from app.core.runtime_checks import production_startup_errors, validate_production_startup
 
 
 def test_database_backup_status_requires_admin(client: TestClient) -> None:
@@ -53,3 +54,28 @@ def test_system_readiness_allows_local_with_warnings(client: TestClient, monkeyp
     assert checks["database"]["status"] == "ok"
     assert checks["secret-key"]["status"] == "ok"
     assert checks["dingtalk"]["status"] == "warning"
+
+
+def test_production_startup_validation_blocks_unsafe_config(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(settings, "app_env", "production")
+    monkeypatch.setattr(settings, "database_url", "sqlite+pysqlite:///./data/dev.db")
+    monkeypatch.setattr(settings, "secret_key", "dev-secret")
+    monkeypatch.setattr(settings, "cors_origin_csv", "http://localhost:3000")
+    monkeypatch.setattr(settings, "file_storage_root", str(tmp_path / "files"))
+
+    errors = production_startup_errors()
+
+    assert any("SQLite" in error for error in errors)
+    assert any("SECRET_KEY" in error for error in errors)
+    assert any("localhost" in error for error in errors)
+
+
+def test_production_startup_validation_allows_safe_config(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(settings, "app_env", "production")
+    monkeypatch.setattr(settings, "database_url", "postgresql+psycopg://finhub:secret@localhost:5432/finhub")
+    monkeypatch.setattr(settings, "secret_key", "x" * 32)
+    monkeypatch.setattr(settings, "cors_origin_csv", "https://admin.example.com")
+    monkeypatch.setattr(settings, "file_storage_root", str(tmp_path / "files"))
+
+    assert production_startup_errors() == []
+    validate_production_startup()

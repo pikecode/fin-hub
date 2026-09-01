@@ -26,7 +26,11 @@ from app.models import (
     utc_now,
 )
 from app.modules.audit.service import write_audit_log
-from app.modules.auth.permissions import ensure_permission, ensure_store_access, scoped_store_condition
+from app.modules.auth.permissions import (
+    ensure_permission,
+    ensure_store_access,
+    scoped_store_condition,
+)
 from app.modules.auth.router import audit_actor, get_current_user
 from app.modules.common import paginate
 from app.schemas import (
@@ -56,18 +60,61 @@ def confirmed_expense_match_amount(session: Session, expense_item_id: str, exclu
     return Decimal(session.scalar(query) or 0)
 
 
-def active_bank_expense_match(
-    session: Session,
-    bank_transaction_id: str,
-    exclude_match_id: str | None = None,
-) -> ExpenseBankMatch | None:
-    query = select(ExpenseBankMatch).where(
+def confirmed_bank_match_amount(session: Session, bank_transaction_id: str, exclude_match_id: str | None = None) -> Decimal:
+    query = select(func.coalesce(func.sum(ExpenseBankMatch.amount), Decimal("0.00"))).where(
+        ExpenseBankMatch.bank_transaction_id == bank_transaction_id,
+        ExpenseBankMatch.status == MatchStatus.CONFIRMED.value,
+    )
+    if exclude_match_id:
+        query = query.where(ExpenseBankMatch.id != exclude_match_id)
+    return Decimal(session.scalar(query) or 0)
+
+
+def active_expense_match_amount(session: Session, expense_item_id: str, exclude_match_id: str | None = None) -> Decimal:
+    query = select(func.coalesce(func.sum(ExpenseBankMatch.amount), Decimal("0.00"))).where(
+        ExpenseBankMatch.expense_item_id == expense_item_id,
+        ExpenseBankMatch.status != MatchStatus.REJECTED.value,
+    )
+    if exclude_match_id:
+        query = query.where(ExpenseBankMatch.id != exclude_match_id)
+    return Decimal(session.scalar(query) or 0)
+
+
+def active_bank_match_amount(session: Session, bank_transaction_id: str, exclude_match_id: str | None = None) -> Decimal:
+    query = select(func.coalesce(func.sum(ExpenseBankMatch.amount), Decimal("0.00"))).where(
         ExpenseBankMatch.bank_transaction_id == bank_transaction_id,
         ExpenseBankMatch.status != MatchStatus.REJECTED.value,
     )
     if exclude_match_id:
         query = query.where(ExpenseBankMatch.id != exclude_match_id)
-    return session.scalar(query.limit(1))
+    return Decimal(session.scalar(query) or 0)
+
+
+def validate_expense_bank_match_amount(
+    session: Session,
+    *,
+    expense_item: ExpenseItem,
+    bank_transaction: BankTransaction,
+    amount: Decimal,
+    exclude_match_id: str | None = None,
+    include_candidates: bool = False,
+) -> None:
+    used_expense_amount = (
+        active_expense_match_amount(session, expense_item.id, exclude_match_id=exclude_match_id)
+        if include_candidates
+        else confirmed_expense_match_amount(session, expense_item.id, exclude_match_id=exclude_match_id)
+    )
+    used_bank_amount = (
+        active_bank_match_amount(session, bank_transaction.id, exclude_match_id=exclude_match_id)
+        if include_candidates
+        else confirmed_bank_match_amount(session, bank_transaction.id, exclude_match_id=exclude_match_id)
+    )
+    remaining_expense_amount = Decimal(expense_item.amount) - used_expense_amount
+    remaining_bank_amount = Decimal(bank_transaction.amount) - used_bank_amount
+    if amount > remaining_expense_amount:
+        raise HTTPException(status_code=409, detail="Match amount exceeds remaining expense amount")
+    if amount > remaining_bank_amount:
+        raise HTTPException(status_code=409, detail="Match amount exceeds remaining bank amount")
 
 
 def parse_raw_payload(raw_payload: str | None) -> dict:
@@ -453,13 +500,28 @@ def list_matches(
 @router.get("/revenue", response_model=ApiEnvelope[Page[RevenueMatchRead]])
 def list_revenue_matches(
     status: str | None = None,
+    store_id: str | None = None,
+    ledger_period: str | None = None,
     page: int = 1,
     page_size: int = 50,
     session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
 ) -> ApiEnvelope[Page[RevenueMatchRead]]:
-    query = select(RevenueBankMatch).order_by(RevenueBankMatch.created_at.desc())
+    ensure_permission(session, current_user, "reconciliation.view")
+    query = (
+        select(RevenueBankMatch)
+        .join(BankTransaction, RevenueBankMatch.bank_transaction_id == BankTransaction.id)
+        .order_by(RevenueBankMatch.created_at.desc())
+    )
     if status:
         query = query.where(RevenueBankMatch.status == status)
+    if store_id:
+        ensure_store_access(session, current_user, store_id)
+        query = query.where(BankTransaction.store_id == store_id)
+    else:
+        query = query.where(scoped_store_condition(session, current_user, BankTransaction.store_id))
+    if ledger_period:
+        query = query.where(BankTransaction.ledger_period == ledger_period)
     items, total = paginate(session, query, page, page_size)
     return ApiEnvelope(data=Page(items=items, total=total, page=page, page_size=page_size))
 
@@ -508,6 +570,21 @@ def create_revenue_match_candidate(
     remaining_bank_amount = Decimal(bank_transaction.amount) - Decimal(bank_transaction.matched_amount or 0)
     if payload.amount > remaining_bank_amount:
         raise HTTPException(status_code=409, detail="Match amount exceeds remaining bank amount")
+    overlapping_match = session.scalar(
+        select(RevenueBankMatch)
+        .join(BankTransaction, RevenueBankMatch.bank_transaction_id == BankTransaction.id)
+        .where(
+            BankTransaction.store_id == bank_transaction.store_id,
+            BankTransaction.ledger_period == bank_transaction.ledger_period,
+            RevenueBankMatch.channel == payload.channel,
+            RevenueBankMatch.status != MatchStatus.REJECTED.value,
+            RevenueBankMatch.revenue_start_date <= payload.revenue_end_date,
+            RevenueBankMatch.revenue_end_date >= payload.revenue_start_date,
+        )
+        .limit(1)
+    )
+    if overlapping_match is not None:
+        raise HTTPException(status_code=409, detail="Revenue records already matched for selected range")
 
     match = RevenueBankMatch(**payload.model_dump(), status=MatchStatus.CANDIDATE.value)
     session.add(match)
@@ -643,9 +720,19 @@ def create_match_candidate(
     if existing_match is not None:
         if existing_match.status == MatchStatus.CONFIRMED.value:
             raise HTTPException(status_code=409, detail="This bank transaction is already matched to the approval")
+        validate_expense_bank_match_amount(
+            session,
+            expense_item=expense_item,
+            bank_transaction=bank_transaction,
+            amount=payload.amount,
+            exclude_match_id=existing_match.id,
+            include_candidates=True,
+        )
+        if payload.category_l1 is not None:
+            expense_item.category_l1 = payload.category_l1
         if payload.category_l2 is not None:
             expense_item.category_l2 = payload.category_l2
-        for key, value in payload.model_dump(exclude={"category_l2"}).items():
+        for key, value in payload.model_dump(exclude={"category_l1", "category_l2"}).items():
             setattr(existing_match, key, value)
         existing_match.status = MatchStatus.CANDIDATE.value
         existing_match.confirmed_by = None
@@ -654,13 +741,18 @@ def create_match_candidate(
         session.refresh(existing_match)
         return ApiEnvelope(data=existing_match)
 
-    bank_active_match = active_bank_expense_match(session, payload.bank_transaction_id)
-    if bank_active_match is not None:
-        raise HTTPException(status_code=409, detail="Bank transaction is already matched to another approval")
-
     if payload.accounting_period and bank_transaction.ledger_period and payload.accounting_period != bank_transaction.ledger_period:
         raise HTTPException(status_code=409, detail="Accounting period does not match bank transaction period")
-    payload_data = payload.model_dump(exclude={"category_l2"})
+    validate_expense_bank_match_amount(
+        session,
+        expense_item=expense_item,
+        bank_transaction=bank_transaction,
+        amount=payload.amount,
+        include_candidates=True,
+    )
+    payload_data = payload.model_dump(exclude={"category_l1", "category_l2"})
+    if payload.category_l1 is not None:
+        expense_item.category_l1 = payload.category_l1
     if payload.category_l2 is not None:
         expense_item.category_l2 = payload.category_l2
     match = ExpenseBankMatch(**payload_data, status=MatchStatus.CANDIDATE.value)
@@ -814,18 +906,11 @@ def list_reconciliation_candidates(
         raise HTTPException(status_code=409, detail="Excluded match belongs to another bank transaction")
     remaining_bank_amount = Decimal("0.00")
     if bank_transaction is not None:
-        remaining_bank_amount = Decimal(bank_transaction.amount) - Decimal(bank_transaction.matched_amount or 0)
-        if excluded_match and excluded_match.status == MatchStatus.CONFIRMED.value:
-            remaining_bank_amount += Decimal(excluded_match.amount)
-        active_bank_match = active_bank_expense_match(session, bank_transaction.id, exclude_match_id)
-        if active_bank_match is not None:
-            return ApiEnvelope(
-                data=ReconciliationCandidateResult(
-                    bank_transaction=bank_transaction,
-                    remaining_amount=Decimal("0.00"),
-                    candidates=[],
-                )
-            )
+        remaining_bank_amount = Decimal(bank_transaction.amount) - active_bank_match_amount(
+            session,
+            bank_transaction.id,
+            exclude_match_id=exclude_match_id,
+        )
         if remaining_bank_amount <= 0:
             return ApiEnvelope(
                 data=ReconciliationCandidateResult(
@@ -898,7 +983,7 @@ def list_reconciliation_candidates(
         match.expense_item_id
         for match in session.scalars(
             select(ExpenseBankMatch).where(
-                ExpenseBankMatch.status != MatchStatus.REJECTED.value,
+                ExpenseBankMatch.status == MatchStatus.CANDIDATE.value,
                 ExpenseBankMatch.id != exclude_match_id,
             )
         )
@@ -1033,10 +1118,6 @@ def update_reconciliation_record(
 
     target_amount = updates.get("amount", match.amount)
     target_period = updates.get("accounting_period", match.accounting_period) or target_expense.ledger_period
-    bank_active_match = active_bank_expense_match(session, bank_transaction.id, exclude_match_id=match.id)
-    if bank_active_match is not None:
-        raise HTTPException(status_code=409, detail="Bank transaction is already matched to another approval")
-
     other_expense_store_ids = {
         expense.store_id
         for expense in session.scalars(
@@ -1051,6 +1132,13 @@ def update_reconciliation_record(
     }
     if other_expense_store_ids and other_expense_store_ids != {target_expense.store_id}:
         raise HTTPException(status_code=409, detail="Bank transaction already matched to another store")
+    validate_expense_bank_match_amount(
+        session,
+        expense_item=target_expense,
+        bank_transaction=bank_transaction,
+        amount=target_amount,
+        exclude_match_id=match.id,
+    )
 
     match.expense_item_id = target_expense.id
     match.amount = target_amount
@@ -1059,6 +1147,8 @@ def update_reconciliation_record(
         match.bank_occurred = updates["bank_occurred"]
     if "reason" in updates:
         match.reason = updates["reason"]
+    if "category_l1" in updates:
+        target_expense.category_l1 = updates["category_l1"]
     if "category_l2" in updates:
         target_expense.category_l2 = updates["category_l2"]
 
@@ -1166,10 +1256,14 @@ def confirm_match(
         return ApiEnvelope(data=match)
     if match.status == MatchStatus.REJECTED.value:
         raise HTTPException(status_code=409, detail="Rejected match cannot be confirmed")
-    bank_active_match = active_bank_expense_match(session, bank_transaction.id, exclude_match_id=match.id)
-    if bank_active_match is not None:
-        raise HTTPException(status_code=409, detail="Bank transaction is already matched to another approval")
     confirmed_expense_amount = confirmed_expense_match_amount(session, expense_item.id, exclude_match_id=match.id)
+    validate_expense_bank_match_amount(
+        session,
+        expense_item=expense_item,
+        bank_transaction=bank_transaction,
+        amount=match.amount,
+        exclude_match_id=match.id,
+    )
 
     match.status = MatchStatus.CONFIRMED.value
     match.confirmed_by = operator
@@ -1179,7 +1273,7 @@ def confirm_match(
         bank_transaction.ledger_period = match.accounting_period or expense_item.ledger_period
     if not match.accounting_period:
         match.accounting_period = bank_transaction.ledger_period or expense_item.ledger_period
-    bank_transaction.matched_amount = Decimal(bank_transaction.matched_amount or 0) + match.amount
+    bank_transaction.matched_amount = confirmed_bank_match_amount(session, bank_transaction.id, exclude_match_id=match.id) + match.amount
     if confirmed_expense_amount + match.amount >= Decimal(expense_item.amount):
         expense_item.payment_status = ExpensePaymentStatus.PAID.value
     else:

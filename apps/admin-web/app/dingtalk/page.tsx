@@ -375,12 +375,47 @@ function approvalStatusMeta(status: string) {
   return statusMap[normalized] ?? { label: status || "-", color: "default" };
 }
 
+function payloadArray(payload: unknown, ...keys: string[]) {
+  if (!payload || typeof payload !== "object") return [];
+  const source = payload as Record<string, unknown>;
+  for (const key of keys) {
+    const value = source[key];
+    if (Array.isArray(value)) return value.filter((item) => item && typeof item === "object") as Record<string, unknown>[];
+  }
+  return [];
+}
+
+function fieldLabel(field: DingTalkFormField) {
+  return field.name || field.id || "字段";
+}
+
+function fieldValue(field: DingTalkFormField) {
+  return field.value ?? (field as Record<string, unknown>).ext_value ?? (field as Record<string, unknown>).extValue;
+}
+
+function operationTitle(record: Record<string, unknown>) {
+  return String(record.name ?? record.task_name ?? record.activity_name ?? record.type ?? "审批节点");
+}
+
+function operationActor(record: Record<string, unknown>) {
+  return String(record.user_name ?? record.userid ?? record.userId ?? record.operator ?? "-");
+}
+
+function operationAction(record: Record<string, unknown>) {
+  return String(record.action ?? record.result ?? record.status ?? "-");
+}
+
+function operationTime(record: Record<string, unknown>) {
+  const value = record.date ?? record.time ?? record.create_time ?? record.finish_time;
+  return value ? formatBeijingDateTime(String(value)) : "-";
+}
+
 function syncJobTypeLabel(type: string) {
   const labels: Record<string, string> = {
     dingtalk_auto_sync: "钉钉自动同步",
     dingtalk_approval_sync: "审批列表同步",
     dingtalk_approval_reparse: "审批重新解析",
-    bank_import: "银行流水导入",
+    bank_transaction_import: "银行流水导入",
   };
   return labels[type] ?? type;
 }
@@ -582,25 +617,30 @@ export default function DingTalkPage() {
       return null;
     }
   }, [selectedInstance]);
-  const selectedInstanceParse = selectedInstancePayload?._fin_hub_parse;
   const selectedInstanceFields = useMemo<DingTalkFormField[]>(() => {
-    const fields = selectedInstancePayload?.form_component_values;
+    const fields = selectedInstancePayload?.form_component_values ?? selectedInstancePayload?.formComponentValues;
     return Array.isArray(fields) ? fields.filter((item) => item && typeof item === "object") : [];
   }, [selectedInstancePayload]);
   const selectedInstanceBasicFields = useMemo(() => {
-    return selectedInstanceFields.filter((field) => (field.componentType ?? field.component_type) !== "TableField");
+    return selectedInstanceFields.filter((field) => {
+      const componentType = field.componentType ?? field.component_type;
+      return componentType !== "TableField" && !parseDingTalkTableValue(fieldValue(field)).length;
+    });
   }, [selectedInstanceFields]);
   const selectedInstanceTables = useMemo(() => {
     return selectedInstanceFields
       .map((field) => ({
-        name: field.name || "表格",
-        rows: parseDingTalkTableValue(field.value),
+        name: fieldLabel(field),
+        rows: parseDingTalkTableValue(fieldValue(field)),
       }))
       .filter((table) => table.rows.length > 0);
   }, [selectedInstanceFields]);
+  const selectedInstanceOperations = useMemo(
+    () => payloadArray(selectedInstancePayload, "operation_records", "operationRecords", "tasks", "task_list", "taskList"),
+    [selectedInstancePayload],
+  );
   const businessMappings = useMemo(() => mappings.filter(isBusinessMapping), [mappings]);
   const displayMappings = useMemo(() => mappings.filter(isDisplayMapping), [mappings]);
-  const detailDisplayMappings = displayMappings;
   const selectedTemplateSampleInstance = selectedTemplate
     ? approvalInstances.find((instance) => instance.template_id === selectedTemplate.id)
     : undefined;
@@ -1216,7 +1256,7 @@ export default function DingTalkPage() {
       );
       setSelectedInstanceAttachments(data.items);
     } catch (error) {
-      setErrorMessage(dingtalkPageErrorMessage(error, "无法读取审批附件"));
+      setErrorMessage(dingtalkPageErrorMessage(error, "无法读取审批详情"));
     }
   }
 
@@ -1961,172 +2001,171 @@ export default function DingTalkPage() {
         </Space>
       </Drawer>
 
-      <Modal
-        title="审批实例详情"
+      <Drawer
+        title={selectedInstance ? approvalTitle(selectedInstance) || selectedInstance.approval_no || "审批实例详情" : "审批实例详情"}
         open={Boolean(selectedInstance)}
-        onCancel={() => setSelectedInstance(null)}
-        footer={
-          <Space>
-            <Button onClick={() => setSelectedInstance(null)}>关闭</Button>
-            {selectedInstance ? (
-              <Button type="primary" loading={isLoading} onClick={() => useSelectedInstanceAsFieldSample(selectedInstance)}>
+        onClose={() => setSelectedInstance(null)}
+        extra={
+          selectedInstance ? (
+            <Space>
+              <Button onClick={() => setSelectedInstance(null)}>关闭</Button>
+              <Button loading={isLoading} onClick={() => useSelectedInstanceAsFieldSample(selectedInstance)}>
                 用这条配置显示字段
               </Button>
-            ) : null}
-          </Space>
+            </Space>
+          ) : null
         }
-        width={920}
+        width={1080}
+        className="dingtalk-approval-detail"
       >
         {selectedInstance ? (
           <Space direction="vertical" size={16} className="full-width">
-            <Descriptions bordered size="small" column={2}>
-              <Descriptions.Item label="审批编号">{selectedInstance.approval_no || "-"}</Descriptions.Item>
-              <Descriptions.Item label="审批状态">{selectedInstance.approval_status}</Descriptions.Item>
-              <Descriptions.Item label="实例 ID" span={2}>
-                {selectedInstance.dingtalk_instance_id}
-              </Descriptions.Item>
-              <Descriptions.Item label="申请人">{applicantDisplayName(selectedInstance)}</Descriptions.Item>
-              <Descriptions.Item label="申请人 User ID">{selectedInstance.applicant_user_id || "-"}</Descriptions.Item>
-              <Descriptions.Item label="本地门店 ID" span={2}>
-                {selectedInstance.store_id || "-"}
-              </Descriptions.Item>
-              <Descriptions.Item label="提交时间">
-                {selectedInstance.submit_at?.replace("T", " ").slice(0, 16) || "-"}
-              </Descriptions.Item>
-              <Descriptions.Item label="通过时间">
-                {selectedInstance.approved_at?.replace("T", " ").slice(0, 16) || "-"}
-              </Descriptions.Item>
-            </Descriptions>
-
-            {detailDisplayMappings.length ? (
-              <Card size="small" title="已配置显示字段">
-                <Descriptions bordered size="small" column={2}>
-                  {detailDisplayMappings.map((mapping) => (
-                    <Descriptions.Item label={mappingDisplayLabel(mapping)} key={mapping.id}>
-                      {renderDingTalkValue(mappedDisplayValue(selectedInstance, mapping))}
-                    </Descriptions.Item>
-                  ))}
-                </Descriptions>
-              </Card>
-            ) : null}
-
-            <Card size="small" title="解析诊断">
-              {selectedInstanceParse ? (
-                <Space direction="vertical" size={8} className="full-width">
-                  <Space wrap>
-                    <Tag color={selectedInstanceParse.expense_parse_status === "skipped" ? "gold" : "green"}>
-                      {selectedInstanceParse.expense_parse_status === "skipped" ? "未生成支出" : "已解析"}
-                    </Tag>
-                    <Tag>明细行 {selectedInstanceParse.expense_row_count ?? 0}</Tag>
-                    <Tag>生成支出 {selectedInstanceParse.created_expense_ids?.length ?? 0}</Tag>
-                  </Space>
-                  <Descriptions bordered size="small" column={1}>
-                    <Descriptions.Item label="表单门店">{selectedInstanceParse.store_text || "-"}</Descriptions.Item>
-                    <Descriptions.Item label="发起部门 ID">{selectedInstanceParse.originator_dept_id || "-"}</Descriptions.Item>
-                    <Descriptions.Item label="发起部门">{selectedInstanceParse.originator_dept_name || "-"}</Descriptions.Item>
-                    <Descriptions.Item label="解析门店 ID">{selectedInstanceParse.resolved_store_id || "-"}</Descriptions.Item>
-                    <Descriptions.Item label="缺失字段">
-                      {selectedInstanceParse.missing_fields?.length ? selectedInstanceParse.missing_fields.join(", ") : "-"}
-                    </Descriptions.Item>
-                  </Descriptions>
+            <div className="dingtalk-approval-hero">
+              <div className="dingtalk-approval-hero__main">
+                <Space wrap size={8}>
+                  <Tag color={approvalStatusMeta(selectedInstance.approval_status).color}>
+                    {approvalStatusMeta(selectedInstance.approval_status).label}
+                  </Tag>
+                  <Tag>{templateNameById.get(selectedInstance.template_id) || "未知模板"}</Tag>
                 </Space>
-              ) : (
-                <Typography.Text type="secondary">暂无解析诊断</Typography.Text>
-              )}
-            </Card>
+                <Typography.Title level={4}>
+                  {approvalTitle(selectedInstance) || selectedInstance.approval_no || selectedInstance.dingtalk_instance_id}
+                </Typography.Title>
+                <Space wrap className="dingtalk-approval-hero__meta">
+                  <span>申请人：{applicantDisplayName(selectedInstance)}</span>
+                  <span>部门：{approvalDepartmentName(selectedInstance)}</span>
+                  <span>提交：{formatBeijingDateTime(selectedInstance.submit_at)}</span>
+                  <span>完成：{formatBeijingDateTime(selectedInstance.approved_at)}</span>
+                </Space>
+              </div>
+            </div>
 
-            <Card size="small" title="钉钉表单字段">
-              <Table
-                size="small"
-                rowKey={(record, index) => `${record.name || record.id || "field"}-${index}`}
-                pagination={false}
-                dataSource={selectedInstanceBasicFields}
-                columns={[
-                  { title: "字段", dataIndex: "name", width: 180, render: (value) => value || "-" },
-                  { title: "类型", width: 140, render: (_, record) => record.componentType ?? record.component_type ?? "-" },
-                  {
-                    title: "值",
-                    dataIndex: "value",
-                    render: renderDingTalkValue,
-                  },
-                ]}
-              />
-            </Card>
-
-            {selectedInstanceTables.map((table) => {
-              const keys = Array.from(new Set(table.rows.flatMap((row) => Object.keys(row))));
-              return (
-                <Card size="small" title={`${table.name}明细`} key={table.name}>
-                  <Table
-                    size="small"
-                    rowKey={(_, index) => `${table.name}-${index}`}
-                    pagination={false}
-                    dataSource={table.rows}
-                    columns={keys.map((key) => ({
-                      title: key,
-                      dataIndex: key,
-                      render: renderDingTalkValue,
-                    }))}
-                  />
+            <div className="dingtalk-approval-layout">
+              <div className="dingtalk-approval-layout__main">
+                <Card size="small" title="审批详情">
+                  <div className="dingtalk-approval-field-list">
+                    {selectedInstanceBasicFields.map((field, index) => (
+                      <div className="dingtalk-approval-field" key={`${fieldLabel(field)}-${index}`}>
+                        <div className="dingtalk-approval-field__label">{fieldLabel(field)}</div>
+                        <div className="dingtalk-approval-field__value">{renderDingTalkValue(fieldValue(field))}</div>
+                      </div>
+                    ))}
+                  </div>
                 </Card>
-              );
-            })}
 
-            <Card size="small" title="报销凭证文档">
-              <Table
-                size="small"
-                rowKey="id"
-                pagination={false}
-                dataSource={selectedInstanceAttachments}
-                columns={[
-                  { title: "文件名", dataIndex: "file_name", render: (value) => value || "钉钉凭证" },
-                  {
-                    title: "状态",
-                    dataIndex: "download_status",
-                    width: 110,
-                    render: (value) => {
-                      if (value === "stored") return <Tag color="green">已下载</Tag>;
-                      if (value === "failed") return <Tag color="red">失败</Tag>;
-                      return <Tag color="gold">待下载</Tag>;
-                    },
-                  },
-                  { title: "类型", dataIndex: "content_type", width: 150, render: (value) => value || "-" },
-                  {
-                    title: "操作",
-                    width: 280,
-                    render: (_, record) => {
-                      const sourceUrl = externalAttachmentUrl(record);
-                      return (
-                        <Space>
-                          {sourceUrl ? (
-                            <Button size="small" href={sourceUrl} target="_blank" rel="noreferrer">
-                              源链接
-                            </Button>
-                          ) : null}
-                          <Button size="small" onClick={() => openAttachmentAccessUrl(record)}>
-                            {isImageAttachment(record) ? "预览图片" : "链接访问"}
-                          </Button>
-                          <Button size="small" onClick={() => openAttachment(record, "download")}>
-                            保存到本地
-                          </Button>
-                        </Space>
-                      );
-                    },
-                  },
-                ]}
-              />
-            </Card>
+                {selectedInstanceTables.map((table) => {
+                  const keys = Array.from(new Set(table.rows.flatMap((row) => Object.keys(row))));
+                  return (
+                    <Card size="small" title={table.name} key={table.name}>
+                      <Table
+                        size="small"
+                        rowKey={(_, index) => `${table.name}-${index}`}
+                        pagination={false}
+                        dataSource={table.rows}
+                        columns={keys.map((key) => ({
+                          title: key,
+                          dataIndex: key,
+                          render: renderDingTalkValue,
+                        }))}
+                      />
+                    </Card>
+                  );
+                })}
 
-            <Card size="small" title="原始数据">
-              <pre className="json-block">
-                {selectedInstance.raw_payload
-                  ? JSON.stringify(selectedInstancePayload ?? selectedInstance.raw_payload, null, 2)
-                  : "-"}
-              </pre>
-            </Card>
+                <Card size="small" title="报销凭证与附件">
+                  {selectedInstanceAttachments.length ? (
+                    <div className="dingtalk-attachment-list">
+                      {selectedInstanceAttachments.map((attachment) => {
+                        const sourceUrl = externalAttachmentUrl(attachment);
+                        const statusColor = attachment.download_status === "stored" ? "green" : attachment.download_status === "failed" ? "red" : "gold";
+                        const statusLabel = attachment.download_status === "stored" ? "已下载" : attachment.download_status === "failed" ? "失败" : "待下载";
+                        return (
+                          <div className="dingtalk-attachment-item" key={attachment.id}>
+                            <div className={`dingtalk-attachment-item__icon${isImageAttachment(attachment) ? " is-image" : ""}`}>
+                              {isImageAttachment(attachment) ? "图" : "文"}
+                            </div>
+                            <div className="dingtalk-attachment-item__main">
+                              <Typography.Text strong ellipsis={{ tooltip: attachment.file_name }}>
+                                {attachment.file_name || "钉钉凭证"}
+                              </Typography.Text>
+                              <Space size={6} wrap>
+                                <Tag color={statusColor}>{statusLabel}</Tag>
+                                {attachment.content_type ? <Typography.Text type="secondary">{attachment.content_type}</Typography.Text> : null}
+                              </Space>
+                            </div>
+                            <Space size={6}>
+                              {sourceUrl ? (
+                                <Button size="small" href={sourceUrl} target="_blank" rel="noreferrer">
+                                  源链接
+                                </Button>
+                              ) : null}
+                              <Button size="small" onClick={() => openAttachmentAccessUrl(attachment)}>
+                                {isImageAttachment(attachment) ? "预览" : "打开"}
+                              </Button>
+                              <Button size="small" onClick={() => openAttachment(attachment, "download")}>
+                                下载
+                              </Button>
+                            </Space>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <Typography.Text type="secondary">暂无附件</Typography.Text>
+                  )}
+                </Card>
+
+                <Card size="small" title="原始数据">
+                  <pre className="json-block">
+                    {selectedInstance.raw_payload
+                      ? JSON.stringify(selectedInstancePayload ?? selectedInstance.raw_payload, null, 2)
+                      : "-"}
+                  </pre>
+                </Card>
+              </div>
+
+              <div className="dingtalk-approval-layout__side">
+                <Card size="small" title="流程">
+                  {selectedInstanceOperations.length ? (
+                    <div className="dingtalk-flow-list">
+                      {selectedInstanceOperations.map((record, index) => (
+                        <div className="dingtalk-flow-item" key={`operation-${index}`}>
+                          <div className="dingtalk-flow-item__dot">{index + 1}</div>
+                          <div className="dingtalk-flow-item__body">
+                            <div className="dingtalk-flow-item__head">
+                              <Typography.Text strong>{operationTitle(record)}</Typography.Text>
+                              <Typography.Text type="secondary">{operationTime(record)}</Typography.Text>
+                            </div>
+                            <Typography.Text>{operationActor(record)}</Typography.Text>
+                            <Space size={6} wrap>
+                              <Tag color="blue">{operationAction(record)}</Tag>
+                              {record.remark || record.comment || record.reason ? (
+                                <Typography.Text type="secondary">
+                                  {String(record.remark ?? record.comment ?? record.reason)}
+                                </Typography.Text>
+                              ) : null}
+                            </Space>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <Typography.Text type="secondary">当前同步数据暂无流程记录</Typography.Text>
+                  )}
+                </Card>
+
+                <Card size="small" title="基础信息">
+                  <Descriptions size="small" column={1}>
+                    <Descriptions.Item label="审批编号">{selectedInstance.approval_no || "-"}</Descriptions.Item>
+                    <Descriptions.Item label="实例 ID">{selectedInstance.dingtalk_instance_id}</Descriptions.Item>
+                    <Descriptions.Item label="申请人 User ID">{selectedInstance.applicant_user_id || "-"}</Descriptions.Item>
+                  </Descriptions>
+                </Card>
+              </div>
+            </div>
           </Space>
         ) : null}
-      </Modal>
+      </Drawer>
       <Modal
         title={imagePreview?.title || "图片预览"}
         open={Boolean(imagePreview)}

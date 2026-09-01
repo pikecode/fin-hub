@@ -6,7 +6,11 @@ from sqlalchemy.orm import Session
 from app.core.database import get_session
 from app.models import Ledger, LedgerStatus, MasterDataStatus, RevenueChannel, RevenueRecord, User
 from app.modules.audit.service import write_audit_log
-from app.modules.auth.permissions import ensure_permission, ensure_store_access, scoped_store_condition
+from app.modules.auth.permissions import (
+    ensure_permission,
+    ensure_store_access,
+    scoped_store_condition,
+)
 from app.modules.auth.router import audit_actor, get_current_user
 from app.modules.common import paginate
 from app.schemas import (

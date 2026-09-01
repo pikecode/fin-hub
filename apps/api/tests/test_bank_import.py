@@ -2,6 +2,18 @@ from fastapi.testclient import TestClient
 from openpyxl import Workbook
 
 
+def test_download_bank_import_template(client: TestClient) -> None:
+    response = client.get("/api/bank-transactions/import/template.csv")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/csv")
+    assert "bank-import-template.csv" in response.headers["content-disposition"]
+    assert response.content.startswith("\ufeff".encode("utf-8"))
+    text = response.content.decode("utf-8-sig")
+    assert "发生时间,方向,金额,对方户名,对方账号,摘要,流水号" in text
+    assert "2026-08-20 10:00:00,收入,1200.00" in text
+
+
 def test_import_bank_transactions_csv_and_skip_duplicates(client: TestClient) -> None:
     store_id = client.post("/api/stores", json={"name": "蘑说流水导入店"}).json()["data"]["id"]
     client.post("/api/ledgers", json={"store_id": store_id, "period": "2026-08"})
@@ -24,6 +36,7 @@ def test_import_bank_transactions_csv_and_skip_duplicates(client: TestClient) ->
     assert data["created_count"] == 2
     assert data["skipped_count"] == 0
     assert data["job"]["status"] == "succeeded"
+    job_id = data["job"]["id"]
 
     duplicate_response = client.post(
         "/api/bank-transactions/import-csv",
@@ -37,10 +50,122 @@ def test_import_bank_transactions_csv_and_skip_duplicates(client: TestClient) ->
     list_response = client.get("/api/bank-transactions?store_id=" + store_id)
     assert list_response.status_code == 200
     assert list_response.json()["data"]["total"] == 2
+    assert {item["import_job_id"] for item in list_response.json()["data"]["items"]} == {job_id}
 
     jobs_response = client.get("/api/dingtalk/sync-jobs")
     assert jobs_response.status_code == 200
     assert jobs_response.json()["data"]["total"] == 2
+
+    filtered_jobs_response = client.get("/api/dingtalk/sync-jobs?job_type=bank_transaction_import")
+    assert filtered_jobs_response.status_code == 200
+    assert filtered_jobs_response.json()["data"]["total"] == 2
+    assert {
+        item["job_type"] for item in filtered_jobs_response.json()["data"]["items"]
+    } == {"bank_transaction_import"}
+
+
+def test_rollback_bank_import_deletes_unmatched_imported_transactions(client: TestClient) -> None:
+    store_id = client.post("/api/stores", json={"name": "蘑说流水回滚店"}).json()["data"]["id"]
+    client.post("/api/ledgers", json={"store_id": store_id, "period": "2026-08"})
+    csv_content = "\n".join(
+        [
+            "发生时间,方向,金额,对方户名,流水号",
+            "2026-08-20 10:00:00,支出,120.00,维修供应商,BANK-ROLLBACK-001",
+            "2026-08-21 11:30:00,收入,300.00,营业款,BANK-ROLLBACK-002",
+        ]
+    )
+    import_response = client.post(
+        "/api/bank-transactions/import",
+        data={"store_id": store_id, "ledger_period": "2026-08", "started_by": "tester"},
+        files={"file": ("bank.csv", csv_content.encode("utf-8"), "text/csv")},
+    )
+    job_id = import_response.json()["data"]["job"]["id"]
+
+    rollback_response = client.post(f"/api/bank-transactions/imports/{job_id}/rollback?operator=tester")
+
+    assert rollback_response.status_code == 200
+    rollback = rollback_response.json()["data"]
+    assert rollback["deleted_count"] == 2
+    assert rollback["job"]["status"] == "failed"
+    assert rollback["job"]["error_message"] == "Rolled back by operator"
+    assert client.get("/api/bank-transactions?store_id=" + store_id).json()["data"]["total"] == 0
+    logs = client.get("/api/audit-logs?resource_type=sync_job&page_size=20").json()["data"]["items"]
+    assert any(log["action"] == "bank_transaction_import.rollback" and log["resource_id"] == job_id for log in logs)
+
+
+def test_rollback_bank_import_rejects_matched_transactions(client: TestClient) -> None:
+    store_id = client.post("/api/stores", json={"name": "蘑说已匹配回滚店"}).json()["data"]["id"]
+    client.post("/api/ledgers", json={"store_id": store_id, "period": "2026-08"})
+    expense_id = client.post(
+        "/api/expense-items",
+        json={
+            "store_id": store_id,
+            "ledger_period": "2026-08",
+            "description": "导入后匹配支出",
+            "amount": "120.00",
+        },
+    ).json()["data"]["id"]
+    csv_content = "\n".join(
+        [
+            "发生时间,方向,金额,对方户名,流水号",
+            "2026-08-20 10:00:00,支出,120.00,维修供应商,BANK-ROLLBACK-MATCHED",
+        ]
+    )
+    import_response = client.post(
+        "/api/bank-transactions/import",
+        data={"store_id": store_id, "ledger_period": "2026-08", "started_by": "tester"},
+        files={"file": ("bank.csv", csv_content.encode("utf-8"), "text/csv")},
+    )
+    job_id = import_response.json()["data"]["job"]["id"]
+    bank_id = client.get("/api/bank-transactions?store_id=" + store_id).json()["data"]["items"][0]["id"]
+    match_id = client.post(
+        "/api/matches",
+        json={"expense_item_id": expense_id, "bank_transaction_id": bank_id, "amount": "120.00"},
+    ).json()["data"]["id"]
+    client.post(f"/api/matches/{match_id}/confirm?operator=tester")
+
+    rollback_response = client.post(f"/api/bank-transactions/imports/{job_id}/rollback?operator=tester")
+
+    assert rollback_response.status_code == 409
+    assert rollback_response.json()["detail"] == "Imported transactions already matched"
+    assert client.get("/api/bank-transactions?store_id=" + store_id).json()["data"]["total"] == 1
+
+
+def test_rollback_bank_import_rejects_candidate_match_records(client: TestClient) -> None:
+    store_id = client.post("/api/stores", json={"name": "蘑说候选匹配回滚店"}).json()["data"]["id"]
+    client.post("/api/ledgers", json={"store_id": store_id, "period": "2026-08"})
+    expense_id = client.post(
+        "/api/expense-items",
+        json={
+            "store_id": store_id,
+            "ledger_period": "2026-08",
+            "description": "导入后候选支出",
+            "amount": "120.00",
+        },
+    ).json()["data"]["id"]
+    csv_content = "\n".join(
+        [
+            "发生时间,方向,金额,对方户名,流水号",
+            "2026-08-20 10:00:00,支出,120.00,维修供应商,BANK-ROLLBACK-CANDIDATE",
+        ]
+    )
+    import_response = client.post(
+        "/api/bank-transactions/import",
+        data={"store_id": store_id, "ledger_period": "2026-08", "started_by": "tester"},
+        files={"file": ("bank.csv", csv_content.encode("utf-8"), "text/csv")},
+    )
+    job_id = import_response.json()["data"]["job"]["id"]
+    bank_id = client.get("/api/bank-transactions?store_id=" + store_id).json()["data"]["items"][0]["id"]
+    client.post(
+        "/api/matches",
+        json={"expense_item_id": expense_id, "bank_transaction_id": bank_id, "amount": "120.00"},
+    )
+
+    rollback_response = client.post(f"/api/bank-transactions/imports/{job_id}/rollback?operator=tester")
+
+    assert rollback_response.status_code == 409
+    assert rollback_response.json()["detail"] == "Imported transactions already have match records"
+    assert client.get("/api/bank-transactions?store_id=" + store_id).json()["data"]["total"] == 1
 
 
 def test_import_bank_transactions_without_store_assignment(client: TestClient) -> None:

@@ -162,6 +162,7 @@ def test_confirm_match_assigns_unassigned_bank_transaction(client: TestClient) -
             "bank_transaction_id": bank_id,
             "amount": "300.00",
             "accounting_period": "2026-09",
+            "category_l1": "日常支出",
             "category_l2": "门店零星报销",
         },
     ).json()["data"]["id"]
@@ -178,6 +179,7 @@ def test_confirm_match_assigns_unassigned_bank_transaction(client: TestClient) -
     assert records["items"][0]["match"]["accounting_period"] == "2026-09"
     assert records["items"][0]["match"]["bank_occurred"] is True
     assert records["items"][0]["expense_item"]["id"] == expense_id
+    assert records["items"][0]["expense_item"]["category_l1"] == "日常支出"
     assert records["items"][0]["expense_item"]["category_l2"] == "门店零星报销"
 
     update_response = client.patch(
@@ -185,6 +187,7 @@ def test_confirm_match_assigns_unassigned_bank_transaction(client: TestClient) -
         json={
             "accounting_period": "2026-10",
             "bank_occurred": False,
+            "category_l1": "人工成本",
             "category_l2": "员工工资",
             "reason": "银行暂未实际发生",
         },
@@ -196,6 +199,7 @@ def test_confirm_match_assigns_unassigned_bank_transaction(client: TestClient) -
     updated_records = client.get("/api/matches/reconciliation/records?accounting_period=2026-10").json()["data"]
     assert updated_records["total"] == 1
     assert updated_records["items"][0]["match"]["bank_occurred"] is False
+    assert updated_records["items"][0]["expense_item"]["category_l1"] == "人工成本"
     assert updated_records["items"][0]["expense_item"]["category_l2"] == "员工工资"
 
     unmatch_response = client.post(f"/api/matches/reconciliation/records/{match_id}/unmatch")
@@ -342,8 +346,8 @@ def test_create_match_candidate_reuses_rejected_existing_match(client: TestClien
     assert retry.json()["data"]["reason"] == "重新匹配"
 
 
-def test_create_match_candidate_rejects_second_approval_for_same_bank_transaction(client: TestClient) -> None:
-    store_id = client.post("/api/stores", json={"name": "蘑说流水唯一匹配店"}).json()["data"]["id"]
+def test_bank_transaction_can_split_match_multiple_expense_items(client: TestClient) -> None:
+    store_id = client.post("/api/stores", json={"name": "蘑说流水拆分匹配店"}).json()["data"]["id"]
     client.post("/api/ledgers", json={"store_id": store_id, "period": "2026-08"})
     first_expense_id = client.post(
         "/api/expense-items",
@@ -352,7 +356,7 @@ def test_create_match_candidate_rejects_second_approval_for_same_bank_transactio
             "ledger_period": "2026-08",
             "expense_date": "2026-08-20",
             "description": "第一个审批单",
-            "amount": "1980.00",
+            "amount": "400.00",
         },
     ).json()["data"]["id"]
     second_expense_id = client.post(
@@ -362,7 +366,7 @@ def test_create_match_candidate_rejects_second_approval_for_same_bank_transactio
             "ledger_period": "2026-08",
             "expense_date": "2026-08-21",
             "description": "第二个审批单",
-            "amount": "1980.00",
+            "amount": "600.00",
         },
     ).json()["data"]["id"]
     bank_id = client.post(
@@ -372,8 +376,8 @@ def test_create_match_candidate_rejects_second_approval_for_same_bank_transactio
             "ledger_period": "2026-08",
             "occurred_at": "2026-08-22T10:30:00",
             "direction": "expense",
-            "amount": "1980.00",
-            "summary": "同一流水只能匹配一个审批",
+            "amount": "1000.00",
+            "summary": "一笔流水合并支付两个审批",
         },
     ).json()["data"]["id"]
 
@@ -382,7 +386,7 @@ def test_create_match_candidate_rejects_second_approval_for_same_bank_transactio
         json={
             "expense_item_id": first_expense_id,
             "bank_transaction_id": bank_id,
-            "amount": "1980.00",
+            "amount": "400.00",
             "accounting_period": "2026-08",
         },
     )
@@ -391,14 +395,43 @@ def test_create_match_candidate_rejects_second_approval_for_same_bank_transactio
         json={
             "expense_item_id": second_expense_id,
             "bank_transaction_id": bank_id,
-            "amount": "1980.00",
+            "amount": "600.00",
             "accounting_period": "2026-08",
         },
     )
 
     assert first.status_code == 201
-    assert second.status_code == 409
-    assert second.json()["detail"] == "Bank transaction is already matched to another approval"
+    assert second.status_code == 201
+
+    first_confirm = client.post(f"/api/matches/{first.json()['data']['id']}/confirm?operator=tester")
+    second_confirm = client.post(f"/api/matches/{second.json()['data']['id']}/confirm?operator=tester")
+    assert first_confirm.status_code == 200
+    assert second_confirm.status_code == 200
+
+    bank_transaction = client.get(f"/api/bank-transactions?store_id={store_id}&page_size=20").json()["data"]["items"][0]
+    assert bank_transaction["matched_amount"] == "1000.00"
+
+    third_expense_id = client.post(
+        "/api/expense-items",
+        json={
+            "store_id": store_id,
+            "ledger_period": "2026-08",
+            "expense_date": "2026-08-22",
+            "description": "第三个审批单",
+            "amount": "1.00",
+        },
+    ).json()["data"]["id"]
+    over_match = client.post(
+        "/api/matches",
+        json={
+            "expense_item_id": third_expense_id,
+            "bank_transaction_id": bank_id,
+            "amount": "1.00",
+            "accounting_period": "2026-08",
+        },
+    )
+    assert over_match.status_code == 409
+    assert over_match.json()["detail"] == "Match amount exceeds remaining bank amount"
 
 
 def test_reconciliation_candidate_search_backfills_total_approval_expense(
@@ -911,7 +944,8 @@ def test_confirm_multiple_matches_updates_partial_and_paid_status(client: TestCl
             "reason": "超额付款",
         },
     )
-    assert over_match_response.status_code == 201
+    assert over_match_response.status_code == 409
+    assert over_match_response.json()["detail"] == "Match amount exceeds remaining expense amount"
 
     second_match_id = client.post(
         "/api/matches",
@@ -922,7 +956,6 @@ def test_confirm_multiple_matches_updates_partial_and_paid_status(client: TestCl
             "reason": "第二笔付款",
         },
     ).json()["data"]["id"]
-    assert second_match_id == over_match_response.json()["data"]["id"]
     second_confirm_response = client.post(f"/api/matches/{second_match_id}/confirm?operator=tester")
     assert second_confirm_response.status_code == 200
 
@@ -1357,9 +1390,11 @@ def test_export_ledger_detail_xlsx(client: TestClient) -> None:
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
     workbook = load_workbook(io.BytesIO(response.content))
-    assert workbook.sheetnames == ["账套汇总", "营业收入", "支出明细", "银行流水"]
+    assert workbook.sheetnames == ["账套汇总", "营业收入", "收入渠道汇总", "支出明细", "银行流水"]
     assert workbook["账套汇总"]["A1"].value == "门店"
     assert workbook["账套汇总"]["B1"].value == "蘑说 Excel 报表店"
     assert workbook["营业收入"]["B2"].value == "美团"
+    assert workbook["收入渠道汇总"]["A2"].value == "美团"
+    assert workbook["收入渠道汇总"]["D2"].value == 20
     assert workbook["支出明细"]["B2"].value == "物料采购"
     assert workbook["银行流水"]["D2"].value == "食材供应商"

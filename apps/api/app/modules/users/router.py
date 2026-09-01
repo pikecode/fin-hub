@@ -7,7 +7,11 @@ from app.core.database import get_session
 from app.core.security import hash_password
 from app.models import Store, User, UserPermission, UserRole, UserStorePermission
 from app.modules.audit.service import write_audit_log
-from app.modules.auth.permissions import effective_permissions, effective_store_ids, validate_permissions
+from app.modules.auth.permissions import (
+    effective_permissions,
+    effective_store_ids,
+    validate_permissions,
+)
 from app.modules.auth.router import audit_actor, require_permission
 from app.modules.common import paginate
 from app.schemas import ApiEnvelope, Page, UserCreate, UserRead, UserUpdate

@@ -9,7 +9,13 @@ from app.modules.audit.service import write_audit_log
 from app.modules.auth.permissions import ensure_permission
 from app.modules.auth.router import audit_actor, get_current_user
 from app.modules.common import paginate
-from app.schemas import ApiEnvelope, ExpenseCategoryCreate, ExpenseCategoryRead, ExpenseCategoryUpdate, Page
+from app.schemas import (
+    ApiEnvelope,
+    ExpenseCategoryCreate,
+    ExpenseCategoryRead,
+    ExpenseCategoryUpdate,
+    Page,
+)
 
 router = APIRouter(prefix="/categories", tags=["categories"])
 

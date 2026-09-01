@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import type {
   LedgerReportSummary,
   LedgerTrend,
+  ReportPeriodOption,
   ShareholderAccessGrant,
   StoreComparisonReport,
   StoreReportSummary,
@@ -25,6 +26,7 @@ export default function StoresPage() {
   const [stores, setStores] = useState<StoreReportSummary[]>([]);
   const [comparison, setComparison] = useState<StoreComparisonReport | null>(null);
   const [grant, setGrant] = useState<ShareholderAccessGrant | null>(null);
+  const [reportPeriods, setReportPeriods] = useState<ReportPeriodOption[]>([]);
   const [storeTrends, setStoreTrends] = useState<LedgerTrend[]>([]);
   const [statusText, setStatusText] = useState("加载中");
   const [isLoading, setIsLoading] = useState(false);
@@ -49,14 +51,16 @@ export default function StoresPage() {
     setStatusText("加载中");
     setHasLoadError(false);
     try {
-      const [profile, data, comparisonData, trendData] = await Promise.all([
+      const [profile, data, periodsData, comparisonData, trendData] = await Promise.all([
         api.shareholderMe(),
         api.storeSummaries(),
+        api.reportPeriods(),
         api.storeComparison(),
         api.ledgerTrends(undefined, 6),
       ]);
       setGrant(profile);
       setStores(data);
+      setReportPeriods(periodsData);
       setComparison(comparisonData);
       setStoreTrends(trendData);
       setSelectedPeriod(comparisonData.period);
@@ -80,7 +84,7 @@ export default function StoresPage() {
   }, []);
 
   async function changePeriod(index: number) {
-    const period = periodOptions[index];
+    const period = periodOptions[index]?.period;
     if (!period || period === selectedPeriod) return;
     setIsLoading(true);
     setStatusText("加载中");
@@ -98,11 +102,19 @@ export default function StoresPage() {
   }
 
   const periodOptions = useMemo(() => {
-    const periods = new Set(stores.map((store) => store.period));
-    if (comparison?.period) periods.add(comparison.period);
-    return [...periods].sort((a, b) => b.localeCompare(a));
-  }, [comparison?.period, stores]);
-  const selectedPeriodIndex = Math.max(0, periodOptions.findIndex((period) => period === selectedPeriod));
+    const periods = new Map(reportPeriods.map((item) => [item.period, item]));
+    stores.forEach((store) => {
+      if (!periods.has(store.period)) {
+        periods.set(store.period, { period: store.period, store_count: 1 });
+      }
+    });
+    if (comparison?.period && !periods.has(comparison.period)) {
+      periods.set(comparison.period, { period: comparison.period, store_count: comparison.items.length });
+    }
+    return [...periods.values()].sort((a, b) => b.period.localeCompare(a.period));
+  }, [comparison?.items.length, comparison?.period, reportPeriods, stores]);
+  const selectedPeriodIndex = Math.max(0, periodOptions.findIndex((item) => item.period === selectedPeriod));
+  const selectedPeriodInfo = periodOptions.find((item) => item.period === selectedPeriod);
   const rankedStoreIds = useMemo(() => comparison?.items.map((item) => item.store_id) ?? [], [comparison]);
   const aggregateTrend = useMemo<AggregateTrendItem[]>(() => {
     const buckets = new Map<string, AggregateTrendItem>();
@@ -248,13 +260,16 @@ export default function StoresPage() {
       <View className="toolbar">
         <Picker
           mode="selector"
-          range={periodOptions.map((period) => formatPeriod(period))}
+          range={periodOptions.map((item) => `${formatPeriod(item.period)} · ${item.store_count} 家`)}
           value={selectedPeriodIndex}
           onChange={(event) => changePeriod(Number(event.detail.value))}
         >
           <View className="period-control">
             <Text className="control-label">账期</Text>
             <Text className="control-value">{selectedPeriod ? formatPeriod(selectedPeriod) : "暂无账期"}</Text>
+            {selectedPeriodInfo ? (
+              <Text className="control-subvalue">{selectedPeriodInfo.store_count} 家已封账</Text>
+            ) : null}
           </View>
         </Picker>
         <Input

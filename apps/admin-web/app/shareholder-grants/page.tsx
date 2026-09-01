@@ -1,6 +1,6 @@
 "use client";
 
-import { Alert, Button, Card, DatePicker, Form, Input, Modal, Select, Space, Table, Tag } from "antd";
+import { Alert, Button, Card, DatePicker, Form, Input, Modal, Select, Space, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import dayjs from "dayjs";
 import { useEffect, useMemo, useState } from "react";
@@ -13,6 +13,13 @@ interface GrantFormValues {
   access_code?: string;
   store_ids: string[];
   expires_at?: dayjs.Dayjs | null;
+}
+
+function generateAccessCode() {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const randomValues = new Uint32Array(10);
+  crypto.getRandomValues(randomValues);
+  return Array.from(randomValues, (value) => alphabet[value % alphabet.length]).join("");
 }
 
 export default function ShareholderGrantsPage() {
@@ -51,6 +58,7 @@ export default function ShareholderGrantsPage() {
   function openCreateModal() {
     setEditingGrant(null);
     form.resetFields();
+    form.setFieldValue("access_code", generateAccessCode());
     setIsModalOpen(true);
   }
 
@@ -182,7 +190,27 @@ export default function ShareholderGrantsPage() {
             label={editingGrant ? "新授权码" : "授权码"}
             rules={[{ required: !editingGrant, min: 6 }]}
           >
-            <Input.Password />
+            <Input.Password
+              addonAfter={
+                <Button type="link" size="small" onClick={() => form.setFieldValue("access_code", generateAccessCode())}>
+                  生成
+                </Button>
+              }
+            />
+          </Form.Item>
+          <Form.Item shouldUpdate noStyle>
+            {({ getFieldValue }) => {
+              const accessCode = getFieldValue("access_code") as string | undefined;
+              return accessCode ? (
+                <Typography.Paragraph
+                  copyable={{ text: accessCode }}
+                  type="secondary"
+                  className="form-help-text"
+                >
+                  保存后授权码不可回显，请先复制并发送给股东。
+                </Typography.Paragraph>
+              ) : null;
+            }}
           </Form.Item>
           <Form.Item name="store_ids" label="授权门店" rules={[{ required: true }]}>
             <Select mode="multiple" options={storeOptions} />

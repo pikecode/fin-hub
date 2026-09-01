@@ -396,6 +396,31 @@
   word-break: break-word;
 }
 
+.channel-row {
+  align-items: flex-start;
+}
+
+.channel-rate {
+  flex: 0 0 132px;
+  text-align: right;
+}
+
+.rate-value {
+  display: block;
+  color: #2f6f5e;
+  font-size: 28px;
+  line-height: 36px;
+  font-weight: 700;
+}
+
+.rate-label {
+  display: block;
+  color: #64746d;
+  font-size: 22px;
+  line-height: 30px;
+  margin-top: 4px;
+}
+
 .ranking-row {
   padding: 18px 0;
   border-top: 1px solid #eef2ef;

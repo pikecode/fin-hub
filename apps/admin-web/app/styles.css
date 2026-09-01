@@ -241,6 +241,43 @@ body {
   min-width: 16px;
 }
 
+.sidebar-menu.ant-menu-light .ant-menu-submenu-title {
+  margin: 4px 8px;
+  border-radius: 6px;
+  height: 40px;
+  line-height: 40px;
+  color: #475569;
+  font-weight: 600;
+}
+
+.sidebar-menu.ant-menu-light .ant-menu-submenu-title:hover {
+  background: #f8fafc !important;
+  color: #0f766e !important;
+}
+
+.sidebar-menu.ant-menu-light .ant-menu-submenu-selected > .ant-menu-submenu-title {
+  color: #0f766e !important;
+  font-weight: 600;
+}
+
+.sidebar-menu.ant-menu-light:not(.ant-menu-inline-collapsed) .ant-menu-sub {
+  background: #ffffff;
+}
+
+.sidebar-menu.ant-menu-light:not(.ant-menu-inline-collapsed) .ant-menu-sub .ant-menu-item {
+  margin: 3px 8px 3px 18px;
+  width: calc(100% - 26px);
+  height: 36px;
+  line-height: 36px;
+  padding-left: 34px !important;
+  font-size: 13px;
+}
+
+.sidebar-menu.ant-menu-light:not(.ant-menu-inline-collapsed) .ant-menu-sub .ant-menu-item .ant-menu-item-icon {
+  font-size: 14px;
+  min-width: 14px;
+}
+
 /* 菜单分组间距 */
 .sidebar-menu.ant-menu-light .ant-menu-item-group:not(:first-child) {
   margin-top: 8px;
@@ -252,6 +289,170 @@ body {
   height: 1px;
   background: #f1f5f9;
   margin: 8px 16px;
+}
+
+/* ===================================
+   Store Ledger Workspace
+   =================================== */
+
+.store-ledger-entry-panel,
+.store-ledger-context-card {
+  margin-bottom: 16px;
+}
+
+.store-ledger-card {
+  width: 100%;
+  min-height: 238px;
+  padding: 18px;
+  text-align: left;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+}
+
+.store-ledger-card:hover {
+  border-color: #14b8a6;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
+  transform: translateY(-1px);
+}
+
+.store-ledger-card__header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 48px;
+  margin-bottom: 14px;
+}
+
+.store-ledger-card__icon,
+.store-ledger-context__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 40px;
+  height: 40px;
+  color: #0f766e;
+  background: #e6fffb;
+  border-radius: 8px;
+}
+
+.store-ledger-card__title {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.store-ledger-card__status {
+  min-height: 30px;
+  margin-bottom: 12px;
+}
+
+.store-ledger-card__metrics {
+  margin-bottom: 12px;
+}
+
+.store-ledger-card__metrics .ant-statistic-title,
+.store-ledger-workbench-grid .ant-statistic-title {
+  margin-bottom: 4px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.store-ledger-card__metrics .ant-statistic-content,
+.store-ledger-workbench-grid .ant-statistic-content {
+  color: #0f172a;
+  font-size: 18px;
+  line-height: 26px;
+}
+
+.store-ledger-card__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 10px;
+  color: #0f766e;
+  font-weight: 600;
+  border-top: 1px solid #f1f5f9;
+}
+
+.store-ledger-module-strip {
+  margin-bottom: 16px;
+}
+
+.store-ledger-period-select {
+  min-width: 132px;
+}
+
+.store-ledger-store-select {
+  min-width: 180px;
+}
+
+.store-ledger-workspace-nav {
+  margin-bottom: 16px;
+  padding: 14px 16px 0;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+}
+
+.store-ledger-workspace-nav__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 8px;
+}
+
+.store-ledger-workspace-nav__title {
+  min-width: 0;
+}
+
+.store-ledger-workspace-nav__title h4.ant-typography {
+  margin: 0;
+}
+
+.store-ledger-workspace-nav__eyebrow {
+  display: block;
+  margin-bottom: 4px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.store-ledger-workspace-tabs .ant-tabs-nav {
+  margin-bottom: 0;
+}
+
+.store-ledger-context {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.store-ledger-context h4.ant-typography {
+  margin: 0 0 8px;
+}
+
+.store-ledger-workbench-grid {
+  margin-bottom: 16px;
+}
+
+.store-ledger-action-card {
+  min-height: 132px;
+  cursor: pointer;
+  border-radius: 8px;
+}
+
+.store-ledger-action-card:hover {
+  border-color: #14b8a6;
+}
+
+.store-ledger-page-note {
+  margin-top: 12px;
 }
 
 /* 固定底部区域 */
@@ -733,6 +934,10 @@ body {
   width: 100%;
 }
 
+.form-help-text {
+  margin: -12px 0 18px;
+}
+
 .app-header {
   position: sticky;
   top: 0;
@@ -885,6 +1090,172 @@ body {
   display: inline-block;
   max-width: 138px;
   vertical-align: middle;
+}
+
+.dingtalk-approval-detail .ant-drawer-body {
+  background: #f8fafc;
+}
+
+.dingtalk-approval-detail .ant-card {
+  box-shadow: none;
+  border-radius: 8px;
+}
+
+.dingtalk-approval-hero {
+  padding: 18px;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+}
+
+.dingtalk-approval-hero__main {
+  min-width: 0;
+}
+
+.dingtalk-approval-hero__main h4.ant-typography {
+  margin: 10px 0 8px;
+}
+
+.dingtalk-approval-hero__meta {
+  color: #475569;
+  font-size: 13px;
+}
+
+.dingtalk-approval-field-list {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.dingtalk-approval-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  gap: 16px;
+  align-items: start;
+}
+
+.dingtalk-approval-layout__main,
+.dingtalk-approval-layout__side {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.dingtalk-approval-layout__side {
+  position: sticky;
+  top: 12px;
+}
+
+.dingtalk-approval-field {
+  min-width: 0;
+}
+
+.dingtalk-approval-field__label {
+  margin-bottom: 5px;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.dingtalk-approval-field__value {
+  color: #0f172a;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.dingtalk-flow-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.dingtalk-flow-item {
+  position: relative;
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 10px;
+  padding-bottom: 18px;
+}
+
+.dingtalk-flow-item:not(:last-child)::before {
+  position: absolute;
+  top: 30px;
+  bottom: 0;
+  left: 14px;
+  width: 2px;
+  background: #dbeafe;
+  content: "";
+}
+
+.dingtalk-flow-item__dot {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  color: #ffffff;
+  background: #3b82f6;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.dingtalk-flow-item__body {
+  min-width: 0;
+  padding: 0 0 2px;
+}
+
+.dingtalk-flow-item__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.dingtalk-attachment-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.dingtalk-attachment-item {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 12px;
+  background: #f8fafc;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+}
+
+.dingtalk-attachment-item__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  color: #2563eb;
+  background: #dbeafe;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.dingtalk-attachment-item__icon.is-image {
+  color: #0f766e;
+  background: #ccfbf1;
+}
+
+.dingtalk-attachment-item__main {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
 }
 
 .mapping-modal-grid {
@@ -1418,6 +1789,28 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+.reconciliation-confirm-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+  margin: 14px 0 16px;
+}
+
+.reconciliation-confirm-summary > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px;
+  background: #fafafa;
+  border: 1px solid #e5e5e5;
+  border-radius: 8px;
+}
+
+.reconciliation-confirm-summary .ant-typography {
+  max-width: 100%;
+}
+
 .bank-entry-grid-toolbar {
   display: flex;
   align-items: center;
@@ -1510,6 +1903,27 @@ body {
 
   .approval-candidate-card__aside {
     align-items: flex-start;
+  }
+
+  .reconciliation-confirm-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .dingtalk-approval-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .dingtalk-approval-layout__side {
+    position: static;
+  }
+
+  .dingtalk-attachment-item {
+    grid-template-columns: 38px minmax(0, 1fr);
+  }
+
+  .dingtalk-attachment-item > .ant-space {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
   }
 }
 

@@ -5,6 +5,7 @@ import type {
   LedgerReportDetail,
   LedgerReportSummary,
   LedgerTrend,
+  ReportPeriodOption,
   ShareholderAccessGrant,
   ShareholderLoginResponse,
   StoreComparisonReport,
@@ -63,6 +64,7 @@ export const api = {
     request<StoreComparisonReport>(
       `/api/reports/store-comparison${period ? `?period=${encodeURIComponent(period)}` : ""}`,
     ),
+  reportPeriods: () => request<ReportPeriodOption[]>("/api/reports/periods"),
   shareholderMe: () => request<ShareholderAccessGrant>("/api/shareholder-auth/me"),
   ledgerPeriods: (storeId: string) =>
     request<LedgerPeriodOption[]>(`/api/reports/ledger-periods?store_id=${encodeURIComponent(storeId)}`),

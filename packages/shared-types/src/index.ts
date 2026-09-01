@@ -85,6 +85,8 @@ export interface LedgerCloseCheck {
   unmatched_bank_transaction_count: number;
   candidate_match_count: number;
   revenue_record_count: number;
+  unmatched_revenue_record_count: number;
+  unmatched_revenue_amount: string;
   issues: string[];
   warnings: string[];
 }
@@ -304,6 +306,23 @@ export interface ExpenseItem {
   category_l2?: string | null;
   supplier_name?: string | null;
   payee_account?: string | null;
+  approval_instance_id?: string | null;
+  approval_line_no?: number | null;
+  approval_line_key?: string | null;
+  approval_line_source_type?: string | null;
+  parse_status?: string | null;
+  source_sync_hash?: string | null;
+  source_snapshot_json?: string | null;
+  user_edited_fields_json?: string | null;
+  sync_conflict_status?: string | null;
+  payee_name?: string | null;
+  payee_bank_name?: string | null;
+  payee_bank_branch?: string | null;
+  payee_account_no?: string | null;
+  payee_account_type?: string | null;
+  payee_account_verify_status?: string | null;
+  payee_account_snapshot_json?: string | null;
+  remark?: string | null;
   payment_status: ExpensePaymentStatus;
   source: string;
   source_document_id?: string | null;
@@ -342,6 +361,7 @@ export interface ExpenseItemCreate {
   category_l2?: string | null;
   supplier_name?: string | null;
   payee_account?: string | null;
+  remark?: string | null;
 }
 
 export interface ExpenseItemUpdate {
@@ -352,6 +372,7 @@ export interface ExpenseItemUpdate {
   category_l2?: string | null;
   supplier_name?: string | null;
   payee_account?: string | null;
+  remark?: string | null;
 }
 
 export interface BankTransaction {
@@ -366,6 +387,7 @@ export interface BankTransaction {
   summary?: string | null;
   bank_serial_no?: string | null;
   matched_amount: string;
+  import_job_id?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -416,6 +438,7 @@ export interface MatchCreate {
   amount: string;
   accounting_period?: string | null;
   bank_occurred?: boolean;
+  category_l1?: string | null;
   category_l2?: string | null;
   confidence?: string | null;
   reason?: string | null;
@@ -426,6 +449,7 @@ export interface ReconciliationRecordUpdate {
   amount?: string | null;
   accounting_period?: string | null;
   bank_occurred?: boolean | null;
+  category_l1?: string | null;
   category_l2?: string | null;
   reason?: string | null;
 }
@@ -746,6 +770,11 @@ export interface BankImportResult {
   row_errors: BankImportRowError[];
 }
 
+export interface BankImportRollbackResult {
+  job: SyncJob;
+  deleted_count: number;
+}
+
 export interface BankImportPreviewRow {
   row_number: number;
   occurred_at: string;
@@ -780,6 +809,15 @@ export interface ApprovalInstance {
   approved_at?: string | null;
   raw_payload?: string | null;
   synced_job_id?: string | null;
+  expense_item_count: number;
+  classified_expense_item_count: number;
+  matched_expense_item_count: number;
+  pending_expense_item_count: number;
+  sync_conflict_expense_item_count: number;
+  total_expense_amount: string;
+  confirmed_match_amount: string;
+  candidate_match_count: number;
+  processing_status: "unparsed" | "sync_conflict" | "pending_classification" | "pending_match" | "partial_matched" | "matched" | string;
   created_at: string;
   updated_at: string;
 }
@@ -807,15 +845,33 @@ export interface LedgerPeriodOption {
   ledger_status: LedgerStatus;
 }
 
+export interface ReportPeriodOption {
+  period: string;
+  store_count: number;
+}
+
 export interface ExpenseBreakdownItem {
   name: string;
   amount: string;
   item_count: number;
 }
 
+export interface RevenueChannelBreakdownItem {
+  channel: string;
+  gross_amount: string;
+  net_amount: string;
+  fee_amount: string;
+  fee_rate: string;
+  matched_amount: string;
+  unmatched_amount: string;
+  reconciliation_rate: string;
+  record_count: number;
+}
+
 export interface LedgerReportDetail {
   summary: LedgerReportSummary;
   revenue_records: RevenueRecord[];
+  revenue_channel_breakdown: RevenueChannelBreakdownItem[];
   category_breakdown: ExpenseBreakdownItem[];
   supplier_breakdown: ExpenseBreakdownItem[];
   pending_expense_items: ExpenseItem[];
@@ -834,6 +890,32 @@ export interface StoreComparisonReport {
   total_income_amount: string;
   total_expense_amount: string;
   total_profit_amount: string;
+}
+
+export interface StoreLedgerWorkspaceMetrics {
+  revenue_record_count: number;
+  income_amount: string;
+  net_income_amount: string;
+  fee_amount: string;
+  bank_transaction_count: number;
+  unmatched_bank_transaction_count: number;
+  approval_count: number;
+  pending_approval_count: number;
+  revenue_match_count: number;
+  pending_revenue_match_count: number;
+}
+
+export interface StoreLedgerWorkspace {
+  store: Store;
+  period: string;
+  ledgers: Ledger[];
+  selected_ledger?: Ledger | null;
+  close_check?: LedgerCloseCheck | null;
+  metrics: StoreLedgerWorkspaceMetrics;
+  bank_transactions: BankTransaction[];
+  revenue_records: RevenueRecord[];
+  approval_instances: ApprovalInstance[];
+  revenue_matches: RevenueBankMatch[];
 }
 
 export interface FinancialAnalyticsMetrics {

@@ -17,6 +17,24 @@
 
 ## 2. 已实现模块
 
+### 2.0 认证与当前用户
+
+路由前缀：`/api/auth`
+
+接口：
+
+- `POST /api/auth/login`
+- `POST /api/auth/logout`
+- `POST /api/auth/change-password`
+- `GET /api/auth/me`
+- `GET /api/auth/me/stores`
+
+说明：
+
+- `me` 返回当前后台用户、角色、功能权限和门店范围。
+- `me/stores` 返回当前用户可维护门店；管理员返回全部门店，非管理员返回 `user_store_permissions` 授权门店。
+- `me/stores` 要求当前用户具备 `stores.view` 权限。
+
 ### 2.1 门店
 
 路由前缀：`/api/stores`
@@ -56,8 +74,25 @@
 
 - `store_id + period` 唯一。
 - 封账后业务写入接口应拒绝。
-- 封账前会检查未付款/部分付款支出、未完全匹配银行流水、待确认候选匹配。
+- 封账前会检查未付款/部分付款支出、未完全匹配银行流水、需要银行对账但未确认匹配的营业收入、待确认候选匹配。
+- `close-check` 返回 `unmatched_revenue_record_count` 和 `unmatched_revenue_amount`，用于后台展示收入侧封账阻断指标。
 - 关账、重开都会增加 `version` 并记录操作人和时间。
+
+### 2.2.1 门店套帐工作台
+
+路由前缀：`/api/store-ledgers`
+
+接口：
+
+- `GET /api/store-ledgers/{store_id}/workspace?period=YYYY-MM&preview_size=8`
+
+说明：
+
+- 返回单门店套帐工作台所需的门店、账期列表、当前账期、汇总指标和最近业务记录。
+- 未传 `period` 时默认使用该门店最近账期；门店暂无账套时默认当前月份。
+- 指标包含收入、实收、手续费、银行流水、未匹配流水、审批单、待处理审批、收入匹配和待确认收入匹配。
+- 当选中账期存在账套时，返回 `close_check`，字段同 `/api/ledgers/{ledger_id}/close-check`，用于单门店工作台直接展示封账预检状态。
+- 接口按当前后台用户的门店范围校验访问权限。
 
 ### 2.3 支出明细
 
@@ -182,6 +217,9 @@
 - 自动候选当前处理同门店、同账期、剩余金额完全一致的未付款/部分付款支出与支出方向流水。
 - 收入匹配要求银行流水为收入方向，且匹配金额等于收入日期范围内的实收合计。
 - 封账检查会把支出候选和收入候选一起计入待确认候选匹配。
+- 封账检查会按收入渠道 `requires_bank_match` 判断需要对账的日收入；只有已确认且日期范围覆盖该收入日的收入流水匹配才视为已对账。
+- 收入匹配列表支持 `store_id` 和 `ledger_period` 查询参数，并按当前用户门店范围过滤。
+- 收入匹配创建时会阻止同一门店、账期、渠道、日期范围的候选或已确认匹配重复创建。
 
 ### 2.7 附件与凭证
 
@@ -240,6 +278,11 @@
 - `raw_summary`：模板级同步摘要。
 - 续跑接口读取上一任务的 `next_cursor`、`request_start_at` 和 `request_end_at`，创建新任务继续拉取后续分页。
 
+审批实例列表：
+
+- `GET /api/dingtalk/approval-instances` 支持 `store_id` 查询参数，用于门店套帐内的审批单管理。
+- 门店账期过滤当前由前端按提交时间月份处理，后续建议在接口增加 `ledger_period` 或时间窗口参数。
+
 字段候选：
 
 - `field-candidates` 从审批模板快照和最近审批实例 payload 中提取可映射字段。
@@ -276,13 +319,14 @@
 - `ledger-periods` 返回指定门店的可查看账期列表；股东 token 访问时只返回已封账账套。
 - `ledger-trends` 返回指定门店或全部门店最近若干账期的汇总趋势；股东 token 访问时只返回授权门店的已封账账套。
 - `ledger-summary` 返回单门店单月份报表汇总，用于小程序报表详情。
-- `ledger-detail` 返回营业收入、分类、供应商、待付款支出和未匹配流水明细。
+- `ledger-detail` 返回营业收入、收入渠道汇总、分类、供应商、待付款支出和未匹配流水明细。
 - `ledger-detail.csv` 返回后台可下载的账套 CSV 明细。
-- `ledger-detail.xlsx` 返回 Excel 多工作表明细，包含账套汇总、营业收入、支出明细和银行流水。
+- `ledger-detail.xlsx` 返回 Excel 多工作表明细，包含账套汇总、营业收入、收入渠道汇总、支出明细和银行流水。
 - 股东 token 访问 `ledger-summary`、`ledger-detail`、`ledger-detail.csv` 和 `ledger-detail.xlsx` 时，只允许读取已封账账套。
 - 当前收入优先取 `revenue_records.gross_amount` 合计；没有收入记录时兼容旧数据，取 `bank_transactions.direction=income` 金额合计。
 - 当前支出取 `expense_items.amount` 的金额合计。
 - 利润为收入减支出。
+- 收入渠道汇总字段 `revenue_channel_breakdown` 包含经营收入、实收金额、手续费、费率、已对账、未对账和对账完成率。
 
 ### 2.10 股东授权
 

@@ -9,6 +9,12 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.database import get_session
+from app.core.runtime_checks import (
+    is_localhost_origin,
+    is_production_environment,
+    is_weak_secret,
+    parse_cors_origins,
+)
 from app.models import User
 from app.modules.audit.service import write_audit_log
 from app.modules.auth.router import audit_actor, require_permission
@@ -66,7 +72,7 @@ def readiness_check(key: str, name: str, status: str, detail: str) -> SystemRead
 def build_system_readiness_report(session: Session) -> SystemReadinessReport:
     checks: list[SystemReadinessCheck] = []
     environment = settings.app_env
-    is_production = environment.lower() in {"prod", "production"}
+    is_production = is_production_environment(environment)
     database_backend = session.get_bind().url.get_backend_name()
 
     if is_production and database_backend == "sqlite":
@@ -74,19 +80,17 @@ def build_system_readiness_report(session: Session) -> SystemReadinessReport:
     else:
         checks.append(readiness_check("database", "数据库", "ok", f"当前数据库类型：{database_backend}"))
 
-    weak_secret_values = {"", "dev-secret", "change-me", "secret", "password"}
-    if settings.secret_key in weak_secret_values or len(settings.secret_key) < 32:
+    if is_weak_secret():
         checks.append(readiness_check("secret-key", "服务端密钥", "error", "SECRET_KEY 必须设置为至少 32 位强随机值"))
     else:
         checks.append(readiness_check("secret-key", "服务端密钥", "ok", "SECRET_KEY 已配置"))
 
-    localhost_origins = [
-        origin for origin in settings.cors_origins if "localhost" in origin or "127.0.0.1" in origin
-    ]
+    cors_origins = parse_cors_origins()
+    localhost_origins = [origin for origin in cors_origins if is_localhost_origin(origin)]
     if is_production and localhost_origins:
         checks.append(readiness_check("cors", "跨域来源", "error", "生产环境 CORS_ORIGINS 不能包含 localhost"))
     else:
-        checks.append(readiness_check("cors", "跨域来源", "ok", f"已配置 {len(settings.cors_origins)} 个来源"))
+        checks.append(readiness_check("cors", "跨域来源", "ok", f"已配置 {len(cors_origins)} 个来源"))
 
     storage_root = Path(settings.file_storage_root)
     storage_parent = storage_root if storage_root.exists() else storage_root.parent

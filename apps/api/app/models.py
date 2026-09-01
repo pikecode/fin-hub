@@ -278,6 +278,9 @@ class ExpenseItem(Base):
     __table_args__ = (
         Index("ix_expense_items_store_period", "store_id", "ledger_period"),
         Index("ix_expense_items_payment_status", "payment_status"),
+        Index("ix_expense_items_approval_instance", "approval_instance_id"),
+        Index("ix_expense_items_approval_line", "approval_instance_id", "approval_line_no"),
+        Index("ix_expense_items_sync_conflict", "sync_conflict_status"),
     )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
@@ -290,11 +293,28 @@ class ExpenseItem(Base):
     category_l2: Mapped[str | None] = mapped_column(String(80))
     supplier_name: Mapped[str | None] = mapped_column(String(120))
     payee_account: Mapped[str | None] = mapped_column(String(120))
+    approval_instance_id: Mapped[str | None] = mapped_column(ForeignKey("approval_instances.id"))
+    approval_line_no: Mapped[int | None] = mapped_column()
+    approval_line_key: Mapped[str | None] = mapped_column(String(160))
+    approval_line_source_type: Mapped[str | None] = mapped_column(String(32))
+    parse_status: Mapped[str | None] = mapped_column(String(24))
+    remark: Mapped[str | None] = mapped_column(Text)
+    source_sync_hash: Mapped[str | None] = mapped_column(String(64))
+    source_snapshot_json: Mapped[str | None] = mapped_column(Text)
+    user_edited_fields_json: Mapped[str | None] = mapped_column(Text)
+    sync_conflict_status: Mapped[str | None] = mapped_column(String(40))
+    payee_name: Mapped[str | None] = mapped_column(String(120))
+    payee_bank_name: Mapped[str | None] = mapped_column(String(120))
+    payee_bank_branch: Mapped[str | None] = mapped_column(String(180))
+    payee_account_no: Mapped[str | None] = mapped_column(String(120))
+    payee_account_type: Mapped[str | None] = mapped_column(String(60))
+    payee_account_verify_status: Mapped[str | None] = mapped_column(String(60))
+    payee_account_snapshot_json: Mapped[str | None] = mapped_column(Text)
     payment_status: Mapped[str] = mapped_column(
         String(24), default=ExpensePaymentStatus.UNPAID.value, nullable=False
     )
     source: Mapped[str] = mapped_column(String(24), default="manual", nullable=False)
-    source_document_id: Mapped[str | None] = mapped_column(String(120))
+    source_document_id: Mapped[str | None] = mapped_column(String(220))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=utc_now, onupdate=utc_now, nullable=False
@@ -345,6 +365,7 @@ class BankTransaction(Base):
     summary: Mapped[str | None] = mapped_column(String(240))
     bank_serial_no: Mapped[str | None] = mapped_column(String(120))
     matched_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=0, nullable=False)
+    import_job_id: Mapped[str | None] = mapped_column(ForeignKey("sync_jobs.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=utc_now, onupdate=utc_now, nullable=False

@@ -13,10 +13,13 @@ import type {
   BankTransactionCreate,
   Ledger,
   Store,
+  SyncJob,
 } from "@fin-hub/shared-types";
 import { formatMoney } from "@fin-hub/shared-utils";
 import { AppShell } from "../components/AppShell";
+import { StoreLedgerWorkspaceNav } from "../components/StoreLedgerWorkspaceNav";
 import { apiClient } from "../lib/api";
+import { useClientSearchParams } from "../lib/searchParams";
 
 interface BankFormValues extends Omit<BankTransactionCreate, "occurred_at"> {
   occurred_at?: dayjs.Dayjs;
@@ -31,9 +34,22 @@ interface BankFilterValues {
 type ImportMode = "file" | "paste";
 
 export default function BankPage() {
+  const searchParams = useClientSearchParams();
+  const queryStoreId = searchParams.get("store_id") ?? undefined;
+  const queryLedgerPeriod = searchParams.get("ledger_period") ?? undefined;
+  const queryDirection = (searchParams.get("direction") as BankFilterValues["direction"] | null) ?? undefined;
+  const initialFilters = useMemo<BankFilterValues>(
+    () => ({
+      store_id: queryStoreId,
+      ledger_period: queryLedgerPeriod,
+      direction: queryDirection,
+    }),
+    [queryDirection, queryLedgerPeriod, queryStoreId],
+  );
   const [stores, setStores] = useState<Store[]>([]);
   const [ledgers, setLedgers] = useState<Ledger[]>([]);
   const [transactions, setTransactions] = useState<BankTransaction[]>([]);
+  const [importJobs, setImportJobs] = useState<SyncJob[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingTransaction, setEditingTransaction] = useState<BankTransaction | null>(null);
@@ -64,6 +80,7 @@ export default function BankPage() {
     .sort()
     .reverse()
     .map((period) => ({ label: period, value: period }));
+  const currentStore = queryStoreId ? storesById.get(queryStoreId) : undefined;
 
   function buildFilterParams(values?: BankFilterValues) {
     const params = new URLSearchParams({ page_size: "500" });
@@ -77,14 +94,16 @@ export default function BankPage() {
     setIsLoading(true);
     setErrorMessage(null);
     try {
-      const [storePage, ledgerPage, transactionPage] = await Promise.all([
+      const [storePage, ledgerPage, transactionPage, syncJobPage] = await Promise.all([
         apiClient.stores.list("?page_size=200"),
         apiClient.ledgers.list("?page_size=200"),
         apiClient.bankTransactions.list(buildFilterParams(filters ?? filterForm.getFieldsValue())),
+        apiClient.dingtalk.listSyncJobs("?job_type=bank_transaction_import&page_size=20"),
       ]);
       setStores(storePage.items);
       setLedgers(ledgerPage.items);
       setTransactions(transactionPage.items);
+      setImportJobs(syncJobPage.items);
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "无法加载银行流水");
     } finally {
@@ -93,8 +112,9 @@ export default function BankPage() {
   }
 
   useEffect(() => {
-    loadData();
-  }, []);
+    filterForm.setFieldsValue(initialFilters);
+    loadData(initialFilters);
+  }, [filterForm, initialFilters]);
 
   async function submitFilters(values: BankFilterValues) {
     await loadData(values);
@@ -103,6 +123,21 @@ export default function BankPage() {
   async function resetFilters() {
     filterForm.resetFields();
     await loadData({});
+  }
+
+  async function downloadImportTemplate() {
+    setErrorMessage(null);
+    try {
+      const blob = await apiClient.bankTransactions.downloadImportTemplate();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = "bank-import-template.csv";
+      anchor.click();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "无法下载导入模板");
+    }
   }
 
   function openImportModal(mode: ImportMode) {
@@ -114,9 +149,13 @@ export default function BankPage() {
   }
 
   function openCreateModal() {
+    const filters = filterForm.getFieldsValue();
     setEditingTransaction(null);
     form.resetFields();
-    form.setFieldsValue({ direction: "expense" });
+    form.setFieldsValue({
+      direction: "expense",
+      ledger_period: filters.store_id && filters.ledger_period ? `${filters.store_id}|${filters.ledger_period}` : undefined,
+    });
     setIsModalOpen(true);
   }
 
@@ -291,6 +330,29 @@ export default function BankPage() {
     }
   }
 
+  async function rollbackImportJob(job: SyncJob) {
+    Modal.confirm({
+      title: "回滚导入批次",
+      content: `确认删除该批次导入的银行流水？存在候选、确认或拒绝匹配记录的流水不会允许回滚。批次号：${job.id}`,
+      okText: "确认回滚",
+      okButtonProps: { danger: true },
+      cancelText: "取消",
+      async onOk() {
+        setIsLoading(true);
+        setErrorMessage(null);
+        try {
+          const result = await apiClient.bankTransactions.rollbackImport(job.id, "admin");
+          setImportResultText(`已回滚导入批次，删除 ${result.deleted_count} 条银行流水`);
+          await loadData();
+        } catch (error) {
+          setErrorMessage(error instanceof Error ? error.message : "无法回滚导入批次");
+        } finally {
+          setIsLoading(false);
+        }
+      },
+    });
+  }
+
   const columns: ColumnsType<BankTransaction> = [
     { title: "发生时间", dataIndex: "occurred_at", width: 150, fixed: "left", render: (value: string) => value.replace("T", " ").slice(0, 16) },
     { title: "方向", dataIndex: "direction", width: 80, render: (value) => (value === "income" ? "收入" : "支出") },
@@ -329,6 +391,28 @@ export default function BankPage() {
     { title: "流水号", dataIndex: "bank_serial_no", render: (value) => value || "-" },
     { title: "结果", dataIndex: "duplicate", render: (value: boolean) => (value ? "重复跳过" : "可导入") },
   ];
+  const importJobColumns: ColumnsType<SyncJob> = [
+    { title: "批次号", dataIndex: "id", ellipsis: true },
+    { title: "状态", dataIndex: "status", width: 100 },
+    { title: "处理", dataIndex: "processed_count", width: 80 },
+    { title: "成功", dataIndex: "success_count", width: 80 },
+    { title: "失败/跳过", dataIndex: "failed_count", width: 100 },
+    {
+      title: "完成时间",
+      dataIndex: "finished_at",
+      width: 160,
+      render: (value: string | null) => (value ? value.replace("T", " ").slice(0, 16) : "-"),
+    },
+    {
+      title: "操作",
+      width: 110,
+      render: (_, record) => (
+        <Button size="small" danger disabled={record.status !== "succeeded"} onClick={() => rollbackImportJob(record)}>
+          回滚
+        </Button>
+      ),
+    },
+  ];
 
   return (
     <AppShell
@@ -341,6 +425,16 @@ export default function BankPage() {
         </Space>
       }
     >
+      {queryStoreId ? (
+        <StoreLedgerWorkspaceNav
+          storeId={queryStoreId}
+          storeName={currentStore?.name}
+          period={queryLedgerPeriod}
+          periodOptions={ledgerPeriodOptions}
+          statusLabel={currentStore?.status === "active" ? "启用门店" : currentStore ? "停用门店" : undefined}
+          activeKey="bank"
+        />
+      ) : null}
       {errorMessage ? (
         <Alert className="dashboard-alert" message={errorMessage} type="warning" showIcon />
       ) : null}
@@ -357,6 +451,16 @@ export default function BankPage() {
           closable
         />
       ) : null}
+      <Card title="最近导入批次" className="dashboard-alert">
+        <Table
+          rowKey="id"
+          loading={isLoading}
+          columns={importJobColumns}
+          dataSource={importJobs}
+          pagination={false}
+          size="small"
+        />
+      </Card>
       <Card title="银行流水列表">
         <Form form={filterForm} layout="inline" onFinish={submitFilters} className="table-filter-form">
           <Form.Item name="store_id" label="门店">
@@ -460,6 +564,11 @@ export default function BankPage() {
           <Form.Item name="ledger_period" label="账套">
             <Select allowClear placeholder="可留空导入未归属流水" options={openLedgerOptions} />
           </Form.Item>
+          <Space className="dashboard-alert">
+            <Button size="small" onClick={downloadImportTemplate}>
+              下载标准模板
+            </Button>
+          </Space>
           <Tabs
             activeKey={importMode}
             onChange={(key) => {

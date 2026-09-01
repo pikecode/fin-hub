@@ -18,6 +18,7 @@ from app.models import (
     ExpenseItem,
     Ledger,
     MatchStatus,
+    RevenueBankMatch,
     RevenueRecord,
     ShareholderAccessGrant,
     Store,
@@ -42,6 +43,8 @@ from app.schemas import (
     LedgerReportSummary,
     LedgerTrend,
     ReconciliationRecord,
+    ReportPeriodOption,
+    RevenueChannelBreakdownItem,
     StoreComparisonReport,
     StoreReportSummary,
 )
@@ -112,6 +115,12 @@ def decimal_sum(value: Decimal | None) -> Decimal:
 
 def decimal_cell(value: Decimal | None) -> float:
     return float(decimal_sum(value))
+
+
+def decimal_rate(numerator: Decimal, denominator: Decimal) -> Decimal:
+    if denominator <= 0:
+        return Decimal("0.00")
+    return (numerator / denominator * Decimal(100)).quantize(Decimal("0.01"))
 
 
 def build_report_summary(session: Session, ledger: Ledger, store: Store) -> LedgerReportSummary:
@@ -207,6 +216,60 @@ def read_ledger_export_rows(
         .order_by(BankTransaction.occurred_at.asc())
     ).all()
     return list(revenue_records), list(expenses), list(bank_transactions)
+
+
+def build_revenue_channel_breakdown(
+    revenue_records: list[RevenueRecord],
+    revenue_matches: list[RevenueBankMatch],
+) -> list[RevenueChannelBreakdownItem]:
+    buckets: dict[str, dict[str, Decimal | int]] = {}
+    for record in revenue_records:
+        bucket = buckets.setdefault(
+            record.channel,
+            {
+                "gross_amount": Decimal("0.00"),
+                "net_amount": Decimal("0.00"),
+                "fee_amount": Decimal("0.00"),
+                "matched_amount": Decimal("0.00"),
+                "record_count": 0,
+            },
+        )
+        bucket["gross_amount"] = Decimal(bucket["gross_amount"]) + Decimal(record.gross_amount)
+        bucket["net_amount"] = Decimal(bucket["net_amount"]) + Decimal(record.net_amount)
+        bucket["fee_amount"] = Decimal(bucket["fee_amount"]) + Decimal(record.fee_amount)
+        bucket["record_count"] = int(bucket["record_count"]) + 1
+
+    for match in revenue_matches:
+        if match.status != MatchStatus.CONFIRMED.value:
+            continue
+        bucket = buckets.setdefault(
+            match.channel,
+            {
+                "gross_amount": Decimal("0.00"),
+                "net_amount": Decimal("0.00"),
+                "fee_amount": Decimal("0.00"),
+                "matched_amount": Decimal("0.00"),
+                "record_count": 0,
+            },
+        )
+        bucket["matched_amount"] = Decimal(bucket["matched_amount"]) + Decimal(match.amount)
+
+    breakdown = [
+        RevenueChannelBreakdownItem(
+            channel=channel,
+            gross_amount=Decimal(bucket["gross_amount"]),
+            net_amount=Decimal(bucket["net_amount"]),
+            fee_amount=Decimal(bucket["fee_amount"]),
+            fee_rate=decimal_rate(Decimal(bucket["fee_amount"]), Decimal(bucket["gross_amount"])),
+            matched_amount=Decimal(bucket["matched_amount"]),
+            unmatched_amount=max(Decimal(bucket["net_amount"]) - Decimal(bucket["matched_amount"]), Decimal("0.00")),
+            reconciliation_rate=decimal_rate(Decimal(bucket["matched_amount"]), Decimal(bucket["net_amount"])),
+            record_count=int(bucket["record_count"]),
+        )
+        for channel, bucket in buckets.items()
+    ]
+    breakdown.sort(key=lambda item: item.gross_amount, reverse=True)
+    return breakdown
 
 
 def apply_period_range(query, column, period_start: str | None, period_end: str | None):
@@ -726,6 +789,29 @@ def list_store_summaries(
     return ApiEnvelope(data=summaries)
 
 
+@router.get("/periods", response_model=ApiEnvelope[list[ReportPeriodOption]])
+def list_report_periods(
+    session: Session = Depends(get_session),
+    shareholder_grant: ShareholderAccessGrant | None = Depends(get_report_access),
+    current_user: User | None = Depends(get_optional_current_user),
+) -> ApiEnvelope[list[ReportPeriodOption]]:
+    allowed_store_ids: set[str] | None = None
+    if shareholder_grant is not None:
+        allowed_store_ids = set(grant_store_ids(shareholder_grant))
+    elif current_user is not None:
+        allowed_store_ids = set(effective_store_ids(session, current_user))
+
+    query = select(Ledger.period, func.count(Ledger.store_id)).group_by(Ledger.period)
+    if shareholder_grant is not None:
+        query = query.where(Ledger.status == "closed")
+    if allowed_store_ids is not None:
+        query = query.where(Ledger.store_id.in_(allowed_store_ids))
+    rows = session.execute(query.order_by(Ledger.period.desc())).all()
+    return ApiEnvelope(
+        data=[ReportPeriodOption(period=period, store_count=store_count) for period, store_count in rows]
+    )
+
+
 @router.get("/ledger-periods", response_model=ApiEnvelope[list[LedgerPeriodOption]])
 def list_ledger_periods(
     store_id: str,
@@ -901,11 +987,26 @@ def read_ledger_detail(
         .order_by(RevenueRecord.revenue_date.desc(), RevenueRecord.created_at.desc())
         .limit(50)
     ).all()
+    all_revenue_records = list(
+        session.scalars(
+            select(RevenueRecord)
+            .where(RevenueRecord.store_id == store_id, RevenueRecord.ledger_period == period)
+            .order_by(RevenueRecord.revenue_date.asc(), RevenueRecord.created_at.asc())
+        )
+    )
+    revenue_matches = list(
+        session.scalars(
+            select(RevenueBankMatch)
+            .join(BankTransaction, RevenueBankMatch.bank_transaction_id == BankTransaction.id)
+            .where(BankTransaction.store_id == store_id, BankTransaction.ledger_period == period)
+        )
+    )
 
     return ApiEnvelope(
         data=LedgerReportDetail(
             summary=build_report_summary(session, ledger, store),
             revenue_records=list(revenue_records),
+            revenue_channel_breakdown=build_revenue_channel_breakdown(all_revenue_records, revenue_matches),
             category_breakdown=[
                 ExpenseBreakdownItem(name=name, amount=decimal_sum(amount), item_count=count)
                 for name, amount, count in category_rows
@@ -930,6 +1031,14 @@ def export_ledger_detail_csv(
 ) -> StreamingResponse:
     store, ledger = read_ledger_for_report(session, store_id, period, shareholder_grant, current_user)
     revenue_records, expenses, bank_transactions = read_ledger_export_rows(session, store_id, period)
+    revenue_matches = list(
+        session.scalars(
+            select(RevenueBankMatch)
+            .join(BankTransaction, RevenueBankMatch.bank_transaction_id == BankTransaction.id)
+            .where(BankTransaction.store_id == store_id, BankTransaction.ledger_period == period)
+        )
+    )
+    channel_breakdown = build_revenue_channel_breakdown(revenue_records, revenue_matches)
     summary = build_report_summary(session, ledger, store)
 
     buffer = io.StringIO()
@@ -959,6 +1068,23 @@ def export_ledger_detail_csv(
                 record.net_amount,
                 record.fee_amount,
                 record.remark or "",
+            ]
+        )
+    writer.writerow([])
+    writer.writerow(["收入渠道汇总"])
+    writer.writerow(["渠道", "经营收入", "实收金额", "手续费", "费率", "已对账", "未对账", "对账完成率", "记录数"])
+    for item in channel_breakdown:
+        writer.writerow(
+            [
+                item.channel,
+                item.gross_amount,
+                item.net_amount,
+                item.fee_amount,
+                f"{item.fee_rate}%",
+                item.matched_amount,
+                item.unmatched_amount,
+                f"{item.reconciliation_rate}%",
+                item.record_count,
             ]
         )
     writer.writerow([])
@@ -1017,6 +1143,14 @@ def export_ledger_detail_xlsx(
 ) -> StreamingResponse:
     store, ledger = read_ledger_for_report(session, store_id, period, shareholder_grant, current_user)
     revenue_records, expenses, bank_transactions = read_ledger_export_rows(session, store_id, period)
+    revenue_matches = list(
+        session.scalars(
+            select(RevenueBankMatch)
+            .join(BankTransaction, RevenueBankMatch.bank_transaction_id == BankTransaction.id)
+            .where(BankTransaction.store_id == store_id, BankTransaction.ledger_period == period)
+        )
+    )
+    channel_breakdown = build_revenue_channel_breakdown(revenue_records, revenue_matches)
     summary = build_report_summary(session, ledger, store)
 
     workbook = Workbook()
@@ -1047,6 +1181,23 @@ def export_ledger_detail_xlsx(
                 decimal_cell(record.net_amount),
                 decimal_cell(record.fee_amount),
                 record.remark or "",
+            ]
+        )
+
+    revenue_channel_sheet = workbook.create_sheet("收入渠道汇总")
+    revenue_channel_sheet.append(["渠道", "经营收入", "实收金额", "手续费", "费率", "已对账", "未对账", "对账完成率", "记录数"])
+    for item in channel_breakdown:
+        revenue_channel_sheet.append(
+            [
+                item.channel,
+                decimal_cell(item.gross_amount),
+                decimal_cell(item.net_amount),
+                decimal_cell(item.fee_amount),
+                float(item.fee_rate),
+                decimal_cell(item.matched_amount),
+                decimal_cell(item.unmatched_amount),
+                float(item.reconciliation_rate),
+                item.record_count,
             ]
         )
 

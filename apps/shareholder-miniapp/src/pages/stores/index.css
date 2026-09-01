@@ -306,7 +306,7 @@
   display: flex;
   flex-direction: column;
   justify-content: center;
-  padding: 10px 18px;
+  padding: 8px 18px;
 }
 
 .control-label {
@@ -320,8 +320,15 @@
   display: block;
   color: #234b40;
   font-size: 24px;
-  line-height: 34px;
+  line-height: 30px;
   font-weight: 700;
+}
+
+.control-subvalue {
+  display: block;
+  color: #71817a;
+  font-size: 19px;
+  line-height: 26px;
 }
 
 .search-input {

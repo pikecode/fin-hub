@@ -1,4 +1,5 @@
 import json
+import hashlib
 from datetime import UTC, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -21,6 +22,7 @@ from app.models import (
     ExpenseBankMatch,
     ExpenseItem,
     Ledger,
+    MatchStatus,
     Store,
     SyncJob,
     SyncJobStatus,
@@ -829,7 +831,93 @@ def resolve_approval_department_name(session: Session, instance: ApprovalInstanc
     return None
 
 
-def approval_instance_read(session: Session, instance: ApprovalInstance) -> ApprovalInstanceRead:
+def decimal_value(value: Any) -> Decimal:
+    if value is None:
+        return Decimal("0.00")
+    return Decimal(str(value))
+
+
+def approval_expense_stats(expense_items: list[ExpenseItem], matches: list[ExpenseBankMatch]) -> dict[str, Any]:
+    confirmed_match_amount = sum(
+        (decimal_value(match.amount) for match in matches if match.status == MatchStatus.CONFIRMED.value),
+        Decimal("0.00"),
+    )
+    candidate_match_count = sum(1 for match in matches if match.status == MatchStatus.CANDIDATE.value)
+    classified_count = sum(1 for item in expense_items if item.category_l1 or item.category_l2)
+    matched_item_ids = {
+        match.expense_item_id for match in matches if match.status == MatchStatus.CONFIRMED.value
+    }
+    matched_item_count = sum(1 for item in expense_items if item.id in matched_item_ids or item.payment_status == "paid")
+    pending_item_count = sum(1 for item in expense_items if item.payment_status != "paid")
+    sync_conflict_count = sum(
+        1 for item in expense_items if item.sync_conflict_status and item.sync_conflict_status != "none"
+    )
+    total_expense_amount = sum((decimal_value(item.amount) for item in expense_items), Decimal("0.00"))
+    if not expense_items:
+        processing_status = "unparsed"
+    elif sync_conflict_count:
+        processing_status = "sync_conflict"
+    elif classified_count < len(expense_items):
+        processing_status = "pending_classification"
+    elif pending_item_count == len(expense_items):
+        processing_status = "pending_match"
+    elif pending_item_count:
+        processing_status = "partial_matched"
+    else:
+        processing_status = "matched"
+    return {
+        "expense_item_count": len(expense_items),
+        "classified_expense_item_count": classified_count,
+        "matched_expense_item_count": matched_item_count,
+        "pending_expense_item_count": pending_item_count,
+        "sync_conflict_expense_item_count": sync_conflict_count,
+        "total_expense_amount": total_expense_amount,
+        "confirmed_match_amount": confirmed_match_amount,
+        "candidate_match_count": candidate_match_count,
+        "processing_status": processing_status,
+    }
+
+
+def approval_expense_stats_map(session: Session, approval_ids: list[str]) -> dict[str, dict[str, Any]]:
+    if not approval_ids:
+        return {}
+    expense_items = list(
+        session.scalars(
+            select(ExpenseItem).where(ExpenseItem.approval_instance_id.in_(approval_ids))
+        )
+    )
+    expenses_by_approval_id: dict[str, list[ExpenseItem]] = {}
+    for item in expense_items:
+        if item.approval_instance_id:
+            expenses_by_approval_id.setdefault(item.approval_instance_id, []).append(item)
+    expense_ids = [item.id for item in expense_items]
+    matches = list(
+        session.scalars(
+            select(ExpenseBankMatch).where(ExpenseBankMatch.expense_item_id.in_(expense_ids))
+        )
+    ) if expense_ids else []
+    matches_by_expense_id: dict[str, list[ExpenseBankMatch]] = {}
+    for match in matches:
+        matches_by_expense_id.setdefault(match.expense_item_id, []).append(match)
+    result: dict[str, dict[str, Any]] = {}
+    for approval_id in approval_ids:
+        approval_expenses = expenses_by_approval_id.get(approval_id, [])
+        approval_matches = [
+            match
+            for item in approval_expenses
+            for match in matches_by_expense_id.get(item.id, [])
+        ]
+        result[approval_id] = approval_expense_stats(approval_expenses, approval_matches)
+    return result
+
+
+def approval_instance_read(
+    session: Session,
+    instance: ApprovalInstance,
+    stats: dict[str, Any] | None = None,
+) -> ApprovalInstanceRead:
+    stats = stats or approval_expense_stats_map(session, [instance.id]).get(instance.id, approval_expense_stats([], []))
+
     return ApprovalInstanceRead(
         id=instance.id,
         template_id=instance.template_id,
@@ -844,6 +932,15 @@ def approval_instance_read(session: Session, instance: ApprovalInstance) -> Appr
         approved_at=instance.approved_at,
         raw_payload=instance.raw_payload,
         synced_job_id=instance.synced_job_id,
+        expense_item_count=stats["expense_item_count"],
+        classified_expense_item_count=stats["classified_expense_item_count"],
+        matched_expense_item_count=stats["matched_expense_item_count"],
+        pending_expense_item_count=stats["pending_expense_item_count"],
+        sync_conflict_expense_item_count=stats["sync_conflict_expense_item_count"],
+        total_expense_amount=stats["total_expense_amount"],
+        confirmed_match_amount=stats["confirmed_match_amount"],
+        candidate_match_count=stats["candidate_match_count"],
+        processing_status=stats["processing_status"],
         created_at=instance.created_at,
         updated_at=instance.updated_at,
     )
@@ -1461,7 +1558,6 @@ def reparse_template_instances(
         except ValueError:
             skipped_count += 1
             continue
-        delete_unmatched_dingtalk_expenses_for_instance(session, instance)
         if sync_real_instance(session, template, job, raw_instance):
             reparsed_count += 1
         else:
@@ -1561,6 +1657,10 @@ def create_expense_from_instance(
             category_l1="钉钉同步",
             supplier_name="同步样例供应商",
             payee_account="6222 **** 2026",
+            approval_instance_id=instance.id,
+            approval_line_no=1,
+            approval_line_key="seed-line-1",
+            parse_status="parsed",
             source="dingtalk",
             source_document_id=instance.dingtalk_instance_id,
         )
@@ -1786,7 +1886,7 @@ def pick_row_value(row: dict[str, Any], *names: str) -> Any:
 
 def expense_rows_from_table(value: Any) -> list[dict[str, Any]]:
     rows = []
-    for row in decode_table_value(value):
+    for index, row in enumerate(decode_table_value(value), start=1):
         description = parse_text(pick_row_value(row, "支出详情", "费用明细", "费用说明", "说明", "摘要"))
         amount = parse_decimal(pick_row_value(row, "小项金额", "金额", "报销金额", "费用金额"))
         category_l1 = parse_text(pick_row_value(row, "支出类型", "费用类型", "一级分类"))
@@ -1801,9 +1901,61 @@ def expense_rows_from_table(value: Any) -> list[dict[str, Any]]:
                 "category_l1": category_l1,
                 "category_l2": category_l2,
                 "supplier_name": supplier_name,
+                "line_source_type": "table_row",
+                "source_row": row,
+                "source_row_index": index,
             }
         )
     return rows
+
+
+def installment_rows_from_form(raw_instance: dict[str, Any], default_description: str, category_l1: str | None) -> list[dict[str, Any]]:
+    rows = []
+    installment_fields = [
+        ("首期费用", "installment-1"),
+        ("第一期费用", "installment-1"),
+        ("第二期费用", "installment-2"),
+        ("第三期费用", "installment-3"),
+        ("第四期费用", "installment-4"),
+    ]
+    seen_keys: set[str] = set()
+    for label, line_key in installment_fields:
+        if line_key in seen_keys:
+            continue
+        amount = parse_decimal(find_form_value(raw_instance, label))
+        if amount is None or amount <= 0:
+            continue
+        seen_keys.add(line_key)
+        rows.append(
+            {
+                "description": f"{default_description} {label}",
+                "amount": amount,
+                "category_l1": category_l1,
+                "line_source_type": "installment",
+                "source_installment_label": label,
+                "source_line_key": line_key,
+            }
+        )
+    return rows
+
+
+def payee_snapshot_from_raw(raw_instance: dict[str, Any], payee_account: str | None) -> dict[str, Any]:
+    payee_name = parse_text(find_form_value(raw_instance, "收款人", "收款账户", "账户名", "户名"))
+    bank_name = parse_text(find_form_value(raw_instance, "开户银行", "银行", "收款银行"))
+    bank_branch = parse_text(find_form_value(raw_instance, "开户支行", "开户地", "开户行", "支行"))
+    account_no = parse_text(find_form_value(raw_instance, "银行卡号", "银行账号", "收款账号", "账号"))
+    account_type = parse_text(find_form_value(raw_instance, "账户类型"))
+    verify_status = parse_text(find_form_value(raw_instance, "账户校验", "收款账户信息校验", "收款账户校验"))
+    raw_value = find_form_value(raw_instance, "收款账户", "收款账号", "账户")
+    return {
+        "payee_name": payee_name or payee_account,
+        "payee_bank_name": bank_name,
+        "payee_bank_branch": bank_branch,
+        "payee_account_no": account_no,
+        "payee_account_type": account_type,
+        "payee_account_verify_status": verify_status,
+        "raw_value": raw_value,
+    }
 
 
 def voucher_items_from_table(value: Any) -> list[dict[str, str | None]]:
@@ -1929,7 +2081,8 @@ def build_approval_parse_preview(
     category_l1 = parse_text(
         mapped_or_form_value(mapped, raw_instance, "category_l1", "支出类型", "费用类型", "一级分类")
     )
-    rows = expense_rows or (
+    installment_rows = installment_rows_from_form(raw_instance, description or template.name, category_l1)
+    rows = expense_rows or installment_rows or (
         [
             {
                 "description": description,
@@ -2014,6 +2167,192 @@ def delete_unmatched_dingtalk_expenses_for_instance(session: Session, instance: 
     return deleted_count
 
 
+def stable_json_hash(value: dict[str, Any]) -> str:
+    payload = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def edited_fields(item: ExpenseItem) -> set[str]:
+    if not item.user_edited_fields_json:
+        return set()
+    try:
+        fields = json.loads(item.user_edited_fields_json)
+    except ValueError:
+        return set()
+    return {str(field) for field in fields} if isinstance(fields, list) else set()
+
+
+def expense_has_bank_match(session: Session, item: ExpenseItem) -> bool:
+    return session.scalar(select(ExpenseBankMatch.id).where(ExpenseBankMatch.expense_item_id == item.id).limit(1)) is not None
+
+
+def source_document_id_for_line(instance_id: str, total_rows: int, line_key: str) -> str:
+    return instance_id if total_rows == 1 else f"{instance_id}:{line_key}"
+
+
+def expense_source_snapshot(
+    *,
+    store_id: str,
+    ledger_period: str,
+    expense_date: datetime,
+    row: dict[str, Any],
+    payee_account: str | None,
+    payee_snapshot: dict[str, Any],
+    category_l1: str | None,
+    category_l2: str | None,
+    supplier_name: str | None,
+    line_no: int,
+    line_key: str,
+    line_source_type: str,
+) -> dict[str, Any]:
+    return {
+        "store_id": store_id,
+        "ledger_period": ledger_period,
+        "expense_date": expense_date.date().isoformat(),
+        "description": str(row["description"]),
+        "amount": str(Decimal(row["amount"]).quantize(Decimal("0.01"))),
+        "category_l1": category_l1,
+        "category_l2": category_l2,
+        "supplier_name": supplier_name,
+        "payee_account": payee_account,
+        "payee_snapshot": payee_snapshot,
+        "source_row": row.get("source_row"),
+        "source_installment_label": row.get("source_installment_label"),
+        "approval_line_no": line_no,
+        "approval_line_key": line_key,
+        "approval_line_source_type": line_source_type,
+    }
+
+
+def sync_expense_line(
+    session: Session,
+    *,
+    instance: ApprovalInstance,
+    source_document_id: str,
+    snapshot: dict[str, Any],
+    row: dict[str, Any],
+    store_id: str,
+    ledger_period: str,
+    expense_date: datetime,
+    category_l1: str | None,
+    category_l2: str | None,
+    supplier_name: str | None,
+    payee_account: str | None,
+    payee_snapshot: dict[str, Any],
+    line_no: int,
+    line_key: str,
+    line_source_type: str,
+) -> tuple[ExpenseItem, bool]:
+    source_hash = stable_json_hash(snapshot)
+    snapshot_json = json.dumps(snapshot, ensure_ascii=False, sort_keys=True)
+    item = session.scalar(select(ExpenseItem).where(ExpenseItem.source_document_id == source_document_id))
+    if item is None:
+        item = ExpenseItem(
+            store_id=store_id,
+            ledger_period=ledger_period,
+            expense_date=expense_date,
+            description=str(row["description"]),
+            amount=row["amount"],
+            category_l1=category_l1,
+            category_l2=category_l2,
+            supplier_name=supplier_name,
+            payee_account=payee_account,
+            approval_instance_id=instance.id,
+            approval_line_no=line_no,
+            approval_line_key=line_key,
+            approval_line_source_type=line_source_type,
+            parse_status="parsed",
+            source_sync_hash=source_hash,
+            source_snapshot_json=snapshot_json,
+            sync_conflict_status="none",
+            payee_name=parse_text(payee_snapshot.get("payee_name")),
+            payee_bank_name=parse_text(payee_snapshot.get("payee_bank_name")),
+            payee_bank_branch=parse_text(payee_snapshot.get("payee_bank_branch")),
+            payee_account_no=parse_text(payee_snapshot.get("payee_account_no")),
+            payee_account_type=parse_text(payee_snapshot.get("payee_account_type")),
+            payee_account_verify_status=parse_text(payee_snapshot.get("payee_account_verify_status")),
+            payee_account_snapshot_json=json.dumps(payee_snapshot, ensure_ascii=False, sort_keys=True),
+            source="dingtalk",
+            source_document_id=source_document_id,
+        )
+        session.add(item)
+        session.flush()
+        return item, True
+
+    matched = expense_has_bank_match(session, item)
+    if item.source_sync_hash and item.source_sync_hash != source_hash:
+        item.sync_conflict_status = "amount_changed_after_matched" if matched and str(item.amount) != snapshot["amount"] else "source_changed"
+    elif item.sync_conflict_status in {None, "source_removed"}:
+        item.sync_conflict_status = "none"
+
+    protected_fields = edited_fields(item)
+    source_updates = {
+        "store_id": store_id,
+        "ledger_period": ledger_period,
+        "expense_date": expense_date,
+        "description": str(row["description"]),
+        "amount": row["amount"],
+        "category_l1": category_l1,
+        "category_l2": category_l2,
+        "supplier_name": supplier_name,
+        "payee_account": payee_account,
+        "payee_name": parse_text(payee_snapshot.get("payee_name")),
+        "payee_bank_name": parse_text(payee_snapshot.get("payee_bank_name")),
+        "payee_bank_branch": parse_text(payee_snapshot.get("payee_bank_branch")),
+        "payee_account_no": parse_text(payee_snapshot.get("payee_account_no")),
+        "payee_account_type": parse_text(payee_snapshot.get("payee_account_type")),
+        "payee_account_verify_status": parse_text(payee_snapshot.get("payee_account_verify_status")),
+    }
+    for field, value in source_updates.items():
+        if field in protected_fields:
+            continue
+        if matched and field in {"amount", "store_id", "ledger_period"}:
+            continue
+        setattr(item, field, value)
+    item.approval_instance_id = instance.id
+    item.approval_line_no = line_no
+    item.approval_line_key = line_key
+    item.approval_line_source_type = line_source_type
+    item.parse_status = "parsed"
+    item.source_sync_hash = source_hash
+    item.source_snapshot_json = snapshot_json
+    item.payee_account_snapshot_json = json.dumps(payee_snapshot, ensure_ascii=False, sort_keys=True)
+    session.flush()
+    return item, False
+
+
+def mark_removed_expense_lines(session: Session, instance: ApprovalInstance, active_source_document_ids: set[str]) -> None:
+    prefix = f"{instance.dingtalk_instance_id}:"
+    items = list(
+        session.scalars(
+            select(ExpenseItem).where(
+                ExpenseItem.source == "dingtalk",
+                ExpenseItem.approval_instance_id == instance.id,
+                ExpenseItem.source_document_id.is_not(None),
+            )
+        )
+    )
+    legacy_items = list(
+        session.scalars(
+            select(ExpenseItem).where(
+                ExpenseItem.source == "dingtalk",
+                ExpenseItem.approval_instance_id.is_(None),
+                ExpenseItem.source_document_id.is_not(None),
+                ExpenseItem.source_document_id.in_([instance.dingtalk_instance_id])
+                | ExpenseItem.source_document_id.startswith(prefix),
+            )
+        )
+    )
+    for item in [*items, *legacy_items]:
+        if item.source_document_id in active_source_document_ids:
+            continue
+        item.approval_instance_id = instance.id
+        item.parse_status = "source_removed"
+        item.sync_conflict_status = (
+            "source_removed_after_matched" if expense_has_bank_match(session, item) else "source_removed"
+        )
+
+
 def sync_real_instance(
     session: Session,
     template: ApprovalTemplate,
@@ -2075,9 +2414,11 @@ def sync_real_instance(
     payee_account = parse_text(
         mapped_or_form_value(mapped, raw_instance, "payee_account", "收款账户", "收款账号", "账户")
     )
+    payee_snapshot = payee_snapshot_from_raw(raw_instance, payee_account)
     category_l1 = parse_text(
         mapped_or_form_value(mapped, raw_instance, "category_l1", "支出类型", "费用类型", "一级分类")
     )
+    installment_rows = installment_rows_from_form(raw_instance, description or template.name, category_l1)
 
     instance = session.scalar(select(ApprovalInstance).where(ApprovalInstance.dingtalk_instance_id == instance_id))
     if instance is None:
@@ -2096,11 +2437,11 @@ def sync_real_instance(
     session.flush()
     create_dingtalk_attachment_placeholders(session, "approval_instance", instance.id, voucher_items)
 
-    if store is None or (amount is None and not expense_rows) or expense_date is None:
+    if store is None or (amount is None and not expense_rows and not installment_rows) or expense_date is None:
         missing_fields = []
         if store is None:
             missing_fields.append("store")
-        if amount is None and not expense_rows:
+        if amount is None and not expense_rows and not installment_rows:
             missing_fields.append("amount")
         if expense_date is None:
             missing_fields.append("expense_date")
@@ -2128,8 +2469,8 @@ def sync_real_instance(
         session.add(Ledger(store_id=store.id, period=period))
         session.flush()
 
-    approval_total = amount or sum((Decimal(row["amount"]) for row in expense_rows), Decimal("0.00"))
-    rows_to_create = [
+    approval_total = amount or sum((Decimal(row["amount"]) for row in [*expense_rows, *installment_rows]), Decimal("0.00"))
+    rows_to_create = expense_rows or installment_rows or [
         {
             "description": parse_text(raw_instance.get("title") or raw_instance.get("titleName"))
             or description
@@ -2138,40 +2479,66 @@ def sync_real_instance(
             "category_l1": category_l1,
             "category_l2": parse_text(mapped.get("category_l2")),
             "supplier_name": parse_text(mapped.get("supplier_name")),
+            "line_source_type": "whole_approval",
         }
     ]
     created_expense_ids: list[str] = []
-    for row in rows_to_create:
-        source_document_id = instance.dingtalk_instance_id
-        exists_item = session.scalar(
-            select(ExpenseItem).where(ExpenseItem.source_document_id == source_document_id)
+    active_source_document_ids: set[str] = set()
+    for line_no, row in enumerate(rows_to_create, start=1):
+        approval_line_key = parse_text(row.get("source_line_key")) or f"line-{line_no}"
+        line_source_type = parse_text(row.get("line_source_type")) or "whole_approval"
+        source_document_id = source_document_id_for_line(
+            instance.dingtalk_instance_id,
+            len(rows_to_create),
+            approval_line_key,
         )
-        if exists_item is not None:
-            continue
-        expense_item = ExpenseItem(
+        active_source_document_ids.add(source_document_id)
+        row_category_l1 = parse_text(row.get("category_l1")) or category_l1
+        row_category_l2 = parse_text(row.get("category_l2")) or parse_text(mapped.get("category_l2"))
+        row_supplier_name = parse_text(row.get("supplier_name")) or parse_text(mapped.get("supplier_name"))
+        snapshot = expense_source_snapshot(
             store_id=store.id,
             ledger_period=period,
             expense_date=expense_date,
-            description=str(row["description"]),
-            amount=row["amount"],
-            category_l1=parse_text(row.get("category_l1")) or category_l1,
-            category_l2=parse_text(row.get("category_l2")) or parse_text(mapped.get("category_l2")),
-            supplier_name=parse_text(row.get("supplier_name")) or parse_text(mapped.get("supplier_name")),
+            row=row,
+            category_l1=row_category_l1,
+            category_l2=row_category_l2,
+            supplier_name=row_supplier_name,
             payee_account=payee_account,
-            source="dingtalk",
-            source_document_id=source_document_id,
+            payee_snapshot=payee_snapshot,
+            line_no=line_no,
+            line_key=approval_line_key,
+            line_source_type=line_source_type,
         )
-        session.add(expense_item)
-        session.flush()
-        created_expense_ids.append(expense_item.id)
-        create_dingtalk_attachment_placeholders(
+        expense_item, created = sync_expense_line(
             session,
-            "expense_item",
-            expense_item.id,
-            [
-                *voucher_items,
-            ],
+            instance=instance,
+            source_document_id=source_document_id,
+            snapshot=snapshot,
+            row=row,
+            store_id=store.id,
+            ledger_period=period,
+            expense_date=expense_date,
+            category_l1=row_category_l1,
+            category_l2=row_category_l2,
+            supplier_name=row_supplier_name,
+            payee_account=payee_account,
+            payee_snapshot=payee_snapshot,
+            line_no=line_no,
+            line_key=approval_line_key,
+            line_source_type=line_source_type,
         )
+        if created:
+            created_expense_ids.append(expense_item.id)
+            create_dingtalk_attachment_placeholders(
+                session,
+                "expense_item",
+                expense_item.id,
+                [
+                    *voucher_items,
+                ],
+            )
+    mark_removed_expense_lines(session, instance, active_source_document_ids)
     instance.raw_payload = json.dumps(
         {
             **raw_instance,
@@ -2687,11 +3054,17 @@ def resume_approval_sync(
 
 @router.get("/sync-jobs", response_model=ApiEnvelope[Page[SyncJobRead]])
 def list_sync_jobs(
+    job_type: str | None = None,
+    status: str | None = None,
     page: int = 1,
     page_size: int = 50,
     session: Session = Depends(get_session),
 ) -> ApiEnvelope[Page[SyncJobRead]]:
     query = select(SyncJob).order_by(SyncJob.created_at.desc())
+    if job_type:
+        query = query.where(SyncJob.job_type == job_type)
+    if status:
+        query = query.where(SyncJob.status == status)
     items, total = paginate(session, query, page, page_size)
     return ApiEnvelope(data=Page(items=items, total=total, page=page, page_size=page_size))
 
@@ -2699,6 +3072,7 @@ def list_sync_jobs(
 @router.get("/approval-instances", response_model=ApiEnvelope[Page[ApprovalInstanceRead]])
 def list_approval_instances(
     template_id: str | None = None,
+    store_id: str | None = None,
     page: int = 1,
     page_size: int = 50,
     session: Session = Depends(get_session),
@@ -2706,10 +3080,13 @@ def list_approval_instances(
     query = select(ApprovalInstance).order_by(ApprovalInstance.created_at.desc())
     if template_id:
         query = query.where(ApprovalInstance.template_id == template_id)
+    if store_id:
+        query = query.where(ApprovalInstance.store_id == store_id)
     items, total = paginate(session, query, page, page_size)
+    stats_by_approval_id = approval_expense_stats_map(session, [item.id for item in items])
     return ApiEnvelope(
         data=Page(
-            items=[approval_instance_read(session, item) for item in items],
+            items=[approval_instance_read(session, item, stats_by_approval_id.get(item.id)) for item in items],
             total=total,
             page=page,
             page_size=page_size,

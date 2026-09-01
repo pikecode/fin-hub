@@ -3,10 +3,20 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.database import get_session
-from app.core.security import create_session_token, decode_session_token, hash_password, verify_password
-from app.models import User, UserRole, UserStatus, utc_now
-from app.modules.auth.permissions import effective_permissions, effective_store_ids, ensure_permission
-from app.schemas import ApiEnvelope, ChangePasswordRequest, CurrentUser, LoginRequest
+from app.core.security import (
+    create_session_token,
+    decode_session_token,
+    hash_password,
+    verify_password,
+)
+from app.models import Store, User, UserRole, UserStatus, utc_now
+from app.modules.auth.permissions import (
+    effective_permissions,
+    effective_store_ids,
+    ensure_permission,
+    scoped_store_condition,
+)
+from app.schemas import ApiEnvelope, ChangePasswordRequest, CurrentUser, LoginRequest, StoreRead
 
 SESSION_COOKIE_NAME = "fin_hub_session"
 
@@ -132,3 +142,19 @@ def me(
     session: Session = Depends(get_session),
 ) -> ApiEnvelope[CurrentUser]:
     return ApiEnvelope(data=to_current_user(session, current_user))
+
+
+@router.get("/me/stores", response_model=ApiEnvelope[list[StoreRead]])
+def my_stores(
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> ApiEnvelope[list[StoreRead]]:
+    ensure_permission(session, current_user, "stores.view")
+    stores = list(
+        session.scalars(
+            select(Store)
+            .where(scoped_store_condition(session, current_user, Store.id))
+            .order_by(Store.created_at.desc())
+        )
+    )
+    return ApiEnvelope(data=stores)

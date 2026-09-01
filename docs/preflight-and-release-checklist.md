@@ -56,3 +56,19 @@ scripts/preflight.sh --skip-admin-build --skip-miniapp-build --smoke
 - 微信公众平台已配置 request 合法域名。
 - 后台管理员默认密码已修改。
 - 股东授权码已设置合理到期时间。
+
+## 诊断包
+
+上线后排障可导出脱敏诊断包：
+
+```bash
+scripts/export-diagnostics.sh
+```
+
+输出目录：
+
+```text
+reports/diagnostics/
+```
+
+诊断包只采集配置摘要、迁移状态、HTTP 状态、近期本地日志和端口监听信息；不导出数据库文件、附件原件或完整业务数据。脚本会对常见密钥字段做脱敏，但外发前仍应人工检查压缩包内容。

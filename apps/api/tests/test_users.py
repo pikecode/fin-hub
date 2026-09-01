@@ -93,6 +93,11 @@ def test_user_permissions_and_store_scope_are_persisted(client: TestClient) -> N
     stores = stores_response.json()["data"]["items"]
     assert [store["id"] for store in stores] == [first_store_id]
 
+    my_stores_response = client.get("/api/auth/me/stores")
+    assert my_stores_response.status_code == 200
+    my_stores = my_stores_response.json()["data"]
+    assert [store["id"] for store in my_stores] == [first_store_id]
+
 
 def test_explicit_empty_permissions_do_not_fall_back_to_role_defaults(client: TestClient) -> None:
     create_response = client.post(
@@ -115,3 +120,4 @@ def test_explicit_empty_permissions_do_not_fall_back_to_role_defaults(client: Te
     current_user = client.get("/api/auth/me").json()["data"]
     assert current_user["permissions"] == []
     assert client.get("/api/stores").status_code == 403
+    assert client.get("/api/auth/me/stores").status_code == 403

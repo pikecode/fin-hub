@@ -65,6 +65,15 @@ docker compose -f infra/docker/docker-compose.yml up --build
 
 Compose 会启动 PostgreSQL、Redis、API 和后台管理端。API 容器启动时执行数据库迁移，并在 `SEED_DEV_DATA=true` 时写入开发样例数据。
 
+生产 Compose 使用：
+
+```bash
+cp .env.production.example .env.production
+docker compose --env-file .env.production -f infra/docker/docker-compose.prod.yml up --build -d
+```
+
+生产环境 API 启动时会拒绝弱 `SECRET_KEY`、SQLite 数据库、空 `CORS_ORIGINS` 或包含 localhost 的跨域配置。
+
 ## 验证命令
 
 API 测试：
@@ -105,15 +114,19 @@ scripts/preflight.sh
 
 - `/login`：后台登录
 - `/`：首页仪表盘
-- `/stores`：门店管理
+- `/store-ledgers`：门店套帐入口，按当前维护人员可管理门店展示卡片
+- `/store-ledgers/[storeId]`：单门店套帐工作台，聚合银行流水、审批单、对账、营业收入
+- `/store-ledgers/[storeId]/approvals`：单门店审批单列表
+- `/stores`：门店资料管理
 - `/ledgers`：门店账套、封账检查、封账、反封账
 - `/categories`：费用分类
 - `/suppliers`：供应商档案
 - `/revenue-channels`：收入渠道
-- `/revenue`：营业收入新增、编辑、筛选
+- `/revenue`：营业收入新增、编辑、筛选，支持从门店套帐带入门店和账期
 - `/expenses`：支出明细新增、编辑、凭证上传、钉钉凭证归档和下载
-- `/bank`：银行流水新增、编辑、CSV/XLSX 预览和导入
-- `/matching`：匹配工作台、支出匹配、收入匹配、自动生成候选、确认、拒绝
+- `/bank`：银行流水新增、编辑、CSV/XLSX 预览和导入，支持从门店套帐带入门店和账期
+- `/finance/reconciliation`：对账管理，支持门店上下文
+- `/matching`：旧版匹配工作台、支出匹配、收入匹配、自动生成候选、确认、拒绝
 - `/dingtalk`：钉钉配置、连接测试、审批模板、字段映射、审批同步
 - `/reports`：财务报表、账套 CSV 导出
 - `/shareholder-grants`：股东授权管理
@@ -133,6 +146,7 @@ scripts/preflight.sh
 - `/api/auth`：后台登录、当前用户、退出
 - `/api/users`：后台用户管理
 - `/api/stores`：门店管理
+- `/api/store-ledgers/{store_id}/workspace`：单门店套帐工作台聚合数据
 - `/api/ledgers`：账套管理、封账检查、封账、反封账
 - `/api/categories`：费用分类
 - `/api/suppliers`：供应商档案

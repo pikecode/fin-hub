@@ -46,7 +46,9 @@
 - 同步请求支持 `start_at`、`end_at`、`page_size`、`max_pages`。
 - 任务记录请求窗口 `request_start_at`、`request_end_at`、分页游标 `next_cursor` 和 `raw_summary`。
 - 如果达到 `max_pages` 仍存在后续游标，任务标记为 `failed`，并保留 `process_code:cursor` 形式的 `next_cursor`，避免误认为全量同步完成。
+- `GET /api/dingtalk/sync-jobs` 支持 `job_type` 和 `status` 查询参数，用于在后台按任务类型查看钉钉同步或银行导入批次。
 - 可通过 `POST /api/dingtalk/sync-jobs/{job_id}/resume` 从失败任务的 `next_cursor` 继续同步，续跑会创建新的同步任务记录。
+- 后台任务中心 `/tasks` 统一展示 `sync_jobs`，可筛选钉钉自动同步、审批同步、审批重解析与银行导入任务。
 - mock 模式为每个模板生成开发样例审批实例。
 - real 模式分页调用钉钉审批实例 ID 列表和实例详情接口。
 - 审批实例会按字段映射生成 `source=dingtalk` 的支出明细。

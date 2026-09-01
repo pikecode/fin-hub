@@ -6,14 +6,16 @@ from contextlib import asynccontextmanager, suppress
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.core.database import SessionLocal
 from app.core.config import settings
-from app.modules.audit.router import router as audit_router
+from app.core.database import SessionLocal
+from app.core.runtime_checks import validate_production_startup
 from app.modules.attachments.router import router as attachments_router
+from app.modules.audit.router import router as audit_router
 from app.modules.auth.router import router as auth_router
 from app.modules.bank.router import router as bank_router
 from app.modules.categories.router import router as categories_router
 from app.modules.dingtalk.router import router as dingtalk_router
+from app.modules.dingtalk.router import run_due_auto_sync_jobs
 from app.modules.expense.router import router as expense_router
 from app.modules.health.router import router as health_router
 from app.modules.ledgers.router import router as ledgers_router
@@ -22,11 +24,11 @@ from app.modules.reports.router import router as reports_router
 from app.modules.revenue.router import channels_router as revenue_channels_router
 from app.modules.revenue.router import router as revenue_router
 from app.modules.shareholder_auth.router import router as shareholder_auth_router
+from app.modules.store_ledgers.router import router as store_ledgers_router
 from app.modules.stores.router import router as stores_router
 from app.modules.suppliers.router import router as suppliers_router
 from app.modules.system.router import router as system_router
 from app.modules.users.router import router as users_router
-from app.modules.dingtalk.router import run_due_auto_sync_jobs
 
 
 async def dingtalk_auto_sync_loop() -> None:
@@ -58,6 +60,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 
 def create_app() -> FastAPI:
+    validate_production_startup()
     app = FastAPI(
         title="fin-hub API",
         version="0.1.0",
@@ -79,6 +82,7 @@ def create_app() -> FastAPI:
     app.include_router(shareholder_auth_router, prefix="/api")
     app.include_router(system_router, prefix="/api")
     app.include_router(stores_router, prefix="/api")
+    app.include_router(store_ledgers_router, prefix="/api")
     app.include_router(ledgers_router, prefix="/api")
     app.include_router(categories_router, prefix="/api")
     app.include_router(suppliers_router, prefix="/api")
