@@ -12,6 +12,8 @@ export type PermissionKey =
   | "dingtalk.view"
   | "dingtalk.manage"
   | "reports.view"
+  | "revenue.view"
+  | "revenue.manage"
   | "stores.view"
   | "stores.manage"
   | "categories.view"
@@ -82,7 +84,9 @@ export interface LedgerCloseCheck {
   unpaid_expense_count: number;
   unmatched_bank_transaction_count: number;
   candidate_match_count: number;
+  revenue_record_count: number;
   issues: string[];
+  warnings: string[];
 }
 
 export interface DatabaseBackupStatus {
@@ -121,7 +125,7 @@ export interface RevenueRecord {
 
 export interface RevenueRecordCreate {
   store_id: string;
-  ledger_period: string;
+  ledger_period?: string | null;
   revenue_date: string;
   channel: string;
   gross_amount: string;
@@ -131,6 +135,8 @@ export interface RevenueRecordCreate {
 }
 
 export interface RevenueRecordUpdate {
+  store_id?: string | null;
+  ledger_period?: string | null;
   revenue_date?: string;
   channel?: string | null;
   gross_amount?: string | null;

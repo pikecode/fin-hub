@@ -70,6 +70,9 @@ export default function LedgersPage() {
           setErrorMessage(`暂不能封账：${closeCheck.issues.join("；")}`);
           return;
         }
+        if (closeCheck.warnings.length) {
+          setErrorMessage(`封账提示：${closeCheck.warnings.join("；")}`);
+        }
         await apiClient.ledgers.close(ledger.id, "admin");
       }
       await loadData();

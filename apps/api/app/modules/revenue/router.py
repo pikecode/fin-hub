@@ -4,9 +4,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.database import get_session
-from app.models import Ledger, LedgerStatus, MasterDataStatus, RevenueChannel, RevenueRecord, User, UserRole
+from app.models import Ledger, LedgerStatus, MasterDataStatus, RevenueChannel, RevenueRecord, User
 from app.modules.audit.service import write_audit_log
-from app.modules.auth.router import audit_actor, require_roles
+from app.modules.auth.permissions import ensure_permission, ensure_store_access, scoped_store_condition
+from app.modules.auth.router import audit_actor, get_current_user
 from app.modules.common import paginate
 from app.schemas import (
     ApiEnvelope,
@@ -23,12 +24,35 @@ router = APIRouter(prefix="/revenue-records", tags=["revenue"])
 channels_router = APIRouter(prefix="/revenue-channels", tags=["revenue"])
 
 
+def period_from_revenue_date(revenue_date) -> str:
+    return revenue_date.strftime("%Y-%m")
+
+
+def ensure_open_or_create_ledger(session: Session, store_id: str, period: str) -> None:
+    ledger = session.scalar(select(Ledger).where(Ledger.store_id == store_id, Ledger.period == period))
+    if ledger is None:
+        session.add(Ledger(store_id=store_id, period=period))
+        session.flush()
+        return
+    if ledger.status == LedgerStatus.CLOSED.value:
+        raise HTTPException(status_code=409, detail="Ledger is closed")
+
+
 def ensure_open_ledger(session: Session, store_id: str, period: str) -> None:
     ledger = session.scalar(select(Ledger).where(Ledger.store_id == store_id, Ledger.period == period))
     if ledger is None:
         raise HTTPException(status_code=404, detail="Ledger not found")
     if ledger.status == LedgerStatus.CLOSED.value:
         raise HTTPException(status_code=409, detail="Ledger is closed")
+
+
+def normalize_revenue_assignment(session: Session, data: dict) -> dict:
+    period = period_from_revenue_date(data["revenue_date"])
+    if data.get("ledger_period") and data["ledger_period"] != period:
+        raise HTTPException(status_code=422, detail="Ledger period must match revenue date month")
+    data["ledger_period"] = period
+    ensure_open_or_create_ledger(session, data["store_id"], period)
+    return data
 
 
 def ensure_active_channel(session: Session, channel_name: str) -> None:
@@ -44,7 +68,9 @@ def list_revenue_channels(
     page: int = 1,
     page_size: int = 100,
     session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
 ) -> ApiEnvelope[Page[RevenueChannelRead]]:
+    ensure_permission(session, current_user, "revenue.view")
     query = select(RevenueChannel).order_by(RevenueChannel.sort_order.asc(), RevenueChannel.created_at.asc())
     items, total = paginate(session, query, page, page_size)
     return ApiEnvelope(data=Page(items=items, total=total, page=page, page_size=page_size))
@@ -54,8 +80,9 @@ def list_revenue_channels(
 def create_revenue_channel(
     payload: RevenueChannelCreate,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+    current_user: User = Depends(get_current_user),
 ) -> ApiEnvelope[RevenueChannelRead]:
+    ensure_permission(session, current_user, "revenue.manage")
     channel = RevenueChannel(**payload.model_dump())
     session.add(channel)
     try:
@@ -81,8 +108,9 @@ def update_revenue_channel(
     channel_id: str,
     payload: RevenueChannelUpdate,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+    current_user: User = Depends(get_current_user),
 ) -> ApiEnvelope[RevenueChannelRead]:
+    ensure_permission(session, current_user, "revenue.manage")
     channel = session.get(RevenueChannel, channel_id)
     if channel is None:
         raise HTTPException(status_code=404, detail="Revenue channel not found")
@@ -118,10 +146,15 @@ def list_revenue_records(
     page: int = 1,
     page_size: int = 50,
     session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
 ) -> ApiEnvelope[Page[RevenueRecordRead]]:
+    ensure_permission(session, current_user, "revenue.view")
     query = select(RevenueRecord).order_by(RevenueRecord.revenue_date.desc(), RevenueRecord.created_at.desc())
     if store_id:
+        ensure_store_access(session, current_user, store_id)
         query = query.where(RevenueRecord.store_id == store_id)
+    else:
+        query = query.where(scoped_store_condition(session, current_user, RevenueRecord.store_id))
     if ledger_period:
         query = query.where(RevenueRecord.ledger_period == ledger_period)
     if channel:
@@ -134,11 +167,12 @@ def list_revenue_records(
 def create_revenue_record(
     payload: RevenueRecordCreate,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+    current_user: User = Depends(get_current_user),
 ) -> ApiEnvelope[RevenueRecordRead]:
-    ensure_open_ledger(session, payload.store_id, payload.ledger_period)
+    ensure_permission(session, current_user, "revenue.manage")
+    ensure_store_access(session, current_user, payload.store_id)
     ensure_active_channel(session, payload.channel)
-    record = RevenueRecord(**payload.model_dump())
+    record = RevenueRecord(**normalize_revenue_assignment(session, payload.model_dump()))
     session.add(record)
     try:
         session.flush()
@@ -168,14 +202,25 @@ def update_revenue_record(
     record_id: str,
     payload: RevenueRecordUpdate,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+    current_user: User = Depends(get_current_user),
 ) -> ApiEnvelope[RevenueRecordRead]:
+    ensure_permission(session, current_user, "revenue.manage")
     record = session.get(RevenueRecord, record_id)
     if record is None:
         raise HTTPException(status_code=404, detail="Revenue record not found")
+    ensure_store_access(session, current_user, record.store_id)
     ensure_open_ledger(session, record.store_id, record.ledger_period)
 
     changes = payload.model_dump(exclude_unset=True)
+    target_store_id = changes.get("store_id", record.store_id)
+    ensure_store_access(session, current_user, target_store_id)
+    target_revenue_date = changes.get("revenue_date", record.revenue_date)
+    target_period = period_from_revenue_date(target_revenue_date)
+    if changes.get("ledger_period") and changes["ledger_period"] != target_period:
+        raise HTTPException(status_code=422, detail="Ledger period must match revenue date month")
+    changes["store_id"] = target_store_id
+    changes["ledger_period"] = target_period
+    ensure_open_or_create_ledger(session, target_store_id, target_period)
     if "channel" in changes and changes["channel"] is not None:
         ensure_active_channel(session, changes["channel"])
     for field, value in changes.items():

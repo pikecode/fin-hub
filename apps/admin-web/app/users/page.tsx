@@ -35,6 +35,8 @@ const permissionGroups: { title: string; options: { label: string; value: Permis
       { label: "查看对账", value: "reconciliation.view" },
       { label: "维护对账", value: "reconciliation.manage" },
       { label: "查看报表", value: "reports.view" },
+      { label: "查看收入", value: "revenue.view" },
+      { label: "维护收入", value: "revenue.manage" },
     ],
   },
   {
@@ -71,6 +73,8 @@ const roleDefaultPermissions: Record<UserRole, PermissionKey[]> = {
     "reconciliation.view",
     "reconciliation.manage",
     "reports.view",
+    "revenue.view",
+    "revenue.manage",
     "stores.view",
     "stores.manage",
     "categories.view",
@@ -78,13 +82,14 @@ const roleDefaultPermissions: Record<UserRole, PermissionKey[]> = {
     "dingtalk.view",
     "audit.view",
   ],
-  viewer: ["dashboard.view", "reconciliation.view", "reports.view", "stores.view", "categories.view"],
+  viewer: ["dashboard.view", "reconciliation.view", "reports.view", "revenue.view", "stores.view", "categories.view"],
 };
 
 const impliedPermissions: Partial<Record<PermissionKey, PermissionKey[]>> = {
   "reconciliation.view": ["stores.view", "categories.view", "dingtalk.view"],
   "reconciliation.manage": ["reconciliation.view"],
   "dingtalk.manage": ["dingtalk.view"],
+  "revenue.manage": ["revenue.view", "stores.view"],
   "stores.manage": ["stores.view"],
   "categories.manage": ["categories.view"],
   "users.manage": ["users.view"],

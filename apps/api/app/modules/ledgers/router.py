@@ -12,6 +12,7 @@ from app.models import (
     LedgerStatus,
     MatchStatus,
     RevenueBankMatch,
+    RevenueRecord,
     Store,
     User,
     UserRole,
@@ -83,20 +84,35 @@ def build_close_check(session: Session, ledger: Ledger) -> LedgerCloseCheck:
         )
     )
     candidate_match_count = expense_candidate_match_count + revenue_candidate_match_count
+    revenue_record_count = len(
+        list(
+            session.scalars(
+                select(RevenueRecord).where(
+                    RevenueRecord.store_id == ledger.store_id,
+                    RevenueRecord.ledger_period == ledger.period,
+                )
+            )
+        )
+    )
 
     issues: list[str] = []
+    warnings: list[str] = []
     if unpaid_expense_count:
         issues.append(f"存在 {unpaid_expense_count} 条未付款或部分付款支出")
     if unmatched_bank_transaction_count:
         issues.append(f"存在 {unmatched_bank_transaction_count} 条未完全匹配的银行流水")
     if candidate_match_count:
         issues.append(f"存在 {candidate_match_count} 条待确认候选匹配")
+    if not revenue_record_count:
+        warnings.append("当前账期没有营业收入记录")
     return LedgerCloseCheck(
         can_close=not issues,
         unpaid_expense_count=unpaid_expense_count,
         unmatched_bank_transaction_count=unmatched_bank_transaction_count,
         candidate_match_count=candidate_match_count,
+        revenue_record_count=revenue_record_count,
         issues=issues,
+        warnings=warnings,
     )
 
 

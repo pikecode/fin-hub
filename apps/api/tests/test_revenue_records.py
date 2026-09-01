@@ -53,6 +53,71 @@ def test_create_update_revenue_record_and_report(client: TestClient) -> None:
     assert any(log["action"] == "revenue_record.update" and log["resource_id"] == record_id for log in logs)
 
 
+def test_create_revenue_record_auto_creates_open_ledger(client: TestClient) -> None:
+    store_id = client.post("/api/stores", json={"name": "蘑说收入自动账套店"}).json()["data"]["id"]
+    client.post("/api/revenue-channels", json={"name": "扫码收入", "requires_bank_match": False})
+
+    create_response = client.post(
+        "/api/revenue-records",
+        json={
+            "store_id": store_id,
+            "revenue_date": "2026-09-02",
+            "channel": "扫码收入",
+            "gross_amount": "1280.00",
+            "net_amount": "1280.00",
+        },
+    )
+    assert create_response.status_code == 201
+    assert create_response.json()["data"]["ledger_period"] == "2026-09"
+
+    ledgers_response = client.get(f"/api/ledgers?store_id={store_id}&period=2026-09")
+    assert ledgers_response.status_code == 200
+    ledgers = ledgers_response.json()["data"]["items"]
+    assert len(ledgers) == 1
+    assert ledgers[0]["status"] == "open"
+
+
+def test_revenue_record_rejects_ledger_period_that_does_not_match_revenue_date(client: TestClient) -> None:
+    store_id = client.post("/api/stores", json={"name": "蘑说收入账期校验店"}).json()["data"]["id"]
+    client.post("/api/revenue-channels", json={"name": "现金收入", "requires_bank_match": False})
+
+    response = client.post(
+        "/api/revenue-records",
+        json={
+            "store_id": store_id,
+            "ledger_period": "2026-08",
+            "revenue_date": "2026-09-02",
+            "channel": "现金收入",
+            "gross_amount": "100.00",
+            "net_amount": "100.00",
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_update_revenue_record_can_move_to_month_and_create_target_ledger(client: TestClient) -> None:
+    store_id = client.post("/api/stores", json={"name": "蘑说收入改账期店"}).json()["data"]["id"]
+    client.post("/api/revenue-channels", json={"name": "团购收入", "requires_bank_match": False})
+    record_id = client.post(
+        "/api/revenue-records",
+        json={
+            "store_id": store_id,
+            "revenue_date": "2026-08-20",
+            "channel": "团购收入",
+            "gross_amount": "300.00",
+            "net_amount": "300.00",
+        },
+    ).json()["data"]["id"]
+
+    update_response = client.patch(
+        f"/api/revenue-records/{record_id}",
+        json={"revenue_date": "2026-09-01"},
+    )
+    assert update_response.status_code == 200
+    assert update_response.json()["data"]["ledger_period"] == "2026-09"
+    assert client.get(f"/api/ledgers?store_id={store_id}&period=2026-09").json()["data"]["total"] == 1
+
+
 def test_revenue_record_requires_open_ledger(client: TestClient) -> None:
     store_id = client.post("/api/stores", json={"name": "蘑说收入封账店"}).json()["data"]["id"]
     ledger_id = client.post("/api/ledgers", json={"store_id": store_id, "period": "2026-08"}).json()["data"]["id"]
@@ -71,6 +136,67 @@ def test_revenue_record_requires_open_ledger(client: TestClient) -> None:
         },
     )
     assert response.status_code == 409
+
+
+def test_ledger_close_check_warns_when_revenue_is_missing(client: TestClient) -> None:
+    store_id = client.post("/api/stores", json={"name": "蘑说无收入提示店"}).json()["data"]["id"]
+    ledger_id = client.post("/api/ledgers", json={"store_id": store_id, "period": "2026-08"}).json()["data"]["id"]
+
+    check_response = client.get(f"/api/ledgers/{ledger_id}/close-check")
+    assert check_response.status_code == 200
+    check = check_response.json()["data"]
+    assert check["can_close"] is True
+    assert check["revenue_record_count"] == 0
+    assert check["warnings"] == ["当前账期没有营业收入记录"]
+
+
+def test_revenue_records_respect_user_store_scope(client: TestClient) -> None:
+    first_store_id = client.post("/api/stores", json={"name": "蘑说收入权限店 A"}).json()["data"]["id"]
+    second_store_id = client.post("/api/stores", json={"name": "蘑说收入权限店 B"}).json()["data"]["id"]
+    client.post("/api/revenue-channels", json={"name": "权限渠道", "requires_bank_match": False})
+    for store_id, amount in [(first_store_id, "100.00"), (second_store_id, "200.00")]:
+        client.post(
+            "/api/revenue-records",
+            json={
+                "store_id": store_id,
+                "revenue_date": "2026-08-20",
+                "channel": "权限渠道",
+                "gross_amount": amount,
+                "net_amount": amount,
+            },
+        )
+    client.post(
+        "/api/users",
+        json={
+            "username": "revenue_limited",
+            "display_name": "收入受限",
+            "password": "secret123",
+            "role": "finance",
+            "permissions": ["revenue.view", "revenue.manage"],
+            "store_ids": [first_store_id],
+        },
+    )
+
+    login_response = client.post("/api/auth/login", json={"username": "revenue_limited", "password": "secret123"})
+    assert login_response.status_code == 200
+
+    list_response = client.get("/api/revenue-records?page_size=20")
+    assert list_response.status_code == 200
+    records = list_response.json()["data"]["items"]
+    assert len(records) == 1
+    assert records[0]["store_id"] == first_store_id
+
+    forbidden_response = client.post(
+        "/api/revenue-records",
+        json={
+            "store_id": second_store_id,
+            "revenue_date": "2026-08-21",
+            "channel": "权限渠道",
+            "gross_amount": "300.00",
+            "net_amount": "300.00",
+        },
+    )
+    assert forbidden_response.status_code == 403
 
 
 def test_revenue_channel_update_and_record_validation(client: TestClient) -> None:

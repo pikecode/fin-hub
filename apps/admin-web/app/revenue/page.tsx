@@ -9,7 +9,7 @@ import { formatMoney } from "@fin-hub/shared-utils";
 import { AppShell } from "../components/AppShell";
 import { apiClient } from "../lib/api";
 
-interface RevenueFormValues extends Omit<RevenueRecordCreate, "revenue_date" | "store_id"> {
+interface RevenueFormValues extends Omit<RevenueRecordCreate, "revenue_date" | "ledger_period"> {
   revenue_date?: dayjs.Dayjs;
 }
 
@@ -36,12 +36,6 @@ export default function RevenuePage() {
     () => new Map(ledgers.map((ledger) => [`${ledger.store_id}|${ledger.period}`, ledger])),
     [ledgers],
   );
-  const openLedgerOptions = ledgers
-    .filter((ledger) => ledger.status === "open")
-    .map((ledger) => ({
-      label: `${storesById.get(ledger.store_id)?.name ?? "未知门店"} / ${ledger.period}`,
-      value: `${ledger.store_id}|${ledger.period}`,
-    }));
   const ledgerPeriodOptions = Array.from(new Set(ledgers.map((ledger) => ledger.period)))
     .sort()
     .reverse()
@@ -91,6 +85,7 @@ export default function RevenuePage() {
     setEditingRecord(null);
     form.resetFields();
     form.setFieldsValue({
+      revenue_date: dayjs(),
       channel: channelOptions[0]?.value,
       gross_amount: "0.00",
       net_amount: "0.00",
@@ -102,7 +97,7 @@ export default function RevenuePage() {
   function openEditModal(record: RevenueRecord) {
     setEditingRecord(record);
     form.setFieldsValue({
-      ledger_period: `${record.store_id}|${record.ledger_period}`,
+      store_id: record.store_id,
       revenue_date: dayjs(record.revenue_date),
       channel: record.channel,
       gross_amount: record.gross_amount,
@@ -118,6 +113,7 @@ export default function RevenuePage() {
     setErrorMessage(null);
     try {
       const payload = {
+        store_id: values.store_id,
         revenue_date: values.revenue_date?.format("YYYY-MM-DD") ?? dayjs().format("YYYY-MM-DD"),
         channel: values.channel,
         gross_amount: values.gross_amount,
@@ -128,12 +124,7 @@ export default function RevenuePage() {
       if (editingRecord) {
         await apiClient.revenueRecords.update(editingRecord.id, payload);
       } else {
-        const [storeId, period] = values.ledger_period.split("|");
-        await apiClient.revenueRecords.create({
-          ...payload,
-          store_id: storeId,
-          ledger_period: period,
-        });
+        await apiClient.revenueRecords.create(payload);
       }
       setIsModalOpen(false);
       setEditingRecord(null);
@@ -221,10 +212,19 @@ export default function RevenuePage() {
         confirmLoading={isLoading}
       >
         <Form form={form} layout="vertical" onFinish={submitRecord}>
-          <Form.Item name="ledger_period" label="账套" rules={[{ required: true }]}>
-            <Select disabled={Boolean(editingRecord)} options={openLedgerOptions} />
+          <Form.Item name="store_id" label="门店" rules={[{ required: true }]}>
+            <Select
+              showSearch
+              optionFilterProp="label"
+              options={stores.map((store) => ({ label: store.name, value: store.id }))}
+            />
           </Form.Item>
-          <Form.Item name="revenue_date" label="收入日期">
+          <Form.Item
+            name="revenue_date"
+            label="收入日期"
+            extra="系统会按收入日期自动归属账期，例：2026-08-20 归入 2026-08。"
+            rules={[{ required: true, message: "请选择收入日期" }]}
+          >
             <DatePicker className="full-width" />
           </Form.Item>
           <Form.Item name="channel" label="收入渠道" rules={[{ required: true }]}>
