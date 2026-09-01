@@ -170,7 +170,9 @@ class LedgerCloseCheck(BaseModel):
     unpaid_expense_count: int
     unmatched_bank_transaction_count: int
     candidate_match_count: int
+    revenue_record_count: int = 0
     issues: list[str]
+    warnings: list[str] = Field(default_factory=list)
 
 
 class DatabaseBackupStatus(BaseModel):
@@ -195,7 +197,7 @@ class SystemReadinessReport(BaseModel):
 
 class RevenueRecordCreate(BaseModel):
     store_id: str
-    ledger_period: str = Field(pattern=r"^\d{4}-\d{2}$")
+    ledger_period: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}$")
     revenue_date: date
     channel: str = Field(min_length=1, max_length=80)
     gross_amount: Decimal = Field(ge=0)
@@ -205,6 +207,8 @@ class RevenueRecordCreate(BaseModel):
 
 
 class RevenueRecordUpdate(BaseModel):
+    store_id: str | None = None
+    ledger_period: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}$")
     revenue_date: date | None = None
     channel: str | None = Field(default=None, min_length=1, max_length=80)
     gross_amount: Decimal | None = Field(default=None, ge=0)
@@ -469,6 +473,7 @@ class DingTalkAutoSyncSettingRead(BaseModel):
 
     id: str
     enabled: bool
+    scheduled_time: str
     interval_minutes: int
     window_days: int
     root_dept_id: str
@@ -490,13 +495,7 @@ class DingTalkAutoSyncSettingRead(BaseModel):
 
 class DingTalkAutoSyncSettingUpdate(BaseModel):
     enabled: bool | None = None
-    interval_minutes: int | None = Field(default=None, ge=5, le=1440)
-    window_days: int | None = Field(default=None, ge=1, le=365)
-    root_dept_id: str | None = Field(default=None, min_length=1, max_length=120)
-    max_depth: int | None = Field(default=None, ge=1, le=8)
-    page_size: int | None = Field(default=None, ge=1, le=100)
-    max_pages: int | None = Field(default=None, ge=1, le=500)
-    skip_existing: bool | None = None
+    scheduled_time: str | None = Field(default=None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
     sync_departments: bool | None = None
     sync_templates: bool | None = None
     sync_approvals: bool | None = None

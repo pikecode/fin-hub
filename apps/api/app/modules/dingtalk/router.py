@@ -1,7 +1,8 @@
 import json
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
@@ -17,7 +18,6 @@ from app.models import (
     AttachmentStatus,
     DingTalkAutoSyncSetting,
     DingTalkConfig,
-    DingTalkDepartment as DingTalkDepartmentModel,
     ExpenseBankMatch,
     ExpenseItem,
     Ledger,
@@ -28,6 +28,7 @@ from app.models import (
     User,
     utc_now,
 )
+from app.models import DingTalkDepartment as DingTalkDepartmentModel
 from app.modules.audit.service import write_audit_log
 from app.modules.auth.router import audit_actor, require_permission
 from app.modules.common import paginate
@@ -67,6 +68,13 @@ router = APIRouter(
     tags=["dingtalk"],
     dependencies=[Depends(require_permission("dingtalk.view"))],
 )
+
+AUTO_SYNC_TIMEZONE = ZoneInfo("Asia/Shanghai")
+AUTO_SYNC_DEPARTMENT_ROOT_ID = "1"
+AUTO_SYNC_DEPARTMENT_MAX_DEPTH = 8
+AUTO_SYNC_APPROVAL_PAGE_SIZE = 100
+AUTO_SYNC_APPROVAL_MAX_PAGES = 500
+AUTO_SYNC_INITIAL_APPROVAL_LOOKBACK_DAYS = 3650
 
 
 def template_mapping_status(session: Session, template_id: str) -> str:
@@ -119,8 +127,8 @@ def get_or_create_config(session: Session) -> DingTalkConfig:
 def get_or_create_auto_sync_setting(session: Session) -> DingTalkAutoSyncSetting:
     setting = session.scalar(select(DingTalkAutoSyncSetting).order_by(DingTalkAutoSyncSetting.created_at.asc()))
     if setting is None:
-        now = utc_now()
-        setting = DingTalkAutoSyncSetting(next_run_at=now + timedelta(minutes=60))
+        setting = DingTalkAutoSyncSetting()
+        refresh_auto_sync_next_run(setting)
         session.add(setting)
         session.commit()
         session.refresh(setting)
@@ -128,7 +136,13 @@ def get_or_create_auto_sync_setting(session: Session) -> DingTalkAutoSyncSetting
 
 
 def refresh_auto_sync_next_run(setting: DingTalkAutoSyncSetting) -> None:
-    setting.next_run_at = utc_now() + timedelta(minutes=setting.interval_minutes)
+    hour, minute = map(int, (setting.scheduled_time or "02:00").split(":"))
+    now_utc = utc_now().replace(tzinfo=UTC)
+    now_local = now_utc.astimezone(AUTO_SYNC_TIMEZONE)
+    next_local = datetime.combine(now_local.date(), time(hour=hour, minute=minute), tzinfo=AUTO_SYNC_TIMEZONE)
+    if next_local <= now_local:
+        next_local += timedelta(days=1)
+    setting.next_run_at = next_local.astimezone(UTC).replace(tzinfo=None)
 
 
 def dingtalk_credentials(config: DingTalkConfig) -> DingTalkCredentials | None:
@@ -2364,11 +2378,16 @@ def execute_auto_sync(
     try:
         update_progress("start", "running")
         if setting.sync_departments:
-            update_progress("departments_pull", "running", root_dept_id=setting.root_dept_id, max_depth=setting.max_depth)
+            update_progress(
+                "departments_pull",
+                "running",
+                root_dept_id=AUTO_SYNC_DEPARTMENT_ROOT_ID,
+                max_depth=AUTO_SYNC_DEPARTMENT_MAX_DEPTH,
+            )
             department_pull = pull_departments_core(
                 session,
-                root_dept_id=setting.root_dept_id,
-                max_depth=setting.max_depth,
+                root_dept_id=AUTO_SYNC_DEPARTMENT_ROOT_ID,
+                max_depth=AUTO_SYNC_DEPARTMENT_MAX_DEPTH,
             )
             update_progress("departments_pull", "succeeded", pulled_count=department_pull.pulled_count)
             update_progress("stores_sync", "running")
@@ -2391,13 +2410,17 @@ def execute_auto_sync(
             update_progress(
                 "approvals_sync",
                 "running",
-                window_days=setting.window_days,
-                page_size=setting.page_size,
-                max_pages=setting.max_pages,
+                page_size=AUTO_SYNC_APPROVAL_PAGE_SIZE,
+                max_pages=AUTO_SYNC_APPROVAL_MAX_PAGES,
+                incremental_start_at=setting.last_run_at.isoformat()
+                if setting.last_run_at
+                else None,
             )
             end_at = utc_now()
             job.request_end_at = end_at
-            job.request_start_at = end_at - timedelta(days=setting.window_days)
+            job.request_start_at = setting.last_run_at or (
+                end_at - timedelta(days=AUTO_SYNC_INITIAL_APPROVAL_LOOKBACK_DAYS)
+            )
             templates = list(
                 session.scalars(
                     select(ApprovalTemplate)
@@ -2411,9 +2434,9 @@ def execute_auto_sync(
                 session,
                 job=job,
                 templates=templates,
-                page_size=setting.page_size,
-                max_pages=setting.max_pages,
-                skip_existing=setting.skip_existing,
+                page_size=AUTO_SYNC_APPROVAL_PAGE_SIZE,
+                max_pages=AUTO_SYNC_APPROVAL_MAX_PAGES,
+                skip_existing=True,
             )
             approval_sync_summary = json.loads(job.raw_summary) if job.raw_summary else None
             update_progress(

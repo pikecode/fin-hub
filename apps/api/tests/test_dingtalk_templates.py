@@ -91,19 +91,16 @@ def test_auto_sync_setting_and_manual_run(client: TestClient, session) -> None:
         "/api/dingtalk/auto-sync/settings",
         json={
             "enabled": True,
-            "interval_minutes": 30,
-            "window_days": 14,
+            "scheduled_time": "23:00",
             "sync_departments": False,
             "sync_templates": True,
             "sync_approvals": True,
-            "page_size": 10,
-            "max_pages": 5,
         },
     )
     assert update_response.status_code == 200
     setting = update_response.json()["data"]
     assert setting["enabled"] is True
-    assert setting["interval_minutes"] == 30
+    assert setting["scheduled_time"] == "23:00"
     assert setting["sync_departments"] is False
 
     run_response = client.post("/api/dingtalk/auto-sync/run")

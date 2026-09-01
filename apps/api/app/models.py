@@ -426,6 +426,7 @@ class DingTalkAutoSyncSetting(Base):
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
     enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    scheduled_time: Mapped[str] = mapped_column(String(5), default="02:00", nullable=False)
     interval_minutes: Mapped[int] = mapped_column(default=60, nullable=False)
     window_days: Mapped[int] = mapped_column(default=7, nullable=False)
     root_dept_id: Mapped[str] = mapped_column(String(120), default="1", nullable=False)

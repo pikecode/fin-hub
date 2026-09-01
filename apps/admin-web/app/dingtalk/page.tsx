@@ -100,6 +100,29 @@ type ImagePreviewState = {
   url: string;
 };
 
+const AUTO_SYNC_TIME_OPTIONS = Array.from({ length: 24 }, (_, hour) => {
+  const value = `${String(hour).padStart(2, "0")}:00`;
+  return { value, label: value };
+});
+
+function formatBeijingDateTime(value?: string | null) {
+  if (!value) {
+    return "-";
+  }
+  const normalized = value.endsWith("Z") ? value : `${value}Z`;
+  return new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  })
+    .format(new Date(normalized))
+    .replace(/\//g, "-");
+}
+
 const BUSINESS_FIELD_OPTIONS: BusinessFieldOption[] = [
   { value: "amount", label: "单据总金额", description: "对账时与银行流水金额匹配", required: true },
   { value: "store", label: "门店/部门", description: "用于归属门店和门店维度分析", required: true },
@@ -650,13 +673,7 @@ export default function DingTalkPage() {
       setAutoSyncSetting(data);
       autoSyncForm.setFieldsValue({
         enabled: data.enabled,
-        interval_minutes: data.interval_minutes,
-        window_days: data.window_days,
-        root_dept_id: data.root_dept_id,
-        max_depth: data.max_depth,
-        page_size: data.page_size,
-        max_pages: data.max_pages,
-        skip_existing: data.skip_existing,
+        scheduled_time: data.scheduled_time,
         sync_departments: data.sync_departments,
         sync_templates: data.sync_templates,
         sync_approvals: data.sync_approvals,
@@ -749,13 +766,7 @@ export default function DingTalkPage() {
       setAutoSyncSetting(setting);
       autoSyncForm.setFieldsValue({
         enabled: setting.enabled,
-        interval_minutes: setting.interval_minutes,
-        window_days: setting.window_days,
-        root_dept_id: setting.root_dept_id,
-        max_depth: setting.max_depth,
-        page_size: setting.page_size,
-        max_pages: setting.max_pages,
-        skip_existing: setting.skip_existing,
+        scheduled_time: setting.scheduled_time,
         sync_departments: setting.sync_departments,
         sync_templates: setting.sync_templates,
         sync_approvals: setting.sync_approvals,
@@ -806,7 +817,7 @@ export default function DingTalkPage() {
     setIsLoading(true);
     setErrorMessage(null);
     try {
-      const result = await apiClient.dingtalk.pullDepartments("?root_dept_id=1&max_depth=6");
+      const result = await apiClient.dingtalk.pullDepartments("?root_dept_id=1&max_depth=8");
       const preview = await apiClient.dingtalk.previewDepartmentSync();
       setDepartmentPreview(preview);
       message.success(
@@ -1669,13 +1680,13 @@ export default function DingTalkPage() {
                 <Space direction="vertical" size={16} className="full-width">
                   <Space wrap>
                     <Tag color="cyan">
-                      上次执行 {autoSyncSetting?.last_run_at ? autoSyncSetting.last_run_at.replace("T", " ").slice(0, 16) : "尚未执行"}
+                      上次执行 {autoSyncSetting?.last_run_at ? formatBeijingDateTime(autoSyncSetting.last_run_at) : "尚未执行"}
                     </Tag>
                     <Tag color={autoSyncSetting?.last_status === "failed" ? "red" : "green"}>
                       上次状态 {autoSyncSetting?.last_status ?? "-"}
                     </Tag>
                     <Tag>
-                      下次计划 {autoSyncSetting?.next_run_at ? autoSyncSetting.next_run_at.replace("T", " ").slice(0, 16) : "-"}
+                      下次计划 {formatBeijingDateTime(autoSyncSetting?.next_run_at)}
                     </Tag>
                     {autoSyncSetting?.last_error ? <Tag color="red">{autoSyncSetting.last_error}</Tag> : null}
                   </Space>
@@ -1683,7 +1694,7 @@ export default function DingTalkPage() {
                   <Alert
                     type="info"
                     showIcon
-                    message="自动同步会按配置顺序执行：拉取部门快照、同步门店、同步审批模板、同步审批列表。只有启用的审批模板会参与审批同步。"
+                    message="自动同步会在每天设定时间执行：全量拉取部门并同步门店、同步审批模板、增量同步审批列表。只有启用的审批模板会参与审批同步。"
                   />
 
                   <Form
@@ -1692,13 +1703,7 @@ export default function DingTalkPage() {
                     onFinish={submitAutoSyncSetting}
                     initialValues={{
                       enabled: false,
-                      interval_minutes: 60,
-                      window_days: 7,
-                      root_dept_id: "1",
-                      max_depth: 6,
-                      page_size: 20,
-                      max_pages: 20,
-                      skip_existing: true,
+                      scheduled_time: "02:00",
                       sync_departments: true,
                       sync_templates: true,
                       sync_approvals: true,
@@ -1711,38 +1716,8 @@ export default function DingTalkPage() {
                         </Form.Item>
                       </Col>
                       <Col xs={24} md={8}>
-                        <Form.Item name="interval_minutes" label="同步间隔（分钟）" rules={[{ required: true }]}>
-                          <InputNumber min={5} max={1440} className="full-width" />
-                        </Form.Item>
-                      </Col>
-                      <Col xs={24} md={8}>
-                        <Form.Item name="window_days" label="审批同步窗口（天）" rules={[{ required: true }]}>
-                          <InputNumber min={1} max={365} className="full-width" />
-                        </Form.Item>
-                      </Col>
-                      <Col xs={24} md={8}>
-                        <Form.Item name="root_dept_id" label="部门根节点" rules={[{ required: true }]}>
-                          <Input />
-                        </Form.Item>
-                      </Col>
-                      <Col xs={24} md={8}>
-                        <Form.Item name="max_depth" label="部门最大深度" rules={[{ required: true }]}>
-                          <InputNumber min={1} max={8} className="full-width" />
-                        </Form.Item>
-                      </Col>
-                      <Col xs={24} md={8}>
-                        <Form.Item name="page_size" label="审批每页数量" rules={[{ required: true }]}>
-                          <InputNumber min={1} max={100} className="full-width" />
-                        </Form.Item>
-                      </Col>
-                      <Col xs={24} md={8}>
-                        <Form.Item name="max_pages" label="审批最大页数" rules={[{ required: true }]}>
-                          <InputNumber min={1} max={500} className="full-width" />
-                        </Form.Item>
-                      </Col>
-                      <Col xs={24} md={8}>
-                        <Form.Item name="skip_existing" label="跳过已有审批" valuePropName="checked">
-                          <Switch />
+                        <Form.Item name="scheduled_time" label="每天开始时间（北京时间）" rules={[{ required: true }]}>
+                          <Select options={AUTO_SYNC_TIME_OPTIONS} />
                         </Form.Item>
                       </Col>
                       <Col xs={24} md={8}>

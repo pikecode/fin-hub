@@ -2,7 +2,7 @@ import json
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -787,13 +787,13 @@ def auto_suggest_matches(
     response_model=ApiEnvelope[ReconciliationCandidateResult],
 )
 def list_reconciliation_candidates(
-    bank_transaction_id: str | None = None,
-    template_id: str | None = None,
-    store_id: str | None = None,
-    approval_no: str | None = None,
-    exclude_match_id: str | None = None,
-    approval_only: bool = False,
-    page_size: int = 50,
+    bank_transaction_id: str | None = Query(default=None),
+    template_id: str | None = Query(default=None),
+    store_id: str | None = Query(default=None),
+    approval_no: str | None = Query(default=None),
+    exclude_match_id: str | None = Query(default=None),
+    approval_only: bool = Query(default=False),
+    page_size: int = Query(default=50, ge=1, le=100),
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> ApiEnvelope[ReconciliationCandidateResult]:

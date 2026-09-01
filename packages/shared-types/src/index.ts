@@ -496,6 +496,7 @@ export interface DingTalkConfig {
 export interface DingTalkAutoSyncSetting {
   id: string;
   enabled: boolean;
+  scheduled_time: string;
   interval_minutes: number;
   window_days: number;
   root_dept_id: string;
@@ -517,13 +518,7 @@ export interface DingTalkAutoSyncSetting {
 
 export interface DingTalkAutoSyncSettingUpdate {
   enabled?: boolean;
-  interval_minutes?: number;
-  window_days?: number;
-  root_dept_id?: string;
-  max_depth?: number;
-  page_size?: number;
-  max_pages?: number;
-  skip_existing?: boolean;
+  scheduled_time?: string;
   sync_departments?: boolean;
   sync_templates?: boolean;
   sync_approvals?: boolean;
