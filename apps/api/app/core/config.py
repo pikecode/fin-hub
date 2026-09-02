@@ -32,6 +32,10 @@ class Settings(BaseSettings):
         validation_alias="CORS_ORIGINS",
     )
 
+    # Observability settings
+    sentry_dsn: str | None = Field(default=None, validation_alias="SENTRY_DSN")
+    log_level: str = Field(default="INFO", validation_alias="LOG_LEVEL")
+
     @cached_property
     def cors_origins(self) -> list[str]:
         return [item.strip() for item in self.cors_origin_csv.split(",") if item.strip()]

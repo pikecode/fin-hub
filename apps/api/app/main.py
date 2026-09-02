@@ -9,6 +9,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.core.database import SessionLocal
 from app.core.runtime_checks import validate_production_startup
+from app.core.sentry import init_sentry
+from app.core.logging import init_logging
 from app.middleware.rate_limit import create_rate_limit_middleware
 from app.middleware.security_headers import create_security_headers_middleware
 from app.modules.attachments.router import router as attachments_router
@@ -22,6 +24,7 @@ from app.modules.expense.router import router as expense_router
 from app.modules.health.router import router as health_router
 from app.modules.ledgers.router import router as ledgers_router
 from app.modules.matching.router import router as matching_router
+from app.modules.metrics.router import router as metrics_router
 from app.modules.reports.router import router as reports_router
 from app.modules.revenue.router import channels_router as revenue_channels_router
 from app.modules.revenue.router import router as revenue_router
@@ -62,6 +65,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 
 def create_app() -> FastAPI:
+    # 初始化可观测性组件
+    init_logging()
+    init_sentry()
+
     validate_production_startup()
     app = FastAPI(
         title="fin-hub API",
@@ -103,6 +110,7 @@ def create_app() -> FastAPI:
     app.include_router(matching_router, prefix="/api")
     app.include_router(dingtalk_router, prefix="/api")
     app.include_router(reports_router, prefix="/api")
+    app.include_router(metrics_router, prefix="/api")
     return app
 
 
