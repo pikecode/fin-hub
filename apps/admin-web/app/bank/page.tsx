@@ -1,7 +1,6 @@
 "use client";
 
 import { Alert, Button, Card, DatePicker, Form, Input, Modal, Popconfirm, Select, Space, Table, Tabs, Upload, Typography, message } from "antd";
-import type { ColumnsType } from "antd/es/table";
 import type { UploadFile } from "antd/es/upload/interface";
 import dayjs from "dayjs";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -10,6 +9,7 @@ import {
   ImportOutlined,
   UploadOutlined,
   DownloadOutlined,
+  DeleteOutlined,
 } from "@ant-design/icons";
 import type {
   BankImportPreviewRow,
@@ -24,6 +24,10 @@ import { AppShell } from "../components/AppShell";
 import { MoneyDisplay } from "../components/MoneyDisplay";
 import { StatusBadge } from "../components/StatusBadge";
 import { StoreLedgerWorkspaceNav } from "../components/StoreLedgerWorkspaceNav";
+import { EnterpriseTable } from "../components/EnterpriseTable";
+import type { EnterpriseTableColumn } from "../components/EnterpriseTable";
+import { SmartFilterBar } from "../components/SmartFilterBar";
+import type { FilterField } from "../components/SmartFilterBar";
 import { apiClient } from "../lib/api";
 import { getLedgers, getStores } from "../lib/referenceData";
 import { useClientSearchParams } from "../lib/searchParams";
@@ -418,12 +422,36 @@ export default function BankPage() {
     }
   }
 
-  const columns: ColumnsType<BankTransaction> = [
+  async function handleBatchDelete(ids: string[]) {
+    const recordsToDelete = transactions.filter(t => ids.includes(t.id));
+    const matchedRecords = recordsToDelete.filter(t => Number(t.matched_amount || 0) > 0);
+
+    if (matchedRecords.length > 0) {
+      message.warning(`选中的 ${matchedRecords.length} 条流水已匹配，无法删除`);
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      for (const id of ids) {
+        await apiClient.bankTransactions.delete(id);
+      }
+      message.success(`成功删除 ${ids.length} 条流水`);
+      await loadData(initialFilters);
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "批量删除失败");
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  const columns: EnterpriseTableColumn<BankTransaction>[] = [
     {
       title: "发生时间",
       dataIndex: "occurred_at",
       width: 160,
       render: (value) => value.replace("T", " ").slice(0, 16),
+      searchable: true,
     },
     {
       title: "类型",
@@ -439,12 +467,14 @@ export default function BankPage() {
       width: 120,
       align: "right",
       render: (value, record) => <MoneyDisplay value={value} colorize={record.direction === "income"} />,
+      sorter: (a, b) => Number(a.amount) - Number(b.amount),
     },
     {
       title: "备注",
       dataIndex: "summary",
       ellipsis: true,
       render: (value) => value || "-",
+      searchable: true,
     },
     {
       title: "操作",
@@ -600,15 +630,21 @@ export default function BankPage() {
             </Space>
           }
         >
-          <Table
+          <EnterpriseTable
             rowKey="id"
             columns={columns}
             dataSource={transactions}
             loading={isLoading}
-            size="middle"
-            pagination={{ pageSize: 12, showSizeChanger: true }}
-            scroll={{ x: 760 }}
-            sticky
+            exportFileName="银行流水"
+            batchActions={[
+              {
+                key: "delete",
+                label: "批量删除",
+                danger: true,
+                icon: <DeleteOutlined />,
+                onExecute: handleBatchDelete,
+              },
+            ]}
           />
         </Card>
       </Space>
