@@ -1,10 +1,13 @@
 "use client";
 
-import { Alert, Button, Card, Form, Input, InputNumber, Modal, Space, Switch, Table, Tag } from "antd";
-import type { ColumnsType } from "antd/es/table";
+import { Alert, Button, Form, Input, InputNumber, Modal, Space, Switch, message } from "antd";
 import { useEffect, useState } from "react";
+import { PlusOutlined, MoneyCollectOutlined } from "@ant-design/icons";
 import type { RevenueChannel, RevenueChannelCreate } from "@fin-hub/shared-types";
 import { AppShell } from "../components/AppShell";
+import { StatusBadge } from "../components/StatusBadge";
+import { EnterpriseTable } from "../components/EnterpriseTable";
+import type { EnterpriseTableColumn } from "../components/EnterpriseTable";
 import { apiClient } from "../lib/api";
 
 export default function RevenueChannelsPage() {
@@ -42,15 +45,17 @@ export default function RevenueChannelsPage() {
       };
       if (editingChannel) {
         await apiClient.revenueChannels.update(editingChannel.id, payload);
+        message.success("更新成功");
       } else {
         await apiClient.revenueChannels.create(payload);
+        message.success("创建成功");
       }
       setIsModalOpen(false);
       setEditingChannel(null);
       form.resetFields();
       await loadChannels();
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "无法保存收入渠道");
+      message.error(error instanceof Error ? error.message : "操作失败");
     } finally {
       setIsLoading(false);
     }
@@ -79,37 +84,77 @@ export default function RevenueChannelsPage() {
       await apiClient.revenueChannels.update(channel.id, {
         status: channel.status === "active" ? "inactive" : "active",
       });
+      message.success("状态更新成功");
       await loadChannels();
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "无法更新收入渠道");
+      message.error(error instanceof Error ? error.message : "状态更新失败");
     } finally {
       setIsLoading(false);
     }
   }
 
-  const columns: ColumnsType<RevenueChannel> = [
-    { title: "渠道名称", dataIndex: "name" },
-    { title: "排序", dataIndex: "sort_order", width: 100 },
+  async function handleBatchDelete(ids: string[]) {
+    setIsLoading(true);
+    try {
+      for (const id of ids) {
+        await apiClient.revenueChannels.delete(id);
+      }
+      message.success(`成功删除 ${ids.length} 个渠道`);
+      await loadChannels();
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "批量删除失败");
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  const columns: EnterpriseTableColumn<RevenueChannel>[] = [
+    {
+      title: "渠道名称",
+      dataIndex: "name",
+      searchable: true,
+    },
+    {
+      title: "排序",
+      dataIndex: "sort_order",
+      width: 100,
+      sorter: (a, b) => a.sort_order - b.sort_order,
+    },
     {
       title: "需匹配流水",
       dataIndex: "requires_bank_match",
       width: 130,
-      render: (value: boolean) => (value ? <Tag color="blue">需要</Tag> : <Tag>不需要</Tag>),
+      render: (value: boolean) => (
+        <StatusBadge
+          status={value ? "info" : "default"}
+          text={value ? "需要" : "不需要"}
+        />
+      ),
     },
     {
       title: "状态",
       dataIndex: "status",
       width: 100,
-      render: (value: RevenueChannel["status"]) =>
-        value === "active" ? <Tag color="green">启用</Tag> : <Tag>停用</Tag>,
+      render: (value: RevenueChannel["status"]) => (
+        <StatusBadge
+          status={value === "active" ? "active" : "inactive"}
+          text={value === "active" ? "启用" : "停用"}
+        />
+      ),
     },
     {
       title: "操作",
       width: 150,
       render: (_, record) => (
         <Space>
-          <Button type="link" onClick={() => openEditModal(record)}>编辑</Button>
-          <Button type="link" onClick={() => toggleStatus(record)}>
+          <Button type="link" size="small" onClick={() => openEditModal(record)}>
+            编辑
+          </Button>
+          <Button
+            type="link"
+            size="small"
+            onClick={() => toggleStatus(record)}
+          >
             {record.status === "active" ? "停用" : "启用"}
           </Button>
         </Space>
@@ -118,13 +163,34 @@ export default function RevenueChannelsPage() {
   ];
 
   return (
-    <AppShell title="收入渠道" action={<Button type="primary" onClick={openCreateModal}>新增渠道</Button>}>
+    <AppShell
+      title="收入渠道"
+      action={
+        <Button type="primary" icon={<PlusOutlined />} onClick={openCreateModal}>
+          新增渠道
+        </Button>
+      }
+    >
       {errorMessage ? (
         <Alert className="dashboard-alert" message={errorMessage} type="warning" showIcon />
       ) : null}
-      <Card title="渠道列表">
-        <Table rowKey="id" loading={isLoading} columns={columns} dataSource={channels} />
-      </Card>
+
+      <EnterpriseTable
+        rowKey="id"
+        loading={isLoading}
+        columns={columns}
+        dataSource={channels}
+        exportFileName="收入渠道"
+        batchActions={[
+          {
+            key: "delete",
+            label: "批量删除",
+            danger: true,
+            onExecute: handleBatchDelete,
+          },
+        ]}
+      />
+
       <Modal
         title={editingChannel ? "编辑渠道" : "新增渠道"}
         open={isModalOpen}
@@ -141,13 +207,18 @@ export default function RevenueChannelsPage() {
           onFinish={submitChannel}
           initialValues={{ sort_order: 0, requires_bank_match: true }}
         >
-          <Form.Item name="name" label="渠道名称" rules={[{ required: true }]}>
-            <Input />
+          <Form.Item name="name" label="渠道名称" rules={[{ required: true, message: "请输入渠道名称" }]}>
+            <Input placeholder="如：线上订单、现金收款" />
           </Form.Item>
-          <Form.Item name="sort_order" label="排序">
-            <InputNumber className="full-width" />
+          <Form.Item name="sort_order" label="排序" tooltip="数字越小越靠前">
+            <InputNumber className="full-width" min={0} placeholder="0" />
           </Form.Item>
-          <Form.Item name="requires_bank_match" label="需匹配银行流水" valuePropName="checked">
+          <Form.Item
+            name="requires_bank_match"
+            label="需匹配银行流水"
+            valuePropName="checked"
+            tooltip="如果选择需要，该渠道的收入需要与银行流水匹配"
+          >
             <Switch checkedChildren="需要" unCheckedChildren="不需要" />
           </Form.Item>
         </Form>

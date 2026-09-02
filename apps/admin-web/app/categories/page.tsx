@@ -1,10 +1,12 @@
 "use client";
 
-import { Alert, Button, Card, Form, Input, InputNumber, Modal, Select, Space, Statistic, Table, Tag, Typography } from "antd";
+import { Alert, Button, Card, Form, Input, InputNumber, Modal, Select, Space, Statistic, Table, Typography, message } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { useEffect, useMemo, useState } from "react";
+import { PlusOutlined, TagsOutlined } from "@ant-design/icons";
 import type { ExpenseCategory, ExpenseCategoryCreate } from "@fin-hub/shared-types";
 import { AppShell } from "../components/AppShell";
+import { StatusBadge } from "../components/StatusBadge";
 import { apiClient } from "../lib/api";
 
 interface CategoryTreeNode extends ExpenseCategory {
@@ -80,15 +82,17 @@ export default function CategoriesPage() {
     try {
       if (editingCategory) {
         await apiClient.categories.update(editingCategory.id, values);
+        message.success("更新成功");
       } else {
         await apiClient.categories.create(values);
+        message.success("创建成功");
       }
       setIsModalOpen(false);
       setEditingCategory(null);
       form.resetFields();
       await loadCategories();
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "无法创建费用分类");
+      message.error(error instanceof Error ? error.message : "操作失败");
     } finally {
       setIsLoading(false);
     }
@@ -124,9 +128,10 @@ export default function CategoriesPage() {
       await apiClient.categories.update(category.id, {
         status: category.status === "active" ? "inactive" : "active",
       });
+      message.success("状态更新成功");
       await loadCategories();
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "无法更新费用分类");
+      message.error(error instanceof Error ? error.message : "状态更新失败");
     } finally {
       setIsLoading(false);
     }
@@ -139,7 +144,11 @@ export default function CategoriesPage() {
       render: (value, record) => (
         <Space size={8}>
           <Typography.Text strong={!record.parent_id}>{value}</Typography.Text>
-          {record.parent_id ? <Tag>二级分类</Tag> : <Tag color="blue">一级分类</Tag>}
+          {record.parent_id ? (
+            <StatusBadge status="default" text="二级分类" />
+          ) : (
+            <StatusBadge status="info" text="一级分类" />
+          )}
         </Space>
       ),
     },
@@ -147,7 +156,12 @@ export default function CategoriesPage() {
       title: "上级分类",
       dataIndex: "parent_id",
       width: 180,
-      render: (value) => (value ? categoryById.get(value)?.name ?? value : <Tag color="blue">一级分类</Tag>),
+      render: (value) =>
+        value ? (
+          categoryById.get(value)?.name ?? value
+        ) : (
+          <StatusBadge status="info" text="一级分类" />
+        ),
     },
     {
       title: "子分类",
@@ -155,22 +169,41 @@ export default function CategoriesPage() {
       align: "right",
       render: (_, record) => (record.parent_id ? "-" : record.children?.length ?? 0),
     },
-    { title: "排序", dataIndex: "sort_order", width: 100 },
+    {
+      title: "排序",
+      dataIndex: "sort_order",
+      width: 100,
+      sorter: (a, b) => a.sort_order - b.sort_order,
+    },
     {
       title: "状态",
       dataIndex: "status",
       width: 100,
-      render: (value: ExpenseCategory["status"]) =>
-        value === "active" ? <Tag color="green">启用</Tag> : <Tag>停用</Tag>,
+      render: (value: ExpenseCategory["status"]) => (
+        <StatusBadge
+          status={value === "active" ? "active" : "inactive"}
+          text={value === "active" ? "启用" : "停用"}
+        />
+      ),
     },
     {
       title: "操作",
-      width: 150,
+      width: 200,
       render: (_, record) => (
         <Space>
-          {!record.parent_id ? <Button type="link" onClick={() => openCreateChildModal(record)}>新增子分类</Button> : null}
-          <Button type="link" onClick={() => openEditModal(record)}>编辑</Button>
-          <Button type="link" onClick={() => toggleStatus(record)}>
+          {!record.parent_id ? (
+            <Button type="link" size="small" onClick={() => openCreateChildModal(record)}>
+              新增子分类
+            </Button>
+          ) : null}
+          <Button type="link" size="small" onClick={() => openEditModal(record)}>
+            编辑
+          </Button>
+          <Button
+            type="link"
+            size="small"
+            onClick={() => toggleStatus(record)}
+          >
             {record.status === "active" ? "停用" : "启用"}
           </Button>
         </Space>
@@ -182,7 +215,11 @@ export default function CategoriesPage() {
     <AppShell
       title="费用分类"
       kicker="维护支出归类口径，用于对账和报表分析"
-      action={<Button type="primary" onClick={openCreateModal}>新增一级分类</Button>}
+      action={
+        <Button type="primary" icon={<PlusOutlined />} onClick={openCreateModal}>
+          新增一级分类
+        </Button>
+      }
     >
       <div className="category-tree-page">
         {errorMessage ? (
@@ -218,14 +255,22 @@ export default function CategoriesPage() {
         confirmLoading={isLoading}
       >
         <Form form={form} layout="vertical" onFinish={submitCategory} initialValues={{ sort_order: 0 }}>
-          <Form.Item name="name" label="分类名称" rules={[{ required: true }]}>
-            <Input />
+          <Form.Item
+            name="name"
+            label="分类名称"
+            rules={[{ required: true, message: "请输入分类名称" }]}
+          >
+            <Input placeholder="如：员工工资、房租" />
           </Form.Item>
-          <Form.Item name="parent_id" label="上级分类">
-            <Select allowClear options={parentOptions} />
+          <Form.Item name="parent_id" label="上级分类" tooltip="留空则创建一级分类">
+            <Select
+              allowClear
+              placeholder="选择上级分类（留空为一级分类）"
+              options={parentOptions}
+            />
           </Form.Item>
-          <Form.Item name="sort_order" label="排序">
-            <InputNumber className="full-width" />
+          <Form.Item name="sort_order" label="排序" tooltip="数字越小越靠前">
+            <InputNumber className="full-width" min={0} placeholder="0" />
           </Form.Item>
         </Form>
       </Modal>
