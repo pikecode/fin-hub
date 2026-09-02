@@ -49,16 +49,47 @@ postgresql+psycopg://finhub:finhub@localhost:5432/finhub
 
 ## 生产部署
 
-### `deploy-prod.sh`
+### 推荐：`build-prod-images.sh` + `deploy-prod-images.sh`
 
-在服务器上构建并启动生产环境：
+生产环境推荐使用预构建镜像发布，不在服务器上执行 `docker compose build`。这样服务器只做 `docker load` / `docker pull` 和容器重启，避免 Next.js 构建、TypeScript 检查、依赖下载把线上机器资源打满。
+
+本地或 CI 构建并导出镜像包：
 
 ```bash
-cp .env.production.example .env.production
-scripts/deploy-prod.sh
+scripts/build-prod-images.sh --save
 ```
 
-脚本会检查 Docker、`.env.production` 必填变量，构建生产镜像，并通过 `infra/docker/docker-compose.prod.yml` 启动 PostgreSQL、Redis、API、后台管理端和 Nginx。
+把镜像包和镜像变量文件上传到服务器：
+
+```bash
+scp reports/deploy/fin-hub-images-<tag>.tar fin-hub-server:/opt/fin-hub/
+scp reports/deploy/fin-hub-images-<tag>.env fin-hub-server:/opt/fin-hub/
+```
+
+服务器加载镜像并重启：
+
+```bash
+ssh fin-hub-server 'cd /opt/fin-hub && scripts/deploy-prod-images.sh --load fin-hub-images-<tag>.tar --image-env fin-hub-images-<tag>.env'
+```
+
+如果已经配置镜像仓库，可以改为：
+
+```bash
+scripts/build-prod-images.sh --registry ghcr.io/example/fin-hub --push
+ssh fin-hub-server 'cd /opt/fin-hub && scripts/deploy-prod-images.sh'
+```
+
+此时 `.env.production` 需要设置：
+
+```text
+IMAGE_TAG=<tag>
+API_IMAGE=ghcr.io/example/fin-hub/fin-hub-api:<tag>
+ADMIN_WEB_IMAGE=ghcr.io/example/fin-hub/fin-hub-admin-web:<tag>
+```
+
+### 兼容：`deploy-prod.sh`
+
+`deploy-prod.sh` 会在服务器上构建镜像并启动生产环境。该方式对 CPU、内存和磁盘 I/O 压力较大，仅建议在服务器资源充足或临时排障时使用。
 
 ## 交付验收
 

@@ -1,0 +1,67 @@
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-finhub}
+      POSTGRES_USER: ${POSTGRES_USER:-finhub}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-finhub} -d ${POSTGRES_DB:-finhub}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7
+    restart: unless-stopped
+    volumes:
+      - redis-data:/data
+
+  api:
+    image: ${API_IMAGE:-fin-hub-api:${IMAGE_TAG:-latest}}
+    restart: unless-stopped
+    environment:
+      APP_ENV: production
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-finhub}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-finhub}
+      REDIS_URL: redis://redis:6379/0
+      SECRET_KEY: ${SECRET_KEY}
+      CORS_ORIGINS: ${CORS_ORIGINS}
+      FILE_STORAGE_ROOT: /app/data/files
+      DINGTALK_SYNC_MODE: ${DINGTALK_SYNC_MODE:-real}
+      DINGTALK_API_BASE_URL: ${DINGTALK_API_BASE_URL:-https://api.dingtalk.com}
+      DINGTALK_OAPI_BASE_URL: ${DINGTALK_OAPI_BASE_URL:-https://oapi.dingtalk.com}
+    volumes:
+      - app-files:/app/data/files
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  admin-web:
+    image: ${ADMIN_WEB_IMAGE:-fin-hub-admin-web:${IMAGE_TAG:-latest}}
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL}
+    depends_on:
+      - api
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ../nginx/fin-hub.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - admin-web
+      - api
+
+volumes:
+  postgres-data:
+  redis-data:
+  app-files:
