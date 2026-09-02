@@ -17,19 +17,27 @@ def approval_expense_stats(
     expense_items: list[ExpenseItem],
     matches: list[ExpenseBankMatch],
 ) -> dict[str, Any]:
-    confirmed_match_amount = sum(
-        (decimal_value(match.amount) for match in matches if match.status == MatchStatus.CONFIRMED.value),
-        Decimal("0.00"),
-    )
+    confirmed_match_amount_by_item: dict[str, Decimal] = {}
+    for match in matches:
+        if match.status != MatchStatus.CONFIRMED.value:
+            continue
+        confirmed_match_amount_by_item[match.expense_item_id] = (
+            confirmed_match_amount_by_item.get(match.expense_item_id, Decimal("0.00"))
+            + decimal_value(match.amount)
+        )
+    confirmed_match_amount = sum(confirmed_match_amount_by_item.values(), Decimal("0.00"))
     candidate_match_count = sum(1 for match in matches if match.status == MatchStatus.CANDIDATE.value)
     classified_count = sum(1 for item in expense_items if item.category_l1 or item.category_l2)
-    matched_item_ids = {
-        match.expense_item_id for match in matches if match.status == MatchStatus.CONFIRMED.value
-    }
     matched_item_count = sum(
-        1 for item in expense_items if item.id in matched_item_ids or item.payment_status == "paid"
+        1
+        for item in expense_items
+        if confirmed_match_amount_by_item.get(item.id, Decimal("0.00")) >= decimal_value(item.amount)
     )
-    pending_item_count = sum(1 for item in expense_items if item.payment_status != "paid")
+    pending_item_count = sum(
+        1
+        for item in expense_items
+        if confirmed_match_amount_by_item.get(item.id, Decimal("0.00")) < decimal_value(item.amount)
+    )
     sync_conflict_count = sum(
         1 for item in expense_items if item.sync_conflict_status and item.sync_conflict_status != "none"
     )
@@ -59,6 +67,27 @@ def approval_expense_stats(
     }
 
 
+def canonical_expense_items(expense_items: list[ExpenseItem]) -> list[ExpenseItem]:
+    """Exclude a synced whole-approval summary when line items exist for it."""
+    line_document_bases = {
+        item.source_document_id.split(":", 1)[0]
+        for item in expense_items
+        if item.source == "dingtalk"
+        and item.source_document_id
+        and ":" in item.source_document_id
+    }
+    return [
+        item
+        for item in expense_items
+        if not (
+            item.source == "dingtalk"
+            and item.source_document_id
+            and ":" not in item.source_document_id
+            and item.source_document_id in line_document_bases
+        )
+    ]
+
+
 def approval_expense_stats_map(
     session: Session,
     approval_ids: list[str],
@@ -68,6 +97,7 @@ def approval_expense_stats_map(
     expense_items = list(
         session.scalars(select(ExpenseItem).where(ExpenseItem.approval_instance_id.in_(approval_ids)))
     )
+    expense_items = canonical_expense_items(expense_items)
     expenses_by_approval_id: dict[str, list[ExpenseItem]] = {}
     for item in expense_items:
         if item.approval_instance_id:

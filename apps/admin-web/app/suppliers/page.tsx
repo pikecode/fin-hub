@@ -89,50 +89,39 @@ export default function SuppliersPage() {
     }
   }
 
-  async function handleBatchDelete(ids: string[]) {
-    setIsLoading(true);
-    try {
-      for (const id of ids) {
-        await apiClient.suppliers.delete(id);
-      }
-      message.success(`成功删除 ${ids.length} 个供应商`);
-      await loadSuppliers();
-    } catch (error) {
-      message.error(error instanceof Error ? error.message : "批量删除失败");
-    } finally {
-      setIsLoading(false);
-    }
-  }
-
   const columns: EnterpriseTableColumn<Supplier>[] = [
     {
+      key: "name",
       title: "供应商",
       dataIndex: "name",
-      searchable: true,
     },
     {
+      key: "bank_account",
       title: "收款账号",
       dataIndex: "bank_account",
       render: (value) => value || "-",
     },
     {
+      key: "contact_name",
       title: "联系人",
       dataIndex: "contact_name",
       render: (value) => value || "-",
-      searchable: true,
     },
     {
+      key: "phone",
       title: "电话",
       dataIndex: "phone",
       render: (value) => value || "-",
     },
     {
+      key: "remark",
       title: "备注",
       dataIndex: "remark",
       render: (value) => value || "-",
       ellipsis: true,
     },
     {
+      key: "status",
       title: "状态",
       dataIndex: "status",
       width: 100,
@@ -144,6 +133,7 @@ export default function SuppliersPage() {
       ),
     },
     {
+      key: "actions",
       title: "操作",
       width: 150,
       render: (_, record) => (
@@ -182,14 +172,6 @@ export default function SuppliersPage() {
         columns={columns}
         dataSource={suppliers}
         exportFileName="供应商档案"
-        batchActions={[
-          {
-            key: "delete",
-            label: "批量删除",
-            danger: true,
-            onExecute: handleBatchDelete,
-          },
-        ]}
       />
 
       <Modal

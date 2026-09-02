@@ -2,6 +2,7 @@ import hashlib
 import json
 from datetime import UTC, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
+from time import sleep
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -140,7 +141,8 @@ def get_or_create_config(session: Session) -> DingTalkConfig:
 def get_or_create_auto_sync_setting(session: Session) -> DingTalkAutoSyncSetting:
     setting = session.scalar(select(DingTalkAutoSyncSetting).order_by(DingTalkAutoSyncSetting.created_at.asc()))
     if setting is None:
-        setting = DingTalkAutoSyncSetting()
+        # 默认时间设置为 02:15，避开整点时刻的钉钉 API 限流高峰
+        setting = DingTalkAutoSyncSetting(scheduled_time="02:15")
         refresh_auto_sync_next_run(setting)
         session.add(setting)
         session.commit()
@@ -925,6 +927,8 @@ def build_department_tree(
             return
         seen.add(dept_id)
         children = client.list_child_departments(dept_id)
+        # 添加延迟避免触发钉钉 QPS 限流（90002 错误）
+        sleep(0.15)
         for child in children:
             child_id = department_id(child)
             name = str(child.get("name") or child.get("dept_name") or child.get("deptName") or "")
@@ -932,6 +936,8 @@ def build_department_tree(
                 continue
             path = department_path(child, parent_path)
             grandchildren = client.list_child_departments(child_id) if depth < max_depth else []
+            # 添加延迟避免触发钉钉 QPS 限流
+            sleep(0.15)
             child_names = [
                 str(item.get("name") or item.get("dept_name") or item.get("deptName") or "")
                 for item in grandchildren

@@ -424,6 +424,28 @@ class RevenueBankMatch(Base):
     )
 
 
+class RevenueBankMatchRecord(Base):
+    __tablename__ = "revenue_bank_match_records"
+    __table_args__ = (
+        UniqueConstraint(
+            "revenue_bank_match_id",
+            "revenue_record_id",
+            name="uq_revenue_bank_match_record",
+        ),
+        Index("ix_revenue_bank_match_records_record", "revenue_record_id"),
+        Index("ix_revenue_bank_match_records_match", "revenue_bank_match_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    revenue_bank_match_id: Mapped[str] = mapped_column(
+        ForeignKey("revenue_bank_matches.id"), nullable=False
+    )
+    revenue_record_id: Mapped[str] = mapped_column(
+        ForeignKey("revenue_records.id"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+
+
 class DingTalkConfig(Base):
     __tablename__ = "dingtalk_configs"
 

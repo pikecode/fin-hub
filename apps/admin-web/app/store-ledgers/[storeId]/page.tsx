@@ -2,15 +2,9 @@
 
 import {
   Alert,
-  Button,
   Card,
-  Col,
-  Descriptions,
   Empty,
-  Modal,
-  Row,
   Space,
-  Statistic,
   Table,
   Typography,
   Tabs,
@@ -20,25 +14,23 @@ import type { ColumnsType } from "antd/es/table";
 import {
   BankOutlined,
   FileTextOutlined,
-  ReconciliationOutlined,
   WalletOutlined,
   DollarOutlined,
-  CheckCircleOutlined,
   ClockCircleOutlined,
   WarningOutlined,
-  SwapOutlined,
   RiseOutlined,
   FallOutlined,
 } from "@ant-design/icons";
-import { useParams, useRouter } from "next/navigation";
+import { useParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import type { ApprovalInstance, BankTransaction, RevenueRecord, StoreLedgerWorkspace } from "@fin-hub/shared-types";
+import { formatMoney } from "@fin-hub/shared-utils";
 import { AppShell } from "../../components/AppShell";
 import { MoneyDisplay } from "../../components/MoneyDisplay";
 import { StatusBadge } from "../../components/StatusBadge";
+import { getBankTransactionViewColumns } from "../../components/BankTransactionColumns";
 import { StoreLedgerWorkspaceNav } from "../../components/StoreLedgerWorkspaceNav";
 import { apiClient } from "../../lib/api";
-import { getStoreLedgers } from "../../lib/referenceData";
 import { useClientSearchParams } from "../../lib/searchParams";
 
 function currentPeriod() {
@@ -48,15 +40,12 @@ function currentPeriod() {
 export default function StoreLedgerWorkspacePage() {
   const params = useParams();
   const searchParams = useClientSearchParams();
-  const router = useRouter();
   const storeId = params?.storeId as string;
   const period = searchParams.get("period") || currentPeriod();
 
   const [data, setData] = useState<StoreLedgerWorkspace | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [isPeriodModalOpen, setIsPeriodModalOpen] = useState(false);
-  const [availablePeriods, setAvailablePeriods] = useState<string[]>([]);
 
   useEffect(() => {
     let ignore = false;
@@ -85,56 +74,9 @@ export default function StoreLedgerWorkspacePage() {
     };
   }, [storeId, period]);
 
-  useEffect(() => {
-    if (!storeId) return;
-    void (async () => {
-      try {
-        const ledgers = await getStoreLedgers(storeId);
-        const periods = Array.from(new Set(ledgers.map((ledger) => ledger.period))).sort().reverse();
-        setAvailablePeriods(periods);
-      } catch {
-        setAvailablePeriods([]);
-      }
-    })();
-  }, [storeId]);
-
   const storeName = data?.store.name ?? "门店";
 
-  const bankColumns: ColumnsType<BankTransaction> = [
-    {
-      title: "交易日期",
-      dataIndex: "occurred_at",
-      width: 100,
-      render: (date) => date?.slice(0, 10) || "-",
-    },
-    {
-      title: "对方户名",
-      dataIndex: "counterparty_name",
-      width: 180,
-      ellipsis: true,
-      render: (value) => value || "-",
-    },
-    {
-      title: "金额",
-      dataIndex: "amount",
-      width: 120,
-      align: "right",
-      render: (value) => <MoneyDisplay value={value} colorize />,
-    },
-    {
-      title: "已匹配",
-      dataIndex: "matched_amount",
-      width: 120,
-      align: "right",
-      render: (value) => <MoneyDisplay value={value || 0} />,
-    },
-    {
-      title: "摘要",
-      dataIndex: "summary",
-      ellipsis: true,
-      render: (value) => value || "-",
-    },
-  ];
+  const bankColumns: ColumnsType<BankTransaction> = getBankTransactionViewColumns();
 
   const revenueColumns: ColumnsType<RevenueRecord> = [
     {
@@ -201,13 +143,9 @@ export default function StoreLedgerWorkspacePage() {
     if (!data) return null;
 
     const totalIncome = Number(data.metrics.income_amount || 0);
-    const totalExpense = data.approval_instances.reduce((sum, approval) => sum + Number(approval.total_expense_amount || 0), 0);
-    const unmatchedBank = data.bank_transactions.filter(
-      (b) => Number(b.matched_amount || 0) < Number(b.amount) * 0.99
-    ).length;
-    const pendingApprovals = data.approval_instances.filter(
-      (a) => a.approval_status === "RUNNING" || a.approval_status === "NEW"
-    ).length;
+    const totalExpense = Number(data.metrics.expense_amount || 0);
+    const unmatchedBank = data.metrics.unmatched_bank_transaction_count;
+    const pendingApprovals = data.metrics.pending_approval_count;
 
     return {
       totalIncome,
@@ -222,67 +160,9 @@ export default function StoreLedgerWorkspacePage() {
     <AppShell
       title={storeName}
       kicker={`账期: ${period}`}
-      action={
-        <Space>
-          <Button onClick={() => setIsPeriodModalOpen(true)}>切换账期</Button>
-          <Button type="primary" onClick={() => router.push(`/matching?store_id=${storeId}`)}>
-            <SwapOutlined /> 进入匹配
-          </Button>
-        </Space>
-      }
     >
       <Space direction="vertical" size={16} style={{ width: "100%", display: "flex" }}>
         {errorMessage && <Alert message="加载失败" description={errorMessage} type="error" showIcon closable />}
-
-        {/* 紧凑的统计卡片 */}
-        {stats && (
-          <Row gutter={12}>
-            <Col span={6}>
-              <Card size="small" style={{ background: "linear-gradient(135deg, #10b981 0%, #059669 100%)" }}>
-                <Statistic
-                  title={<span style={{ color: "rgba(255,255,255,0.85)", fontSize: 12 }}>本期收入</span>}
-                  value={stats.totalIncome}
-                  precision={2}
-                  valueStyle={{ color: "white", fontSize: 20 }}
-                  prefix={<RiseOutlined />}
-                />
-              </Card>
-            </Col>
-            <Col span={6}>
-              <Card size="small" style={{ background: "linear-gradient(135deg, #ef4444 0%, #dc2626 100%)" }}>
-                <Statistic
-                  title={<span style={{ color: "rgba(255,255,255,0.85)", fontSize: 12 }}>本期支出</span>}
-                  value={stats.totalExpense}
-                  precision={2}
-                  valueStyle={{ color: "white", fontSize: 20 }}
-                  prefix={<FallOutlined />}
-                />
-              </Card>
-            </Col>
-            <Col span={6}>
-              <Card size="small">
-                <Statistic
-                  title="未匹配流水"
-                  value={stats.unmatchedBank}
-                  suffix="笔"
-                  valueStyle={{ color: stats.unmatchedBank > 0 ? "#f59e0b" : "#525252", fontSize: 20 }}
-                  prefix={<WarningOutlined style={{ color: stats.unmatchedBank > 0 ? "#f59e0b" : "#525252" }} />}
-                />
-              </Card>
-            </Col>
-            <Col span={6}>
-              <Card size="small">
-                <Statistic
-                  title="待审批单"
-                  value={stats.pendingApprovals}
-                  suffix="个"
-                  valueStyle={{ color: stats.pendingApprovals > 0 ? "#3b82f6" : "#525252", fontSize: 20 }}
-                  prefix={<ClockCircleOutlined style={{ color: stats.pendingApprovals > 0 ? "#3b82f6" : "#525252" }} />}
-                />
-              </Card>
-            </Col>
-          </Row>
-        )}
 
         {/* 导航菜单 */}
         {data ? (
@@ -296,14 +176,65 @@ export default function StoreLedgerWorkspacePage() {
           />
         ) : null}
 
-        {/* 紧凑的标签页内容 */}
+        {/* 本期经营摘要 */}
+        {stats && (
+          <div className="store-ledger-overview-metrics">
+            <Card size="small" className="store-ledger-overview-metric store-ledger-overview-metric--income">
+              <div className="store-ledger-overview-metric__label">
+                <RiseOutlined />
+                <span>本期收入</span>
+              </div>
+              <Typography.Text className="store-ledger-overview-metric__value">
+                {formatMoney(stats.totalIncome)}
+              </Typography.Text>
+              <Typography.Text type="secondary">营业收入合计</Typography.Text>
+            </Card>
+            <Card size="small" className="store-ledger-overview-metric store-ledger-overview-metric--expense">
+              <div className="store-ledger-overview-metric__label">
+                <FallOutlined />
+                <span>本期支出</span>
+              </div>
+              <Typography.Text className="store-ledger-overview-metric__value">
+                {formatMoney(stats.totalExpense)}
+              </Typography.Text>
+              <Typography.Text type="secondary">审批支出合计</Typography.Text>
+            </Card>
+            <Card size="small" className={`store-ledger-overview-metric ${stats.balance >= 0 ? "store-ledger-overview-metric--positive" : "store-ledger-overview-metric--negative"}`}>
+              <div className="store-ledger-overview-metric__label">
+                <DollarOutlined />
+                <span>本期结余</span>
+              </div>
+              <Typography.Text className="store-ledger-overview-metric__value">
+                {formatMoney(stats.balance)}
+              </Typography.Text>
+              <Typography.Text type="secondary">收入减支出</Typography.Text>
+            </Card>
+            <Card size="small" className={`store-ledger-overview-metric ${stats.unmatchedBank > 0 ? "store-ledger-overview-metric--warning" : ""}`}>
+              <div className="store-ledger-overview-metric__label">
+                <WarningOutlined />
+                <span>待处理流水</span>
+              </div>
+              <Typography.Text className="store-ledger-overview-metric__value">
+                {stats.unmatchedBank}<span className="store-ledger-overview-metric__unit">笔</span>
+              </Typography.Text>
+              <Typography.Text type="secondary">尚未完成对账</Typography.Text>
+            </Card>
+            <Card size="small" className={`store-ledger-overview-metric ${stats.pendingApprovals > 0 ? "store-ledger-overview-metric--info" : ""}`}>
+              <div className="store-ledger-overview-metric__label">
+                <ClockCircleOutlined />
+                <span>待处理审批</span>
+              </div>
+              <Typography.Text className="store-ledger-overview-metric__value">
+                {stats.pendingApprovals}<span className="store-ledger-overview-metric__unit">单</span>
+              </Typography.Text>
+              <Typography.Text type="secondary">费用明细尚未完成流水匹配</Typography.Text>
+            </Card>
+          </div>
+        )}
+
+        {/* 本期明细 */}
         {data ? (
-          <Card
-            size="small"
-            styles={{
-              body: { padding: "12px 16px" },
-            }}
-          >
+          <Card size="small" title="本期明细" className="store-ledger-overview-data-card">
             <Tabs
               defaultActiveKey="bank"
               items={[
@@ -376,35 +307,6 @@ export default function StoreLedgerWorkspacePage() {
           <Empty description="暂无数据" />
         )}
       </Space>
-
-      {/* 切换账期模态框 */}
-      <Modal
-        title="切换账期"
-        open={isPeriodModalOpen}
-        onCancel={() => setIsPeriodModalOpen(false)}
-        footer={null}
-        width={400}
-      >
-        {availablePeriods.length ? (
-          <Space direction="vertical" style={{ width: "100%" }}>
-            {availablePeriods.map((p) => (
-              <Button
-                key={p}
-                type={p === period ? "primary" : "default"}
-                block
-                onClick={() => {
-                  router.push(`/store-ledgers/${storeId}?period=${p}`);
-                  setIsPeriodModalOpen(false);
-                }}
-              >
-                {p} {p === period && "(当前)"}
-              </Button>
-            ))}
-          </Space>
-        ) : (
-          <Empty description="当前账期暂无账套" />
-        )}
-      </Modal>
     </AppShell>
   );
 }

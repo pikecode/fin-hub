@@ -4,7 +4,17 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.database import get_session
-from app.models import BankTransaction, Ledger, LedgerStatus, MasterDataStatus, RevenueBankMatch, RevenueChannel, RevenueRecord, User
+from app.models import (
+    BankTransaction,
+    Ledger,
+    LedgerStatus,
+    MasterDataStatus,
+    RevenueBankMatch,
+    RevenueBankMatchRecord,
+    RevenueChannel,
+    RevenueRecord,
+    User,
+)
 from app.modules.audit.service import write_audit_log
 from app.modules.auth.permissions import (
     ensure_permission,
@@ -260,7 +270,19 @@ def delete_revenue_record(
         raise HTTPException(status_code=404, detail="Revenue record not found")
     ensure_store_access(session, current_user, record.store_id)
     ensure_open_ledger(session, record.store_id, record.ledger_period)
-    existing_match = session.scalar(
+    existing_exact_match = session.scalar(
+        select(RevenueBankMatch)
+        .join(
+            RevenueBankMatchRecord,
+            RevenueBankMatchRecord.revenue_bank_match_id == RevenueBankMatch.id,
+        )
+        .where(
+            RevenueBankMatchRecord.revenue_record_id == record.id,
+            RevenueBankMatch.status != "rejected",
+        )
+        .limit(1)
+    )
+    existing_legacy_match = session.scalar(
         select(RevenueBankMatch)
         .join(BankTransaction, RevenueBankMatch.bank_transaction_id == BankTransaction.id)
         .where(
@@ -270,10 +292,13 @@ def delete_revenue_record(
             RevenueBankMatch.revenue_start_date <= record.revenue_date,
             RevenueBankMatch.revenue_end_date >= record.revenue_date,
             RevenueBankMatch.status != "rejected",
+            ~select(RevenueBankMatchRecord.id)
+            .where(RevenueBankMatchRecord.revenue_bank_match_id == RevenueBankMatch.id)
+            .exists(),
         )
         .limit(1)
     )
-    if existing_match is not None:
+    if existing_exact_match is not None or existing_legacy_match is not None:
         raise HTTPException(status_code=409, detail="Revenue record already matched")
 
     deleted = RevenueRecordRead.model_validate(record)

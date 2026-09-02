@@ -453,6 +453,15 @@ class RevenueMatchCreate(BaseModel):
     revenue_start_date: date
     revenue_end_date: date
     amount: Decimal = Field(gt=0)
+    revenue_record_ids: list[str] = Field(default_factory=list)
+    confidence: Decimal | None = None
+    reason: str | None = None
+
+
+class RevenueMatchBatchCreate(BaseModel):
+    bank_transaction_id: str
+    revenue_record_ids: list[str] = Field(min_length=1)
+    amount: Decimal = Field(gt=0)
     confidence: Decimal | None = None
     reason: str | None = None
 
@@ -698,6 +707,7 @@ class StoreComparisonReport(BaseModel):
 class StoreLedgerWorkspaceMetrics(BaseModel):
     revenue_record_count: int
     income_amount: Decimal
+    expense_amount: Decimal
     net_income_amount: Decimal
     fee_amount: Decimal
     bank_transaction_count: int

@@ -1,5 +1,5 @@
 import json
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -18,13 +18,18 @@ from app.models import (
     MasterDataStatus,
     MatchStatus,
     RevenueBankMatch,
+    RevenueBankMatchRecord,
     RevenueChannel,
     RevenueRecord,
     TemplateFieldMapping,
     User,
     utc_now,
 )
-from app.modules.approvals.status import refresh_approval_processing_status
+from app.modules.approvals.status import (
+    approval_expense_stats,
+    approval_expense_stats_map,
+    refresh_approval_processing_status,
+)
 from app.modules.audit.service import write_audit_log
 from app.modules.auth.permissions import (
     ensure_permission,
@@ -35,6 +40,7 @@ from app.modules.auth.router import audit_actor, get_current_user
 from app.modules.common import paginate
 from app.schemas import (
     ApiEnvelope,
+    ApprovalInstanceRead,
     AutoMatchResult,
     MatchCreate,
     MatchRead,
@@ -43,6 +49,7 @@ from app.schemas import (
     ReconciliationExpenseCandidate,
     ReconciliationRecord,
     ReconciliationRecordUpdate,
+    RevenueMatchBatchCreate,
     RevenueMatchCreate,
     RevenueMatchRead,
 )
@@ -348,6 +355,44 @@ def approval_expense_join_condition():
     )
 
 
+def approval_instance_response(
+    approval: ApprovalInstance | None,
+    stats: dict | None = None,
+) -> ApprovalInstanceRead | None:
+    if approval is None:
+        return None
+    current_stats = stats or approval_expense_stats([], [])
+    return ApprovalInstanceRead(
+        id=approval.id,
+        template_id=approval.template_id,
+        dingtalk_instance_id=approval.dingtalk_instance_id,
+        approval_no=approval.approval_no,
+        store_id=approval.store_id,
+        department_name=approval.department_name,
+        applicant_name=approval.applicant_name,
+        applicant_user_id=approval.applicant_user_id,
+        approval_status=approval.approval_status,
+        parse_status=approval.parse_status,
+        parse_error=approval.parse_error,
+        last_parsed_at=approval.last_parsed_at,
+        submit_at=approval.submit_at,
+        approved_at=approval.approved_at,
+        raw_payload=approval.raw_payload,
+        synced_job_id=approval.synced_job_id,
+        expense_item_count=current_stats["expense_item_count"],
+        classified_expense_item_count=current_stats["classified_expense_item_count"],
+        matched_expense_item_count=current_stats["matched_expense_item_count"],
+        pending_expense_item_count=current_stats["pending_expense_item_count"],
+        sync_conflict_expense_item_count=current_stats["sync_conflict_expense_item_count"],
+        total_expense_amount=current_stats["total_expense_amount"],
+        confirmed_match_amount=current_stats["confirmed_match_amount"],
+        candidate_match_count=current_stats["candidate_match_count"],
+        processing_status=current_stats["processing_status"],
+        created_at=approval.created_at,
+        updated_at=approval.updated_at,
+    )
+
+
 def real_approval_candidate_filter():
     return (
         ExpenseItem.source == "dingtalk",
@@ -358,6 +403,40 @@ def real_approval_candidate_filter():
         or_(ApprovalInstance.approval_no.is_(None), ~ApprovalInstance.approval_no.ilike("SAMPLE-%")),
         or_(ApprovalInstance.approval_no.is_(None), ~ApprovalInstance.approval_no.ilike("SEED-%")),
     )
+
+
+def matched_approval_keys(
+    session: Session,
+    *,
+    store_id: str | None,
+    ledger_period: str | None,
+    exclude_match_id: str | None = None,
+) -> tuple[set[str], set[str]]:
+    """Return approval and DingTalk document IDs that already have an active match."""
+    query = (
+        select(ExpenseItem)
+        .join(ExpenseBankMatch, ExpenseBankMatch.expense_item_id == ExpenseItem.id)
+        .where(ExpenseBankMatch.status != MatchStatus.REJECTED.value)
+    )
+    if exclude_match_id:
+        query = query.where(ExpenseBankMatch.id != exclude_match_id)
+    if store_id:
+        query = query.where(ExpenseItem.store_id == store_id)
+    if ledger_period:
+        query = query.where(ExpenseItem.ledger_period == ledger_period)
+
+    matched_items = list(session.scalars(query))
+    approval_ids = {
+        item.approval_instance_id
+        for item in matched_items
+        if item.approval_instance_id
+    }
+    document_ids = {
+        item.source_document_id.split(":", 1)[0]
+        for item in matched_items
+        if item.source == "dingtalk" and item.source_document_id
+    }
+    return approval_ids, document_ids
 
 
 @router.get("", response_model=ApiEnvelope[Page[MatchRead]])
@@ -400,7 +479,147 @@ def list_revenue_matches(
     if ledger_period:
         query = query.where(BankTransaction.ledger_period == ledger_period)
     items, total = paginate(session, query, page, page_size)
-    return ApiEnvelope(data=Page(items=items, total=total, page=page, page_size=page_size))
+    record_ids_by_match = revenue_match_record_ids_map(session, [item.id for item in items])
+    return ApiEnvelope(
+        data=Page(
+            items=[
+                revenue_match_response(session, item, record_ids_by_match.get(item.id, []))
+                for item in items
+            ],
+            total=total,
+            page=page,
+            page_size=page_size,
+        )
+    )
+
+
+def revenue_match_record_ids_map(
+    session: Session,
+    match_ids: list[str],
+) -> dict[str, list[str]]:
+    if not match_ids:
+        return {}
+    rows = session.execute(
+        select(
+            RevenueBankMatchRecord.revenue_bank_match_id,
+            RevenueBankMatchRecord.revenue_record_id,
+        )
+        .where(RevenueBankMatchRecord.revenue_bank_match_id.in_(match_ids))
+        .order_by(RevenueBankMatchRecord.created_at.asc())
+    ).all()
+    result: dict[str, list[str]] = {}
+    for match_id, record_id in rows:
+        result.setdefault(match_id, []).append(record_id)
+    return result
+
+
+def revenue_match_response(
+    session: Session,
+    match: RevenueBankMatch,
+    record_ids: list[str] | None = None,
+) -> RevenueMatchRead:
+    response = RevenueMatchRead.model_validate(match)
+    return response.model_copy(
+        update={
+            "revenue_record_ids": record_ids
+            if record_ids is not None
+            else revenue_match_record_ids_map(session, [match.id]).get(match.id, []),
+        }
+    )
+
+
+def revenue_records_for_match(
+    session: Session,
+    bank_transaction: BankTransaction,
+    payload: RevenueMatchCreate,
+) -> list[RevenueRecord]:
+    if not bank_transaction.store_id or not bank_transaction.ledger_period:
+        raise HTTPException(status_code=409, detail="Bank transaction has no store assignment")
+    if payload.revenue_start_date > payload.revenue_end_date:
+        raise HTTPException(status_code=422, detail="Revenue start date cannot be after end date")
+    if not payload.revenue_record_ids:
+        return list(
+            session.scalars(
+                select(RevenueRecord).where(
+                    RevenueRecord.store_id == bank_transaction.store_id,
+                    RevenueRecord.ledger_period == bank_transaction.ledger_period,
+                    RevenueRecord.channel == payload.channel,
+                    RevenueRecord.revenue_date >= payload.revenue_start_date,
+                    RevenueRecord.revenue_date <= payload.revenue_end_date,
+                )
+            )
+        )
+    if len(payload.revenue_record_ids) != len(set(payload.revenue_record_ids)):
+        raise HTTPException(status_code=422, detail="Revenue record IDs must be unique")
+    records = list(
+        session.scalars(
+            select(RevenueRecord).where(RevenueRecord.id.in_(payload.revenue_record_ids))
+        )
+    )
+    records_by_id = {record.id: record for record in records}
+    if len(records_by_id) != len(payload.revenue_record_ids):
+        raise HTTPException(status_code=404, detail="Revenue record not found")
+    invalid_record = next(
+        (
+            record
+            for record in records
+            if record.store_id != bank_transaction.store_id
+            or record.ledger_period != bank_transaction.ledger_period
+            or record.channel != payload.channel
+        ),
+        None,
+    )
+    if invalid_record is not None:
+        raise HTTPException(status_code=409, detail="Revenue record does not belong to selected bank transaction")
+    return [records_by_id[record_id] for record_id in payload.revenue_record_ids]
+
+
+def overlapping_revenue_match(
+    session: Session,
+    bank_transaction: BankTransaction,
+    payload: RevenueMatchCreate,
+) -> RevenueBankMatch | None:
+    common_filters = (
+        BankTransaction.store_id == bank_transaction.store_id,
+        BankTransaction.ledger_period == bank_transaction.ledger_period,
+        RevenueBankMatch.channel == payload.channel,
+        RevenueBankMatch.status != MatchStatus.REJECTED.value,
+    )
+    legacy_overlap = session.scalar(
+        select(RevenueBankMatch)
+        .join(BankTransaction, RevenueBankMatch.bank_transaction_id == BankTransaction.id)
+        .where(
+            *common_filters,
+            RevenueBankMatch.revenue_start_date <= payload.revenue_end_date,
+            RevenueBankMatch.revenue_end_date >= payload.revenue_start_date,
+            ~select(RevenueBankMatchRecord.id)
+            .where(RevenueBankMatchRecord.revenue_bank_match_id == RevenueBankMatch.id)
+            .exists(),
+        )
+        .limit(1)
+    )
+    if legacy_overlap is not None:
+        return legacy_overlap
+
+    exact_query = (
+        select(RevenueBankMatch)
+        .join(BankTransaction, RevenueBankMatch.bank_transaction_id == BankTransaction.id)
+        .join(
+            RevenueBankMatchRecord,
+            RevenueBankMatchRecord.revenue_bank_match_id == RevenueBankMatch.id,
+        )
+        .join(RevenueRecord, RevenueBankMatchRecord.revenue_record_id == RevenueRecord.id)
+        .where(
+            *common_filters,
+            RevenueRecord.revenue_date >= payload.revenue_start_date,
+            RevenueRecord.revenue_date <= payload.revenue_end_date,
+        )
+    )
+    if payload.revenue_record_ids:
+        exact_query = exact_query.where(
+            RevenueBankMatchRecord.revenue_record_id.in_(payload.revenue_record_ids)
+        )
+    return session.scalar(exact_query.limit(1))
 
 
 def revenue_range_total(session: Session, bank_transaction: BankTransaction, payload: RevenueMatchCreate) -> Decimal:
@@ -408,16 +627,8 @@ def revenue_range_total(session: Session, bank_transaction: BankTransaction, pay
         raise HTTPException(status_code=409, detail="Bank transaction has no store assignment")
     if payload.revenue_start_date > payload.revenue_end_date:
         raise HTTPException(status_code=422, detail="Revenue start date cannot be after end date")
-    total = session.scalar(
-        select(func.coalesce(func.sum(RevenueRecord.net_amount), Decimal("0.00"))).where(
-            RevenueRecord.store_id == bank_transaction.store_id,
-            RevenueRecord.ledger_period == bank_transaction.ledger_period,
-            RevenueRecord.channel == payload.channel,
-            RevenueRecord.revenue_date >= payload.revenue_start_date,
-            RevenueRecord.revenue_date <= payload.revenue_end_date,
-        )
-    )
-    return Decimal(total or 0)
+    records = revenue_records_for_match(session, bank_transaction, payload)
+    return sum((Decimal(record.net_amount) for record in records), Decimal("0.00"))
 
 
 @router.post("/revenue", response_model=ApiEnvelope[RevenueMatchRead], status_code=201)
@@ -439,7 +650,8 @@ def create_revenue_match_candidate(
     if channel.status != MasterDataStatus.ACTIVE.value:
         raise HTTPException(status_code=409, detail="Revenue channel is inactive")
 
-    total = revenue_range_total(session, bank_transaction, payload)
+    records = revenue_records_for_match(session, bank_transaction, payload)
+    total = sum((Decimal(record.net_amount) for record in records), Decimal("0.00"))
     if total <= 0:
         raise HTTPException(status_code=409, detail="Revenue records not found for selected range")
     if payload.amount != total:
@@ -447,26 +659,28 @@ def create_revenue_match_candidate(
     remaining_bank_amount = Decimal(bank_transaction.amount) - Decimal(bank_transaction.matched_amount or 0)
     if payload.amount > remaining_bank_amount:
         raise HTTPException(status_code=409, detail="Match amount exceeds remaining bank amount")
-    overlapping_match = session.scalar(
-        select(RevenueBankMatch)
-        .join(BankTransaction, RevenueBankMatch.bank_transaction_id == BankTransaction.id)
-        .where(
-            BankTransaction.store_id == bank_transaction.store_id,
-            BankTransaction.ledger_period == bank_transaction.ledger_period,
-            RevenueBankMatch.channel == payload.channel,
-            RevenueBankMatch.status != MatchStatus.REJECTED.value,
-            RevenueBankMatch.revenue_start_date <= payload.revenue_end_date,
-            RevenueBankMatch.revenue_end_date >= payload.revenue_start_date,
-        )
-        .limit(1)
-    )
+    overlapping_match = overlapping_revenue_match(session, bank_transaction, payload)
     if overlapping_match is not None:
         raise HTTPException(status_code=409, detail="Revenue records already matched for selected range")
 
-    match = RevenueBankMatch(**payload.model_dump(), status=MatchStatus.CANDIDATE.value)
+    match = RevenueBankMatch(
+        **payload.model_dump(exclude={"revenue_record_ids"}),
+        status=MatchStatus.CANDIDATE.value,
+    )
     session.add(match)
     try:
         session.flush()
+        if payload.revenue_record_ids:
+            session.add_all(
+                [
+                    RevenueBankMatchRecord(
+                        revenue_bank_match_id=match.id,
+                        revenue_record_id=record.id,
+                    )
+                    for record in records
+                ]
+            )
+            session.flush()
     except IntegrityError as exc:
         session.rollback()
         raise HTTPException(status_code=409, detail="Revenue bank match already exists") from exc
@@ -487,7 +701,194 @@ def create_revenue_match_candidate(
     )
     session.commit()
     session.refresh(match)
-    return ApiEnvelope(data=match)
+    return ApiEnvelope(data=revenue_match_response(session, match, payload.revenue_record_ids))
+
+
+@router.post("/revenue/batch", response_model=ApiEnvelope[list[RevenueMatchRead]], status_code=201)
+def create_revenue_match_batch(
+    payload: RevenueMatchBatchCreate,
+    operator: str = "admin",
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> ApiEnvelope[list[RevenueMatchRead]]:
+    """Confirm one bank transaction against revenue records from one or more channels.
+
+    RevenueBankMatch keeps a single channel for reporting, so a cross-channel selection is
+    persisted as one confirmed match per channel inside the same database transaction.
+    """
+    ensure_permission(session, current_user, "reconciliation.manage")
+    bank_transaction = session.scalar(
+        select(BankTransaction)
+        .where(BankTransaction.id == payload.bank_transaction_id)
+        .with_for_update()
+    )
+    if bank_transaction is None:
+        raise HTTPException(status_code=404, detail="Bank transaction not found")
+    ensure_store_access(session, current_user, bank_transaction.store_id)
+    if bank_transaction.direction != "income":
+        raise HTTPException(status_code=409, detail="Bank transaction is not income")
+    if len(payload.revenue_record_ids) != len(set(payload.revenue_record_ids)):
+        raise HTTPException(status_code=422, detail="Revenue record IDs must be unique")
+
+    records = list(
+        session.scalars(
+            select(RevenueRecord).where(RevenueRecord.id.in_(payload.revenue_record_ids))
+        )
+    )
+    records_by_id = {record.id: record for record in records}
+    if len(records_by_id) != len(payload.revenue_record_ids):
+        raise HTTPException(status_code=404, detail="Revenue record not found")
+    invalid_record = next(
+        (
+            record
+            for record in records
+            if record.store_id != bank_transaction.store_id
+            or record.ledger_period != bank_transaction.ledger_period
+        ),
+        None,
+    )
+    if invalid_record is not None:
+        raise HTTPException(status_code=409, detail="Revenue record does not belong to selected bank transaction")
+
+    channel_names = {record.channel for record in records}
+    channels = {
+        channel.name: channel
+        for channel in session.scalars(
+            select(RevenueChannel).where(RevenueChannel.name.in_(channel_names))
+        )
+    }
+    inactive_or_missing_channel = next(
+        (
+            channel_name
+            for channel_name in channel_names
+            if channel_name not in channels
+            or channels[channel_name].status != MasterDataStatus.ACTIVE.value
+        ),
+        None,
+    )
+    if inactive_or_missing_channel is not None:
+        raise HTTPException(status_code=409, detail="Revenue channel is missing or inactive")
+
+    total = sum((Decimal(record.net_amount) for record in records), Decimal("0.00"))
+    if total <= 0:
+        raise HTTPException(status_code=409, detail="Revenue records not found for selected range")
+    if payload.amount != total:
+        raise HTTPException(status_code=409, detail="Match amount must equal selected revenue net amount")
+    remaining_bank_amount = Decimal(bank_transaction.amount) - Decimal(bank_transaction.matched_amount or 0)
+    if payload.amount > remaining_bank_amount:
+        raise HTTPException(status_code=409, detail="Match amount exceeds remaining bank amount")
+
+    existing_record_match = session.scalar(
+        select(RevenueBankMatchRecord)
+        .join(RevenueBankMatch, RevenueBankMatchRecord.revenue_bank_match_id == RevenueBankMatch.id)
+        .where(
+            RevenueBankMatchRecord.revenue_record_id.in_(payload.revenue_record_ids),
+            RevenueBankMatch.status != MatchStatus.REJECTED.value,
+        )
+        .limit(1)
+    )
+    if existing_record_match is not None:
+        raise HTTPException(status_code=409, detail="Revenue records already matched")
+
+    records_by_channel: dict[str, list[RevenueRecord]] = {}
+    for record_id in payload.revenue_record_ids:
+        record = records_by_id[record_id]
+        records_by_channel.setdefault(record.channel, []).append(record)
+
+    match_specs: list[tuple[str, list[RevenueRecord], Decimal, date, date]] = []
+    for channel, channel_records in records_by_channel.items():
+        start_date = min(record.revenue_date for record in channel_records)
+        end_date = max(record.revenue_date for record in channel_records)
+        channel_amount = sum(
+            (Decimal(record.net_amount) for record in channel_records),
+            Decimal("0.00"),
+        )
+        channel_payload = RevenueMatchCreate(
+            bank_transaction_id=bank_transaction.id,
+            channel=channel,
+            revenue_start_date=start_date,
+            revenue_end_date=end_date,
+            amount=channel_amount,
+            revenue_record_ids=[record.id for record in channel_records],
+            confidence=payload.confidence,
+            reason=payload.reason,
+        )
+        if overlapping_revenue_match(session, bank_transaction, channel_payload) is not None:
+            raise HTTPException(status_code=409, detail="Revenue records already matched for selected range")
+        match_specs.append((channel, channel_records, channel_amount, start_date, end_date))
+
+    matches: list[RevenueBankMatch] = []
+    for channel, channel_records, channel_amount, start_date, end_date in match_specs:
+        match = RevenueBankMatch(
+            bank_transaction_id=bank_transaction.id,
+            channel=channel,
+            revenue_start_date=start_date,
+            revenue_end_date=end_date,
+            amount=channel_amount,
+            status=MatchStatus.CONFIRMED.value,
+            confidence=payload.confidence,
+            reason=payload.reason,
+            confirmed_by=operator,
+            confirmed_at=utc_now(),
+        )
+        session.add(match)
+        matches.append(match)
+
+    try:
+        session.flush()
+        for match, (_, channel_records, _, _, _) in zip(matches, match_specs, strict=True):
+            session.add_all(
+                [
+                    RevenueBankMatchRecord(
+                        revenue_bank_match_id=match.id,
+                        revenue_record_id=record.id,
+                    )
+                    for record in channel_records
+                ]
+            )
+        session.flush()
+        bank_transaction.matched_amount = Decimal(bank_transaction.matched_amount or 0) + total
+        for match in matches:
+            write_audit_log(
+                session,
+                actor=audit_actor(current_user, operator),
+                action="revenue_match.create",
+                resource_type="revenue_bank_match",
+                resource_id=match.id,
+                summary="创建收入流水匹配",
+                metadata={
+                    "bank_transaction_id": match.bank_transaction_id,
+                    "channel": match.channel,
+                    "amount": match.amount,
+                },
+            )
+            write_audit_log(
+                session,
+                actor=audit_actor(current_user, operator),
+                action="revenue_match.confirm",
+                resource_type="revenue_bank_match",
+                resource_id=match.id,
+                summary="确认收入流水匹配",
+                metadata={
+                    "bank_transaction_id": match.bank_transaction_id,
+                    "channel": match.channel,
+                    "amount": match.amount,
+                },
+            )
+        session.commit()
+    except IntegrityError as exc:
+        session.rollback()
+        raise HTTPException(status_code=409, detail="Revenue bank match already exists") from exc
+
+    for match in matches:
+        session.refresh(match)
+    record_ids_by_match = revenue_match_record_ids_map(session, [match.id for match in matches])
+    return ApiEnvelope(
+        data=[
+            revenue_match_response(session, match, record_ids_by_match.get(match.id, []))
+            for match in matches
+        ]
+    )
 
 
 @router.post("/revenue/{match_id}/confirm", response_model=ApiEnvelope[RevenueMatchRead])
@@ -533,7 +934,7 @@ def confirm_revenue_match(
     )
     session.commit()
     session.refresh(match)
-    return ApiEnvelope(data=match)
+    return ApiEnvelope(data=revenue_match_response(session, match))
 
 
 @router.post("/revenue/{match_id}/reject", response_model=ApiEnvelope[RevenueMatchRead])
@@ -563,7 +964,7 @@ def reject_revenue_match(
     )
     session.commit()
     session.refresh(match)
-    return ApiEnvelope(data=match)
+    return ApiEnvelope(data=revenue_match_response(session, match))
 
 
 @router.post("/revenue/{match_id}/unmatch", response_model=ApiEnvelope[RevenueMatchRead])
@@ -605,7 +1006,7 @@ def unmatch_revenue_match(
     )
     session.commit()
     session.refresh(match)
-    return ApiEnvelope(data=match)
+    return ApiEnvelope(data=revenue_match_response(session, match))
 
 
 @router.post("", response_model=ApiEnvelope[MatchRead], status_code=201)
@@ -834,6 +1235,7 @@ def list_reconciliation_candidates(
     current_user: User = Depends(get_current_user),
 ) -> ApiEnvelope[ReconciliationCandidateResult]:
     ensure_permission(session, current_user, "reconciliation.view")
+    approval_search = approval_no.strip() if approval_no and approval_no.strip() else None
     bank_transaction = session.get(BankTransaction, bank_transaction_id) if bank_transaction_id else None
     if bank_transaction_id and bank_transaction is None:
         raise HTTPException(status_code=404, detail="Bank transaction not found")
@@ -869,17 +1271,18 @@ def list_reconciliation_candidates(
         .outerjoin(ApprovalInstance, approval_expense_join_condition())
         .outerjoin(ApprovalTemplate, ApprovalInstance.template_id == ApprovalTemplate.id)
         .where(
-            ExpenseItem.payment_status.in_(
-                [ExpensePaymentStatus.UNPAID.value, ExpensePaymentStatus.PARTIAL_PAID.value]
-            )
-        )
-        .where(
             or_(
                 ExpenseItem.source != "dingtalk",
                 ApprovalTemplate.is_enabled.is_(True),
             )
         )
     )
+    if not approval_search:
+        query = query.where(
+            ExpenseItem.payment_status.in_(
+                [ExpensePaymentStatus.UNPAID.value, ExpensePaymentStatus.PARTIAL_PAID.value]
+            )
+        )
     if template_id:
         query = query.where(ApprovalInstance.template_id == template_id)
     if approval_only:
@@ -890,8 +1293,8 @@ def list_reconciliation_candidates(
         query = query.where(scoped_store_condition(session, current_user, ExpenseItem.store_id))
     if ledger_period:
         query = query.where(ExpenseItem.ledger_period == ledger_period)
-    if approval_no:
-        like = f"%{approval_no.strip()}%"
+    if approval_search:
+        like = f"%{approval_search}%"
         query = query.where(
             (ApprovalInstance.approval_no.ilike(like))
             | (ApprovalInstance.dingtalk_instance_id.ilike(like))
@@ -918,6 +1321,10 @@ def list_reconciliation_candidates(
         )
         for current_template_id in template_ids
     }
+    approval_stats = approval_expense_stats_map(
+        session,
+        list({approval.id for _, approval, _ in rows if approval is not None}),
+    )
 
     candidates: list[ReconciliationExpenseCandidate] = []
     active_expense_ids = {
@@ -929,7 +1336,18 @@ def list_reconciliation_candidates(
             )
         )
     }
+    matched_approval_ids, matched_document_ids = matched_approval_keys(
+        session,
+        store_id=store_id,
+        ledger_period=ledger_period,
+        exclude_match_id=exclude_match_id,
+    )
     for expense, approval, template in rows:
+        if not approval_search and approval is not None and (
+            approval.id in matched_approval_ids
+            or approval.dingtalk_instance_id in matched_document_ids
+        ):
+            continue
         if (
             expense.source == "dingtalk"
             and expense.source_document_id
@@ -944,13 +1362,16 @@ def list_reconciliation_candidates(
             expense.id,
             exclude_match_id=exclude_match_id,
         )
-        if remaining_expense_amount <= 0:
+        if remaining_expense_amount <= 0 and not approval_search:
             continue
         score, reason = candidate_score(bank_transaction, expense, remaining_expense_amount)
         candidates.append(
             ReconciliationExpenseCandidate(
                 expense_item=expense,
-                approval_instance=approval,
+                approval_instance=approval_instance_response(
+                    approval,
+                    approval_stats.get(approval.id) if approval is not None else None,
+                ),
                 template_name=template.name if template else None,
                 display_fields=display_fields_for_instance(mappings_by_template, approval),
                 remaining_amount=remaining_expense_amount,
@@ -1005,6 +1426,10 @@ def list_reconciliation_records(
     total = session.scalar(select(func.count()).select_from(query.subquery())) or 0
     rows = session.execute(query.offset((page - 1) * page_size).limit(page_size)).all()
     template_ids = {approval.template_id for _, _, _, approval, _ in rows if approval is not None}
+    approval_stats = approval_expense_stats_map(
+        session,
+        list({approval.id for _, _, _, approval, _ in rows if approval is not None}),
+    )
     mappings_by_template: dict[str, list[TemplateFieldMapping]] = {
         current_template_id: list(
             session.scalars(
@@ -1023,7 +1448,10 @@ def list_reconciliation_records(
             match=match,
             bank_transaction=bank_transaction,
             expense_item=expense,
-            approval_instance=approval,
+            approval_instance=approval_instance_response(
+                approval,
+                approval_stats.get(approval.id) if approval is not None else None,
+            ),
             template_name=template.name if template else None,
             display_fields=display_fields_for_instance(mappings_by_template, approval),
         )

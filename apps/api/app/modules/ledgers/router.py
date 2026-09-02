@@ -14,6 +14,7 @@ from app.models import (
     LedgerStatus,
     MatchStatus,
     RevenueBankMatch,
+    RevenueBankMatchRecord,
     RevenueChannel,
     RevenueRecord,
     Store,
@@ -130,13 +131,47 @@ def build_close_check(session: Session, ledger: Ledger) -> LedgerCloseCheck:
             )
         )
     )
+    explicit_match_ids = set(
+        session.scalars(
+            select(RevenueBankMatchRecord.revenue_bank_match_id)
+            .join(
+                RevenueBankMatch,
+                RevenueBankMatchRecord.revenue_bank_match_id == RevenueBankMatch.id,
+            )
+            .join(BankTransaction, RevenueBankMatch.bank_transaction_id == BankTransaction.id)
+            .where(
+                BankTransaction.store_id == ledger.store_id,
+                BankTransaction.ledger_period == ledger.period,
+                RevenueBankMatch.status == MatchStatus.CONFIRMED.value,
+            )
+        ).all()
+    )
+    explicitly_matched_revenue_record_ids = set(
+        session.scalars(
+            select(RevenueBankMatchRecord.revenue_record_id)
+            .join(
+                RevenueBankMatch,
+                RevenueBankMatchRecord.revenue_bank_match_id == RevenueBankMatch.id,
+            )
+            .join(BankTransaction, RevenueBankMatch.bank_transaction_id == BankTransaction.id)
+            .where(
+                BankTransaction.store_id == ledger.store_id,
+                BankTransaction.ledger_period == ledger.period,
+                RevenueBankMatch.status == MatchStatus.CONFIRMED.value,
+            )
+        ).all()
+    )
+    legacy_confirmed_revenue_matches = [
+        match for match in confirmed_revenue_matches if match.id not in explicit_match_ids
+    ]
     unmatched_revenue_records = [
         record
         for record in revenue_records_requiring_match
-        if not any(
+        if record.id not in explicitly_matched_revenue_record_ids
+        and not any(
             match.channel == record.channel
             and match.revenue_start_date <= record.revenue_date <= match.revenue_end_date
-            for match in confirmed_revenue_matches
+            for match in legacy_confirmed_revenue_matches
         )
     ]
     unmatched_revenue_record_count = len(unmatched_revenue_records)

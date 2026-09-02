@@ -657,6 +657,12 @@ select,
   margin-bottom: 0;
 }
 
+.store-ledger-workspace-tab-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
 .store-ledger-context {
   display: flex;
   align-items: center;
@@ -669,6 +675,157 @@ select,
 
 .store-ledger-workbench-grid {
   margin-bottom: 16px;
+}
+
+.store-ledger-overview-metrics {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.store-ledger-overview-metric {
+  position: relative;
+  min-height: 128px;
+  overflow: hidden;
+  border-color: #e6eaf0;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.035);
+}
+
+.store-ledger-overview-metric::before {
+  position: absolute;
+  inset: 0 0 auto;
+  height: 3px;
+  content: "";
+  background: #cbd5e1;
+}
+
+.store-ledger-overview-metric .ant-card-body {
+  display: flex;
+  min-height: 128px;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 18px 16px 16px;
+}
+
+.store-ledger-overview-metric__label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #64748b;
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.store-ledger-overview-metric__value {
+  display: block;
+  margin-top: 8px;
+  color: #0f172a;
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 32px;
+}
+
+.store-ledger-overview-metric__value.ant-typography-secondary {
+  color: #0f172a;
+}
+
+.store-ledger-overview-metric__unit {
+  margin-left: 4px;
+  color: #64748b;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.store-ledger-overview-metric .ant-typography-secondary {
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.store-ledger-overview-metric--income::before {
+  background: #0f9f7a;
+}
+
+.store-ledger-overview-metric--income .store-ledger-overview-metric__label {
+  color: #0f766e;
+}
+
+.store-ledger-overview-metric--expense::before {
+  background: #d65a5a;
+}
+
+.store-ledger-overview-metric--expense .store-ledger-overview-metric__label {
+  color: #b54747;
+}
+
+.store-ledger-overview-metric--positive::before {
+  background: #3b82f6;
+}
+
+.store-ledger-overview-metric--positive .store-ledger-overview-metric__label {
+  color: #2563eb;
+}
+
+.store-ledger-overview-metric--negative::before {
+  background: #d97706;
+}
+
+.store-ledger-overview-metric--negative .store-ledger-overview-metric__label,
+.store-ledger-overview-metric--warning .store-ledger-overview-metric__label {
+  color: #b45309;
+}
+
+.store-ledger-overview-metric--warning::before {
+  background: #d97706;
+}
+
+.store-ledger-overview-metric--info::before {
+  background: #64748b;
+}
+
+.store-ledger-overview-metric--info .store-ledger-overview-metric__label {
+  color: #475569;
+}
+
+.store-ledger-overview-data-card .ant-card-body {
+  padding: 0 16px 16px;
+}
+
+.store-ledger-overview-data-card .ant-tabs-nav {
+  margin-bottom: 12px;
+}
+
+@media (max-width: 1200px) {
+  .store-ledger-overview-metrics {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 720px) {
+  .store-ledger-overview-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .store-ledger-overview-metric,
+  .store-ledger-overview-metric .ant-card-body {
+    min-height: 112px;
+  }
+
+  .store-ledger-overview-metric .ant-card-body {
+    padding: 16px 12px 14px;
+  }
+
+  .store-ledger-overview-metric__value {
+    font-size: 20px;
+    line-height: 28px;
+  }
+}
+
+@media (max-width: 480px) {
+  .store-ledger-overview-metrics {
+    grid-template-columns: 1fr;
+  }
 }
 
 .store-ledger-action-card {
@@ -1234,6 +1391,7 @@ select,
 
 .app-header-kicker {
   overflow: hidden;
+  min-height: 18px;
   color: #64748b;
   font-size: 12px;
   font-weight: 500;
@@ -1785,6 +1943,24 @@ select,
   padding: 12px;
 }
 
+.reconciliation-record-expanded {
+  padding: 4px 12px 8px 36px;
+  background: #f8fafc;
+  border-left: 2px solid #dbeafe;
+}
+
+.reconciliation-record-expanded > .ant-typography {
+  display: block;
+  margin-bottom: 8px;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.reconciliation-record-expanded .ant-table-wrapper {
+  margin: 0;
+}
+
 .bank-transaction-panel .ant-card-body {
   padding: 12px;
 }
@@ -2037,6 +2213,18 @@ select,
   font-size: 16px;
   font-weight: 750;
   font-variant-numeric: tabular-nums;
+}
+
+.approval-candidate-card__detail-button {
+  min-width: 92px;
+  font-weight: 600;
+  border-color: #2563eb;
+}
+
+.approval-candidate-card__detail-button:hover {
+  border-color: #1d4ed8 !important;
+  color: #1d4ed8 !important;
+  background: #eff6ff !important;
 }
 
 .revenue-match-summary {

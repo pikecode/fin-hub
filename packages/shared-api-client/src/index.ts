@@ -53,6 +53,7 @@ import type {
   RevenueChannelCreate,
   RevenueChannelUpdate,
   RevenueBankMatch,
+  RevenueMatchBatchCreate,
   RevenueMatchCreate,
   RevenueRecord,
   RevenueRecordCreate,
@@ -394,6 +395,11 @@ export function createApiClient(options: ApiClientOptions) {
       listRevenue: (params = "") => request<Page<RevenueBankMatch>>(`/api/matches/revenue${params}`),
       createRevenue: (payload: RevenueMatchCreate) =>
         request<RevenueBankMatch>("/api/matches/revenue", {
+          method: "POST",
+          body: JSON.stringify(payload),
+        }),
+      createRevenueBatch: (payload: RevenueMatchBatchCreate) =>
+        request<RevenueBankMatch[]>("/api/matches/revenue/batch", {
           method: "POST",
           body: JSON.stringify(payload),
         }),

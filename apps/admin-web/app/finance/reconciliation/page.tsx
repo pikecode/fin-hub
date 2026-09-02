@@ -13,6 +13,7 @@ import {
   Input,
   Modal,
   Popconfirm,
+  Radio,
   Select,
   Space,
   Splitter,
@@ -27,6 +28,7 @@ import {
   message,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
+import { FileSearchOutlined } from "@ant-design/icons";
 import dayjs from "dayjs";
 import { useEffect, useMemo, useState } from "react";
 import type {
@@ -34,6 +36,7 @@ import type {
   ApprovalTemplate,
   BankTransaction,
   ExpenseCategory,
+  ExpenseItem,
   ReconciliationExpenseCandidate,
   ReconciliationRecord,
   Store,
@@ -62,7 +65,9 @@ interface ConfirmValues {
   reason?: string;
 }
 
-type EditValues = ConfirmValues;
+type EditValues = ConfirmValues & {
+  expense_item_id?: string;
+};
 
 function remainingAmount(transaction: BankTransaction) {
   return Number(transaction.amount) - Number(transaction.matched_amount || 0);
@@ -220,7 +225,14 @@ export default function FinanceReconciliationPage() {
   const [selectedStoreId, setSelectedStoreId] = useState<string>();
   const [selectedTransaction, setSelectedTransaction] = useState<BankTransaction | null>(null);
   const [selectedCandidateId, setSelectedCandidateId] = useState<string>();
+  const [isApprovalSearchActive, setIsApprovalSearchActive] = useState(Boolean(initialApprovalNo?.trim()));
   const [detailRecord, setDetailRecord] = useState<ApprovalLike | null>(null);
+  const [detailExpenseItems, setDetailExpenseItems] = useState<ExpenseItem[]>([]);
+  const [confirmExpenseItems, setConfirmExpenseItems] = useState<ExpenseItem[]>([]);
+  const [editExpenseItems, setEditExpenseItems] = useState<ExpenseItem[]>([]);
+  const [approvalExpenseItemsById, setApprovalExpenseItemsById] = useState<Record<string, ExpenseItem[]>>({});
+  const [loadingApprovalDetailIds, setLoadingApprovalDetailIds] = useState<Set<string>>(new Set());
+  const [isExpenseItemsLoading, setIsExpenseItemsLoading] = useState(false);
   const [editingRecord, setEditingRecord] = useState<ReconciliationRecord | null>(null);
   const [isConfirmOpen, setIsConfirmOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -266,6 +278,37 @@ export default function FinanceReconciliationPage() {
     }))
     .filter((table) => table.rows.length);
   const detailNormalFields = detailFields.filter((field) => !parseDingTalkTableValue(field.value ?? field.ext_value ?? field.extValue).length);
+  const sortedDetailExpenseItems = useMemo(
+    () =>
+      [...detailExpenseItems].sort((left, right) => {
+        const leftLine = left.approval_line_no ?? Number.MAX_SAFE_INTEGER;
+        const rightLine = right.approval_line_no ?? Number.MAX_SAFE_INTEGER;
+        if (leftLine !== rightLine) return leftLine - rightLine;
+        return left.created_at.localeCompare(right.created_at);
+      }),
+    [detailExpenseItems],
+  );
+  const sortedConfirmExpenseItems = useMemo(
+    () =>
+      [...confirmExpenseItems].sort((left, right) => {
+        const leftLine = left.approval_line_no ?? Number.MAX_SAFE_INTEGER;
+        const rightLine = right.approval_line_no ?? Number.MAX_SAFE_INTEGER;
+        if (leftLine !== rightLine) return leftLine - rightLine;
+        return left.created_at.localeCompare(right.created_at);
+      }),
+    [confirmExpenseItems],
+  );
+  const sortedEditExpenseItems = useMemo(
+    () =>
+      [...editExpenseItems].sort((left, right) => {
+        const leftLine = left.approval_line_no ?? Number.MAX_SAFE_INTEGER;
+        const rightLine = right.approval_line_no ?? Number.MAX_SAFE_INTEGER;
+        if (leftLine !== rightLine) return leftLine - rightLine;
+        return left.created_at.localeCompare(right.created_at);
+      }),
+    [editExpenseItems],
+  );
+  const detailMatchedExpenseId = detailRecord && isReconciliationRecord(detailRecord) ? detailRecord.expense_item.id : undefined;
 
   function categoryPathForName(categoryName?: string | null) {
     if (!categoryName) return undefined;
@@ -332,6 +375,7 @@ export default function FinanceReconciliationPage() {
       ]);
       setTransactions(bankPage.items);
       setRecords(recordPage.items);
+      setApprovalExpenseItemsById({});
       const nextTransaction = transaction && remainingAmount(transaction) > 0 ? transaction : null;
       setSelectedTransaction(nextTransaction);
       setCandidates([]);
@@ -352,14 +396,18 @@ export default function FinanceReconciliationPage() {
       approval_only: "true",
       page_size: "100",
     });
+    const approvalSearch = filters && Object.prototype.hasOwnProperty.call(filters, "approval_no")
+      ? filters.approval_no?.trim()
+      : initialApprovalNo?.trim();
     if (selectedLedgerPeriod) params.set("ledger_period", selectedLedgerPeriod);
     if (transaction) params.set("bank_transaction_id", transaction.id);
     if (filters?.template_id) params.set("template_id", filters.template_id);
-    if (filters?.approval_no) params.set("approval_no", filters.approval_no);
+    if (approvalSearch) params.set("approval_no", approvalSearch);
     try {
       const result = await apiClient.matches.reconciliationCandidates(`?${params.toString()}`);
       setCandidates(result.candidates);
       setSelectedCandidateId(undefined);
+      setIsApprovalSearchActive(Boolean(approvalSearch));
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "无法加载审批单候选");
     } finally {
@@ -385,13 +433,102 @@ export default function FinanceReconciliationPage() {
     if (selectedStoreId) void loadStoreWorkspace(selectedStoreId);
   }, [selectedStoreId]);
 
+  useEffect(() => {
+    let ignore = false;
+    const approvalId = detailRecord?.approval_instance?.id;
+    if (!approvalId) {
+      setDetailExpenseItems([]);
+      return;
+    }
+    async function loadDetailExpenseItems(currentApprovalId: string) {
+      try {
+        const page = await fetchApprovalExpenseItems(currentApprovalId);
+        if (!ignore) setDetailExpenseItems(page.items);
+      } catch (error) {
+        if (!ignore) {
+          setDetailExpenseItems([]);
+          message.error(error instanceof Error ? error.message : "无法加载审批费用明细");
+        }
+      }
+    }
+    void loadDetailExpenseItems(approvalId);
+    return () => {
+      ignore = true;
+    };
+  }, [detailRecord?.approval_instance?.id]);
+
   async function selectTransaction(transaction: BankTransaction) {
     if (!selectedStoreId) return;
     setSelectedTransaction(transaction);
     await loadCandidates(transaction, selectedStoreId, filterForm.getFieldsValue());
   }
 
-  function openConfirm() {
+  async function fetchApprovalExpenseItems(approvalId: string) {
+    const params = new URLSearchParams({ approval_instance_id: approvalId, page_size: "500" });
+    return apiClient.expenseItems.list(`?${params.toString()}`);
+  }
+
+  async function loadApprovalExpenseItemsForTable(approvalId: string) {
+    if (approvalExpenseItemsById[approvalId] || loadingApprovalDetailIds.has(approvalId)) return;
+    setLoadingApprovalDetailIds((current) => new Set(current).add(approvalId));
+    try {
+      const page = await fetchApprovalExpenseItems(approvalId);
+      setApprovalExpenseItemsById((current) => ({ ...current, [approvalId]: page.items }));
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "无法加载审批费用明细");
+    } finally {
+      setLoadingApprovalDetailIds((current) => {
+        const next = new Set(current);
+        next.delete(approvalId);
+        return next;
+      });
+    }
+  }
+
+  async function updateExpenseCategory(expenseItem: ExpenseItem, categoryPath?: string[]) {
+    setIsSaving(true);
+    try {
+      const updated = await apiClient.expenseItems.update(expenseItem.id, {
+        category_l1: categoryPath?.[0] || null,
+        category_l2: categoryPath?.at(-1) || null,
+      });
+      setDetailExpenseItems((items) => items.map((item) => (item.id === updated.id ? updated : item)));
+      setConfirmExpenseItems((items) => items.map((item) => (item.id === updated.id ? updated : item)));
+      setEditExpenseItems((items) => items.map((item) => (item.id === updated.id ? updated : item)));
+      setApprovalExpenseItemsById((itemsByApproval) =>
+        Object.fromEntries(
+          Object.entries(itemsByApproval).map(([approvalId, items]) => [
+            approvalId,
+            items.map((item) => (item.id === updated.id ? updated : item)),
+          ]),
+        ),
+      );
+      setCandidates((items) =>
+        items.map((candidate) =>
+          candidate.expense_item.id === updated.id ? { ...candidate, expense_item: updated } : candidate,
+        ),
+      );
+      setRecords((items) =>
+        items.map((record) =>
+          record.expense_item.id === updated.id ? { ...record, expense_item: updated } : record,
+        ),
+      );
+      setDetailRecord((record) => {
+        if (!record || record.expense_item.id !== updated.id) return record;
+        return { ...record, expense_item: updated };
+      });
+      if (selectedCandidateId === updated.id) {
+        confirmForm.setFieldValue("category_path", categoryPath);
+      }
+      message.success("费用分类已更新");
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "更新费用分类失败");
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  async function openConfirm() {
     if (!selectedTransaction || !selectedCandidate) {
       message.warning("请先选择银行流水和审批单");
       return;
@@ -402,7 +539,19 @@ export default function FinanceReconciliationPage() {
       bank_occurred: true,
       category_path: categoryPathForName(selectedCandidate.expense_item.category_l2),
     });
+    setConfirmExpenseItems([selectedCandidate.expense_item]);
     setIsConfirmOpen(true);
+    const approvalId = selectedCandidate.approval_instance?.id;
+    if (!approvalId) return;
+    setIsExpenseItemsLoading(true);
+    try {
+      const page = await fetchApprovalExpenseItems(approvalId);
+      setConfirmExpenseItems(page.items);
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "无法加载审批费用明细");
+    } finally {
+      setIsExpenseItemsLoading(false);
+    }
   }
 
   async function submitConfirm(values: ConfirmValues) {
@@ -425,6 +574,7 @@ export default function FinanceReconciliationPage() {
       await apiClient.matches.confirm(match.id, "admin");
       message.success("匹配已确认");
       setIsConfirmOpen(false);
+      setConfirmExpenseItems([]);
       confirmForm.resetFields();
       await loadStoreWorkspace(selectedStoreId);
     } catch (error) {
@@ -436,13 +586,22 @@ export default function FinanceReconciliationPage() {
 
   function openEdit(record: ReconciliationRecord) {
     setEditingRecord(record);
+    setEditExpenseItems([record.expense_item]);
     editForm.setFieldsValue({
+      expense_item_id: record.expense_item.id,
       amount: record.match.amount,
       accounting_month: dayjs(record.match.accounting_period || record.bank_transaction.ledger_period || record.bank_transaction.occurred_at.slice(0, 7)),
       bank_occurred: record.match.bank_occurred,
       category_path: categoryPathForName(record.expense_item.category_l2),
       reason: record.match.reason || undefined,
     });
+    const approvalId = record.approval_instance?.id;
+    if (!approvalId) return;
+    setIsExpenseItemsLoading(true);
+    fetchApprovalExpenseItems(approvalId)
+      .then((page) => setEditExpenseItems(page.items))
+      .catch((error) => message.error(error instanceof Error ? error.message : "无法加载审批费用明细"))
+      .finally(() => setIsExpenseItemsLoading(false));
   }
 
   async function submitEdit(values: EditValues) {
@@ -450,6 +609,7 @@ export default function FinanceReconciliationPage() {
     setIsSaving(true);
     try {
       await apiClient.matches.updateReconciliationRecord(editingRecord.match.id, {
+        expense_item_id: values.expense_item_id || editingRecord.expense_item.id,
         amount: values.amount || editingRecord.match.amount,
         accounting_period: values.accounting_month?.format("YYYY-MM") || editingRecord.match.accounting_period,
         bank_occurred: values.bank_occurred ?? true,
@@ -498,9 +658,11 @@ export default function FinanceReconciliationPage() {
             <Typography.Text type="danger">{formatMoney(record.bank_transaction.amount)}</Typography.Text>
           </Space>
           <Typography.Text ellipsis>{record.bank_transaction.summary || record.bank_transaction.counterparty_name || "无摘要"}</Typography.Text>
-          <Typography.Text type="secondary" ellipsis>
-            {record.bank_transaction.bank_serial_no ? `流水号 ${record.bank_transaction.bank_serial_no}` : "未填写流水号"}
-          </Typography.Text>
+          {record.bank_transaction.bank_serial_no ? (
+            <Typography.Text type="secondary" ellipsis>
+              流水号 {record.bank_transaction.bank_serial_no}
+            </Typography.Text>
+          ) : null}
         </Space>
       ),
     },
@@ -543,6 +705,68 @@ export default function FinanceReconciliationPage() {
       ),
     },
   ];
+
+  function renderReconciliationSubtable(record: ReconciliationRecord) {
+    const approvalId = record.approval_instance?.id;
+    if (!approvalId) {
+      return <Typography.Text type="secondary">这条记录没有可展开的审批明细</Typography.Text>;
+    }
+    const items = approvalExpenseItemsById[approvalId];
+    if (!items) {
+      return loadingApprovalDetailIds.has(approvalId)
+        ? <Spin size="small" />
+        : <Typography.Text type="secondary">展开明细加载失败，请重新展开</Typography.Text>;
+    }
+    return (
+      <div className="reconciliation-record-expanded">
+        <Typography.Text type="secondary">审批费用明细</Typography.Text>
+        <Table
+          size="small"
+          rowKey="id"
+          pagination={false}
+          dataSource={items}
+          columns={[
+            {
+              title: "费用内容",
+              dataIndex: "description",
+              width: 320,
+              render: (value, item) => (
+                <Space direction="vertical" size={2}>
+                  <Typography.Text>{value || "-"}</Typography.Text>
+                  <Typography.Text type="secondary">
+                    {item.approval_line_source_type === "table" ? "表格明细" : "审批主单"}
+                  </Typography.Text>
+                </Space>
+              ),
+            },
+            {
+              title: "业务日期",
+              dataIndex: "expense_date",
+              width: 120,
+              render: (value) => value ? dayjs(value).format("YYYY-MM-DD") : "-",
+            },
+            {
+              title: "金额",
+              dataIndex: "amount",
+              width: 120,
+              align: "right",
+              render: (value) => formatMoney(value),
+            },
+            {
+              title: "费用分类",
+              dataIndex: "category_l2",
+              width: 220,
+              render: (value, item) => value
+                ? `${item.category_l1 ? `${item.category_l1} / ` : ""}${value}`
+                : "待分类",
+            },
+          ]}
+          rowClassName={(item) => (item.id === record.expense_item.id ? "selected-table-row" : "")}
+          scroll={{ x: 780 }}
+        />
+      </div>
+    );
+  }
 
   return (
     <AppShell title="财务对账">
@@ -621,12 +845,12 @@ export default function FinanceReconciliationPage() {
                                   {transaction.ledger_period ? <Tag>{transaction.ledger_period}</Tag> : null}
                                   {isFullyMatched ? <Tag color="green">已匹配</Tag> : <Tag>待匹配</Tag>}
                                 </span>
-                                <Typography.Text className="bank-transaction-card__summary" ellipsis>
-                                  {transaction.summary || transaction.counterparty_name || "无摘要"}
-                                </Typography.Text>
-                                <span className="bank-transaction-card__serial">
-                                  {transaction.bank_serial_no ? `流水号 ${transaction.bank_serial_no}` : "未填写流水号"}
-                                </span>
+                                  <Typography.Text className="bank-transaction-card__summary" ellipsis>
+                                    {transaction.summary || transaction.counterparty_name || "无摘要"}
+                                  </Typography.Text>
+                                {transaction.bank_serial_no ? (
+                                  <span className="bank-transaction-card__serial">流水号 {transaction.bank_serial_no}</span>
+                                ) : null}
                               </span>
                               <span className="bank-transaction-card__amounts">
                                 <Typography.Text className="bank-transaction-card__amount">{formatMoney(transaction.amount)}</Typography.Text>
@@ -667,26 +891,38 @@ export default function FinanceReconciliationPage() {
                     }
                     className="data-table-card approval-candidate-panel"
                   >
+                    {isApprovalSearchActive ? (
+                      <Alert
+                        className="dashboard-alert"
+                        type="info"
+                        showIcon
+                        message="当前为审批编号检索结果"
+                        description="已匹配明细仅供查看，剩余金额大于 0 的明细仍可继续匹配。"
+                      />
+                    ) : null}
                     <Spin spinning={isCandidateLoading}>
                       {candidates.length ? (
                         <div className="approval-candidate-list">
                           {candidates.map((candidate) => {
                             const isSelected = candidate.expense_item.id === selectedCandidateId;
+                            const isFullyMatched = Number(candidate.remaining_amount || 0) <= 0;
                             const storeName = storesById.get(candidate.expense_item.store_id)?.name || candidate.approval_instance?.department_name || "-";
                             return (
                               <div
                                 key={candidate.expense_item.id}
                                 role="button"
                                 tabIndex={0}
-                                className={`approval-candidate-card${isSelected ? " is-selected" : ""}`}
-                                onClick={() => setSelectedCandidateId(candidate.expense_item.id)}
+                                className={`approval-candidate-card${isSelected ? " is-selected" : ""}${isFullyMatched ? " is-disabled" : ""}`}
+                                onClick={() => {
+                                  if (!isFullyMatched) setSelectedCandidateId(candidate.expense_item.id);
+                                }}
                                 onKeyDown={(event) => {
-                                  if (event.key === "Enter" || event.key === " ") setSelectedCandidateId(candidate.expense_item.id);
+                                  if (!isFullyMatched && (event.key === "Enter" || event.key === " ")) setSelectedCandidateId(candidate.expense_item.id);
                                 }}
                               >
                                 <div className="approval-candidate-card__score">
-                                  <span>{Number(candidate.score).toFixed(0)}</span>
-                                  <Typography.Text type="secondary">推荐</Typography.Text>
+                                  <span>{Number(candidate.score).toFixed(0)}%</span>
+                                  <Typography.Text type="secondary">推荐度</Typography.Text>
                                 </div>
                                 <div className="approval-candidate-card__main">
                                   <Space size={6} wrap>
@@ -699,6 +935,7 @@ export default function FinanceReconciliationPage() {
                                     ) : (
                                       <Tag color="orange">待分类</Tag>
                                     )}
+                                    {isFullyMatched ? <Tag color="green">已完成匹配，仅供查看</Tag> : null}
                                   </Space>
                                   <Typography.Text className="approval-candidate-card__title" ellipsis>
                                     {candidate.expense_item.description}
@@ -711,15 +948,19 @@ export default function FinanceReconciliationPage() {
                                 </div>
                                 <div className="approval-candidate-card__aside">
                                   <Typography.Text className="approval-candidate-card__amount">{formatMoney(candidate.expense_item.amount)}</Typography.Text>
-                                  <Typography.Text type="secondary">未匹配 {formatMoney(candidate.remaining_amount)}</Typography.Text>
+                                  <Typography.Text type="secondary">待匹配金额 {formatMoney(candidate.remaining_amount)}</Typography.Text>
                                   <Button
                                     size="small"
+                                    type="primary"
+                                    ghost
+                                    icon={<FileSearchOutlined />}
+                                    className="approval-candidate-card__detail-button"
                                     onClick={(event) => {
                                       event.stopPropagation();
                                       setDetailRecord(candidate);
                                     }}
                                   >
-                                    明细
+                                    查看明细
                                   </Button>
                                 </div>
                               </div>
@@ -740,7 +981,24 @@ export default function FinanceReconciliationPage() {
             label: `已对账记录 (${records.length})`,
             children: (
               <Card title="已对账记录" className="data-table-card reconciliation-record-card">
-                <Table rowKey={(record) => record.match.id} size="small" loading={isLoading} columns={recordColumns} dataSource={records} pagination={{ pageSize: 12 }} scroll={{ x: 1290, y: "calc(100vh - 430px)" }} sticky />
+                <Table
+                  rowKey={(record) => record.match.id}
+                  size="small"
+                  loading={isLoading}
+                  columns={recordColumns}
+                  dataSource={records}
+                  expandable={{
+                    expandedRowRender: renderReconciliationSubtable,
+                    onExpand: (expanded, record) => {
+                      if (expanded && record.approval_instance?.id) {
+                        void loadApprovalExpenseItemsForTable(record.approval_instance.id);
+                      }
+                    },
+                  }}
+                  pagination={{ pageSize: 12 }}
+                  scroll={{ x: 1290, y: "calc(100vh - 430px)" }}
+                  sticky
+                />
               </Card>
             ),
           },
@@ -755,7 +1013,7 @@ export default function FinanceReconciliationPage() {
         onOk={() => confirmForm.submit()}
         okText="确认匹配"
         confirmLoading={isSaving}
-        width={720}
+        width={980}
       >
         <Form form={confirmForm} layout="vertical" onFinish={submitConfirm}>
           <Alert
@@ -763,7 +1021,7 @@ export default function FinanceReconciliationPage() {
             type="info"
             showIcon
             message={`建议匹配金额 ${formatMoney(defaultMatchAmount)}`}
-            description={`确认后会把当前银行流水关联到所选审批明细，并把下面的费用分类写入该明细，供后续报表统计使用。流水未匹配 ${selectedTransaction ? formatMoney(bankRemaining) : "-"}，审批明细未匹配 ${selectedCandidate ? formatMoney(selectedCandidate.remaining_amount) : "-"}。`}
+            description={`确认后会把当前银行流水关联到所选审批明细，并把下面的费用分类写入该明细，供后续报表统计使用。流水待匹配 ${selectedTransaction ? formatMoney(bankRemaining) : "-"}，审批明细待匹配 ${selectedCandidate ? formatMoney(selectedCandidate.remaining_amount) : "-"}。`}
           />
           <div className="reconciliation-confirm-summary">
             <div>
@@ -772,11 +1030,61 @@ export default function FinanceReconciliationPage() {
               <Typography.Text>{selectedTransaction ? `${dayjs(selectedTransaction.occurred_at).format("YYYY-MM-DD")} · ${formatMoney(selectedTransaction.amount)}` : "-"}</Typography.Text>
             </div>
             <div>
-              <Typography.Text type="secondary">审批明细</Typography.Text>
+              <Typography.Text type="secondary">当前选中审批明细</Typography.Text>
               <Typography.Text strong>{selectedCandidate?.expense_item.description || "-"}</Typography.Text>
               <Typography.Text>{selectedCandidate ? `${approvalNoText(selectedCandidate)} · ${formatMoney(selectedCandidate.expense_item.amount)}` : "-"}</Typography.Text>
             </div>
           </div>
+          <Card size="small" title="审批费用明细" style={{ marginBottom: 16 }}>
+            <Spin spinning={isExpenseItemsLoading}>
+              <Table
+                size="small"
+                rowKey="id"
+                pagination={false}
+                dataSource={sortedConfirmExpenseItems}
+                scroll={{ x: 860, y: 260 }}
+                rowClassName={(record) => (record.id === selectedCandidateId ? "ant-table-row-selected" : "")}
+                columns={[
+                  {
+                    title: "费用内容",
+                    dataIndex: "description",
+                    width: 260,
+                    render: (value, record) => (
+                      <Space direction="vertical" size={2} style={{ width: "100%" }}>
+                        <Typography.Text ellipsis>{value || "-"}</Typography.Text>
+                        <Typography.Text type="secondary">
+                          {record.expense_date ? dayjs(record.expense_date).format("YYYY-MM-DD") : "-"}
+                        </Typography.Text>
+                      </Space>
+                    ),
+                  },
+                  {
+                    title: "金额",
+                    dataIndex: "amount",
+                    width: 110,
+                    align: "right",
+                    render: (value) => formatMoney(value),
+                  },
+                  {
+                    title: "分类",
+                    width: 240,
+                    render: (_, record) => (
+                      <Cascader
+                        value={categoryPathForName(record.category_l2)}
+                        options={categoryOptions}
+                        placeholder="选择分类"
+                        showSearch
+                        changeOnSelect={false}
+                        disabled={isSaving}
+                        style={{ width: "100%" }}
+                        onChange={(value) => updateExpenseCategory(record, value.map(String))}
+                      />
+                    ),
+                  },
+                ]}
+              />
+            </Spin>
+          </Card>
           <Form.Item name="accounting_month" label="入账月份" rules={[{ required: true }]}>
             <DatePicker picker="month" style={{ width: "100%" }} />
           </Form.Item>
@@ -801,8 +1109,96 @@ export default function FinanceReconciliationPage() {
         </Form>
       </Modal>
 
-      <Modal title="编辑对账记录" open={Boolean(editingRecord)} destroyOnHidden onCancel={() => setEditingRecord(null)} onOk={() => editForm.submit()} confirmLoading={isSaving}>
+      <Modal
+        title="编辑对账记录"
+        open={Boolean(editingRecord)}
+        destroyOnHidden
+        onCancel={() => {
+          setEditingRecord(null);
+          setEditExpenseItems([]);
+        }}
+        onOk={() => editForm.submit()}
+        confirmLoading={isSaving}
+        width={900}
+      >
         <Form form={editForm} layout="vertical" onFinish={submitEdit}>
+          {editingRecord?.approval_instance ? (
+            <Card size="small" title="审批费用明细" style={{ marginBottom: 16 }}>
+              <Spin spinning={isExpenseItemsLoading}>
+                <Form.Item name="expense_item_id" noStyle>
+                  <Radio.Group
+                    style={{ width: "100%" }}
+                    onChange={(event) => {
+                      const expenseItem = editExpenseItems.find((item) => item.id === event.target.value);
+                      if (expenseItem) {
+                        editForm.setFieldValue("category_path", categoryPathForName(expenseItem.category_l2));
+                      }
+                    }}
+                  >
+                    <Table
+                      size="small"
+                      rowKey="id"
+                      pagination={false}
+                      dataSource={sortedEditExpenseItems}
+                      scroll={{ x: 860, y: 260 }}
+                      rowClassName={(record) => (record.id === editForm.getFieldValue("expense_item_id") ? "ant-table-row-selected" : "")}
+                      columns={[
+                        {
+                          title: "",
+                          width: 48,
+                          render: (_, record) => <Radio value={record.id} />,
+                        },
+                        {
+                          title: "费用内容",
+                          dataIndex: "description",
+                          width: 260,
+                          render: (value, record) => (
+                            <Space direction="vertical" size={2} style={{ width: "100%" }}>
+                              <Typography.Text ellipsis>{value || "-"}</Typography.Text>
+                              <Typography.Text type="secondary">
+                                {record.expense_date ? dayjs(record.expense_date).format("YYYY-MM-DD") : "-"}
+                              </Typography.Text>
+                            </Space>
+                          ),
+                        },
+                        {
+                          title: "金额",
+                          dataIndex: "amount",
+                          width: 110,
+                          align: "right",
+                          render: (value) => formatMoney(value),
+                        },
+                        {
+                          title: "分类",
+                          width: 240,
+                          render: (_, record) => (
+                            <Cascader
+                              value={categoryPathForName(record.category_l2)}
+                              options={categoryOptions}
+                              placeholder="选择分类"
+                              showSearch
+                              changeOnSelect={false}
+                              disabled={isSaving}
+                              style={{ width: "100%" }}
+                              onChange={(value) => updateExpenseCategory(record, value.map(String))}
+                            />
+                          ),
+                        },
+                      ]}
+                      onRow={(record) => ({
+                        onClick: () => {
+                          editForm.setFieldsValue({
+                            expense_item_id: record.id,
+                            category_path: categoryPathForName(record.category_l2),
+                          });
+                        },
+                      })}
+                    />
+                  </Radio.Group>
+                </Form.Item>
+              </Spin>
+            </Card>
+          ) : null}
           <Form.Item name="amount" label="匹配金额" rules={[{ required: true }]}>
             <Input />
           </Form.Item>
@@ -875,6 +1271,56 @@ export default function FinanceReconciliationPage() {
                 ]}
               />
             </Card>
+            <Card size="small" title="审批费用明细">
+              <Table
+                size="small"
+                rowKey="id"
+                pagination={false}
+                dataSource={sortedDetailExpenseItems}
+                scroll={{ x: 960 }}
+                rowClassName={(record) => (record.id === detailMatchedExpenseId ? "ant-table-row-selected" : "")}
+                columns={[
+                  {
+                    title: "费用内容",
+                    dataIndex: "description",
+                    width: 260,
+                    render: (value, record) => (
+                      <Space direction="vertical" size={2} style={{ width: "100%" }}>
+                        <Typography.Text ellipsis>{value || "-"}</Typography.Text>
+                        <Typography.Text type="secondary" ellipsis>
+                          {record.approval_line_source_type === "table" ? "表格明细" : "审批主单"}
+                          {record.approval_line_key ? ` · ${record.approval_line_key}` : ""}
+                        </Typography.Text>
+                      </Space>
+                    ),
+                  },
+                  {
+                    title: "金额",
+                    dataIndex: "amount",
+                    width: 120,
+                    align: "right",
+                    render: (value) => formatMoney(value),
+                  },
+                  {
+                    title: "费用分类",
+                    width: 260,
+                    render: (_, record) => (
+                      <Cascader
+                        value={categoryPathForName(record.category_l2)}
+                        options={categoryOptions}
+                        placeholder="选择一级 / 二级分类"
+                        showSearch
+                        changeOnSelect={false}
+                        disabled={isSaving}
+                        style={{ width: "100%" }}
+                        onChange={(value) => updateExpenseCategory(record, value.map(String))}
+                      />
+                    ),
+                  },
+                ]}
+                locale={{ emptyText: "这个审批单还没有解析出费用明细" }}
+              />
+            </Card>
             <Card size="small" title="表单字段">
               <Table
                 size="small"
@@ -883,7 +1329,6 @@ export default function FinanceReconciliationPage() {
                 dataSource={detailNormalFields}
                 columns={[
                   { title: "字段", width: 180, render: (_, record) => String(record.name ?? record.label ?? record.id ?? "-") },
-                  { title: "类型", width: 140, render: (_, record) => String(record.component_type ?? record.componentType ?? "-") },
                   { title: "值", render: (_, record) => renderApprovalValue(record.value ?? record.ext_value ?? record.extValue) },
                 ]}
               />

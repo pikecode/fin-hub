@@ -1613,7 +1613,7 @@ export default function DingTalkPage() {
                     onFinish={submitAutoSyncSetting}
                     initialValues={{
                       enabled: false,
-                      scheduled_time: "02:00",
+                      scheduled_time: "02:15",
                       sync_departments: true,
                       sync_templates: true,
                       sync_approvals: true,

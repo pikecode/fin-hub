@@ -5,14 +5,18 @@
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.database import get_session
 from app.models import (
     BankTransaction,
+    ExpenseBankMatch,
     ExpenseItem,
-    Match,
+    ExpensePaymentStatus,
+    MatchStatus,
+    RevenueBankMatch,
+    RevenueBankMatchRecord,
     RevenueRecord,
 )
 
@@ -30,45 +34,95 @@ async def dashboard_metrics(db: Session = Depends(get_session)):
     yesterday = today - timedelta(days=1)
 
     # 待处理匹配数量
-    pending_matches = db.scalar(
-        select(func.count(Match.id)).where(Match.match_status == "candidate")
+    pending_expense_matches = db.scalar(
+        select(func.count(ExpenseBankMatch.id)).where(ExpenseBankMatch.status == MatchStatus.CANDIDATE.value)
     ) or 0
+    pending_revenue_matches = db.scalar(
+        select(func.count(RevenueBankMatch.id)).where(RevenueBankMatch.status == MatchStatus.CANDIDATE.value)
+    ) or 0
+    pending_matches = pending_expense_matches + pending_revenue_matches
 
     # 未匹配银行流水数量
     unmatched_bank_count = db.scalar(
         select(func.count(BankTransaction.id)).where(
-            BankTransaction.matched_amount == None  # noqa: E711
+            BankTransaction.matched_amount < BankTransaction.amount
         )
     ) or 0
 
     # 今日新增匹配
-    today_matches = db.scalar(
-        select(func.count(Match.id)).where(
-            Match.match_status == "confirmed",
-            func.date(Match.created_at) == today,
+    today_expense_matches = db.scalar(
+        select(func.count(ExpenseBankMatch.id)).where(
+            ExpenseBankMatch.status == MatchStatus.CONFIRMED.value,
+            func.date(ExpenseBankMatch.created_at) == today,
         )
     ) or 0
+    today_revenue_matches = db.scalar(
+        select(func.count(RevenueBankMatch.id)).where(
+            RevenueBankMatch.status == MatchStatus.CONFIRMED.value,
+            func.date(RevenueBankMatch.created_at) == today,
+        )
+    ) or 0
+    today_matches = today_expense_matches + today_revenue_matches
 
     # 昨日新增匹配
-    yesterday_matches = db.scalar(
-        select(func.count(Match.id)).where(
-            Match.match_status == "confirmed",
-            func.date(Match.created_at) == yesterday,
+    yesterday_expense_matches = db.scalar(
+        select(func.count(ExpenseBankMatch.id)).where(
+            ExpenseBankMatch.status == MatchStatus.CONFIRMED.value,
+            func.date(ExpenseBankMatch.created_at) == yesterday,
         )
     ) or 0
+    yesterday_revenue_matches = db.scalar(
+        select(func.count(RevenueBankMatch.id)).where(
+            RevenueBankMatch.status == MatchStatus.CONFIRMED.value,
+            func.date(RevenueBankMatch.created_at) == yesterday,
+        )
+    ) or 0
+    yesterday_matches = yesterday_expense_matches + yesterday_revenue_matches
 
     # 未匹配支出笔数
     unmatched_expenses = db.scalar(
         select(func.count(ExpenseItem.id)).where(
-            ExpenseItem.payment_status != "no_bank_flow",
-            ExpenseItem.matched_amount == None,  # noqa: E711
+            ExpenseItem.payment_status.in_(
+                [ExpensePaymentStatus.UNPAID.value, ExpensePaymentStatus.PARTIAL_PAID.value]
+            ),
         )
     ) or 0
 
     # 未匹配收入笔数
+    confirmed_exact_revenue_match_exists = (
+        select(RevenueBankMatch.id)
+        .join(BankTransaction, RevenueBankMatch.bank_transaction_id == BankTransaction.id)
+        .join(
+            RevenueBankMatchRecord,
+            RevenueBankMatchRecord.revenue_bank_match_id == RevenueBankMatch.id,
+        )
+        .where(
+            RevenueBankMatch.status == MatchStatus.CONFIRMED.value,
+            RevenueBankMatchRecord.revenue_record_id == RevenueRecord.id,
+            BankTransaction.store_id == RevenueRecord.store_id,
+            BankTransaction.ledger_period == RevenueRecord.ledger_period,
+        )
+        .exists()
+    )
+    confirmed_legacy_revenue_match_exists = (
+        select(RevenueBankMatch.id)
+        .join(BankTransaction, RevenueBankMatch.bank_transaction_id == BankTransaction.id)
+        .where(
+            RevenueBankMatch.status == MatchStatus.CONFIRMED.value,
+            RevenueBankMatch.channel == RevenueRecord.channel,
+            RevenueBankMatch.revenue_start_date <= RevenueRecord.revenue_date,
+            RevenueBankMatch.revenue_end_date >= RevenueRecord.revenue_date,
+            BankTransaction.store_id == RevenueRecord.store_id,
+            BankTransaction.ledger_period == RevenueRecord.ledger_period,
+            ~select(RevenueBankMatchRecord.id)
+            .where(RevenueBankMatchRecord.revenue_bank_match_id == RevenueBankMatch.id)
+            .exists(),
+        )
+        .exists()
+    )
     unmatched_revenues = db.scalar(
         select(func.count(RevenueRecord.id)).where(
-            RevenueRecord.matched_amount == None  # noqa: E711
+            ~or_(confirmed_exact_revenue_match_exists, confirmed_legacy_revenue_match_exists)
         )
     ) or 0
 
@@ -94,18 +148,34 @@ async def operations_metrics(db: Session = Depends(get_session)):
     seven_days_ago = datetime.utcnow() - timedelta(days=7)
 
     # 过去 7 天的匹配趋势
-    daily_matches = db.execute(
+    daily_expense_matches = db.execute(
         select(
-            func.date(Match.created_at).label("date"),
-            func.count(Match.id).label("count"),
+            func.date(ExpenseBankMatch.created_at).label("date"),
+            func.count(ExpenseBankMatch.id).label("count"),
         )
         .where(
-            Match.match_status == "confirmed",
-            Match.created_at >= seven_days_ago,
+            ExpenseBankMatch.status == MatchStatus.CONFIRMED.value,
+            ExpenseBankMatch.created_at >= seven_days_ago,
         )
-        .group_by(func.date(Match.created_at))
-        .order_by(func.date(Match.created_at))
+        .group_by(func.date(ExpenseBankMatch.created_at))
+        .order_by(func.date(ExpenseBankMatch.created_at))
     ).all()
+    daily_revenue_matches = db.execute(
+        select(
+            func.date(RevenueBankMatch.created_at).label("date"),
+            func.count(RevenueBankMatch.id).label("count"),
+        )
+        .where(
+            RevenueBankMatch.status == MatchStatus.CONFIRMED.value,
+            RevenueBankMatch.created_at >= seven_days_ago,
+        )
+        .group_by(func.date(RevenueBankMatch.created_at))
+        .order_by(func.date(RevenueBankMatch.created_at))
+    ).all()
+    daily_match_counts: dict[str, int] = {}
+    for row in [*daily_expense_matches, *daily_revenue_matches]:
+        key = str(row.date)
+        daily_match_counts[key] = daily_match_counts.get(key, 0) + row.count
 
     # 过去 7 天的银行流水录入
     daily_bank_transactions = db.execute(
@@ -125,8 +195,9 @@ async def operations_metrics(db: Session = Depends(get_session)):
             func.count(ExpenseItem.id).label("unmatched_expenses"),
         )
         .where(
-            ExpenseItem.payment_status != "no_bank_flow",
-            ExpenseItem.matched_amount == None,  # noqa: E711
+            ExpenseItem.payment_status.in_(
+                [ExpensePaymentStatus.UNPAID.value, ExpensePaymentStatus.PARTIAL_PAID.value]
+            ),
         )
         .group_by(ExpenseItem.store_id)
         .order_by(func.count(ExpenseItem.id).desc())
@@ -135,8 +206,8 @@ async def operations_metrics(db: Session = Depends(get_session)):
 
     return {
         "daily_matches": [
-            {"date": str(row.date), "count": row.count}
-            for row in daily_matches
+            {"date": date, "count": count}
+            for date, count in sorted(daily_match_counts.items())
         ],
         "daily_bank_transactions": [
             {"date": str(row.date), "count": row.count}

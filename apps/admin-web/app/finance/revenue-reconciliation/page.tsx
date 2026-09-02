@@ -3,7 +3,7 @@
 import { Alert, Button, Card, Checkbox, Empty, Input, Popconfirm, Select, Space, Splitter, Statistic, Table, Tabs, Tag, Typography, message } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import dayjs from "dayjs";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { BankTransaction, Ledger, RevenueBankMatch, RevenueChannel, RevenueRecord, Store } from "@fin-hub/shared-types";
 import { formatMoney } from "@fin-hub/shared-utils";
 import { AppShell } from "../../components/AppShell";
@@ -29,9 +29,11 @@ function isRevenueRecordCovered(record: RevenueRecord, matches: RevenueBankMatch
   return matches.some(
     (match) =>
       isActiveMatch(match) &&
-      match.channel === record.channel &&
-      match.revenue_start_date <= record.revenue_date &&
-      match.revenue_end_date >= record.revenue_date,
+      (match.revenue_record_ids?.length
+        ? match.revenue_record_ids.includes(record.id)
+        : match.channel === record.channel &&
+          match.revenue_start_date <= record.revenue_date &&
+          match.revenue_end_date >= record.revenue_date),
   );
 }
 
@@ -57,7 +59,9 @@ export default function RevenueReconciliationPage() {
   const [keyword, setKeyword] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [isMatchDataReady, setIsMatchDataReady] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const loadRequestIdRef = useRef(0);
 
   const storesById = useMemo(() => new Map(stores.map((store) => [store.id, store])), [stores]);
   const transactionsById = useMemo(() => new Map(transactions.map((transaction) => [transaction.id, transaction])), [transactions]);
@@ -77,7 +81,6 @@ export default function RevenueReconciliationPage() {
     .filter((record) => selectedRecordIds.includes(record.id))
     .sort((left, right) => left.revenue_date.localeCompare(right.revenue_date));
   const selectedAmount = selectedRecords.reduce((sum, record) => sum + moneyValue(record.net_amount), 0);
-  const selectedChannel = selectedRecords[0]?.channel;
   const bankRemaining = selectedTransaction ? remainingAmount(selectedTransaction) : 0;
   const activeMatches = matches.filter(isActiveMatch);
   const unmatchedRecords = records.filter((record) => !isRevenueRecordCovered(record, activeMatches));
@@ -118,8 +121,10 @@ export default function RevenueReconciliationPage() {
   }
 
   async function loadStoreWorkspace(storeId: string, keepTransactionId?: string) {
+    const requestId = ++loadRequestIdRef.current;
     setIsLoading(true);
     setErrorMessage(null);
+    setIsMatchDataReady(false);
     try {
       const bankParams = new URLSearchParams({ store_id: storeId, direction: "income", page_size: "500" });
       const revenueParams = new URLSearchParams({ store_id: storeId, page_size: "500" });
@@ -129,25 +134,45 @@ export default function RevenueReconciliationPage() {
         revenueParams.set("ledger_period", initialLedgerPeriod);
         matchParams.set("ledger_period", initialLedgerPeriod);
       }
-      const [bankPage, revenuePage, matchPage] = await Promise.all([
+      const results = await Promise.allSettled([
         apiClient.bankTransactions.list(`?${bankParams.toString()}`),
         apiClient.revenueRecords.list(`?${revenueParams.toString()}`),
         apiClient.matches.listRevenue(`?${matchParams.toString()}`),
       ]);
-      const nextTransactions = bankPage.items.sort((left, right) => right.occurred_at.localeCompare(left.occurred_at));
+
+      if (requestId !== loadRequestIdRef.current) return;
+
+      const [bankResult, revenueResult, matchResult] = results;
+      const loadErrors: string[] = [];
+      const nextTransactions = bankResult.status === "fulfilled"
+        ? [...bankResult.value.items].sort((left, right) => right.occurred_at.localeCompare(left.occurred_at))
+        : [];
+      const nextRecords = revenueResult.status === "fulfilled" ? revenueResult.value.items : [];
+      const nextMatches = matchResult.status === "fulfilled" ? matchResult.value.items : [];
+
+      if (bankResult.status === "rejected") loadErrors.push("收入银行流水");
+      if (revenueResult.status === "rejected") loadErrors.push("营业收入");
+      if (matchResult.status === "rejected") loadErrors.push("收入匹配记录");
+
       setTransactions(nextTransactions);
-      setRecords(revenuePage.items);
-      setMatches(matchPage.items);
+      setRecords(nextRecords);
+      setMatches(nextMatches);
+      setIsMatchDataReady(matchResult.status === "fulfilled");
       const kept = keepTransactionId ? nextTransactions.find((transaction) => transaction.id === keepTransactionId) : null;
       const nextSelected = kept && remainingAmount(kept) > 0
         ? kept
         : nextTransactions.find((transaction) => remainingAmount(transaction) > 0) ?? null;
       setSelectedTransaction(nextSelected);
       setSelectedRecordIds([]);
+      if (loadErrors.length) {
+        setErrorMessage(`收入对账部分数据加载失败：${loadErrors.join("、")}。请刷新后重试。`);
+      }
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "无法加载收入对账数据");
+      if (requestId === loadRequestIdRef.current) {
+        setErrorMessage(error instanceof Error ? error.message : "无法加载收入对账数据");
+      }
     } finally {
-      setIsLoading(false);
+      if (requestId === loadRequestIdRef.current) setIsLoading(false);
     }
   }
 
@@ -168,11 +193,11 @@ export default function RevenueReconciliationPage() {
   }, [selectedStoreId, initialLedgerPeriod]);
 
   function toggleRecord(record: RevenueRecord) {
-    if (isRevenueRecordCovered(record, activeMatches)) return;
-    if (selectedChannel && selectedChannel !== record.channel && !selectedRecordIds.includes(record.id)) {
-      message.warning("一次匹配只能选择同一个收入渠道");
+    if (!isMatchDataReady) {
+      message.warning("收入匹配记录尚未加载完成，请刷新后再操作");
       return;
     }
+    if (isRevenueRecordCovered(record, activeMatches)) return;
     setSelectedRecordIds((current) =>
       current.includes(record.id) ? current.filter((id) => id !== record.id) : [...current, record.id],
     );
@@ -187,31 +212,8 @@ export default function RevenueReconciliationPage() {
       message.warning("请选择要匹配的营业收入");
       return null;
     }
-    const channel = selectedRecords[0].channel;
-    if (selectedRecords.some((record) => record.channel !== channel)) {
-      message.warning("一次匹配只能选择同一个收入渠道");
-      return null;
-    }
     const startDate = selectedRecords[0].revenue_date;
     const endDate = selectedRecords[selectedRecords.length - 1].revenue_date;
-    const hasMatchedOverlap = activeMatches.some(
-      (match) =>
-        match.channel === channel &&
-        match.revenue_start_date <= endDate &&
-        match.revenue_end_date >= startDate,
-    );
-    if (hasMatchedOverlap) {
-      message.warning("所选日期范围内已经存在已对账收入，请调整选择范围");
-      return null;
-    }
-    const rangeRecords = unmatchedRecords
-      .filter((record) => record.channel === channel && record.revenue_date >= startDate && record.revenue_date <= endDate)
-      .sort((left, right) => left.revenue_date.localeCompare(right.revenue_date));
-    const selectedIdSet = new Set(selectedRecords.map((record) => record.id));
-    if (rangeRecords.length !== selectedRecords.length || rangeRecords.some((record) => !selectedIdSet.has(record.id))) {
-      message.warning("多条收入匹配需要选择连续日期范围内的全部未对账收入");
-      return null;
-    }
     if (!Number.isFinite(selectedAmount) || selectedAmount <= 0) {
       message.warning("选中收入实收合计必须大于 0");
       return null;
@@ -220,7 +222,12 @@ export default function RevenueReconciliationPage() {
       message.warning("选中收入合计不能超过银行流水剩余金额");
       return null;
     }
-    return { channel, startDate, endDate, amount: selectedAmount };
+    return {
+      startDate,
+      endDate,
+      amount: selectedAmount,
+      revenueRecordIds: selectedRecords.map((record) => record.id),
+    };
   }
 
   async function confirmMatch() {
@@ -229,17 +236,14 @@ export default function RevenueReconciliationPage() {
     if (!selection) return;
     setIsSaving(true);
     try {
-      const match = await apiClient.matches.createRevenue({
+      await apiClient.matches.createRevenueBatch({
         bank_transaction_id: selectedTransaction.id,
-        channel: selection.channel,
-        revenue_start_date: selection.startDate,
-        revenue_end_date: selection.endDate,
         amount: selection.amount.toFixed(2),
+        revenue_record_ids: selection.revenueRecordIds,
         confidence: "100.00",
         reason: "营业收入记录手动关联银行流水",
       });
-      await apiClient.matches.confirmRevenue(match.id, "admin");
-      message.success("收入对账已确认");
+      message.success(`收入对账已确认，已关联 ${selection.revenueRecordIds.length} 条营业收入`);
       await loadStoreWorkspace(selectedStoreId, selectedTransaction.id);
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "确认收入对账失败");
@@ -269,7 +273,10 @@ export default function RevenueReconciliationPage() {
       render: (_, match) => (
         <Space direction="vertical" size={2}>
           <Typography.Text strong>{match.channel}</Typography.Text>
-          <Typography.Text type="secondary">{match.revenue_start_date} 至 {match.revenue_end_date}</Typography.Text>
+          <Typography.Text type="secondary">
+            {match.revenue_start_date} 至 {match.revenue_end_date}
+            {match.revenue_record_ids?.length ? ` / ${match.revenue_record_ids.length} 条收入` : ""}
+          </Typography.Text>
         </Space>
       ),
     },
@@ -400,9 +407,9 @@ export default function RevenueReconciliationPage() {
                                 <Typography.Text className="bank-transaction-card__summary" ellipsis>
                                   {transaction.summary || transaction.counterparty_name || "无摘要"}
                                 </Typography.Text>
-                                <span className="bank-transaction-card__serial">
-                                  {transaction.bank_serial_no ? `流水号 ${transaction.bank_serial_no}` : "未填写流水号"}
-                                </span>
+                                {transaction.bank_serial_no ? (
+                                  <span className="bank-transaction-card__serial">流水号 {transaction.bank_serial_no}</span>
+                                ) : null}
                               </span>
                               <span className="bank-transaction-card__amounts">
                                 <Typography.Text className="bank-transaction-card__amount income-amount">{formatMoney(transaction.amount)}</Typography.Text>
@@ -419,29 +426,40 @@ export default function RevenueReconciliationPage() {
                 </Splitter.Panel>
                 <Splitter.Panel min="520px">
                   <Card
-                    title={selectedTransaction ? `营业收入候选：流水剩余 ${formatMoney(bankRemaining.toFixed(2))}` : "营业收入候选"}
+                    title={selectedTransaction
+                      ? `营业收入候选 (${filteredRecords.length})：流水剩余 ${formatMoney(bankRemaining.toFixed(2))}${selectedRecordIds.length ? `，已选 ${selectedRecordIds.length} 条` : ""}`
+                      : `营业收入候选 (${filteredRecords.length})`}
                     className="data-table-card approval-candidate-panel"
                     extra={
                       <Space>
                         <Select allowClear placeholder="渠道" style={{ width: 150 }} options={channelOptions} value={channelFilter} onChange={setChannelFilter} />
                         <Input allowClear placeholder="日期 / 渠道 / 备注" style={{ width: 180 }} value={keyword} onChange={(event) => setKeyword(event.target.value)} />
-                        <Button type="primary" loading={isSaving} disabled={!selectedTransaction || !selectedRecordIds.length} onClick={confirmMatch}>
+                        <Button type="primary" loading={isSaving} disabled={!selectedTransaction || !selectedRecordIds.length || !isMatchDataReady} onClick={confirmMatch}>
                           确认匹配
                         </Button>
                       </Space>
                     }
                   >
                     <div className="revenue-match-summary">
-                      <Statistic title="未对账实收" value={formatMoney(unmatchedAmount.toFixed(2))} />
+                      <Statistic title={`待匹配收入 (${unmatchedRecords.length} 条)`} value={formatMoney(unmatchedAmount.toFixed(2))} />
                       <Statistic title="已选实收" value={formatMoney(selectedAmount.toFixed(2))} />
                       <Statistic title="差额" value={formatMoney((bankRemaining - selectedAmount).toFixed(2))} />
                       <Statistic title="已对账金额" value={formatMoney(matchedAmount.toFixed(2))} />
                     </div>
+                    {!transactions.length && unmatchedRecords.length ? (
+                      <Alert
+                        className="dashboard-alert"
+                        type="info"
+                        showIcon
+                        message={`当前账期没有收入银行流水，已加载 ${unmatchedRecords.length} 条待匹配营业收入`}
+                        description="请先到“银行流水”页面，在当前门店和当前账期录入或导入类型为收入的流水，之后返回这里进行匹配。"
+                      />
+                    ) : null}
                     {filteredRecords.length ? (
                       <div className="approval-candidate-list revenue-candidate-list">
                         {filteredRecords.map((record) => {
                           const isSelected = selectedRecordIds.includes(record.id);
-                          const canSelect = !selectedChannel || selectedChannel === record.channel || isSelected;
+                          const canSelect = !isRevenueRecordCovered(record, activeMatches);
                           return (
                             <div
                               key={record.id}
@@ -456,7 +474,7 @@ export default function RevenueReconciliationPage() {
                               <div className="revenue-candidate-card__check">
                                 <Checkbox
                                   checked={isSelected}
-                                  disabled={!canSelect}
+                                  disabled={!canSelect || !isMatchDataReady}
                                   onClick={(event) => event.stopPropagation()}
                                   onChange={() => toggleRecord(record)}
                                 />

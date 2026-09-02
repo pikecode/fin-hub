@@ -106,6 +106,7 @@ export default function RevenuePage() {
   const loadRequestIdRef = useRef(0);
   const watchedGrossAmount = Form.useWatch("gross_amount", form);
   const watchedNetAmount = Form.useWatch("net_amount", form);
+  const watchedFeeAmount = Form.useWatch("fee_amount", form);
 
   const storesById = useMemo(() => new Map(stores.map((store) => [store.id, store])), [stores]);
   const ledgersByKey = useMemo(
@@ -142,12 +143,25 @@ export default function RevenuePage() {
     return `${((fee / gross) * 100).toFixed(2)}%`;
   }
 
+  function isDateInPeriod(value: dayjs.Dayjs, period?: string) {
+    return !period || value.format("YYYY-MM") === period;
+  }
+
   function buildFilterParams(values?: RevenueFilterValues) {
     const params = new URLSearchParams({ page_size: "500" });
     if (values?.store_id) params.set("store_id", values.store_id);
     if (values?.ledger_period) params.set("ledger_period", values.ledger_period);
     if (values?.channel) params.set("channel", values.channel);
     return `?${params.toString()}`;
+  }
+
+  function getActiveFilters(): RevenueFilterValues {
+    const formValues = filterForm.getFieldsValue();
+    return {
+      store_id: queryStoreId ?? formValues.store_id,
+      ledger_period: queryLedgerPeriod ?? formValues.ledger_period,
+      channel: queryChannel ?? formValues.channel,
+    };
   }
 
   useEffect(() => {
@@ -168,9 +182,8 @@ export default function RevenuePage() {
   }, [initialFilters]);
 
   useEffect(() => {
-    if (watchedGrossAmount || watchedNetAmount) {
-      const feeAmount = calculateFee(watchedGrossAmount, watchedNetAmount);
-      form.setFieldValue("fee_amount", feeAmount);
+    if (watchedGrossAmount !== undefined || watchedNetAmount !== undefined) {
+      form.setFieldValue("fee_amount", calculateFee(watchedGrossAmount, watchedNetAmount));
     }
   }, [watchedGrossAmount, watchedNetAmount, form]);
 
@@ -199,6 +212,7 @@ export default function RevenuePage() {
     setEditingRecord(null);
     form.resetFields();
     if (queryStoreId) form.setFieldValue("store_id", queryStoreId);
+    if (queryLedgerPeriod) form.setFieldValue("revenue_date", dayjs(`${queryLedgerPeriod}-01`));
     setIsModalOpen(true);
   }
 
@@ -221,6 +235,10 @@ export default function RevenuePage() {
       message.warning("请选择收入日期");
       return;
     }
+    if (!isDateInPeriod(values.revenue_date, queryLedgerPeriod)) {
+      message.warning(`收入日期必须属于当前账期 ${queryLedgerPeriod}`);
+      return;
+    }
     setIsLoading(true);
     try {
       const payload: RevenueRecordCreate = {
@@ -230,7 +248,7 @@ export default function RevenuePage() {
         channel: values.channel!,
         gross_amount: values.gross_amount!,
         net_amount: values.net_amount!,
-        fee_amount: values.fee_amount!,
+        fee_amount: calculateFee(values.gross_amount, values.net_amount),
         remark: values.remark ?? null,
       };
       if (editingRecord) {
@@ -242,7 +260,7 @@ export default function RevenuePage() {
       }
       setIsModalOpen(false);
       setEditingRecord(null);
-      await loadRecords(filterForm.getFieldsValue());
+      await loadRecords(getActiveFilters());
     } catch (error) {
       message.error(error instanceof Error ? error.message : "操作失败");
     } finally {
@@ -255,7 +273,7 @@ export default function RevenuePage() {
     try {
       await apiClient.revenueRecords.delete(record.id);
       message.success("删除成功");
-      await loadRecords(filterForm.getFieldsValue());
+      await loadRecords(getActiveFilters());
     } catch (error) {
       message.error(error instanceof Error ? error.message : "删除失败");
     } finally {
@@ -265,14 +283,15 @@ export default function RevenuePage() {
 
   function openImportModal() {
     importForm.resetFields();
-    if (queryStoreId) importForm.setFieldValue("store_id", queryStoreId);
     if (queryLedgerPeriod) importForm.setFieldValue("ledger_period", dayjs(`${queryLedgerPeriod}-01`));
     setEntryRows(createRevenueEntryRows(queryLedgerPeriod ?? dayjs().format("YYYY-MM")));
     setIsImportModalOpen(true);
   }
 
   async function submitImport(values: { store_id?: string; ledger_period?: dayjs.Dayjs; channel?: string }) {
-    if (!values.store_id || !values.ledger_period || !values.channel) {
+    const storeId = queryStoreId ?? values.store_id;
+    const period = queryLedgerPeriod ?? values.ledger_period?.format("YYYY-MM");
+    if (!storeId || !period || !values.channel) {
       message.warning("请填写门店、账期和收入渠道");
       return;
     }
@@ -281,15 +300,21 @@ export default function RevenuePage() {
       message.warning("请至少填写一行收入记录");
       return;
     }
+    const invalidPeriodRows = nonEmptyRows.filter(
+      (row) => queryLedgerPeriod && !row.revenue_date.startsWith(`${queryLedgerPeriod}-`),
+    );
+    if (invalidPeriodRows.length) {
+      message.warning(`收入日期必须属于当前账期 ${queryLedgerPeriod}`);
+      return;
+    }
     setIsLoading(true);
     try {
-      const period = values.ledger_period.format("YYYY-MM");
       let createdCount = 0;
       const failedRows: string[] = [];
       for (const row of nonEmptyRows) {
         try {
           await apiClient.revenueRecords.create({
-            store_id: values.store_id!,
+            store_id: storeId,
             ledger_period: period,
             revenue_date: row.revenue_date,
             channel: values.channel!,
@@ -306,11 +331,11 @@ export default function RevenuePage() {
       if (createdCount) message.success(`成功录入 ${createdCount} 条记录`);
       if (failedRows.length) {
         setErrorMessage(`部分收入未录入：${failedRows.slice(0, 5).join("；")}`);
-        await loadRecords(filterForm.getFieldsValue());
+        await loadRecords(getActiveFilters());
         return;
       }
       setIsImportModalOpen(false);
-      await loadRecords(filterForm.getFieldsValue());
+      await loadRecords(getActiveFilters());
     } catch (error) {
       message.error(error instanceof Error ? error.message : "导入失败");
     } finally {
@@ -354,7 +379,7 @@ export default function RevenuePage() {
     message.info("已填入示例数据");
   }
 
-  const entryColumns: ColumnsType<RevenueEntryRow> = revenueEntryFields.map((field) => ({
+  const editableEntryColumns: ColumnsType<RevenueEntryRow> = revenueEntryFields.map((field) => ({
     title: revenueEntryHeaders[field],
     dataIndex: field,
     width: field === "revenue_date" ? 110 : field === "remark" ? 180 : 120,
@@ -370,8 +395,35 @@ export default function RevenuePage() {
         onFocus={() => setFocusedEntryCell({ rowIndex: index, field })}
         style={{ border: focusedEntryCell.rowIndex === index && focusedEntryCell.field === field ? "1px solid var(--primary-500)" : undefined }}
       />
-    ),
+      ),
   }));
+
+  const entryColumns: ColumnsType<RevenueEntryRow> = [
+    ...editableEntryColumns.slice(0, 3),
+    {
+      title: "手续费",
+      key: "fee_amount",
+      width: 120,
+      align: "right",
+      render: (_, record) =>
+        isRevenueEntryRowEmpty(record) ? (
+          <Typography.Text type="secondary">-</Typography.Text>
+        ) : (
+          <MoneyDisplay value={Number(calculateFee(record.gross_amount, record.net_amount || record.gross_amount))} />
+        ),
+    },
+    {
+      title: "费率",
+      key: "fee_rate",
+      width: 90,
+      align: "right",
+      render: (_, record) =>
+        isRevenueEntryRowEmpty(record)
+          ? <Typography.Text type="secondary">-</Typography.Text>
+          : calculateFeeRate(record.gross_amount, calculateFee(record.gross_amount, record.net_amount || record.gross_amount)),
+    },
+    editableEntryColumns[3],
+  ];
 
   const columns: ColumnsType<RevenueRecord> = [
     {
@@ -535,7 +587,10 @@ export default function RevenuePage() {
             extra="系统会按收入日期自动归属账期，例：2026-08-20 归入 2026-08。"
             rules={[{ required: true, message: "请选择收入日期" }]}
           >
-            <DatePicker style={{ width: "100%" }} />
+            <DatePicker
+              style={{ width: "100%" }}
+              disabledDate={(value) => !isDateInPeriod(value, queryLedgerPeriod)}
+            />
           </Form.Item>
           <Form.Item name="channel" label="收入渠道" rules={[{ required: true }]}>
             <Select showSearch options={channelOptions} />
@@ -549,15 +604,11 @@ export default function RevenuePage() {
           <Form.Item name="fee_amount" label="手续费">
             <Input readOnly />
           </Form.Item>
-          <Form.Item noStyle shouldUpdate>
-            {() => (
-              <Alert
-                type="info"
-                showIcon
-                message={`费率 ${calculateFeeRate(form.getFieldValue("gross_amount"), form.getFieldValue("fee_amount"))}`}
-                style={{ marginBottom: 16 }}
-              />
-            )}
+          <Form.Item label="费率">
+            <Input
+              readOnly
+              value={calculateFeeRate(watchedGrossAmount, watchedFeeAmount)}
+            />
           </Form.Item>
           <Form.Item name="remark" label="备注">
             <Input />
@@ -579,17 +630,21 @@ export default function RevenuePage() {
         okText="确认录入"
       >
         <Form form={importForm} layout="vertical" onFinish={submitImport}>
-          {queryStoreId ? (
+          {queryStoreId && queryLedgerPeriod ? (
             <Alert type="info" showIcon message={`收入归属：${currentStoreLedgerLabel}`} style={{ marginBottom: 16 }} />
           ) : (
             <Space style={{ width: "100%" }} size={12} align="start">
-              <Form.Item name="store_id" label="门店" rules={[{ required: true, message: "请选择门店" }]} style={{ flex: 1 }}>
-                <Select
-                  showSearch
-                  optionFilterProp="label"
-                  options={stores.map((store) => ({ label: store.name, value: store.id }))}
-                />
-              </Form.Item>
+              {queryStoreId ? (
+                <Alert type="info" showIcon message={`收入归属：${currentStoreLedgerLabel}`} style={{ flex: 1 }} />
+              ) : (
+                <Form.Item name="store_id" label="门店" rules={[{ required: true, message: "请选择门店" }]} style={{ flex: 1 }}>
+                  <Select
+                    showSearch
+                    optionFilterProp="label"
+                    options={stores.map((store) => ({ label: store.name, value: store.id }))}
+                  />
+                </Form.Item>
+              )}
               <Form.Item name="ledger_period" label="账期" rules={[{ required: true, message: "请选择账期" }]} style={{ width: 180 }}>
                 <DatePicker
                   picker="month"
@@ -623,7 +678,7 @@ export default function RevenuePage() {
               pagination={false}
               dataSource={entryRows}
               columns={entryColumns}
-              scroll={{ x: 820, y: 420 }}
+              scroll={{ x: 1040, y: 420 }}
             />
             <Typography.Text type="secondary">按当前账期生成每日收入行，可以从 Excel 复制整块数据后粘贴到表格。</Typography.Text>
           </Space>

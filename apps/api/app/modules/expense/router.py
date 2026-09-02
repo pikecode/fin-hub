@@ -1,11 +1,11 @@
 import json
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.core.database import get_session
-from app.models import ExpenseItem, Ledger, LedgerStatus, User, UserRole
+from app.models import ApprovalInstance, ExpenseItem, Ledger, LedgerStatus, User, UserRole
 from app.modules.approvals.status import refresh_approval_processing_status
 from app.modules.audit.service import write_audit_log
 from app.modules.auth.router import audit_actor, require_roles
@@ -21,6 +21,32 @@ def ensure_open_ledger(session: Session, store_id: str, period: str) -> None:
         raise HTTPException(status_code=404, detail="Ledger not found")
     if ledger.status == LedgerStatus.CLOSED.value:
         raise HTTPException(status_code=409, detail="Ledger is closed")
+
+
+def approval_expense_condition(approval: ApprovalInstance):
+    dingtalk_instance_id = approval.dingtalk_instance_id
+    return or_(
+        ExpenseItem.approval_instance_id == approval.id,
+        (
+            (ExpenseItem.source == "dingtalk")
+            & ExpenseItem.source_document_id.is_not(None)
+            & (
+                (ExpenseItem.source_document_id == dingtalk_instance_id)
+                | ExpenseItem.source_document_id.like(f"{dingtalk_instance_id}:%")
+            )
+        ),
+    )
+
+
+def resolve_approval_id_for_expense(session: Session, item: ExpenseItem) -> str | None:
+    if item.approval_instance_id:
+        return item.approval_instance_id
+    if item.source != "dingtalk" or not item.source_document_id:
+        return None
+    dingtalk_instance_id = item.source_document_id.split(":", 1)[0]
+    return session.scalar(
+        select(ApprovalInstance.id).where(ApprovalInstance.dingtalk_instance_id == dingtalk_instance_id)
+    )
 
 
 @router.get("", response_model=ApiEnvelope[Page[ExpenseItemRead]])
@@ -39,7 +65,25 @@ def list_expense_items(
     if ledger_period:
         query = query.where(ExpenseItem.ledger_period == ledger_period)
     if approval_instance_id:
-        query = query.where(ExpenseItem.approval_instance_id == approval_instance_id)
+        approval = session.get(ApprovalInstance, approval_instance_id)
+        if approval is None:
+            query = query.where(ExpenseItem.approval_instance_id == approval_instance_id)
+        else:
+            query = query.where(approval_expense_condition(approval))
+            has_line_items = (
+                select(ExpenseItem.id)
+                .where(
+                    ExpenseItem.source == "dingtalk",
+                    ExpenseItem.source_document_id.like(f"{approval.dingtalk_instance_id}:%"),
+                )
+                .exists()
+            )
+            query = query.where(
+                or_(
+                    ~has_line_items,
+                    ExpenseItem.source_document_id != approval.dingtalk_instance_id,
+                )
+            )
     if payment_status:
         payment_statuses = [status.strip() for status in payment_status.split(",") if status.strip()]
         if len(payment_statuses) == 1:
@@ -102,7 +146,10 @@ def update_expense_item(
             sorted(edited_fields | set(changes.keys())),
             ensure_ascii=False,
         )
-        refresh_approval_processing_status(session, item.approval_instance_id)
+        approval_id = resolve_approval_id_for_expense(session, item)
+        if approval_id and not item.approval_instance_id:
+            item.approval_instance_id = approval_id
+        refresh_approval_processing_status(session, approval_id)
 
     write_audit_log(
         session,

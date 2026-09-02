@@ -33,7 +33,7 @@ const tabItems: Array<{ key: StoreLedgerTabKey; label: string; icon: any }> = [
   { key: "approvals", label: "审批单", icon: <FileTextOutlined /> },
   { key: "revenue", label: "营业收入", icon: <WalletOutlined /> },
   { key: "revenueMatching", label: "收入对账", icon: <ReconciliationOutlined /> },
-  { key: "matching", label: "对账管理", icon: <ReconciliationOutlined /> },
+  { key: "matching", label: "审批单对账", icon: <ReconciliationOutlined /> },
 ];
 
 function modulePath(storeId: string, key: StoreLedgerTabKey, period?: string) {
@@ -157,7 +157,7 @@ export function StoreLedgerWorkspaceNav({
         items={tabItems.map((item) => ({
           key: item.key,
           label: (
-            <span>
+            <span className="store-ledger-workspace-tab-label">
               {item.icon}
               {item.label}
             </span>

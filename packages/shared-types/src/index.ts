@@ -492,6 +492,7 @@ export interface RevenueBankMatch {
   revenue_start_date: string;
   revenue_end_date: string;
   amount: string;
+  revenue_record_ids: string[];
   status: MatchStatus;
   confidence?: string | null;
   reason?: string | null;
@@ -506,6 +507,15 @@ export interface RevenueMatchCreate {
   channel: string;
   revenue_start_date: string;
   revenue_end_date: string;
+  amount: string;
+  revenue_record_ids?: string[];
+  confidence?: string | null;
+  reason?: string | null;
+}
+
+export interface RevenueMatchBatchCreate {
+  bank_transaction_id: string;
+  revenue_record_ids: string[];
   amount: string;
   confidence?: string | null;
   reason?: string | null;
@@ -899,6 +909,7 @@ export interface StoreComparisonReport {
 export interface StoreLedgerWorkspaceMetrics {
   revenue_record_count: number;
   income_amount: string;
+  expense_amount: string;
   net_income_amount: string;
   fee_amount: string;
   bank_transaction_count: number;

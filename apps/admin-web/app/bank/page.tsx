@@ -1,9 +1,11 @@
 "use client";
 
 import { Alert, Button, Card, DatePicker, Form, Input, Modal, Popconfirm, Select, Space, Table, Tabs, Upload, Typography, message } from "antd";
+import type { ColumnsType } from "antd/es/table";
 import type { UploadFile } from "antd/es/upload/interface";
 import dayjs from "dayjs";
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { Key } from "react";
 import {
   PlusOutlined,
   ImportOutlined,
@@ -23,11 +25,10 @@ import type {
 import { AppShell } from "../components/AppShell";
 import { MoneyDisplay } from "../components/MoneyDisplay";
 import { StatusBadge } from "../components/StatusBadge";
+import { getBankTransactionViewColumns } from "../components/BankTransactionColumns";
 import { StoreLedgerWorkspaceNav } from "../components/StoreLedgerWorkspaceNav";
 import { EnterpriseTable } from "../components/EnterpriseTable";
 import type { EnterpriseTableColumn } from "../components/EnterpriseTable";
-import { SmartFilterBar } from "../components/SmartFilterBar";
-import type { FilterField } from "../components/SmartFilterBar";
 import { apiClient } from "../lib/api";
 import { getLedgers, getStores } from "../lib/referenceData";
 import { useClientSearchParams } from "../lib/searchParams";
@@ -422,7 +423,8 @@ export default function BankPage() {
     }
   }
 
-  async function handleBatchDelete(ids: string[]) {
+  async function handleBatchDelete(selectedKeys: Key[]) {
+    const ids = selectedKeys.map(String);
     const recordsToDelete = transactions.filter(t => ids.includes(t.id));
     const matchedRecords = recordsToDelete.filter(t => Number(t.matched_amount || 0) > 0);
 
@@ -446,37 +448,9 @@ export default function BankPage() {
   }
 
   const columns: EnterpriseTableColumn<BankTransaction>[] = [
+    ...getBankTransactionViewColumns(),
     {
-      title: "发生时间",
-      dataIndex: "occurred_at",
-      width: 160,
-      render: (value) => value.replace("T", " ").slice(0, 16),
-      searchable: true,
-    },
-    {
-      title: "类型",
-      dataIndex: "direction",
-      width: 80,
-      render: (value: "income" | "expense") => (
-        <StatusBadge status={value === "income" ? "income" : "expense"} text={value === "income" ? "收入" : "支出"} />
-      ),
-    },
-    {
-      title: "金额",
-      dataIndex: "amount",
-      width: 120,
-      align: "right",
-      render: (value, record) => <MoneyDisplay value={value} colorize={record.direction === "income"} />,
-      sorter: (a, b) => Number(a.amount) - Number(b.amount),
-    },
-    {
-      title: "备注",
-      dataIndex: "summary",
-      ellipsis: true,
-      render: (value) => value || "-",
-      searchable: true,
-    },
-    {
+      key: "actions",
       title: "操作",
       width: 120,
       fixed: "right",

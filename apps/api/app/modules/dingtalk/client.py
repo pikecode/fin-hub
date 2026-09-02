@@ -147,13 +147,51 @@ class DingTalkClient:
             errcode = data.get("errcode", 0)
             if errcode in (0, "0", None):
                 return data
-            last_error = DingTalkClientError(data.get("errmsg") or f"DingTalk API error: {data}")
-            if str(errcode) != "90002" or attempt == 2:
+
+            errmsg = data.get("errmsg") or data.get("sub_msg") or f"DingTalk API error: {data}"
+            last_error = DingTalkClientError(errmsg)
+
+            # 针对 90002 (QPS 限流) 错误的特殊处理
+            if str(errcode) == "90002" and attempt < 2:
+                # 尝试从错误消息中解析限流结束时间
+                wait_time = self._parse_rate_limit_wait_time(errmsg)
+                if wait_time is None:
+                    # 如果无法解析，使用指数退避策略
+                    wait_time = min(5.0 * (2 ** attempt), 60.0)
+                sleep(wait_time)
+                continue
+
+            # 其他错误或最后一次重试失败，直接抛出
+            if attempt == 2 or str(errcode) != "90002":
                 break
-            sleep(1.0 + attempt)
+
         if last_error is not None:
             raise last_error
         raise DingTalkClientError("DingTalk OAPI request failed")
+
+    @staticmethod
+    def _parse_rate_limit_wait_time(errmsg: str) -> float | None:
+        """从限流错误消息中解析需要等待的时间
+
+        示例错误消息：
+        "限制将在 2026-09-03 00:01:03 结束"
+        """
+        import re
+        match = re.search(r"限制将在 (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) 结束", errmsg)
+        if match:
+            try:
+                end_time_str = match.group(1)
+                end_time = datetime.strptime(end_time_str, "%Y-%m-%d %H:%M:%S")
+                # 假设钉钉返回的是北京时间
+                from zoneinfo import ZoneInfo
+                end_time = end_time.replace(tzinfo=ZoneInfo("Asia/Shanghai"))
+                now = datetime.now(ZoneInfo("Asia/Shanghai"))
+                wait_seconds = (end_time - now).total_seconds()
+                # 额外等待 1 秒确保限流解除
+                return max(0, wait_seconds) + 1.0
+            except Exception:
+                pass
+        return None
 
     @classmethod
     def _read_oapi_json(cls, response: httpx.Response) -> dict[str, Any]:

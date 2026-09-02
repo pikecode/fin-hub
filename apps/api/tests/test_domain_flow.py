@@ -1008,12 +1008,23 @@ def test_reconciliation_candidates_exclude_expense_with_active_match(
         },
     )
     assert create_response.status_code == 201
+    match_id = create_response.json()["data"]["id"]
+
+    confirm_response = client.post(f"/api/matches/{match_id}/confirm?operator=tester")
+    assert confirm_response.status_code == 200
 
     second_candidates = client.get(
         f"/api/matches/reconciliation/candidates?bank_transaction_id={second_bank_id}&store_id={store_id}&approval_only=true"
     ).json()["data"]["candidates"]
 
     assert all(candidate["expense_item"]["id"] != expense_id for candidate in second_candidates)
+
+    searched_candidates = client.get(
+        f"/api/matches/reconciliation/candidates?bank_transaction_id={second_bank_id}&store_id={store_id}&approval_only=true&approval_no=202608300299"
+    ).json()["data"]["candidates"]
+    assert len(searched_candidates) == 1
+    assert searched_candidates[0]["expense_item"]["id"] == expense_id
+    assert searched_candidates[0]["remaining_amount"] == "0.00"
 
 
 def test_confirm_multiple_matches_updates_partial_and_paid_status(client: TestClient) -> None:

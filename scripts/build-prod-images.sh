@@ -9,6 +9,8 @@ SAVE_TAR="${SAVE_TAR:-false}"
 PUSH="${PUSH:-false}"
 OUTPUT_DIR="${OUTPUT_DIR:-$ROOT_DIR/reports/deploy}"
 PLATFORM="${DOCKER_PLATFORM:-linux/amd64}"
+PYTHON_BASE_IMAGE="${PYTHON_BASE_IMAGE:-python:3.12-slim}"
+NODE_BASE_IMAGE="${NODE_BASE_IMAGE:-node:22-slim}"
 
 usage() {
   cat <<'USAGE'
@@ -20,12 +22,15 @@ Options:
   --tag TAG          Image tag. Defaults to current git short SHA.
   --registry NAME    Registry/repository prefix, for example ghcr.io/org/fin-hub.
   --platform VALUE   Build platform. Defaults to linux/amd64.
+  --python-image IMG Python base image. Defaults to python:3.12-slim.
+  --node-image IMG   Node base image. Defaults to node:22-slim.
   --push            Push images after build.
   --save            Save images to a tar archive for scp/docker load deployment.
 
 Environment:
   NEXT_PUBLIC_API_BASE_URL is read from .env.production when present.
-  IMAGE_TAG, IMAGE_REGISTRY, DOCKER_PLATFORM, PUSH, SAVE_TAR and OUTPUT_DIR can also be set.
+  IMAGE_TAG, IMAGE_REGISTRY, DOCKER_PLATFORM, PYTHON_BASE_IMAGE,
+  NODE_BASE_IMAGE, PUSH, SAVE_TAR and OUTPUT_DIR can also be set.
 USAGE
 }
 
@@ -41,6 +46,14 @@ while [ $# -gt 0 ]; do
       ;;
     --platform)
       PLATFORM="${2:?missing platform value}"
+      shift 2
+      ;;
+    --python-image)
+      PYTHON_BASE_IMAGE="${2:?missing python image value}"
+      shift 2
+      ;;
+    --node-image)
+      NODE_BASE_IMAGE="${2:?missing node image value}"
       shift 2
       ;;
     --push)
@@ -87,12 +100,17 @@ NEXT_PUBLIC_API_BASE_URL="${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8000}"
 cd "$ROOT_DIR"
 
 echo "Building API image: $API_IMAGE"
-docker build --platform "$PLATFORM" -f apps/api/Dockerfile -t "$API_IMAGE" .
+docker build \
+  --platform "$PLATFORM" \
+  -f apps/api/Dockerfile \
+  --build-arg "PYTHON_BASE_IMAGE=$PYTHON_BASE_IMAGE" \
+  -t "$API_IMAGE" .
 
 echo "Building admin-web image: $ADMIN_WEB_IMAGE"
 docker build \
   --platform "$PLATFORM" \
   -f apps/admin-web/Dockerfile \
+  --build-arg "NODE_BASE_IMAGE=$NODE_BASE_IMAGE" \
   --build-arg "NEXT_PUBLIC_API_BASE_URL=$NEXT_PUBLIC_API_BASE_URL" \
   -t "$ADMIN_WEB_IMAGE" .
 

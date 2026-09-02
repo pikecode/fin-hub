@@ -93,34 +93,21 @@ export default function RevenueChannelsPage() {
     }
   }
 
-  async function handleBatchDelete(ids: string[]) {
-    setIsLoading(true);
-    try {
-      for (const id of ids) {
-        await apiClient.revenueChannels.delete(id);
-      }
-      message.success(`成功删除 ${ids.length} 个渠道`);
-      await loadChannels();
-    } catch (error) {
-      message.error(error instanceof Error ? error.message : "批量删除失败");
-    } finally {
-      setIsLoading(false);
-    }
-  }
-
   const columns: EnterpriseTableColumn<RevenueChannel>[] = [
     {
+      key: "name",
       title: "渠道名称",
       dataIndex: "name",
-      searchable: true,
     },
     {
+      key: "sort_order",
       title: "排序",
       dataIndex: "sort_order",
       width: 100,
       sorter: (a, b) => a.sort_order - b.sort_order,
     },
     {
+      key: "requires_bank_match",
       title: "需匹配流水",
       dataIndex: "requires_bank_match",
       width: 130,
@@ -132,6 +119,7 @@ export default function RevenueChannelsPage() {
       ),
     },
     {
+      key: "status",
       title: "状态",
       dataIndex: "status",
       width: 100,
@@ -143,6 +131,7 @@ export default function RevenueChannelsPage() {
       ),
     },
     {
+      key: "actions",
       title: "操作",
       width: 150,
       render: (_, record) => (
@@ -181,14 +170,6 @@ export default function RevenueChannelsPage() {
         columns={columns}
         dataSource={channels}
         exportFileName="收入渠道"
-        batchActions={[
-          {
-            key: "delete",
-            label: "批量删除",
-            danger: true,
-            onExecute: handleBatchDelete,
-          },
-        ]}
       />
 
       <Modal

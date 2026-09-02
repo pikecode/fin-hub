@@ -366,10 +366,12 @@ export function ProLayout({ title, kicker, action, children }: ProLayoutProps) {
                 items={[
                   { title: activeNav?.parents[0]?.label ?? "后台管理" },
                   { title: activeNav?.item.label ?? title },
-                ]}
+              ]}
               />
               <h1 className="app-header-title">{title}</h1>
-              {kicker ? <div className="app-header-kicker">{kicker}</div> : null}
+              <div className="app-header-kicker" aria-hidden={!kicker}>
+                {kicker || " "}
+              </div>
             </div>
           </div>
           <div className="app-header-actions">

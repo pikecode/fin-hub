@@ -1,4 +1,5 @@
-FROM node:22-slim AS deps
+ARG NODE_BASE_IMAGE=node:22-slim
+FROM ${NODE_BASE_IMAGE} AS deps
 WORKDIR /repo
 ENV COREPACK_NPM_REGISTRY=https://registry.npmmirror.com \
     npm_config_registry=https://registry.npmmirror.com
@@ -10,7 +11,7 @@ COPY packages ./packages
 COPY apps/admin-web/package.json ./apps/admin-web/package.json
 RUN pnpm install --filter @fin-hub/admin-web... --frozen-lockfile
 
-FROM node:22-slim AS build
+FROM ${NODE_BASE_IMAGE} AS build
 WORKDIR /repo
 ENV COREPACK_NPM_REGISTRY=https://registry.npmmirror.com \
     npm_config_registry=https://registry.npmmirror.com
@@ -27,7 +28,7 @@ COPY pnpm-lock.yaml ./
 COPY apps/admin-web ./apps/admin-web
 RUN pnpm --filter @fin-hub/admin-web build
 
-FROM node:22-slim AS runner
+FROM ${NODE_BASE_IMAGE} AS runner
 WORKDIR /repo
 ENV COREPACK_NPM_REGISTRY=https://registry.npmmirror.com \
     npm_config_registry=https://registry.npmmirror.com
