@@ -1,5 +1,5 @@
-import json
 import hashlib
+import json
 from datetime import UTC, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -22,7 +22,6 @@ from app.models import (
     ExpenseBankMatch,
     ExpenseItem,
     Ledger,
-    MatchStatus,
     Store,
     SyncJob,
     SyncJobStatus,
@@ -31,6 +30,11 @@ from app.models import (
     utc_now,
 )
 from app.models import DingTalkDepartment as DingTalkDepartmentModel
+from app.modules.approvals.status import (
+    approval_expense_stats,
+    approval_expense_stats_map,
+    refresh_approval_processing_status,
+)
 from app.modules.audit.service import write_audit_log
 from app.modules.auth.router import audit_actor, require_permission
 from app.modules.common import paginate
@@ -77,6 +81,8 @@ AUTO_SYNC_DEPARTMENT_MAX_DEPTH = 8
 AUTO_SYNC_APPROVAL_PAGE_SIZE = 100
 AUTO_SYNC_APPROVAL_MAX_PAGES = 500
 AUTO_SYNC_INITIAL_APPROVAL_LOOKBACK_DAYS = 3650
+COMPLETED_APPROVAL_STATUSES = {"agree", "approved", "completed", "finish", "success"}
+RESYNC_PROCESSING_STATUSES = {"unparsed", "sync_conflict", "pending_classification"}
 
 
 def template_mapping_status(session: Session, template_id: str) -> str:
@@ -836,86 +842,6 @@ def resolve_approval_department_name(session: Session, instance: ApprovalInstanc
     return None
 
 
-def decimal_value(value: Any) -> Decimal:
-    if value is None:
-        return Decimal("0.00")
-    return Decimal(str(value))
-
-
-def approval_expense_stats(expense_items: list[ExpenseItem], matches: list[ExpenseBankMatch]) -> dict[str, Any]:
-    confirmed_match_amount = sum(
-        (decimal_value(match.amount) for match in matches if match.status == MatchStatus.CONFIRMED.value),
-        Decimal("0.00"),
-    )
-    candidate_match_count = sum(1 for match in matches if match.status == MatchStatus.CANDIDATE.value)
-    classified_count = sum(1 for item in expense_items if item.category_l1 or item.category_l2)
-    matched_item_ids = {
-        match.expense_item_id for match in matches if match.status == MatchStatus.CONFIRMED.value
-    }
-    matched_item_count = sum(1 for item in expense_items if item.id in matched_item_ids or item.payment_status == "paid")
-    pending_item_count = sum(1 for item in expense_items if item.payment_status != "paid")
-    sync_conflict_count = sum(
-        1 for item in expense_items if item.sync_conflict_status and item.sync_conflict_status != "none"
-    )
-    total_expense_amount = sum((decimal_value(item.amount) for item in expense_items), Decimal("0.00"))
-    if not expense_items:
-        processing_status = "unparsed"
-    elif sync_conflict_count:
-        processing_status = "sync_conflict"
-    elif classified_count < len(expense_items):
-        processing_status = "pending_classification"
-    elif pending_item_count == len(expense_items):
-        processing_status = "pending_match"
-    elif pending_item_count:
-        processing_status = "partial_matched"
-    else:
-        processing_status = "matched"
-    return {
-        "expense_item_count": len(expense_items),
-        "classified_expense_item_count": classified_count,
-        "matched_expense_item_count": matched_item_count,
-        "pending_expense_item_count": pending_item_count,
-        "sync_conflict_expense_item_count": sync_conflict_count,
-        "total_expense_amount": total_expense_amount,
-        "confirmed_match_amount": confirmed_match_amount,
-        "candidate_match_count": candidate_match_count,
-        "processing_status": processing_status,
-    }
-
-
-def approval_expense_stats_map(session: Session, approval_ids: list[str]) -> dict[str, dict[str, Any]]:
-    if not approval_ids:
-        return {}
-    expense_items = list(
-        session.scalars(
-            select(ExpenseItem).where(ExpenseItem.approval_instance_id.in_(approval_ids))
-        )
-    )
-    expenses_by_approval_id: dict[str, list[ExpenseItem]] = {}
-    for item in expense_items:
-        if item.approval_instance_id:
-            expenses_by_approval_id.setdefault(item.approval_instance_id, []).append(item)
-    expense_ids = [item.id for item in expense_items]
-    matches = list(
-        session.scalars(
-            select(ExpenseBankMatch).where(ExpenseBankMatch.expense_item_id.in_(expense_ids))
-        )
-    ) if expense_ids else []
-    matches_by_expense_id: dict[str, list[ExpenseBankMatch]] = {}
-    for match in matches:
-        matches_by_expense_id.setdefault(match.expense_item_id, []).append(match)
-    result: dict[str, dict[str, Any]] = {}
-    for approval_id in approval_ids:
-        approval_expenses = expenses_by_approval_id.get(approval_id, [])
-        approval_matches = [
-            match
-            for item in approval_expenses
-            for match in matches_by_expense_id.get(item.id, [])
-        ]
-        result[approval_id] = approval_expense_stats(approval_expenses, approval_matches)
-    return result
-
-
 def approval_instance_read(
     session: Session,
     instance: ApprovalInstance,
@@ -933,6 +859,9 @@ def approval_instance_read(
         applicant_name=instance.applicant_name,
         applicant_user_id=instance.applicant_user_id,
         approval_status=instance.approval_status,
+        parse_status=instance.parse_status,
+        parse_error=instance.parse_error,
+        last_parsed_at=instance.last_parsed_at,
         submit_at=instance.submit_at,
         approved_at=instance.approved_at,
         raw_payload=instance.raw_payload,
@@ -2466,8 +2395,16 @@ def sync_real_instance(
             },
             ensure_ascii=False,
         )
+        instance.parse_status = "skipped"
+        instance.processing_status = "unparsed"
+        instance.parse_error = f"Missing required fields: {', '.join(missing_fields)}"
+        instance.last_parsed_at = utc_now()
         return True
-    if instance.approval_status.lower() not in {"agree", "approved", "completed", "finish", "success"}:
+    if instance.approval_status.lower() not in COMPLETED_APPROVAL_STATUSES:
+        instance.parse_status = "skipped"
+        instance.processing_status = "unparsed"
+        instance.parse_error = f"Approval status is not completed: {instance.approval_status}"
+        instance.last_parsed_at = utc_now()
         return True
     period = expense_date.strftime("%Y-%m")
     if session.scalar(select(Ledger).where(Ledger.store_id == store.id, Ledger.period == period)) is None:
@@ -2544,6 +2481,9 @@ def sync_real_instance(
                 ],
             )
     mark_removed_expense_lines(session, instance, active_source_document_ids)
+    instance.parse_status = "parsed"
+    instance.parse_error = None
+    instance.last_parsed_at = utc_now()
     instance.raw_payload = json.dumps(
         {
             **raw_instance,
@@ -2558,6 +2498,7 @@ def sync_real_instance(
         },
         ensure_ascii=False,
     )
+    refresh_approval_processing_status(session, instance.id)
     return True
 
 
@@ -2572,6 +2513,20 @@ def parse_sync_cursor(value: str | None) -> tuple[str, int] | None:
     if not process_code or cursor < 0:
         return None
     return process_code, cursor
+
+
+def approval_needs_detail_resync(instance: ApprovalInstance) -> bool:
+    if instance.approval_status.lower() not in COMPLETED_APPROVAL_STATUSES:
+        return True
+    if instance.store_id is None:
+        return True
+    if instance.parse_status != "parsed":
+        return True
+    if instance.processing_status in RESYNC_PROCESSING_STATUSES:
+        return True
+    payload = approval_raw_payload(instance)
+    parsed = payload.get("_fin_hub_parse")
+    return isinstance(parsed, dict) and parsed.get("expense_parse_status") == "skipped"
 
 
 def run_approval_sync(
@@ -2610,8 +2565,13 @@ def run_approval_sync(
                 for instance_id in ids:
                     job.processed_count += 1
                     template_processed += 1
-                    if skip_existing and session.scalar(
-                        select(ApprovalInstance.id).where(ApprovalInstance.dingtalk_instance_id == instance_id)
+                    existing_instance = session.scalar(
+                        select(ApprovalInstance).where(ApprovalInstance.dingtalk_instance_id == instance_id)
+                    )
+                    if (
+                        skip_existing
+                        and existing_instance is not None
+                        and not approval_needs_detail_resync(existing_instance)
                     ):
                         template_skipped_existing += 1
                         continue
@@ -2808,7 +2768,7 @@ def execute_auto_sync(
                 templates=templates,
                 page_size=AUTO_SYNC_APPROVAL_PAGE_SIZE,
                 max_pages=AUTO_SYNC_APPROVAL_MAX_PAGES,
-                skip_existing=True,
+                skip_existing=setting.skip_existing,
             )
             approval_sync_summary = json.loads(job.raw_summary) if job.raw_summary else None
             update_progress(

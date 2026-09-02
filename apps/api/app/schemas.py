@@ -521,6 +521,7 @@ class DingTalkAutoSyncSettingUpdate(BaseModel):
     sync_departments: bool | None = None
     sync_templates: bool | None = None
     sync_approvals: bool | None = None
+    skip_existing: bool | None = None
 
 
 class ApprovalTemplateCreate(BaseModel):
@@ -891,6 +892,9 @@ class ApprovalInstanceRead(BaseModel):
     applicant_name: str | None
     applicant_user_id: str | None
     approval_status: str
+    parse_status: str = "unparsed"
+    parse_error: str | None = None
+    last_parsed_at: datetime | None = None
     submit_at: datetime | None
     approved_at: datetime | None
     raw_payload: str | None

@@ -552,6 +552,7 @@ export interface DingTalkAutoSyncSettingUpdate {
   sync_departments?: boolean;
   sync_templates?: boolean;
   sync_approvals?: boolean;
+  skip_existing?: boolean;
 }
 
 export interface DingTalkAutoSyncRunResult {
@@ -805,6 +806,9 @@ export interface ApprovalInstance {
   applicant_name?: string | null;
   applicant_user_id?: string | null;
   approval_status: string;
+  parse_status: "unparsed" | "parsed" | "skipped" | "failed" | string;
+  parse_error?: string | null;
+  last_parsed_at?: string | null;
   submit_at?: string | null;
   approved_at?: string | null;
   raw_payload?: string | null;

@@ -24,6 +24,7 @@ from app.models import (
     User,
     utc_now,
 )
+from app.modules.approvals.status import refresh_approval_processing_status
 from app.modules.audit.service import write_audit_log
 from app.modules.auth.permissions import (
     ensure_permission,
@@ -666,6 +667,7 @@ def create_match_candidate(
         existing_match.status = MatchStatus.CANDIDATE.value
         existing_match.confirmed_by = None
         existing_match.confirmed_at = None
+        refresh_approval_processing_status(session, expense_item.approval_instance_id)
         session.commit()
         session.refresh(existing_match)
         return ApiEnvelope(data=existing_match)
@@ -698,6 +700,7 @@ def create_match_candidate(
     match = ExpenseBankMatch(**payload_data, status=MatchStatus.CANDIDATE.value)
     session.add(match)
     session.flush()
+    refresh_approval_processing_status(session, expense_item.approval_instance_id)
     write_audit_log(
         session,
         actor=audit_actor(current_user),
@@ -1113,6 +1116,9 @@ def update_reconciliation_record(
     refresh_expense_payment_status(session, old_expense)
     if target_expense.id != old_expense.id:
         refresh_expense_payment_status(session, target_expense)
+    refresh_approval_processing_status(session, old_expense.approval_instance_id)
+    if target_expense.id != old_expense.id:
+        refresh_approval_processing_status(session, target_expense.approval_instance_id)
 
     write_audit_log(
         session,
@@ -1164,6 +1170,7 @@ def unmatch_reconciliation_record(
     refresh_bank_matched_amount(session, bank_transaction)
     refresh_bank_assignment(session, bank_transaction)
     refresh_expense_payment_status(session, expense_item)
+    refresh_approval_processing_status(session, expense_item.approval_instance_id)
 
     write_audit_log(
         session,
@@ -1227,6 +1234,7 @@ def confirm_match(
         expense_item.payment_status = ExpensePaymentStatus.PAID.value
     else:
         expense_item.payment_status = ExpensePaymentStatus.PARTIAL_PAID.value
+    refresh_approval_processing_status(session, expense_item.approval_instance_id)
     write_audit_log(
         session,
         actor=audit_actor(current_user, operator),

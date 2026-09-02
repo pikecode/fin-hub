@@ -791,11 +791,15 @@ def test_real_approval_sync_skips_existing_instances(client: TestClient, session
         "/api/dingtalk/templates",
         json={"process_code": "PROC-SKIP", "name": "跳过已有审批", "is_enabled": True},
     ).json()["data"]["id"]
+    store_id = client.post("/api/stores", json={"name": "跳过已有审批门店"}).json()["data"]["id"]
     session.add(
         ApprovalInstance(
             template_id=template_id,
             dingtalk_instance_id="existing-instance",
             approval_status="agree",
+            store_id=store_id,
+            parse_status="parsed",
+            processing_status="matched",
         )
     )
     session.commit()
@@ -830,6 +834,157 @@ def test_real_approval_sync_skips_existing_instances(client: TestClient, session
     assert response.status_code == 201
     assert get_calls == ["new-instance"]
     assert '"skipped_existing_count": 1' in response.json()["data"]["raw_summary"]
+
+
+def test_real_approval_sync_resyncs_existing_unparsed_instance(
+    client: TestClient,
+    session,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(settings, "dingtalk_sync_mode", "real")
+    client.put(
+        "/api/dingtalk/config",
+        json={"app_key": "ding-app-key", "app_secret": "super-secret"},
+    )
+    store_id = client.post(
+        "/api/stores",
+        json={"name": "蘑说补解析店", "dingtalk_dept_id": "dept-resync"},
+    ).json()["data"]["id"]
+    template_id = client.post(
+        "/api/dingtalk/templates",
+        json={"process_code": "PROC-RESYNC", "name": "补解析审批", "is_enabled": True},
+    ).json()["data"]["id"]
+    session.add(
+        ApprovalInstance(
+            template_id=template_id,
+            dingtalk_instance_id="existing-unparsed-instance",
+            approval_status="running",
+            parse_status="skipped",
+            processing_status="unparsed",
+            parse_error="Missing required fields: store, amount",
+        )
+    )
+    session.commit()
+    get_calls = []
+
+    class FakeDingTalkClient:
+        def list_process_instance_ids(self, process_code, start_time_ms, end_time_ms, cursor=0, size=20):
+            return ["existing-unparsed-instance"], None
+
+        def get_process_instance(self, instance_id):
+            get_calls.append(instance_id)
+            return {
+                "process_instance_id": instance_id,
+                "business_id": "NO-RESYNC",
+                "originator_dept_id": "dept-resync",
+                "originator_dept_name": "门店运营部-蘑说补解析店",
+                "status": "COMPLETED",
+                "result": "agree",
+                "create_time": "2026-08-29 10:00:00",
+                "form_component_values": [
+                    {"name": "报销日期", "value": "2026-08-29"},
+                    {"name": "支出门店", "value": "蘑说补解析店"},
+                    {"name": "汇总金额（元）", "value": "128.00"},
+                    {"name": "支出详情", "value": "补解析支出"},
+                    {"name": "支出类型", "value": "门店费用"},
+                ],
+            }
+
+    monkeypatch.setattr("app.modules.dingtalk.router.dingtalk_client", lambda config: FakeDingTalkClient())
+    response = client.post(
+        "/api/dingtalk/approval-sync",
+        json={
+            "template_id": template_id,
+            "started_by": "tester",
+            "start_at": "2026-08-01T00:00:00",
+            "end_at": "2026-08-31T23:59:59",
+            "skip_existing": True,
+        },
+    )
+
+    assert response.status_code == 201
+    assert get_calls == ["existing-unparsed-instance"]
+    instance = session.scalar(
+        select(ApprovalInstance).where(
+            ApprovalInstance.dingtalk_instance_id == "existing-unparsed-instance"
+        )
+    )
+    assert instance.store_id == store_id
+    assert instance.approval_status == "agree"
+    assert instance.parse_status == "parsed"
+    assert instance.processing_status == "pending_match"
+    assert instance.parse_error is None
+    expenses = client.get(
+        f"/api/expense-items?approval_instance_id={instance.id}&page_size=20"
+    ).json()["data"]["items"]
+    assert len(expenses) == 1
+    assert expenses[0]["amount"] == "128.00"
+
+
+def test_auto_sync_uses_skip_existing_setting(client: TestClient, session, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "dingtalk_sync_mode", "real")
+    client.put(
+        "/api/dingtalk/config",
+        json={"app_key": "ding-app-key", "app_secret": "super-secret"},
+    )
+    store_id = client.post(
+        "/api/stores",
+        json={"name": "蘑说自动重拉店", "dingtalk_dept_id": "dept-auto-resync"},
+    ).json()["data"]["id"]
+    template_id = client.post(
+        "/api/dingtalk/templates",
+        json={"process_code": "PROC-AUTO-RESYNC", "name": "自动重拉审批", "is_enabled": True},
+    ).json()["data"]["id"]
+    session.add(
+        ApprovalInstance(
+            template_id=template_id,
+            dingtalk_instance_id="auto-existing-instance",
+            approval_status="agree",
+            store_id=store_id,
+            parse_status="parsed",
+            processing_status="matched",
+        )
+    )
+    session.commit()
+    setting_response = client.put(
+        "/api/dingtalk/auto-sync/settings",
+        json={
+            "sync_departments": False,
+            "sync_templates": False,
+            "sync_approvals": True,
+            "skip_existing": False,
+        },
+    )
+    assert setting_response.status_code == 200
+    get_calls = []
+
+    class FakeDingTalkClient:
+        def list_process_instance_ids(self, process_code, start_time_ms, end_time_ms, cursor=0, size=20):
+            return ["auto-existing-instance"], None
+
+        def get_process_instance(self, instance_id):
+            get_calls.append(instance_id)
+            return {
+                "process_instance_id": instance_id,
+                "business_id": "NO-AUTO-RESYNC",
+                "originator_dept_id": "dept-auto-resync",
+                "status": "COMPLETED",
+                "result": "agree",
+                "create_time": "2026-08-29 10:00:00",
+                "form_component_values": [
+                    {"name": "报销日期", "value": "2026-08-29"},
+                    {"name": "支出门店", "value": "蘑说自动重拉店"},
+                    {"name": "汇总金额（元）", "value": "88.00"},
+                    {"name": "支出详情", "value": "自动重拉支出"},
+                    {"name": "支出类型", "value": "门店费用"},
+                ],
+            }
+
+    monkeypatch.setattr("app.modules.dingtalk.router.dingtalk_client", lambda config: FakeDingTalkClient())
+    response = client.post("/api/dingtalk/auto-sync/run")
+
+    assert response.status_code == 201
+    assert get_calls == ["auto-existing-instance"]
 
 
 def test_real_approval_sync_returns_failed_job_on_dingtalk_error(client: TestClient, monkeypatch) -> None:

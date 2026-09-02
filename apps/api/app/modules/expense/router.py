@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_session
 from app.models import ExpenseItem, Ledger, LedgerStatus, User, UserRole
+from app.modules.approvals.status import refresh_approval_processing_status
 from app.modules.audit.service import write_audit_log
 from app.modules.auth.router import audit_actor, require_roles
 from app.modules.common import paginate
@@ -101,6 +102,7 @@ def update_expense_item(
             sorted(edited_fields | set(changes.keys())),
             ensure_ascii=False,
         )
+        refresh_approval_processing_status(session, item.approval_instance_id)
 
     write_audit_log(
         session,
