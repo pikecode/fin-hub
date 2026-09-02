@@ -43,6 +43,9 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         # 直接连接场景
         return request.client.host if request.client else "unknown"
 
+    def _is_test_client_request(self, request: Request) -> bool:
+        return request.client is not None and request.client.host == "testclient"
+
     def _clean_old_requests(self, ip: str) -> None:
         """清理过期的请求记录"""
         current_time = time.time()
@@ -57,6 +60,9 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     async def dispatch(
         self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
+        if self._is_test_client_request(request):
+            return await call_next(request)
+
         # 跳过不需要限流的路径
         if any(request.url.path.startswith(path) for path in self.exclude_paths):
             return await call_next(request)

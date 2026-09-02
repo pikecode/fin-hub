@@ -39,86 +39,77 @@ ORDER BY pg_total_relation_size(relid) DESC;
 #### 支出明细表 (expense_items)
 
 ```sql
--- 门店 + 账期查询（最常用）
-CREATE INDEX IF NOT EXISTS idx_expense_store_ledger 
-ON expense_items(store_id, ledger_id);
+-- 门店 + 账期 + 创建时间排序（最常用）
+CREATE INDEX IF NOT EXISTS idx_expense_store_ledger_created
+ON expense_items(store_id, ledger_period, created_at DESC);
 
 -- 付款状态筛选
 CREATE INDEX IF NOT EXISTS idx_expense_payment_status 
 ON expense_items(payment_status);
 
--- 供应商查询
-CREATE INDEX IF NOT EXISTS idx_expense_supplier 
-ON expense_items(supplier_id) 
-WHERE supplier_id IS NOT NULL;
-
--- 费用分类查询
-CREATE INDEX IF NOT EXISTS idx_expense_category 
-ON expense_items(category_l1_id, category_l2_id);
-
--- 创建时间排序
-CREATE INDEX IF NOT EXISTS idx_expense_created 
-ON expense_items(created_at DESC);
+-- 审批单反查
+CREATE INDEX IF NOT EXISTS idx_expense_approval_instance
+ON expense_items(approval_instance_id);
 ```
 
 #### 银行流水表 (bank_transactions)
 
 ```sql
--- 门店 + 发生时间（对账核心）
-CREATE INDEX IF NOT EXISTS idx_bank_store_occurred 
-ON bank_transactions(store_id, occurred_at DESC);
-
--- 门店 + 账期
-CREATE INDEX IF NOT EXISTS idx_bank_store_ledger 
-ON bank_transactions(store_id, ledger_id);
+-- 门店 + 账期 + 发生时间（对账核心）
+CREATE INDEX IF NOT EXISTS idx_bank_store_ledger_occurred
+ON bank_transactions(store_id, ledger_period, occurred_at DESC);
 
 -- 金额范围查询（匹配算法）
 CREATE INDEX IF NOT EXISTS idx_bank_amount 
 ON bank_transactions(amount);
 
--- 交易方向
-CREATE INDEX IF NOT EXISTS idx_bank_direction 
-ON bank_transactions(direction);
+-- 门店 + 类型
+CREATE INDEX IF NOT EXISTS idx_bank_store_direction
+ON bank_transactions(store_id, direction);
 ```
 
-#### 匹配关系表 (matches)
+#### 支出匹配关系表 (expense_bank_matches)
 
 ```sql
 -- 匹配状态 + 创建时间（待处理列表）
-CREATE INDEX IF NOT EXISTS idx_match_status_created 
-ON matches(match_status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_expense_bank_match_status_created
+ON expense_bank_matches(status, created_at DESC);
 
 -- 银行流水反查
-CREATE INDEX IF NOT EXISTS idx_match_bank 
-ON matches(bank_transaction_id) 
-WHERE bank_transaction_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_expense_bank_match_bank
+ON expense_bank_matches(bank_transaction_id);
 
 -- 支出明细反查
-CREATE INDEX IF NOT EXISTS idx_match_expense 
-ON matches(expense_item_id) 
-WHERE expense_item_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_expense_bank_match_expense
+ON expense_bank_matches(expense_item_id);
+```
 
--- 收入记录反查
-CREATE INDEX IF NOT EXISTS idx_match_revenue 
-ON matches(revenue_record_id) 
-WHERE revenue_record_id IS NOT NULL;
+#### 收入匹配关系表 (revenue_bank_matches)
+
+```sql
+-- 匹配状态 + 创建时间（待处理列表）
+CREATE INDEX IF NOT EXISTS idx_revenue_bank_match_status_created
+ON revenue_bank_matches(status, created_at DESC);
+
+-- 银行流水反查
+CREATE INDEX IF NOT EXISTS idx_revenue_bank_match_bank
+ON revenue_bank_matches(bank_transaction_id);
 ```
 
 #### 营业收入表 (revenue_records)
 
 ```sql
 -- 门店 + 账期
-CREATE INDEX IF NOT EXISTS idx_revenue_store_ledger 
-ON revenue_records(store_id, ledger_id);
+CREATE INDEX IF NOT EXISTS idx_revenue_store_ledger_date
+ON revenue_records(store_id, ledger_period, revenue_date DESC);
 
 -- 营业日期
-CREATE INDEX IF NOT EXISTS idx_revenue_occurred 
-ON revenue_records(occurred_at DESC);
+CREATE INDEX IF NOT EXISTS idx_revenue_date
+ON revenue_records(revenue_date DESC);
 
 -- 收入渠道
-CREATE INDEX IF NOT EXISTS idx_revenue_channel 
-ON revenue_records(channel_id) 
-WHERE channel_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_revenue_channel
+ON revenue_records(channel);
 ```
 
 #### 审计日志表 (audit_logs)
@@ -128,18 +119,9 @@ WHERE channel_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_audit_created 
 ON audit_logs(created_at DESC);
 
--- 操作人
-CREATE INDEX IF NOT EXISTS idx_audit_user 
-ON audit_logs(user_id);
-
 -- 操作类型
 CREATE INDEX IF NOT EXISTS idx_audit_action 
 ON audit_logs(action);
-
--- 实体类型 + 实体 ID（查询某条记录的历史）
-CREATE INDEX IF NOT EXISTS idx_audit_entity 
-ON audit_logs(entity_type, entity_id) 
-WHERE entity_id IS NOT NULL;
 ```
 
 ---
@@ -173,12 +155,12 @@ LIMIT 20;
 EXPLAIN ANALYZE
 SELECT * FROM expense_items
 WHERE store_id = 'xxx'
-  AND ledger_id = 'yyy'
+  AND ledger_period = '2026-08'
 ORDER BY created_at DESC
 LIMIT 50;
 
 -- 检查输出：
--- ✅ 好：Index Scan using idx_expense_store_ledger
+-- ✅ 好：Index Scan using idx_expense_store_ledger_created
 -- ❌ 差：Seq Scan on expense_items
 ```
 

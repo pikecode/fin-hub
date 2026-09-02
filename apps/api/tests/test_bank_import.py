@@ -10,7 +10,7 @@ def test_download_bank_import_template(client: TestClient) -> None:
     assert "bank-import-template.csv" in response.headers["content-disposition"]
     assert response.content.startswith("\ufeff".encode("utf-8"))
     text = response.content.decode("utf-8-sig")
-    assert "发生时间,方向,金额,对方户名,对方账号,摘要,流水号" in text
+    assert "发生时间,类型,金额,备注,流水号" in text
     assert "2026-08-20 10:00:00,收入,1200.00" in text
 
 

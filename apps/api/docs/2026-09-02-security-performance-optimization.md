@@ -95,25 +95,31 @@ HTTP 429 Too Many Requests
 **添加的索引**:
 
 1. **支出明细表** (expense_items)
-   - `idx_expense_store_ledger` - 门店 + 账期查询
+   - `idx_expense_store_ledger_created` - 门店 + 账期 + 创建时间排序
    - `idx_expense_payment_status` - 付款状态筛选
-   - `idx_expense_created` - 创建时间排序
+   - `idx_expense_approval_instance` - 审批单反查
 
 2. **银行流水表** (bank_transactions)
-   - `idx_bank_store_occurred` - 门店 + 发生时间
-   - `idx_bank_store_ledger` - 门店 + 账期
+   - `idx_bank_store_ledger_occurred` - 门店 + 账期 + 发生时间
+   - `idx_bank_store_direction` - 门店 + 类型
    - `idx_bank_amount` - 金额范围查询
 
-3. **匹配关系表** (matches)
-   - `idx_match_status_created` - 状态 + 时间
+3. **支出匹配关系表** (expense_bank_matches)
+   - `idx_expense_bank_match_status_created` - 状态 + 时间
+   - `idx_expense_bank_match_bank` - 银行流水反查
+   - `idx_expense_bank_match_expense` - 支出明细反查
 
-4. **营业收入表** (revenue_records)
-   - `idx_revenue_store_ledger` - 门店 + 账期
-   - `idx_revenue_occurred` - 发生时间
+4. **收入匹配关系表** (revenue_bank_matches)
+   - `idx_revenue_bank_match_status_created` - 状态 + 时间
+   - `idx_revenue_bank_match_bank` - 银行流水反查
 
-5. **审计日志表** (audit_logs)
+5. **营业收入表** (revenue_records)
+   - `idx_revenue_store_ledger_date` - 门店 + 账期 + 营业日期
+   - `idx_revenue_channel` - 收入渠道
+
+6. **审计日志表** (audit_logs)
    - `idx_audit_created` - 时间排序
-   - `idx_audit_user` - 操作人查询
+   - `idx_audit_action` - 操作类型查询
 
 **预期性能提升**:
 - 门店账期查询: 约提升 60-80%
@@ -173,9 +179,8 @@ pg_restore -h localhost -U finhub -d finhub /backups/finhub_20260902_030000.dump
 **测试用例**:
 - ✅ 支出明细查询性能 (< 100ms)
 - ✅ 银行流水查询性能 (< 100ms)
-- ✅ 匹配候选查询性能 (< 50ms)
 - ✅ 营业收入查询性能 (< 100ms)
-- ✅ 复杂关联查询性能 (< 150ms)
+- ✅ 支出/收入匹配查询性能 (< 150ms)
 
 **运行测试**:
 ```bash
@@ -240,7 +245,7 @@ pytest apps/api/tests/test_rate_limit.py -v
 **优化前**:
 ```sql
 SELECT * FROM expense_items
-WHERE store_id = 'xxx' AND ledger_id = 'yyy'
+WHERE store_id = 'xxx' AND ledger_period = '2026-08'
 ORDER BY created_at DESC
 LIMIT 50;
 
@@ -250,11 +255,11 @@ LIMIT 50;
 **优化后**:
 ```sql
 SELECT * FROM expense_items
-WHERE store_id = 'xxx' AND ledger_id = 'yyy'
+WHERE store_id = 'xxx' AND ledger_period = '2026-08'
 ORDER BY created_at DESC
 LIMIT 50;
 
--- Index Scan using idx_expense_store_ledger: 45ms
+-- Index Scan using idx_expense_store_ledger_created: 45ms
 -- 性能提升: 86%
 ```
 
@@ -346,9 +351,9 @@ crontab -l
 ```bash
 # 1. 测试限流
 for i in {1..150}; do
-  curl -s -o /dev/null -w "%{http_code}\n" http://localhost:8000/api/health
+  curl -s -o /dev/null -w "%{http_code}\n" http://localhost:8000/api/auth/me
 done
-# 前 120 次应该返回 200，后 30 次返回 429
+# /api/health 会跳过限流；请使用非排除路径验证，超过阈值后应返回 429
 
 # 2. 验证安全响应头
 curl -I http://localhost:8000/api/health

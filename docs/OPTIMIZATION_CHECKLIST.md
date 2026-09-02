@@ -32,16 +32,16 @@
 - [x] **核心索引优化** (`alembic/versions/20260902_0001_add_performance_indexes.py`)
   - 支出明细: 3 个索引
   - 银行流水: 3 个索引
-  - 匹配关系: 1 个索引
+  - 支出匹配关系: 3 个索引
+  - 收入匹配关系: 2 个索引
   - 营业收入: 2 个索引
   - 审计日志: 2 个索引
 
 - [x] **性能测试** (`tests/test_performance.py`)
   - 支出明细查询测试
   - 银行流水查询测试
-  - 匹配候选查询测试
   - 营业收入查询测试
-  - 复杂关联查询测试
+  - 支出/收入匹配查询测试
 
 - [x] **优化文档** (`docs/database-optimization-guide.md`)
   - 索引审计指南
@@ -255,9 +255,9 @@ curl -I http://localhost:8000/api/health
 
 # 7. 测试限流
 for i in {1..150}; do
-  curl -s -o /dev/null -w "%{http_code}\n" http://localhost:8000/api/health
+  curl -s -o /dev/null -w "%{http_code}\n" http://localhost:8000/api/auth/me
 done
-# 前 120 次返回 200，后面返回 429
+# /api/health 会跳过限流；请使用非排除路径验证，超过阈值后应返回 429
 
 # 8. 配置自动备份
 crontab -e
