@@ -1,6 +1,6 @@
 import json
 from datetime import datetime
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, or_, select
@@ -15,7 +15,6 @@ from app.models import (
     ExpenseBankMatch,
     ExpenseItem,
     ExpensePaymentStatus,
-    Ledger,
     MasterDataStatus,
     MatchStatus,
     RevenueBankMatch,
@@ -48,6 +47,14 @@ from app.schemas import (
 )
 
 router = APIRouter(prefix="/matches", tags=["matching"])
+
+
+def ledger_period_bounds(period: str) -> tuple[datetime, datetime]:
+    year, month = (int(part) for part in period.split("-", 1))
+    start = datetime(year=year, month=month, day=1)
+    if month == 12:
+        return start, datetime(year=year + 1, month=1, day=1)
+    return start, datetime(year=year, month=month + 1, day=1)
 
 
 def confirmed_expense_match_amount(session: Session, expense_item_id: str, exclude_match_id: str | None = None) -> Decimal:
@@ -88,6 +95,23 @@ def active_bank_match_amount(session: Session, bank_transaction_id: str, exclude
     if exclude_match_id:
         query = query.where(ExpenseBankMatch.id != exclude_match_id)
     return Decimal(session.scalar(query) or 0)
+
+
+def mark_expense_fields_user_edited(expense_item: ExpenseItem, fields: set[str]) -> None:
+    if not fields or expense_item.source != "dingtalk":
+        return
+    edited_fields: set[str] = set()
+    if expense_item.user_edited_fields_json:
+        try:
+            decoded = json.loads(expense_item.user_edited_fields_json)
+            if isinstance(decoded, list):
+                edited_fields = {str(field) for field in decoded}
+        except ValueError:
+            edited_fields = set()
+    expense_item.user_edited_fields_json = json.dumps(
+        sorted(edited_fields | fields),
+        ensure_ascii=False,
+    )
 
 
 def validate_expense_bank_match_amount(
@@ -209,154 +233,6 @@ def mapped_display_value(payload: dict, mapping: TemplateFieldMapping) -> object
     if mapping.source_field_id and mapping.source_field_id in values:
         return values[mapping.source_field_id]
     return values.get(mapping.source_field_name)
-
-
-def parsed_decimal(value: object | None) -> Decimal | None:
-    if value in (None, "", "null"):
-        return None
-    if isinstance(value, list):
-        value = value[0] if value else None
-    if isinstance(value, dict):
-        value = value.get("value") or value.get("amount")
-    try:
-        return Decimal(str(value).replace(",", ""))
-    except (InvalidOperation, ValueError):
-        return None
-
-
-def parsed_datetime(value: object | None):
-    if value in (None, "", "null"):
-        return None
-    if isinstance(value, list):
-        value = value[0] if value else None
-    if isinstance(value, dict):
-        value = value.get("value")
-    try:
-        return datetime.fromisoformat(str(value).replace("/", "-")[:19])
-    except ValueError:
-        return None
-
-
-def first_form_value(payload: dict, *names: str) -> object | None:
-    values = form_values(payload)
-    for name in names:
-        value = values.get(name)
-        if value not in (None, "", "null"):
-            return value
-    return None
-
-
-def mapped_values_for_approval(session: Session, approval: ApprovalInstance, payload: dict) -> dict[str, object | None]:
-    mappings = session.scalars(
-        select(TemplateFieldMapping).where(TemplateFieldMapping.template_id == approval.template_id)
-    ).all()
-    return {mapping.standard_field: mapped_display_value(payload, mapping) for mapping in mappings}
-
-
-def mapped_or_first_form_value(
-    mapped: dict[str, object | None],
-    payload: dict,
-    standard_field: str,
-    *fallback_names: str,
-) -> object | None:
-    value = mapped.get(standard_field)
-    if value not in (None, "", "null"):
-        return value
-    return first_form_value(payload, *fallback_names)
-
-
-def ensure_approval_total_expense(session: Session, approval: ApprovalInstance) -> ExpenseItem | None:
-    existing = session.scalar(
-        select(ExpenseItem).where(ExpenseItem.source == "dingtalk", ExpenseItem.source_document_id == approval.dingtalk_instance_id)
-    )
-    if existing is not None:
-        return existing
-
-    payload = parse_raw_payload(approval.raw_payload)
-    mapped = mapped_values_for_approval(session, approval, payload)
-    amount = parsed_decimal(
-        mapped_or_first_form_value(mapped, payload, "amount", "汇总金额（元）", "汇总金额", "金额", "报销金额")
-    )
-    if amount is None:
-        amount = Decimal(
-            session.scalar(
-                select(func.coalesce(func.sum(ExpenseItem.amount), Decimal("0.00"))).where(
-                    ExpenseItem.source == "dingtalk",
-                    ExpenseItem.source_document_id.startswith(f"{approval.dingtalk_instance_id}:"),
-                )
-            )
-            or 0
-        )
-    if amount <= 0 or not approval.store_id:
-        return None
-
-    expense_at = (
-        parsed_datetime(
-            mapped_or_first_form_value(mapped, payload, "expense_date", "报销日期", "支出日期", "费用日期", "日期")
-        )
-        or approval.submit_at
-        or approval.approved_at
-    )
-    if expense_at is None:
-        return None
-    period = expense_at.strftime("%Y-%m")
-    if session.scalar(select(Ledger).where(Ledger.store_id == approval.store_id, Ledger.period == period)) is None:
-        session.add(Ledger(store_id=approval.store_id, period=period))
-        session.flush()
-
-    title = payload.get("title") or payload.get("titleName") or mapped_or_first_form_value(
-        mapped, payload, "description", "费用说明", "其他备注信息", "备注"
-    )
-    expense_item = ExpenseItem(
-        store_id=approval.store_id,
-        ledger_period=period,
-        expense_date=expense_at,
-        description=str(title or approval.approval_no or "钉钉审批单"),
-        amount=amount,
-        category_l1=str(
-            mapped_or_first_form_value(mapped, payload, "category_l1", "支出类型", "费用类型", "一级分类") or "钉钉审批"
-        ),
-        payee_account=str(
-            mapped_or_first_form_value(mapped, payload, "payee_account", "收款账户", "收款账号", "账户") or ""
-        )
-        or None,
-        source="dingtalk",
-        source_document_id=approval.dingtalk_instance_id,
-    )
-    session.add(expense_item)
-    session.flush()
-    return expense_item
-
-
-def ensure_candidate_total_expenses(
-    session: Session,
-    template_id: str | None,
-    store_id: str | None,
-    approval_no: str | None,
-    page_size: int,
-) -> None:
-    approval_query = (
-        select(ApprovalInstance)
-        .join(ApprovalTemplate, ApprovalInstance.template_id == ApprovalTemplate.id)
-        .where(
-            ApprovalInstance.raw_payload.is_not(None),
-            ApprovalTemplate.is_enabled.is_(True),
-            func.lower(ApprovalInstance.approval_status).in_(["agree", "approved", "completed", "finish", "success"]),
-        )
-    )
-    if template_id:
-        approval_query = approval_query.where(ApprovalInstance.template_id == template_id)
-    if store_id:
-        approval_query = approval_query.where(ApprovalInstance.store_id == store_id)
-    if approval_no:
-        like = f"%{approval_no.strip()}%"
-        approval_query = approval_query.where(
-            (ApprovalInstance.approval_no.ilike(like))
-            | (ApprovalInstance.dingtalk_instance_id.ilike(like))
-        )
-    approval_query = approval_query.order_by(ApprovalInstance.submit_at.desc().nullslast(), ApprovalInstance.created_at.desc())
-    for approval in session.scalars(approval_query.limit(max(page_size * 3, 100))):
-        ensure_approval_total_expense(session, approval)
 
 
 def candidate_score(
@@ -689,6 +565,48 @@ def reject_revenue_match(
     return ApiEnvelope(data=match)
 
 
+@router.post("/revenue/{match_id}/unmatch", response_model=ApiEnvelope[RevenueMatchRead])
+def unmatch_revenue_match(
+    match_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> ApiEnvelope[RevenueMatchRead]:
+    ensure_permission(session, current_user, "reconciliation.manage")
+    match = session.get(RevenueBankMatch, match_id)
+    if match is None:
+        raise HTTPException(status_code=404, detail="Revenue match not found")
+    bank_transaction = session.get(BankTransaction, match.bank_transaction_id)
+    if bank_transaction is None:
+        raise HTTPException(status_code=409, detail="Matched bank transaction is missing")
+    ensure_store_access(session, current_user, bank_transaction.store_id)
+    if match.status != MatchStatus.CONFIRMED.value:
+        raise HTTPException(status_code=409, detail="Only confirmed match can be unmatched")
+
+    bank_transaction.matched_amount = max(
+        Decimal("0.00"),
+        Decimal(bank_transaction.matched_amount or 0) - Decimal(match.amount or 0),
+    )
+    match.status = MatchStatus.REJECTED.value
+    match.confirmed_by = None
+    match.confirmed_at = None
+    write_audit_log(
+        session,
+        actor=audit_actor(current_user),
+        action="revenue_match.unmatch",
+        resource_type="revenue_bank_match",
+        resource_id=match.id,
+        summary="解除收入流水匹配",
+        metadata={
+            "bank_transaction_id": match.bank_transaction_id,
+            "channel": match.channel,
+            "amount": match.amount,
+        },
+    )
+    session.commit()
+    session.refresh(match)
+    return ApiEnvelope(data=match)
+
+
 @router.post("", response_model=ApiEnvelope[MatchRead], status_code=201)
 def create_match_candidate(
     payload: MatchCreate,
@@ -732,6 +650,17 @@ def create_match_candidate(
             expense_item.category_l1 = payload.category_l1
         if payload.category_l2 is not None:
             expense_item.category_l2 = payload.category_l2
+        mark_expense_fields_user_edited(
+            expense_item,
+            {
+                field
+                for field, value in {
+                    "category_l1": payload.category_l1,
+                    "category_l2": payload.category_l2,
+                }.items()
+                if value is not None
+            },
+        )
         for key, value in payload.model_dump(exclude={"category_l1", "category_l2"}).items():
             setattr(existing_match, key, value)
         existing_match.status = MatchStatus.CANDIDATE.value
@@ -755,6 +684,17 @@ def create_match_candidate(
         expense_item.category_l1 = payload.category_l1
     if payload.category_l2 is not None:
         expense_item.category_l2 = payload.category_l2
+    mark_expense_fields_user_edited(
+        expense_item,
+        {
+            field
+            for field, value in {
+                "category_l1": payload.category_l1,
+                "category_l2": payload.category_l2,
+            }.items()
+            if value is not None
+        },
+    )
     match = ExpenseBankMatch(**payload_data, status=MatchStatus.CANDIDATE.value)
     session.add(match)
     session.flush()
@@ -882,6 +822,7 @@ def list_reconciliation_candidates(
     bank_transaction_id: str | None = Query(default=None),
     template_id: str | None = Query(default=None),
     store_id: str | None = Query(default=None),
+    ledger_period: str | None = Query(default=None),
     approval_no: str | None = Query(default=None),
     exclude_match_id: str | None = Query(default=None),
     approval_only: bool = Query(default=False),
@@ -920,9 +861,6 @@ def list_reconciliation_candidates(
                 )
             )
 
-    ensure_candidate_total_expenses(session, template_id, store_id, approval_no, page_size)
-    session.commit()
-
     query = (
         select(ExpenseItem, ApprovalInstance, ApprovalTemplate)
         .outerjoin(ApprovalInstance, approval_expense_join_condition())
@@ -930,13 +868,6 @@ def list_reconciliation_candidates(
         .where(
             ExpenseItem.payment_status.in_(
                 [ExpensePaymentStatus.UNPAID.value, ExpensePaymentStatus.PARTIAL_PAID.value]
-            )
-        )
-        .where(
-            or_(
-                ExpenseItem.source != "dingtalk",
-                ExpenseItem.source_document_id.is_(None),
-                ~ExpenseItem.source_document_id.contains(":"),
             )
         )
         .where(
@@ -954,6 +885,8 @@ def list_reconciliation_candidates(
         query = query.where(ExpenseItem.store_id == store_id)
     else:
         query = query.where(scoped_store_condition(session, current_user, ExpenseItem.store_id))
+    if ledger_period:
+        query = query.where(ExpenseItem.ledger_period == ledger_period)
     if approval_no:
         like = f"%{approval_no.strip()}%"
         query = query.where(
@@ -963,6 +896,11 @@ def list_reconciliation_candidates(
         )
 
     rows = session.execute(query.order_by(ExpenseItem.expense_date.desc(), ExpenseItem.created_at.desc())).all()
+    line_document_ids = {
+        expense.source_document_id.split(":", 1)[0]
+        for expense, _approval, _template in rows
+        if expense.source == "dingtalk" and expense.source_document_id and ":" in expense.source_document_id
+    }
     template_ids = {approval.template_id for _, approval, _ in rows if approval is not None}
     mappings_by_template: dict[str, list[TemplateFieldMapping]] = {
         current_template_id: list(
@@ -989,6 +927,13 @@ def list_reconciliation_candidates(
         )
     }
     for expense, approval, template in rows:
+        if (
+            expense.source == "dingtalk"
+            and expense.source_document_id
+            and ":" not in expense.source_document_id
+            and expense.source_document_id in line_document_ids
+        ):
+            continue
         if expense.id in active_expense_ids:
             continue
         remaining_expense_amount = Decimal(expense.amount) - confirmed_expense_match_amount(
@@ -1151,6 +1096,10 @@ def update_reconciliation_record(
         target_expense.category_l1 = updates["category_l1"]
     if "category_l2" in updates:
         target_expense.category_l2 = updates["category_l2"]
+    mark_expense_fields_user_edited(
+        target_expense,
+        {field for field in ("category_l1", "category_l2") if field in updates},
+    )
 
     bank_transaction.store_id = target_expense.store_id
 
