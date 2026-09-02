@@ -34,9 +34,7 @@
 - **框架**: FastAPI + SQLAlchemy
 - **数据库迁移**: Alembic
 - **包管理**: uv + pyproject.toml
-- **数据库支持**: 
-  - SQLite（本地开发）
-  - PostgreSQL（生产环境）
+- **数据库支持**: PostgreSQL
 - **开发端口**: 8000
 - **API 文档**: OpenAPI 自动生成
 - **特点**: 高性能异步 API、类型提示、自动文档
@@ -118,7 +116,7 @@
 **系统功能**
 - 系统设置
 - 集成状态监控
-- SQLite 备份下载
+- PostgreSQL 备份策略提示
 
 ### 股东小程序功能
 
@@ -176,8 +174,7 @@
 
 ### 数据存储
 
-- **PostgreSQL**: 生产环境主数据库
-- **SQLite**: 本地开发数据库
+- **PostgreSQL**: 统一业务数据库
 - **Redis**: 缓存和会话存储
 
 ### 反向代理
@@ -188,7 +185,8 @@
 
 ### 运维脚本
 
-- `scripts/dev-api-sqlite.sh` - 本地 API 启动（SQLite）
+- `scripts/dev-api-postgres.sh` - 本地 API 启动（PostgreSQL）
+- `scripts/dev.sh` - 本地 API 和后台一键启动
 - `scripts/preflight.sh` - 上线前验收检查
 - 其他运维和部署脚本
 
@@ -227,8 +225,8 @@
 # 1. 安装前端依赖
 pnpm install
 
-# 2. 启动 API 服务（SQLite 版本）
-scripts/dev-api-sqlite.sh
+# 2. 启动 API 服务（PostgreSQL 版本）
+scripts/dev-api-postgres.sh
 
 # 3. 启动后台管理端
 pnpm dev:admin
@@ -326,7 +324,7 @@ API 容器启动时会自动执行数据库迁移，在 `SEED_DEV_DATA=true` 时
 1. **类型安全**: TypeScript + 共享类型确保三端类型一致，减少接口对接错误
 2. **代码复用**: 共享包模式避免重复实现，降低维护成本
 3. **开发体验**: pnpm workspace 统一依赖管理，提升开发效率
-4. **灵活部署**: 支持本地 SQLite 和生产 PostgreSQL，适配不同环境
+4. **部署一致**: 本地和生产统一使用 PostgreSQL，降低环境差异
 5. **完整文档**: 详细的实现说明和验收清单，便于团队协作
 6. **集成能力**: 钉钉审批同步、银行流水导入等企业级功能
 

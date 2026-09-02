@@ -49,7 +49,7 @@ scripts/preflight.sh --skip-admin-build --skip-miniapp-build --smoke
 - 生产环境 `APP_ENV=production`。
 - 生产环境不能使用默认 `SECRET_KEY`，长度至少 32 位。
 - 生产环境 `CORS_ORIGINS` 不包含 localhost。
-- 生产环境优先使用 PostgreSQL，不使用 SQLite。
+- 系统数据库统一使用 PostgreSQL。
 - 钉钉正式同步前设置 `DINGTALK_SYNC_MODE=real`，并配置 App Key、App Secret、钉盘 Union ID。
 - `NEXT_PUBLIC_API_BASE_URL` 指向正式 API 域名。
 - `TARO_APP_API_BASE_URL` 指向微信小程序合法 HTTPS 域名。

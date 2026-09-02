@@ -367,9 +367,8 @@
 - 仅 `admin` 角色可访问。
 - `readiness` 返回环境、是否生产就绪和检查项列表。
 - 当前检查项包括数据库类型、`SECRET_KEY` 强度、`CORS_ORIGINS`、文件存储路径和钉钉同步模式配置。
-- SQLite 文件数据库支持后台下载备份。
-- SQLite 内存数据库和 PostgreSQL 返回不支持后台直导，生产环境应使用数据库原生备份。
-- 备份下载会记录审计日志 `system.database_backup.download`。
+- PostgreSQL 返回不支持后台直导，生产环境应使用数据库原生备份。
+- 兼容下载入口返回 409，并提示使用 `pg_dump`、托管数据库快照或云厂商备份策略。
 
 ## 3. 共享契约
 
@@ -419,7 +418,7 @@ alembic upgrade head
 - Docker API 启动时自动执行数据库迁移。
 - `SEED_DEV_DATA=true` 时写入开发样例数据。
 - API 集成测试覆盖门店、账套、封账限制和匹配确认。
-- 钉钉审批模板与字段映射 API。
+- 钉钉审批模板与解析规则 API。
 - 银行流水 CSV/XLSX 导入 API。
 - 银行流水导入行级错误回显。
 

@@ -24,17 +24,14 @@ import {
   Tag,
   Tooltip,
   Typography,
-  Upload,
   message,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import type { UploadFile } from "antd/es/upload/interface";
 import dayjs from "dayjs";
 import { useEffect, useMemo, useState } from "react";
 import type {
   ApprovalInstance,
   ApprovalTemplate,
-  BankImportPreviewResult,
   BankTransaction,
   ExpenseCategory,
   ReconciliationExpenseCandidate,
@@ -45,21 +42,12 @@ import { formatMoney } from "@fin-hub/shared-utils";
 import { AppShell } from "../../components/AppShell";
 import { StoreLedgerWorkspaceNav } from "../../components/StoreLedgerWorkspaceNav";
 import { apiClient } from "../../lib/api";
+import { getApprovalTemplates, getExpenseCategories, getStores } from "../../lib/referenceData";
 import { useClientSearchParams } from "../../lib/searchParams";
 
-type ImportMode = "grid" | "file" | "paste";
 type ApprovalLike = ReconciliationExpenseCandidate | ReconciliationRecord;
 type DingTalkField = Record<string, unknown>;
 type DingTalkTableRow = Record<string, unknown>;
-type BankEntryField = "occurred_at" | "direction" | "amount" | "summary";
-
-interface BankEntryRow {
-  key: string;
-  occurred_at: string;
-  direction: "收入" | "支出" | "";
-  amount: string;
-  summary: string;
-}
 
 interface CandidateFilters {
   template_id?: string;
@@ -211,84 +199,6 @@ function displayFieldSummary(fields: Record<string, unknown>) {
   );
 }
 
-function csvCell(value: string) {
-  const normalized = value.replace(/\r/g, "");
-  return /[",\n]/.test(normalized) ? `"${normalized.replace(/"/g, '""')}"` : normalized;
-}
-
-function pasteToFile(text: string) {
-  const rows = text
-    .split(/\r?\n/)
-    .map((row) => row.trimEnd())
-    .filter((row) => row.trim());
-  if (!rows.length) return null;
-  const firstCells = rows[0].split("\t").map((cell) => cell.trim());
-  const hasHeader = firstCells.some((cell) =>
-    ["日期", "发生时间", "交易时间", "收入还是支出", "方向", "收支方向", "金额", "备注", "摘要"].includes(cell),
-  );
-  const normalizedRows = hasHeader ? rows : ["日期\t收入还是支出\t金额\t备注", ...rows];
-  const csv = normalizedRows.map((row) => row.split("\t").map(csvCell).join(",")).join("\n");
-  return new File([csv], "bank-transactions-paste.csv", { type: "text/csv;charset=utf-8" });
-}
-
-const bankEntryFields: BankEntryField[] = ["occurred_at", "direction", "amount", "summary"];
-const bankEntryHeaders: Record<BankEntryField, string> = {
-  occurred_at: "日期",
-  direction: "收入还是支出",
-  amount: "金额",
-  summary: "备注",
-};
-
-function createEmptyEntryRows(count: number, offset = 0): BankEntryRow[] {
-  return Array.from({ length: count }, (_, index) => ({
-    key: `entry-${Date.now()}-${offset + index}-${Math.random().toString(36).slice(2, 8)}`,
-    occurred_at: "",
-    direction: "",
-    amount: "",
-    summary: "",
-  }));
-}
-
-function isEntryRowEmpty(row: BankEntryRow) {
-  return !row.occurred_at.trim() && !row.direction && !row.amount.trim() && !row.summary.trim();
-}
-
-function entryRowsToText(rows: BankEntryRow[]) {
-  const filledRows = rows.filter((row) => !isEntryRowEmpty(row));
-  if (!filledRows.length) return "";
-  return [
-    bankEntryFields.map((field) => bankEntryHeaders[field]).join("\t"),
-    ...filledRows.map((row) => bankEntryFields.map((field) => row[field]).join("\t")),
-  ].join("\n");
-}
-
-function normalizeEntryDirection(value: string): BankEntryRow["direction"] {
-  const normalized = value.trim().toLowerCase();
-  if (["收入", "income", "in", "收"].includes(normalized)) return "收入";
-  if (["支出", "expense", "out", "付", "付款"].includes(normalized)) return "支出";
-  return "";
-}
-
-function parsePastedEntryRows(text: string) {
-  const rows = text
-    .split(/\r?\n/)
-    .map((row) => row.trimEnd())
-    .filter((row) => row.trim());
-  if (!rows.length) return [];
-  const headerWords = Object.values(bankEntryHeaders).concat(["发生时间", "交易时间", "方向", "收支方向", "摘要"]);
-  const firstCells = rows[0].split("\t").map((cell) => cell.trim());
-  const hasHeader = firstCells.some((cell) => headerWords.includes(cell));
-  return (hasHeader ? rows.slice(1) : rows).map((row) => row.split("\t"));
-}
-
-function assignEntryField(row: BankEntryRow, field: BankEntryField, value: string) {
-  if (field === "direction") {
-    row.direction = normalizeEntryDirection(value);
-    return;
-  }
-  row[field] = value;
-}
-
 function sortTemplates(templates: ApprovalTemplate[]) {
   return [...templates].sort((left, right) => {
     if (left.is_enabled !== right.is_enabled) return left.is_enabled ? -1 : 1;
@@ -312,13 +222,6 @@ export default function FinanceReconciliationPage() {
   const [selectedCandidateId, setSelectedCandidateId] = useState<string>();
   const [detailRecord, setDetailRecord] = useState<ApprovalLike | null>(null);
   const [editingRecord, setEditingRecord] = useState<ReconciliationRecord | null>(null);
-  const [isImportOpen, setIsImportOpen] = useState(false);
-  const [importMode, setImportMode] = useState<ImportMode>("grid");
-  const [uploadFileList, setUploadFileList] = useState<UploadFile[]>([]);
-  const [pasteText, setPasteText] = useState("");
-  const [entryRows, setEntryRows] = useState<BankEntryRow[]>(() => createEmptyEntryRows(12));
-  const [focusedEntryCell, setFocusedEntryCell] = useState<{ rowIndex: number; field: BankEntryField }>({ rowIndex: 0, field: "occurred_at" });
-  const [importPreview, setImportPreview] = useState<BankImportPreviewResult | null>(null);
   const [isConfirmOpen, setIsConfirmOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [isCandidateLoading, setIsCandidateLoading] = useState(false);
@@ -327,7 +230,6 @@ export default function FinanceReconciliationPage() {
   const [filterForm] = Form.useForm<CandidateFilters>();
   const [confirmForm] = Form.useForm<ConfirmValues>();
   const [editForm] = Form.useForm<EditValues>();
-  const [importForm] = Form.useForm<{ ledger_period?: string }>();
 
   const storesById = useMemo(() => new Map(stores.map((store) => [store.id, store])), [stores]);
   const currentStore = selectedStoreId ? storesById.get(selectedStoreId) : undefined;
@@ -351,6 +253,7 @@ export default function FinanceReconciliationPage() {
   const selectedCandidate = candidates.find((candidate) => candidate.expense_item.id === selectedCandidateId);
   const bankRemaining = selectedTransaction ? remainingAmount(selectedTransaction) : 0;
   const defaultMatchAmount = selectedCandidate ? Math.min(bankRemaining, Number(selectedCandidate.remaining_amount || 0)) : bankRemaining;
+  const selectedLedgerPeriod = initialLedgerPeriod;
   const detailPayload = useMemo(() => parseApprovalPayload(detailRecord?.approval_instance), [detailRecord]);
   const detailFields = useMemo<DingTalkField[]>(() => {
     const fields = detailPayload?.form_component_values ?? detailPayload?.formComponentValues;
@@ -376,31 +279,29 @@ export default function FinanceReconciliationPage() {
     setIsLoading(true);
     setErrorMessage(null);
     try {
-      const [storeResult, templateResult, categoryResult] = await Promise.allSettled([
-        apiClient.stores.list("?page_size=500"),
-        apiClient.dingtalk.listTemplates("?page_size=500"),
-        apiClient.categories.list("?page_size=500"),
+      const stores = await getStores();
+      setStores(stores);
+      if (!selectedStoreId) {
+        const defaultStoreId = initialStoreId && stores.some((store) => store.id === initialStoreId)
+          ? initialStoreId
+          : stores[0]?.id;
+        if (defaultStoreId) setSelectedStoreId(defaultStoreId);
+      }
+      setIsLoading(false);
+
+      const [templateResult, categoryResult] = await Promise.allSettled([
+        getApprovalTemplates(),
+        getExpenseCategories(),
       ]);
       const errors: string[] = [];
-      if (storeResult.status === "fulfilled") {
-        setStores(storeResult.value.items);
-        if (!selectedStoreId) {
-          const defaultStoreId = initialStoreId && storeResult.value.items.some((store) => store.id === initialStoreId)
-            ? initialStoreId
-            : storeResult.value.items[0]?.id;
-          if (defaultStoreId) setSelectedStoreId(defaultStoreId);
-        }
-      } else {
-        errors.push("门店");
-      }
       if (templateResult.status === "fulfilled") {
-        setTemplates(sortTemplates(templateResult.value.items));
+        setTemplates(sortTemplates(templateResult.value));
       } else {
         setTemplates([]);
         errors.push("审批模版");
       }
       if (categoryResult.status === "fulfilled") {
-        setCategories(categoryResult.value.items);
+        setCategories(categoryResult.value);
       } else {
         setCategories([]);
         errors.push("费用分类");
@@ -408,6 +309,8 @@ export default function FinanceReconciliationPage() {
       if (errors.length) {
         setErrorMessage(`部分基础数据加载失败：${errors.join("、")}。请检查当前用户权限。`);
       }
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "无法加载门店数据");
     } finally {
       setIsLoading(false);
     }
@@ -417,16 +320,17 @@ export default function FinanceReconciliationPage() {
     setIsLoading(true);
     setErrorMessage(null);
     try {
-      const [bankPage, recordPage, pendingMatchPage] = await Promise.all([
-        apiClient.bankTransactions.list(`?store_id=${storeId}&direction=expense&page_size=500`),
-        apiClient.matches.reconciliationRecords(`?store_id=${storeId}&page_size=200`),
-        apiClient.matches.reconciliationRecords(`?store_id=${storeId}&status=candidate&page_size=500`),
+      const bankParams = new URLSearchParams({ store_id: storeId, direction: "expense", page_size: "200" });
+      const recordParams = new URLSearchParams({ store_id: storeId, page_size: "100" });
+      if (selectedLedgerPeriod) {
+        bankParams.set("ledger_period", selectedLedgerPeriod);
+        recordParams.set("accounting_period", selectedLedgerPeriod);
+      }
+      const [bankPage, recordPage] = await Promise.all([
+        apiClient.bankTransactions.list(`?${bankParams.toString()}`),
+        apiClient.matches.reconciliationRecords(`?${recordParams.toString()}`),
       ]);
-      const activeMatchedBankIds = new Set(
-        [...recordPage.items, ...pendingMatchPage.items].map((record) => record.bank_transaction.id),
-      );
-      const unmatched = bankPage.items.filter((item) => remainingAmount(item) > 0 && !activeMatchedBankIds.has(item.id));
-      setTransactions(unmatched);
+      setTransactions(bankPage.items);
       setRecords(recordPage.items);
       const nextTransaction = transaction && remainingAmount(transaction) > 0 ? transaction : null;
       setSelectedTransaction(nextTransaction);
@@ -448,6 +352,7 @@ export default function FinanceReconciliationPage() {
       approval_only: "true",
       page_size: "100",
     });
+    if (selectedLedgerPeriod) params.set("ledger_period", selectedLedgerPeriod);
     if (transaction) params.set("bank_transaction_id", transaction.id);
     if (filters?.template_id) params.set("template_id", filters.template_id);
     if (filters?.approval_no) params.set("approval_no", filters.approval_no);
@@ -467,6 +372,10 @@ export default function FinanceReconciliationPage() {
   }, []);
 
   useEffect(() => {
+    if (initialStoreId) setSelectedStoreId(initialStoreId);
+  }, [initialStoreId]);
+
+  useEffect(() => {
     if (initialApprovalNo) {
       filterForm.setFieldsValue({ approval_no: initialApprovalNo });
     }
@@ -480,127 +389,6 @@ export default function FinanceReconciliationPage() {
     if (!selectedStoreId) return;
     setSelectedTransaction(transaction);
     await loadCandidates(transaction, selectedStoreId, filterForm.getFieldsValue());
-  }
-
-  function currentImportFile() {
-    if (importMode === "grid") return pasteToFile(entryRowsToText(entryRows));
-    if (importMode === "paste") return pasteToFile(pasteText);
-    return uploadFileList[0]?.originFileObj ?? null;
-  }
-
-  function updateEntryCell(rowKey: string, field: BankEntryField, value: string) {
-    setEntryRows((rows) =>
-      rows.map((row) =>
-        row.key === rowKey
-          ? {
-              ...row,
-              [field]: field === "direction" ? normalizeEntryDirection(value) || (value as BankEntryRow["direction"]) : value,
-            }
-          : row,
-      ),
-    );
-    setImportPreview(null);
-  }
-
-  function pasteRowsIntoGrid(text: string, startRowIndex = focusedEntryCell.rowIndex, startField = focusedEntryCell.field) {
-    const pastedRows = parsePastedEntryRows(text);
-    if (!pastedRows.length) return;
-    const startFieldIndex = bankEntryFields.indexOf(startField);
-    const requiredRows = startRowIndex + pastedRows.length;
-    setEntryRows((rows) => {
-      const nextRows = [...rows];
-      if (requiredRows > nextRows.length) {
-        nextRows.push(...createEmptyEntryRows(requiredRows - nextRows.length, nextRows.length));
-      }
-      pastedRows.forEach((cells, rowOffset) => {
-        const targetIndex = startRowIndex + rowOffset;
-        const target = { ...nextRows[targetIndex] };
-        if (cells.length === 1) {
-          const value = cells[0]?.trim() ?? "";
-          assignEntryField(target, startField, value);
-        } else {
-          cells.forEach((cell, columnOffset) => {
-            const field = bankEntryFields[startFieldIndex + columnOffset];
-            if (!field) return;
-            const value = cell.trim();
-            assignEntryField(target, field, value);
-          });
-        }
-        nextRows[targetIndex] = target;
-      });
-      return nextRows;
-    });
-    setImportPreview(null);
-  }
-
-  function fillEntryColumn(field: BankEntryField) {
-    setEntryRows((rows) => {
-      const sourceValue = rows.find((row) => String(row[field] || "").trim())?.[field] ?? "";
-      if (!sourceValue) return rows;
-      return rows.map((row) => (isEntryRowEmpty(row) || !String(row[field] || "").trim() ? { ...row, [field]: sourceValue } : row));
-    });
-    setImportPreview(null);
-  }
-
-  async function pasteFromClipboard() {
-    try {
-      const text = await navigator.clipboard.readText();
-      pasteRowsIntoGrid(text);
-    } catch {
-      message.warning("浏览器未允许读取剪贴板，请直接在表格单元格里粘贴");
-    }
-  }
-
-  async function previewImport() {
-    if (!selectedStoreId) return;
-    const file = currentImportFile();
-    if (!file) {
-      setErrorMessage(importMode === "file" ? "请选择 CSV / XLSX 文件" : "请录入银行流水数据");
-      return;
-    }
-    const values = importForm.getFieldsValue();
-    const formData = new FormData();
-    formData.append("store_id", selectedStoreId);
-    if (values.ledger_period) formData.append("ledger_period", values.ledger_period);
-    formData.append("file", file);
-    setIsSaving(true);
-    try {
-      setImportPreview(await apiClient.bankTransactions.previewImport(formData));
-    } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "无法预览银行流水");
-    } finally {
-      setIsSaving(false);
-    }
-  }
-
-  async function submitImport() {
-    if (!selectedStoreId) return;
-    const file = currentImportFile();
-    if (!file) {
-      setErrorMessage(importMode === "file" ? "请选择 CSV / XLSX 文件" : "请录入银行流水数据");
-      return;
-    }
-    const values = importForm.getFieldsValue();
-    const formData = new FormData();
-    formData.append("store_id", selectedStoreId);
-    if (values.ledger_period) formData.append("ledger_period", values.ledger_period);
-    formData.append("started_by", "admin");
-    formData.append("file", file);
-    setIsSaving(true);
-    try {
-      const result = await apiClient.bankTransactions.importFile(formData);
-      message.success(`导入 ${result.created_count} 条，跳过 ${result.skipped_count} 条`);
-      setIsImportOpen(false);
-      setPasteText("");
-      setEntryRows(createEmptyEntryRows(12));
-      setUploadFileList([]);
-      setImportPreview(null);
-      await loadStoreWorkspace(selectedStoreId, selectedTransaction);
-    } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "无法导入银行流水");
-    } finally {
-      setIsSaving(false);
-    }
   }
 
   function openConfirm() {
@@ -756,82 +544,8 @@ export default function FinanceReconciliationPage() {
     },
   ];
 
-  const entryColumns: ColumnsType<BankEntryRow> = [
-    {
-      title: "日期",
-      dataIndex: "occurred_at",
-      width: 150,
-      render: (value: string, record, index) => (
-        <Input
-          value={value}
-          placeholder="2026/8/28"
-          onFocus={() => setFocusedEntryCell({ rowIndex: index, field: "occurred_at" })}
-          onPaste={(event) => {
-            event.preventDefault();
-            pasteRowsIntoGrid(event.clipboardData.getData("text"), index, "occurred_at");
-          }}
-          onChange={(event) => updateEntryCell(record.key, "occurred_at", event.target.value)}
-        />
-      ),
-    },
-    {
-      title: "方向",
-      dataIndex: "direction",
-      width: 120,
-      render: (value: BankEntryRow["direction"], record, index) => (
-        <Select
-          value={value || undefined}
-          placeholder="支出"
-          options={[
-            { label: "支出", value: "支出" },
-            { label: "收入", value: "收入" },
-          ]}
-          onFocus={() => setFocusedEntryCell({ rowIndex: index, field: "direction" })}
-          onChange={(nextValue) => updateEntryCell(record.key, "direction", nextValue)}
-          style={{ width: "100%" }}
-        />
-      ),
-    },
-    {
-      title: "金额",
-      dataIndex: "amount",
-      width: 140,
-      render: (value: string, record, index) => (
-        <Input
-          value={value}
-          placeholder="12002"
-          onFocus={() => setFocusedEntryCell({ rowIndex: index, field: "amount" })}
-          onPaste={(event) => {
-            event.preventDefault();
-            pasteRowsIntoGrid(event.clipboardData.getData("text"), index, "amount");
-          }}
-          onChange={(event) => updateEntryCell(record.key, "amount", event.target.value)}
-        />
-      ),
-    },
-    {
-      title: "备注",
-      dataIndex: "summary",
-      render: (value: string, record, index) => (
-        <Input
-          value={value}
-          placeholder="备注"
-          onFocus={() => setFocusedEntryCell({ rowIndex: index, field: "summary" })}
-          onPaste={(event) => {
-            event.preventDefault();
-            pasteRowsIntoGrid(event.clipboardData.getData("text"), index, "summary");
-          }}
-          onChange={(event) => updateEntryCell(record.key, "summary", event.target.value)}
-        />
-      ),
-    },
-  ];
-
   return (
-    <AppShell
-      title="财务对账"
-      kicker="按门店录入银行流水，并匹配钉钉审批单"
-    >
+    <AppShell title="财务对账">
       {initialStoreId ? (
         <StoreLedgerWorkspaceNav
           storeId={selectedStoreId ?? initialStoreId}
@@ -843,30 +557,31 @@ export default function FinanceReconciliationPage() {
       ) : null}
       {errorMessage ? <Alert className="dashboard-alert" type="warning" showIcon message={errorMessage} closable onClose={() => setErrorMessage(null)} /> : null}
 
-      <Card className="reconciliation-summary-card">
-        <div className="reconciliation-summary-card__main">
-          <div className="reconciliation-summary-card__store">
-            <Typography.Text className="reconciliation-summary-card__label">当前门店</Typography.Text>
-            <Select
-              showSearch
-              optionFilterProp="label"
-              className="reconciliation-summary-card__select"
-              value={selectedStoreId}
-              onChange={setSelectedStoreId}
-              options={stores.map((store) => ({ label: store.name, value: store.id }))}
-            />
+      {!initialStoreId ? (
+        <Card className="reconciliation-summary-card">
+          <div className="reconciliation-summary-card__main">
+            <div className="reconciliation-summary-card__store">
+              <Typography.Text className="reconciliation-summary-card__label">当前门店</Typography.Text>
+              <Select
+                showSearch
+                optionFilterProp="label"
+                className="reconciliation-summary-card__select"
+                value={selectedStoreId}
+                onChange={setSelectedStoreId}
+                options={stores.map((store) => ({ label: store.name, value: store.id }))}
+              />
+            </div>
+            <div className="reconciliation-summary-card__metrics">
+              <Statistic title="银行流水" value={transactions.length} />
+              <Statistic title="候选审批单" value={candidates.length} />
+              <Statistic title="已对账" value={records.length} />
+            </div>
           </div>
-          <div className="reconciliation-summary-card__metrics">
-            <Statistic title="待匹配流水" value={transactions.length} />
-            <Statistic title="候选审批单" value={candidates.length} />
-            <Statistic title="已对账" value={records.length} />
-          </div>
-        </div>
-        <Space className="reconciliation-summary-card__actions">
-          <Button disabled={!selectedStoreId} type="primary" onClick={() => setIsImportOpen(true)}>导入/录入流水</Button>
-          <Button onClick={() => selectedStoreId && loadStoreWorkspace(selectedStoreId)}>刷新</Button>
-        </Space>
-      </Card>
+          <Space className="reconciliation-summary-card__actions">
+            <Button onClick={() => selectedStoreId && loadStoreWorkspace(selectedStoreId)}>刷新</Button>
+          </Space>
+        </Card>
+      ) : null}
 
       <Tabs
         className="reconciliation-tabs"
@@ -874,12 +589,12 @@ export default function FinanceReconciliationPage() {
         items={[
           {
             key: "workbench",
-            label: `待匹配 (${transactions.length})`,
+            label: `银行流水 (${transactions.length})`,
             children: (
               <Splitter className="reconciliation-workbench">
                 <Splitter.Panel defaultSize="34%" min="300px">
                   <Card
-                    title="待匹配银行流水"
+                    title="银行流水"
                     className="data-table-card bank-transaction-panel"
                     extra={<Typography.Text type="secondary">共 {transactions.length} 条</Typography.Text>}
                   >
@@ -888,18 +603,23 @@ export default function FinanceReconciliationPage() {
                         {transactions.map((transaction) => {
                           const isSelected = transaction.id === selectedTransaction?.id;
                           const remaining = remainingAmount(transaction);
+                          const isFullyMatched = remaining <= 0;
                           return (
                             <button
                               key={transaction.id}
                               type="button"
-                              className={`bank-transaction-card${isSelected ? " is-selected" : ""}`}
-                              onClick={() => selectTransaction(transaction)}
+                              className={`bank-transaction-card${isSelected ? " is-selected" : ""}${isFullyMatched ? " is-disabled" : ""}`}
+                              disabled={isFullyMatched}
+                              onClick={() => {
+                                if (!isFullyMatched) void selectTransaction(transaction);
+                              }}
                             >
                               <span className="bank-transaction-card__main">
                                 <span className="bank-transaction-card__meta">
                                   <Typography.Text strong>{dayjs(transaction.occurred_at).format("YYYY-MM-DD")}</Typography.Text>
                                   <Tag color="orange">支出</Tag>
                                   {transaction.ledger_period ? <Tag>{transaction.ledger_period}</Tag> : null}
+                                  {isFullyMatched ? <Tag color="green">已匹配</Tag> : <Tag>待匹配</Tag>}
                                 </span>
                                 <Typography.Text className="bank-transaction-card__summary" ellipsis>
                                   {transaction.summary || transaction.counterparty_name || "无摘要"}
@@ -910,14 +630,14 @@ export default function FinanceReconciliationPage() {
                               </span>
                               <span className="bank-transaction-card__amounts">
                                 <Typography.Text className="bank-transaction-card__amount">{formatMoney(transaction.amount)}</Typography.Text>
-                                <Typography.Text type="secondary">未匹配 {formatMoney(remaining)}</Typography.Text>
+                                <Typography.Text type="secondary">剩余 {formatMoney(Math.max(remaining, 0).toFixed(2))}</Typography.Text>
                               </span>
                             </button>
                           );
                         })}
                       </div>
                     ) : (
-                      <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={selectedStoreId ? "当前门店暂无待匹配流水" : "请先选择门店"} />
+                      <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={selectedStoreId ? "当前门店暂无银行流水" : "请先选择门店"} />
                     )}
                   </Card>
                 </Splitter.Panel>
@@ -1105,88 +825,6 @@ export default function FinanceReconciliationPage() {
             <Input.TextArea rows={3} />
           </Form.Item>
         </Form>
-      </Modal>
-
-      <Modal title="导入当前门店流水" open={isImportOpen} destroyOnHidden onCancel={() => setIsImportOpen(false)} onOk={submitImport} confirmLoading={isSaving} width={960} footer={[
-        <Button key="cancel" onClick={() => setIsImportOpen(false)}>取消</Button>,
-        <Button key="preview" onClick={previewImport} loading={isSaving}>预览</Button>,
-        <Button key="import" type="primary" onClick={submitImport} loading={isSaving}>确认导入</Button>,
-      ]}>
-        <Alert className="dashboard-alert" type="info" showIcon message={`导入门店：${selectedStoreId ? storesById.get(selectedStoreId)?.name : "-"}`} description="不指定账期时，系统按每行日期自动归属到对应月份；跨月流水可以一次粘贴。" />
-        <Form form={importForm} layout="vertical">
-          <Form.Item name="ledger_period" label="固定账期">
-            <Input placeholder="可留空，例如 2026-08" />
-          </Form.Item>
-        </Form>
-        <Tabs activeKey={importMode} onChange={(key) => { setImportMode(key as ImportMode); setImportPreview(null); }} items={[
-          {
-            key: "grid",
-            label: "表格录入",
-            children: (
-              <Space direction="vertical" style={{ width: "100%" }} size={12}>
-                <div className="bank-entry-grid-toolbar">
-                  <Space wrap>
-                    <Button onClick={() => setEntryRows((rows) => [...rows, ...createEmptyEntryRows(10, rows.length)])}>添加 10 行</Button>
-                    <Button onClick={pasteFromClipboard}>读取剪贴板</Button>
-                    <Button onClick={() => { setEntryRows(createEmptyEntryRows(12)); setImportPreview(null); }}>清空</Button>
-                  </Space>
-                  <Space wrap>
-                    <Button size="small" onClick={() => fillEntryColumn("occurred_at")}>日期向下填充</Button>
-                    <Button size="small" onClick={() => fillEntryColumn("direction")}>方向向下填充</Button>
-                    <Button size="small" onClick={() => fillEntryColumn("summary")}>备注向下填充</Button>
-                  </Space>
-                </div>
-                <Table
-                  className="bank-entry-grid"
-                  rowKey="key"
-                  size="small"
-                  pagination={false}
-                  dataSource={entryRows}
-                  columns={entryColumns}
-                  scroll={{ x: 760, y: 360 }}
-                />
-                <Typography.Text type="secondary">可以从 Excel 复制整块数据后点第一个日期单元格粘贴；单列数据会从当前单元格向下填充。</Typography.Text>
-              </Space>
-            ),
-          },
-          {
-            key: "paste",
-            label: "批量粘贴",
-            children: (
-              <Space direction="vertical" style={{ width: "100%" }}>
-                <Input.TextArea rows={10} value={pasteText} onChange={(event) => { setPasteText(event.target.value); setImportPreview(null); }} placeholder={"2026/8/28\t支出\t12002\t备注1\n2026/8/29\t支出\t12003\t备注2"} />
-                <Typography.Text type="secondary">无表头时默认按：日期、收入还是支出、金额、备注。</Typography.Text>
-              </Space>
-            ),
-          },
-          {
-            key: "file",
-            label: "文件导入",
-            children: (
-              <Upload accept=".csv,.xlsx,.xlsm" maxCount={1} fileList={uploadFileList} beforeUpload={() => false} onChange={({ fileList }) => { setUploadFileList(fileList.slice(-1)); setImportPreview(null); }}>
-                <Button>选择文件</Button>
-              </Upload>
-            ),
-          },
-        ]} />
-        {importPreview ? (
-          <Table
-            style={{ marginTop: 16 }}
-            rowKey="row_number"
-            size="small"
-            pagination={false}
-            dataSource={importPreview.preview_rows}
-            columns={[
-              { title: "行", dataIndex: "row_number", width: 70 },
-              { title: "日期", dataIndex: "occurred_at", width: 150, render: formatDateTime },
-              { title: "方向", dataIndex: "direction", width: 80, render: (value) => (value === "income" ? "收入" : "支出") },
-              { title: "金额", dataIndex: "amount", width: 120, align: "right", render: (value: string) => formatMoney(value) },
-              { title: "备注", dataIndex: "summary", ellipsis: true, render: (value) => value || "-" },
-              { title: "结果", dataIndex: "duplicate", width: 100, render: (value: boolean) => (value ? <Tag>重复</Tag> : <Tag color="green">可导入</Tag>) },
-            ]}
-            scroll={{ x: 760 }}
-          />
-        ) : null}
       </Modal>
 
       <Drawer title="对账明细" open={Boolean(detailRecord)} destroyOnHidden onClose={() => setDetailRecord(null)} width="min(980px, 92vw)">

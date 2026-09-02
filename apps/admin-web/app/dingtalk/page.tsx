@@ -13,7 +13,6 @@ import {
   Input,
   InputNumber,
   Modal,
-  Popconfirm,
   Row,
   Select,
   Skeleton,
@@ -66,20 +65,12 @@ interface ApprovalSyncFormValues {
 
 interface AutoSyncFormValues extends DingTalkAutoSyncSettingUpdate {}
 
-interface MappingFormValues extends TemplateFieldMappingCreate {
-  selected_field_key?: string;
-}
-
 type BusinessFieldOption = {
   value: string;
   label: string;
   description: string;
   required?: boolean;
 };
-
-type MappingModalMode =
-  | { type: "display" }
-  | { type: "business"; field: BusinessFieldOption };
 
 type DepartmentTreeNode = DingTalkDepartment & {
   children?: DepartmentTreeNode[];
@@ -99,6 +90,8 @@ type ImagePreviewState = {
   title: string;
   url: string;
 };
+
+type DingTalkTabKey = "auto-sync" | "departments" | "templates" | "instances";
 
 const AUTO_SYNC_TIME_OPTIONS = Array.from({ length: 24 }, (_, hour) => {
   const value = `${String(hour).padStart(2, "0")}:00`;
@@ -139,10 +132,6 @@ const BUSINESS_FIELD_SET = new Set(BUSINESS_FIELD_OPTIONS.map((item) => item.val
 
 function isBusinessMapping(mapping: TemplateFieldMapping) {
   return BUSINESS_FIELD_SET.has(mapping.standard_field);
-}
-
-function isDisplayMapping(mapping: TemplateFieldMapping) {
-  return mapping.standard_field.startsWith("display:");
 }
 
 function buildDepartmentTree(departments: DingTalkDepartment[]): DepartmentTreeNode[] {
@@ -548,10 +537,6 @@ function mappedValueFromPayload(payload: unknown, mapping: TemplateFieldMapping)
   return values[mapping.source_field_name];
 }
 
-function mappingDisplayLabel(mapping: TemplateFieldMapping) {
-  return mapping.display_label || mapping.source_field_name || mapping.standard_field;
-}
-
 function mappedDisplayValue(instance: ApprovalInstance, mapping: TemplateFieldMapping) {
   if (!instance.raw_payload) return undefined;
   try {
@@ -574,24 +559,21 @@ export default function DingTalkPage() {
   const [syncJobs, setSyncJobs] = useState<SyncJob[]>([]);
   const [approvalInstances, setApprovalInstances] = useState<ApprovalInstance[]>([]);
   const [departmentPreview, setDepartmentPreview] = useState<DingTalkDepartmentSyncPreview | null>(null);
+  const [activeTabKey, setActiveTabKey] = useState<DingTalkTabKey>("auto-sync");
+  const [loadedTabKeys, setLoadedTabKeys] = useState<DingTalkTabKey[]>([]);
   const [selectedTemplate, setSelectedTemplate] = useState<ApprovalTemplate | null>(null);
   const [instanceTemplateFilterId, setInstanceTemplateFilterId] = useState<string | null>(null);
-  const [instanceDisplayMappings, setInstanceDisplayMappings] = useState<TemplateFieldMapping[]>([]);
   const [selectedInstance, setSelectedInstance] = useState<ApprovalInstance | null>(null);
   const [selectedInstanceAttachments, setSelectedInstanceAttachments] = useState<Attachment[]>([]);
-  const [editingMapping, setEditingMapping] = useState<TemplateFieldMapping | null>(null);
-  const [mappingModalMode, setMappingModalMode] = useState<MappingModalMode>({ type: "display" });
   const [imagePreview, setImagePreview] = useState<ImagePreviewState | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isTemplateModalOpen, setIsTemplateModalOpen] = useState(false);
-  const [isMappingModalOpen, setIsMappingModalOpen] = useState(false);
   const [isMappingDrawerOpen, setIsMappingDrawerOpen] = useState(false);
   const [isSyncModalOpen, setIsSyncModalOpen] = useState(false);
   const [isConfigModalOpen, setIsConfigModalOpen] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [form] = Form.useForm<DingTalkFormValues>();
   const [templateForm] = Form.useForm<ApprovalTemplateCreate>();
-  const [mappingForm] = Form.useForm<MappingFormValues>();
   const [syncForm] = Form.useForm<ApprovalSyncFormValues>();
   const [autoSyncForm] = Form.useForm<AutoSyncFormValues>();
   const departmentTree = useMemo(
@@ -640,7 +622,6 @@ export default function DingTalkPage() {
     [selectedInstancePayload],
   );
   const businessMappings = useMemo(() => mappings.filter(isBusinessMapping), [mappings]);
-  const displayMappings = useMemo(() => mappings.filter(isDisplayMapping), [mappings]);
   const selectedTemplateSampleInstance = selectedTemplate
     ? approvalInstances.find((instance) => instance.template_id === selectedTemplate.id)
     : undefined;
@@ -681,80 +662,148 @@ export default function DingTalkPage() {
     };
   }, [imagePreview]);
 
+  function applyConfig(data: DingTalkConfig) {
+    setConfig(data);
+    form.setFieldsValue({
+      corp_id: data.corp_id ?? undefined,
+      app_key: data.app_key ?? undefined,
+      admin_user_id: data.admin_user_id ?? undefined,
+      drive_union_id: data.drive_union_id ?? undefined,
+    });
+  }
+
+  function applyAutoSyncSetting(data: DingTalkAutoSyncSetting) {
+    setAutoSyncSetting(data);
+    autoSyncForm.setFieldsValue({
+      enabled: data.enabled,
+      scheduled_time: data.scheduled_time,
+      sync_departments: data.sync_departments,
+      sync_templates: data.sync_templates,
+      sync_approvals: data.sync_approvals,
+    });
+  }
+
+  function markTabLoaded(key: DingTalkTabKey) {
+    setLoadedTabKeys((items) => (items.includes(key) ? items : [...items, key]));
+  }
+
   async function loadData() {
     setIsLoading(true);
     setErrorMessage(null);
     const results = await Promise.allSettled([
       apiClient.dingtalk.readConfig(),
       apiClient.dingtalk.readAutoSyncSetting(),
-      apiClient.dingtalk.listTemplates("?page_size=200"),
-      apiClient.dingtalk.listSyncJobs("?page_size=20"),
-      apiClient.dingtalk.listApprovalInstances("?page_size=500"),
-      apiClient.dingtalk.previewDepartmentSync(),
     ]);
-    const [configResult, autoSyncResult, templateResult, jobResult, instanceResult, departmentResult] = results;
+    const [configResult, autoSyncResult] = results;
     const errors: string[] = [];
 
     if (configResult.status === "fulfilled") {
-      const data = configResult.value;
-      setConfig(data);
-      form.setFieldsValue({
-        corp_id: data.corp_id ?? undefined,
-        app_key: data.app_key ?? undefined,
-        admin_user_id: data.admin_user_id ?? undefined,
-        drive_union_id: data.drive_union_id ?? undefined,
-      });
+      applyConfig(configResult.value);
     } else {
       errors.push(dingtalkPageErrorMessage(configResult.reason, "无法读取钉钉配置"));
     }
 
     if (autoSyncResult.status === "fulfilled") {
-      const data = autoSyncResult.value;
-      setAutoSyncSetting(data);
-      autoSyncForm.setFieldsValue({
-        enabled: data.enabled,
-        scheduled_time: data.scheduled_time,
-        sync_departments: data.sync_departments,
-        sync_templates: data.sync_templates,
-        sync_approvals: data.sync_approvals,
-      });
+      applyAutoSyncSetting(autoSyncResult.value);
     } else {
       errors.push(dingtalkPageErrorMessage(autoSyncResult.reason, "无法读取自动同步设置"));
-    }
-
-    if (templateResult.status === "fulfilled") {
-      setTemplates(sortTemplates(templateResult.value.items));
-    } else {
-      errors.push(dingtalkPageErrorMessage(templateResult.reason, "无法读取审批模板"));
-    }
-
-    if (jobResult.status === "fulfilled") {
-      setSyncJobs(jobResult.value.items);
-    } else {
-      errors.push(dingtalkPageErrorMessage(jobResult.reason, "无法读取同步任务"));
-    }
-
-    if (instanceResult.status === "fulfilled") {
-      setApprovalInstances(instanceResult.value.items);
-    } else {
-      errors.push(dingtalkPageErrorMessage(instanceResult.reason, "无法读取审批列表"));
-    }
-
-    if (departmentResult.status === "fulfilled") {
-      setDepartmentPreview(departmentResult.value);
-    } else {
-      errors.push(dingtalkPageErrorMessage(departmentResult.reason, "无法读取本地部门快照"));
     }
 
     if (errors.length) {
       setErrorMessage(Array.from(new Set(errors)).join("；"));
     }
+    markTabLoaded("auto-sync");
     setIsLoading(false);
   }
 
   useEffect(() => {
     loadData();
   }, []);
+
+  async function loadTemplatesTab(force = false) {
+    if (!force && loadedTabKeys.includes("templates")) return;
+    setIsLoading(true);
+    setErrorMessage(null);
+    try {
+      const [configData, templatePage] = await Promise.all([
+        apiClient.dingtalk.readConfig(),
+        apiClient.dingtalk.listTemplates("?page_size=200"),
+      ]);
+      applyConfig(configData);
+      setTemplates(sortTemplates(templatePage.items));
+      markTabLoaded("templates");
+    } catch (error) {
+      setErrorMessage(dingtalkPageErrorMessage(error, "无法读取审批模板"));
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  async function loadDepartmentsTab(force = false) {
+    if (!force && loadedTabKeys.includes("departments")) return;
+    setIsLoading(true);
+    setErrorMessage(null);
+    try {
+      const preview = await apiClient.dingtalk.previewDepartmentSync();
+      setDepartmentPreview(preview);
+      markTabLoaded("departments");
+    } catch (error) {
+      setErrorMessage(dingtalkPageErrorMessage(error, "无法读取本地部门快照"));
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  async function loadInstancesTab(force = false) {
+    if (!force && loadedTabKeys.includes("instances")) return;
+    setIsLoading(true);
+    setErrorMessage(null);
+    const results = await Promise.allSettled([
+      apiClient.dingtalk.readConfig(),
+      apiClient.dingtalk.listTemplates("?page_size=200"),
+      apiClient.dingtalk.listSyncJobs("?page_size=20"),
+      apiClient.dingtalk.listApprovalInstances("?page_size=100"),
+    ]);
+    const [configResult, templateResult, jobResult, instanceResult] = results;
+    const errors: string[] = [];
+
+    if (configResult.status === "fulfilled") {
+      applyConfig(configResult.value);
+    } else {
+      errors.push(dingtalkPageErrorMessage(configResult.reason, "无法读取钉钉配置"));
+    }
+    if (templateResult.status === "fulfilled") {
+      setTemplates(sortTemplates(templateResult.value.items));
+      markTabLoaded("templates");
+    } else {
+      errors.push(dingtalkPageErrorMessage(templateResult.reason, "无法读取审批模板"));
+    }
+    if (jobResult.status === "fulfilled") {
+      setSyncJobs(jobResult.value.items);
+    } else {
+      errors.push(dingtalkPageErrorMessage(jobResult.reason, "无法读取同步任务"));
+    }
+    if (instanceResult.status === "fulfilled") {
+      setApprovalInstances(instanceResult.value.items);
+    } else {
+      errors.push(dingtalkPageErrorMessage(instanceResult.reason, "无法读取审批列表"));
+    }
+
+    if (errors.length) {
+      setErrorMessage(Array.from(new Set(errors)).join("；"));
+    } else {
+      markTabLoaded("instances");
+    }
+    setIsLoading(false);
+  }
+
+  function handleTabChange(key: string) {
+    const nextKey = key as DingTalkTabKey;
+    setActiveTabKey(nextKey);
+    if (nextKey === "departments") void loadDepartmentsTab();
+    if (nextKey === "templates") void loadTemplatesTab();
+    if (nextKey === "instances") void loadInstancesTab();
+  }
 
   async function submitConfig(values: DingTalkFormValues) {
     setIsLoading(true);
@@ -775,7 +824,7 @@ export default function DingTalkPage() {
     setIsLoading(true);
     try {
       const result = await apiClient.dingtalk.syncTemplates();
-      await loadData();
+      await loadTemplatesTab(true);
       message.success(`模板增量同步完成：拉取 ${result.pulled} 个，新增 ${result.created} 个，更新 ${result.updated} 个`);
     } catch (error) {
       setErrorMessage(dingtalkPageErrorMessage(error, "无法同步模板"));
@@ -825,6 +874,9 @@ export default function DingTalkPage() {
     try {
       const result = await apiClient.dingtalk.runAutoSync();
       await loadData();
+      if (loadedTabKeys.includes("departments")) await loadDepartmentsTab(true);
+      if (loadedTabKeys.includes("templates")) await loadTemplatesTab(true);
+      if (loadedTabKeys.includes("instances")) await loadInstancesTab(true);
       if (result.job.status === "failed") {
         message.error(result.job.error_message || "自动同步执行失败");
       } else {
@@ -845,6 +897,7 @@ export default function DingTalkPage() {
     try {
       const preview = await apiClient.dingtalk.previewDepartmentSync();
       setDepartmentPreview(preview);
+      markTabLoaded("departments");
       message.success("已刷新本地部门预览");
     } catch (error) {
       setErrorMessage(dingtalkPageErrorMessage(error, "无法读取本地部门快照"));
@@ -860,6 +913,7 @@ export default function DingTalkPage() {
       const result = await apiClient.dingtalk.pullDepartments("?root_dept_id=1&max_depth=8");
       const preview = await apiClient.dingtalk.previewDepartmentSync();
       setDepartmentPreview(preview);
+      markTabLoaded("departments");
       message.success(
         `部门增量同步完成：拉取 ${result.pulled_count} 个，新增 ${result.created_count} 个，更新 ${result.updated_count} 个`,
       );
@@ -877,6 +931,7 @@ export default function DingTalkPage() {
       const result = await apiClient.dingtalk.syncDepartments();
       const preview = await apiClient.dingtalk.previewDepartmentSync();
       setDepartmentPreview(preview);
+      markTabLoaded("departments");
       message.success(`门店落库完成：新增 ${result.created_count} 个，更新 ${result.updated_count} 个`);
     } catch (error) {
       setErrorMessage(dingtalkPageErrorMessage(error, "无法同步钉钉门店部门"));
@@ -899,19 +954,6 @@ export default function DingTalkPage() {
   async function changeInstanceTemplateFilter(templateId?: string) {
     setInstanceTemplateFilterId(templateId ?? null);
     setErrorMessage(null);
-    if (!templateId) {
-      setInstanceDisplayMappings([]);
-      return;
-    }
-    setIsLoading(true);
-    try {
-      const data = await apiClient.dingtalk.listMappings(templateId);
-      setInstanceDisplayMappings(data.filter(isDisplayMapping));
-    } catch (error) {
-      setErrorMessage(dingtalkPageErrorMessage(error, "无法加载模板显示字段"));
-    } finally {
-      setIsLoading(false);
-    }
   }
 
   async function startApprovalSync(values: ApprovalSyncFormValues) {
@@ -927,11 +969,7 @@ export default function DingTalkPage() {
         skip_existing: values.skip_existing ?? true,
       });
       setIsSyncModalOpen(false);
-      await loadData();
-      if (instanceTemplateFilterId) {
-        const currentMappings = await apiClient.dingtalk.listMappings(instanceTemplateFilterId);
-        setInstanceDisplayMappings(currentMappings.filter(isDisplayMapping));
-      }
+      await loadInstancesTab(true);
       if (job.status === "failed") {
         message.error(job.error_message || "审批列表同步失败");
       } else if (job.next_cursor) {
@@ -956,7 +994,7 @@ export default function DingTalkPage() {
         max_pages: 20,
         skip_existing: true,
       });
-      await loadData();
+      await loadInstancesTab(true);
       if (nextJob.status === "failed") {
         message.error(nextJob.error_message || "审批同步续跑失败");
       } else if (nextJob.next_cursor) {
@@ -977,7 +1015,7 @@ export default function DingTalkPage() {
       await apiClient.dingtalk.createTemplate(values);
       setIsTemplateModalOpen(false);
       templateForm.resetFields();
-      await loadData();
+      await loadTemplatesTab(true);
     } catch (error) {
       setErrorMessage(dingtalkPageErrorMessage(error, "无法新增模板"));
     } finally {
@@ -1019,10 +1057,10 @@ export default function DingTalkPage() {
       ]);
       setMappings(data);
       setFieldCandidates(candidates);
-      updateTemplateMappingStatus(template.id, data.length ? "mapped" : "unmapped");
+      updateTemplateMappingStatus(template.id, data.some(isBusinessMapping) ? "mapped" : "unmapped");
       return data;
     } catch (error) {
-      setErrorMessage(dingtalkPageErrorMessage(error, "无法加载字段映射"));
+      setErrorMessage(dingtalkPageErrorMessage(error, "无法加载解析规则"));
       return [];
     } finally {
       setIsLoading(false);
@@ -1061,65 +1099,6 @@ export default function DingTalkPage() {
     }
   }
 
-  function applyFieldCandidate(fieldKey: string) {
-    const candidate = fieldCandidates.find((item) => candidateKey(item) === fieldKey || item.source_field_name === fieldKey);
-    if (!candidate) return;
-    mappingForm.setFieldsValue({
-      selected_field_key: candidateKey(candidate),
-      source_field_name: candidate.source_field_name,
-      display_label: mappingForm.getFieldValue("display_label") || candidate.source_field_name,
-      source_field_id: candidate.source_field_id ?? undefined,
-      source_path: candidate.source_path ?? undefined,
-      field_type: candidate.field_type ?? undefined,
-    });
-  }
-
-  function openMappingModal(
-    candidate?: TemplateFieldCandidate,
-    mapping?: TemplateFieldMapping,
-    mode: MappingModalMode = { type: "display" },
-  ) {
-    setMappingModalMode(mode);
-    setEditingMapping(mapping ?? null);
-    mappingForm.resetFields();
-    if (mapping) {
-      mappingForm.setFieldsValue({
-        selected_field_key: mapping.source_field_id || mapping.source_field_name,
-        standard_field: mapping.standard_field,
-        display_label: mapping.display_label ?? mapping.source_field_name,
-        source_field_name: mapping.source_field_name,
-        source_field_id: mapping.source_field_id ?? undefined,
-        source_path: mapping.source_path ?? undefined,
-        field_type: mapping.field_type ?? undefined,
-        show_in_list: mapping.show_in_list,
-        show_in_detail: mapping.show_in_detail,
-        is_required: mapping.is_required,
-        sort_order: mapping.sort_order,
-      });
-      setIsMappingModalOpen(true);
-      return;
-    }
-    mappingForm.setFieldsValue({
-      standard_field:
-        mode.type === "business"
-          ? mode.field.value
-          : candidate
-            ? `display:${candidate.source_field_id || candidate.source_field_name}`
-            : undefined,
-      display_label: mode.type === "business" ? mode.field.label : candidate?.source_field_name,
-      selected_field_key: candidate ? candidateKey(candidate) : undefined,
-      source_field_name: candidate?.source_field_name,
-      source_field_id: candidate?.source_field_id ?? undefined,
-      source_path: candidate?.source_path ?? undefined,
-      field_type: candidate?.field_type ?? undefined,
-      show_in_list: mode.type === "display",
-      show_in_detail: mode.type === "display",
-      is_required: mode.type === "business" ? Boolean(mode.field.required) : false,
-      sort_order: mode.type === "display" ? displayMappings.length : businessMappings.length,
-    });
-    setIsMappingModalOpen(true);
-  }
-
   async function saveBusinessFieldMapping(field: BusinessFieldOption, fieldKey?: string) {
     if (!selectedTemplate) return;
     const existing = businessMappings.find((item) => item.standard_field === field.value);
@@ -1154,7 +1133,7 @@ export default function DingTalkPage() {
       updateTemplateMappingStatus(selectedTemplate.id, "mapped");
       message.success(`${field.label}已更新`);
     } catch (error) {
-      setErrorMessage(dingtalkPageErrorMessage(error, "无法保存对账字段"));
+      setErrorMessage(dingtalkPageErrorMessage(error, "无法保存解析规则"));
     } finally {
       setIsLoading(false);
     }
@@ -1167,81 +1146,10 @@ export default function DingTalkPage() {
     try {
       await apiClient.dingtalk.deleteMapping(selectedTemplate.id, mapping.id);
       const nextMappings = await loadMappings(selectedTemplate);
-      updateTemplateMappingStatus(selectedTemplate.id, nextMappings.length ? "mapped" : "unmapped");
-      message.success("字段映射已删除");
+      updateTemplateMappingStatus(selectedTemplate.id, nextMappings.some(isBusinessMapping) ? "mapped" : "unmapped");
+      message.success("解析规则已删除");
     } catch (error) {
-      setErrorMessage(dingtalkPageErrorMessage(error, "无法删除字段映射"));
-    } finally {
-      setIsLoading(false);
-    }
-  }
-
-  async function moveMapping(mapping: TemplateFieldMapping, direction: "up" | "down") {
-    if (!selectedTemplate) return;
-    const currentIndex = displayMappings.findIndex((item) => item.id === mapping.id);
-    const targetIndex = direction === "up" ? currentIndex - 1 : currentIndex + 1;
-    if (currentIndex < 0 || targetIndex < 0 || targetIndex >= displayMappings.length) return;
-    const nextDisplayMappings = [...displayMappings];
-    [nextDisplayMappings[currentIndex], nextDisplayMappings[targetIndex]] = [
-      nextDisplayMappings[targetIndex],
-      nextDisplayMappings[currentIndex],
-    ];
-    const nextMappings = mappings.map((item) => {
-      const nextIndex = nextDisplayMappings.findIndex((displayItem) => displayItem.id === item.id);
-      return nextIndex >= 0 ? { ...item, sort_order: nextIndex } : item;
-    });
-    const payload = {
-      items: nextMappings.map((item, index) => ({
-        id: item.id,
-        sort_order: isDisplayMapping(item) ? item.sort_order : index + 1000,
-      })),
-    };
-    setMappings(nextMappings);
-    setIsLoading(true);
-    setErrorMessage(null);
-    try {
-      const ordered = await apiClient.dingtalk.reorderMappings(selectedTemplate.id, payload);
-      setMappings(ordered);
-      if (instanceTemplateFilterId === selectedTemplate.id) {
-        setInstanceDisplayMappings(ordered.filter(isDisplayMapping));
-      }
-    } catch (error) {
-      await loadMappings(selectedTemplate);
-      setErrorMessage(apiErrorMessage(error, "无法调整字段顺序"));
-    } finally {
-      setIsLoading(false);
-    }
-  }
-
-  async function submitMapping(values: MappingFormValues) {
-    if (!selectedTemplate) return;
-    const sourceKey = values.source_field_id || values.source_field_name;
-    const isBusinessField = BUSINESS_FIELD_SET.has(values.standard_field);
-    setIsLoading(true);
-    try {
-      const payload = {
-        ...values,
-        standard_field: isBusinessField ? values.standard_field : values.standard_field || `display:${sourceKey}`,
-        display_label: values.display_label || values.source_field_name,
-        show_in_detail: isBusinessField ? false : (values.show_in_detail ?? true),
-        show_in_list: isBusinessField ? false : true,
-        is_required: isBusinessField
-          ? Boolean(BUSINESS_FIELD_OPTIONS.find((item) => item.value === values.standard_field)?.required)
-          : false,
-      };
-      if (editingMapping) {
-        await apiClient.dingtalk.updateMapping(selectedTemplate.id, editingMapping.id, payload);
-      } else {
-        await apiClient.dingtalk.upsertMapping(selectedTemplate.id, payload);
-      }
-      setIsMappingModalOpen(false);
-      setEditingMapping(null);
-      setMappingModalMode({ type: "display" });
-      mappingForm.resetFields();
-      await loadMappings(selectedTemplate);
-      updateTemplateMappingStatus(selectedTemplate.id, "mapped");
-    } catch (error) {
-      setErrorMessage(dingtalkPageErrorMessage(error, "无法保存字段映射"));
+      setErrorMessage(dingtalkPageErrorMessage(error, "无法删除解析规则"));
     } finally {
       setIsLoading(false);
     }
@@ -1277,7 +1185,7 @@ export default function DingTalkPage() {
       setFieldCandidates(result.field_candidates);
       setSelectedInstance(null);
       setIsMappingDrawerOpen(true);
-      message.success("已用当前审批单生成字段候选");
+      message.success("已用当前审批单生成解析字段候选");
     } catch (error) {
       setErrorMessage(apiErrorMessage(error, "无法设置字段候选样例"));
     } finally {
@@ -1350,9 +1258,9 @@ export default function DingTalkPage() {
     { key: "process_code", title: "Process Code", dataIndex: "process_code" },
     {
       key: "mapping_status",
-      title: "映射状态",
+      title: "解析状态",
       dataIndex: "mapping_status",
-      render: (value) => (value === "mapped" ? <Tag color="green">已映射</Tag> : <Tag color="gold">未映射</Tag>),
+      render: (value) => (value === "mapped" ? <Tag color="green">已配置</Tag> : <Tag color="gold">未配置</Tag>),
     },
     {
       key: "is_enabled",
@@ -1384,7 +1292,7 @@ export default function DingTalkPage() {
       render: (_, record) => (
         <Space>
           <Button type="link" onClick={() => openMappingDrawer(record)}>
-            字段配置
+            解析规则
           </Button>
         </Space>
       ),
@@ -1468,39 +1376,6 @@ export default function DingTalkPage() {
         if (mapping) return <Tag color="green">已配置</Tag>;
         return <Tag color={record.required ? "red" : "default"}>{record.required ? "必填缺失" : "未配置"}</Tag>;
       },
-    },
-  ];
-
-  const mappingColumns: ColumnsType<TemplateFieldMapping> = [
-    { title: "顺序", width: 70, render: (_, __, index) => index + 1 },
-    { title: "钉钉字段", dataIndex: "source_field_name" },
-    { title: "显示名称", dataIndex: "display_label", render: (_, record) => mappingDisplayLabel(record) },
-    {
-      title: "字段样例",
-      render: (_, record) =>
-        selectedTemplateSampleInstance ? renderDingTalkValue(mappedDisplayValue(selectedTemplateSampleInstance, record)) : "-",
-    },
-    {
-      title: "操作",
-      width: 210,
-      render: (_, record, index) => (
-        <Space>
-          <Button size="small" disabled={index === 0} onClick={() => moveMapping(record, "up")}>
-            上移
-          </Button>
-          <Button size="small" disabled={index === displayMappings.length - 1} onClick={() => moveMapping(record, "down")}>
-            下移
-          </Button>
-          <Button size="small" onClick={() => openMappingModal(undefined, record)}>
-            编辑
-          </Button>
-          <Popconfirm title="删除这个字段映射？" onConfirm={() => deleteMapping(record)}>
-            <Button size="small" danger>
-              删除
-            </Button>
-          </Popconfirm>
-        </Space>
-      ),
     },
   ];
 
@@ -1589,7 +1464,6 @@ export default function DingTalkPage() {
       : []),
   ];
 
-  const listDisplayMappings = instanceTemplateFilterId ? instanceDisplayMappings : [];
   const instanceColumns: EnterpriseTableColumn<ApprovalInstance>[] = [
     {
       key: "approval_no",
@@ -1614,12 +1488,6 @@ export default function DingTalkPage() {
       onFilter: (value, record) => templateNameById.get(record.template_id) === value,
       render: (_, record) => templateNameById.get(record.template_id) || "-",
     },
-    ...listDisplayMappings.map((mapping): EnterpriseTableColumn<ApprovalInstance> => ({
-      title: mappingDisplayLabel(mapping),
-      key: `mapping-${mapping.id}`,
-      width: 160,
-      render: (_, record) => renderDingTalkValue(mappedDisplayValue(record, mapping)),
-    })),
     {
       key: "applicant_name",
       title: "申请人",
@@ -1696,6 +1564,8 @@ export default function DingTalkPage() {
 
       <Tabs
         className="sync-tabs"
+        activeKey={activeTabKey}
+        onChange={handleTabChange}
         items={[
           {
             key: "auto-sync",
@@ -1850,8 +1720,8 @@ export default function DingTalkPage() {
               >
                 <Space wrap className="dashboard-alert">
                   <Tag>本地模板 {templates.length}</Tag>
-                  <Tag color="green">已映射 {templates.filter((item) => item.mapping_status === "mapped").length}</Tag>
-                  <Tag color="gold">未映射 {templates.filter((item) => item.mapping_status !== "mapped").length}</Tag>
+                  <Tag color="green">已配置解析 {templates.filter((item) => item.mapping_status === "mapped").length}</Tag>
+                  <Tag color="gold">未配置解析 {templates.filter((item) => item.mapping_status !== "mapped").length}</Tag>
                   <Tag color="cyan">
                     上次同步 {config?.last_template_sync_at ? config.last_template_sync_at.replace("T", " ").slice(0, 16) : "尚未同步"}
                   </Tag>
@@ -1861,7 +1731,7 @@ export default function DingTalkPage() {
                   loading={isLoading}
                   columns={templateColumns}
                   dataSource={templates}
-                  pagination={{ pageSize: 12 }}
+                  pagination={{ defaultPageSize: 12, showSizeChanger: true }}
                   showDensityToggle
                   showColumnSettings
                   fixedColumns={{ left: ["name"], right: ["actions"] }}
@@ -1909,7 +1779,6 @@ export default function DingTalkPage() {
                         ).length
                       }
                     </Tag>
-                    {instanceTemplateFilter ? <Tag color="purple">显示字段 {instanceDisplayMappings.length}</Tag> : null}
                     <Tag color="blue">同步任务 {syncJobs.length}</Tag>
                     <Tag color="cyan">
                       上次同步 {config?.last_instance_sync_at ? config.last_instance_sync_at.replace("T", " ").slice(0, 16) : "尚未同步"}
@@ -1920,7 +1789,7 @@ export default function DingTalkPage() {
                     loading={isLoading}
                     columns={instanceColumns}
                     dataSource={displayedApprovalInstances}
-                    pagination={{ pageSize: 8 }}
+                    pagination={{ defaultPageSize: 8, showSizeChanger: true }}
                     showDensityToggle
                     showColumnSettings
                     fixedColumns={{ left: ["approval_no"], right: ["actions"] }}
@@ -1932,7 +1801,7 @@ export default function DingTalkPage() {
                     loading={isLoading}
                     columns={jobColumns}
                     dataSource={syncJobs}
-                    pagination={{ pageSize: 5 }}
+                    pagination={{ defaultPageSize: 5, showSizeChanger: true }}
                     showDensityToggle
                     showColumnSettings
                     fixedColumns={hasResumableSyncJob ? { right: ["actions"] } : undefined}
@@ -1945,7 +1814,7 @@ export default function DingTalkPage() {
       />
 
       <Drawer
-        title={selectedTemplate ? `${selectedTemplate.name} 模板字段配置` : "模板字段配置"}
+        title={selectedTemplate ? `${selectedTemplate.name} 解析规则` : "模板解析规则"}
         open={isMappingDrawerOpen}
         onClose={() => setIsMappingDrawerOpen(false)}
         width={1040}
@@ -1954,9 +1823,6 @@ export default function DingTalkPage() {
             <Button disabled={!selectedTemplate} onClick={syncTemplateSample} loading={isLoading}>
               刷新可选字段
             </Button>
-            <Button type="primary" disabled={!selectedTemplate} onClick={() => openMappingModal()}>
-              添加列表字段
-            </Button>
           </Space>
         }
       >
@@ -1964,12 +1830,12 @@ export default function DingTalkPage() {
           <Alert
             type="info"
             showIcon
-            message="先配置对账字段，再选择列表要展示的字段。"
-            description="金额、门店、业务日期会影响同步落库和银行流水匹配；列表字段只影响审批列表和对账选单时的展示。"
+            message="解析规则只用于把钉钉审批转换为系统审批支出明细。"
+            description="审批列表和审批详情始终展示钉钉原始同步数据；金额、门店、业务日期、明细表格和凭证字段会影响后续门店套帐、银行流水对账和报表统计。"
           />
           <Card
             size="small"
-            title="对账字段"
+            title="业务解析字段"
             extra={
               <Space size={8}>
                 <Tag color={fieldCandidates.length ? "blue" : "gold"}>可选字段 {fieldCandidates.length}</Tag>
@@ -1995,9 +1861,6 @@ export default function DingTalkPage() {
               pagination={false}
             />
           </Card>
-          <Card size="small" title="列表显示字段">
-            <Table rowKey="id" loading={isLoading} columns={mappingColumns} dataSource={displayMappings} pagination={false} />
-          </Card>
         </Space>
       </Drawer>
 
@@ -2010,7 +1873,7 @@ export default function DingTalkPage() {
             <Space>
               <Button onClick={() => setSelectedInstance(null)}>关闭</Button>
               <Button loading={isLoading} onClick={() => useSelectedInstanceAsFieldSample(selectedInstance)}>
-                用这条配置显示字段
+                用这条作为解析样例
               </Button>
             </Space>
           ) : null
@@ -2273,93 +2136,6 @@ export default function DingTalkPage() {
           </Form.Item>
           <Form.Item label="启用" name="is_enabled">
             <Switch />
-          </Form.Item>
-        </Form>
-      </Modal>
-      <Modal
-        title={
-          mappingModalMode.type === "business"
-            ? `${editingMapping ? "修改" : "配置"}业务字段：${mappingModalMode.field.label}`
-            : editingMapping
-              ? "编辑列表字段"
-              : "添加列表字段"
-        }
-        open={isMappingModalOpen}
-        onCancel={() => {
-          setIsMappingModalOpen(false);
-          setEditingMapping(null);
-          setMappingModalMode({ type: "display" });
-        }}
-        onOk={() => mappingForm.submit()}
-        confirmLoading={isLoading}
-        okButtonProps={{ disabled: !fieldCandidates.length }}
-        width={560}
-      >
-        <Form form={mappingForm} layout="vertical" onFinish={submitMapping}>
-          {!fieldCandidates.length ? (
-            <Alert
-              className="dashboard-alert"
-              type="warning"
-              showIcon
-              message="还没有可选择的钉钉字段"
-              description="字段必须从当前审批模板的真实审批数据解析出来。先刷新可选字段，成功后这里会变成下拉选择。"
-              action={
-                <Button size="small" type="primary" onClick={syncTemplateSample} loading={isLoading}>
-                  刷新可选字段
-                </Button>
-              }
-            />
-          ) : null}
-          <Form.Item name="selected_field_key" label="选择钉钉字段" rules={[{ required: true }]}>
-            <Select
-              showSearch
-              placeholder={fieldCandidates.length ? "选择这个模板里的钉钉字段" : "请先同步当前模板审批"}
-              optionLabelProp="fieldName"
-              filterOption={(input, option) =>
-                String(option?.searchText ?? "").toLowerCase().includes(input.toLowerCase())
-              }
-              disabled={!fieldCandidates.length}
-              onChange={applyFieldCandidate}
-              options={fieldCandidates.map((candidate) => ({
-                label: renderFieldCandidateOption(candidate),
-                fieldName: candidate.source_field_name,
-                searchText: fieldCandidateSearchText(candidate),
-                value: candidateKey(candidate),
-              }))}
-            />
-          </Form.Item>
-          <Form.Item name="display_label" label="显示名称" rules={[{ required: true }]}>
-            <Input
-              placeholder="例如：门店、金额、凭证"
-              disabled={mappingModalMode.type === "business"}
-            />
-          </Form.Item>
-          <Form.Item name="standard_field" hidden>
-            <Input />
-          </Form.Item>
-          <Form.Item name="source_field_name" hidden>
-            <Input />
-          </Form.Item>
-          <Form.Item name="source_field_id" hidden>
-            <Input />
-          </Form.Item>
-          <Form.Item name="source_path" hidden>
-            <Input />
-          </Form.Item>
-          <Form.Item name="field_type" hidden>
-            <Input />
-          </Form.Item>
-          <Form.Item name="show_in_list" hidden initialValue={true}>
-            <Input />
-          </Form.Item>
-          <Form.Item name="show_in_detail" hidden initialValue={true}>
-            <Input />
-          </Form.Item>
-          <Form.Item name="is_required" hidden initialValue={false}>
-            <Input />
-          </Form.Item>
-          <Form.Item name="sort_order" hidden initialValue={0}>
-            <Input />
           </Form.Item>
         </Form>
       </Modal>

@@ -81,7 +81,12 @@ AUTO_SYNC_INITIAL_APPROVAL_LOOKBACK_DAYS = 3650
 
 def template_mapping_status(session: Session, template_id: str) -> str:
     mapping_exists = session.scalar(
-        select(TemplateFieldMapping.id).where(TemplateFieldMapping.template_id == template_id).limit(1)
+        select(TemplateFieldMapping.id)
+        .where(
+            TemplateFieldMapping.template_id == template_id,
+            ~TemplateFieldMapping.standard_field.startswith("display:"),
+        )
+        .limit(1)
     )
     return "mapped" if mapping_exists else "unmapped"
 
@@ -3073,15 +3078,26 @@ def list_sync_jobs(
 def list_approval_instances(
     template_id: str | None = None,
     store_id: str | None = None,
+    ledger_period: str | None = None,
     page: int = 1,
     page_size: int = 50,
     session: Session = Depends(get_session),
 ) -> ApiEnvelope[Page[ApprovalInstanceRead]]:
-    query = select(ApprovalInstance).order_by(ApprovalInstance.created_at.desc())
+    query = select(ApprovalInstance).order_by(
+        ApprovalInstance.submit_at.desc().nullslast(),
+        ApprovalInstance.created_at.desc(),
+    )
     if template_id:
         query = query.where(ApprovalInstance.template_id == template_id)
     if store_id:
         query = query.where(ApprovalInstance.store_id == store_id)
+    if ledger_period:
+        period_start = datetime.strptime(f"{ledger_period}-01", "%Y-%m-%d")
+        next_month = period_start.replace(year=period_start.year + 1, month=1) if period_start.month == 12 else period_start.replace(month=period_start.month + 1)
+        query = query.where(
+            ApprovalInstance.submit_at >= period_start,
+            ApprovalInstance.submit_at < next_month,
+        )
     items, total = paginate(session, query, page, page_size)
     stats_by_approval_id = approval_expense_stats_map(session, [item.id for item in items])
     return ApiEnvelope(

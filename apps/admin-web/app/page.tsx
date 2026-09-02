@@ -35,6 +35,7 @@ import type {
   SyncJob,
 } from "@fin-hub/shared-types";
 import { apiClient } from "./lib/api";
+import { getStores } from "./lib/referenceData";
 import { AppShell } from "./components/AppShell";
 
 interface WorkbenchData {
@@ -178,30 +179,33 @@ export default function HomePage() {
     async function loadWorkbench() {
       setIsLoading(true);
       setErrorMessage(null);
-      try {
-        const [analytics, stores, syncJobs, recentMatches] = await Promise.all([
-          apiClient.reports.analytics(),
-          apiClient.stores.list("?page_size=500"),
-          apiClient.dingtalk.listSyncJobs("?page_size=5"),
-          apiClient.matches.reconciliationRecords("?status=confirmed&page_size=5"),
-        ]);
-        if (!ignore) {
-          setData({
-            analytics,
-            stores: stores.items,
-            syncJobs: syncJobs.items,
-            recentMatches: recentMatches.items,
-          });
-        }
-      } catch (error) {
-        if (!ignore) {
-          setData(emptyData);
-          setErrorMessage(error instanceof Error ? error.message : "无法加载工作台数据");
-        }
-      } finally {
-        if (!ignore) {
-          setIsLoading(false);
-        }
+      const errors: string[] = [];
+      const tasks = [
+        apiClient.reports.analytics()
+          .then((analytics) => {
+            if (!ignore) setData((current) => ({ ...current, analytics }));
+          })
+          .catch(() => errors.push("经营统计")),
+        getStores()
+          .then((stores) => {
+            if (!ignore) setData((current) => ({ ...current, stores }));
+          })
+          .catch(() => errors.push("门店")),
+        apiClient.dingtalk.listSyncJobs("?page_size=5")
+          .then((syncJobs) => {
+            if (!ignore) setData((current) => ({ ...current, syncJobs: syncJobs.items }));
+          })
+          .catch(() => errors.push("同步任务")),
+        apiClient.matches.reconciliationRecords("?status=confirmed&page_size=5")
+          .then((recentMatches) => {
+            if (!ignore) setData((current) => ({ ...current, recentMatches: recentMatches.items }));
+          })
+          .catch(() => errors.push("最近对账")),
+      ];
+      await Promise.allSettled(tasks);
+      if (!ignore) {
+        setIsLoading(false);
+        setErrorMessage(errors.length ? `${errors.join("、")}加载失败` : null);
       }
     }
 

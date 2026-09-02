@@ -3,7 +3,9 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 API_DIR="$ROOT_DIR/apps/api"
-DATABASE_URL_VALUE="${DATABASE_URL:-sqlite+pysqlite:///$API_DIR/data/dev.db}"
+DATABASE_URL_VALUE="${DATABASE_URL:-postgresql+psycopg://finhub:finhub@localhost:5432/finhub}"
+TEST_DATABASE_URL_VALUE="${TEST_DATABASE_URL:-postgresql+psycopg://finhub:finhub@localhost:5432/finhub}"
+TEST_DATABASE_SCHEMA_VALUE="${TEST_DATABASE_SCHEMA:-finhub_test}"
 API_BASE_URL="${API_BASE_URL:-http://localhost:8000}"
 ADMIN_BASE_URL="${ADMIN_BASE_URL:-http://localhost:3000}"
 RUN_SMOKE=false
@@ -43,10 +45,14 @@ step "Check local toolchain"
 require_command pnpm
 require_command curl
 require_command node
+require_command docker
 if ! command -v uv >/dev/null 2>&1; then
   echo "Missing required command: uv" >&2
   exit 1
 fi
+
+step "Start PostgreSQL and Redis"
+docker compose -f "$ROOT_DIR/infra/docker/docker-compose.yml" up -d postgres redis
 
 step "Install API dependencies"
 cd "$API_DIR"
@@ -59,10 +65,10 @@ step "Run API migrations"
 DATABASE_URL="$DATABASE_URL_VALUE" .venv/bin/alembic upgrade head
 
 step "Run API tests"
-DATABASE_URL="$DATABASE_URL_VALUE" .venv/bin/pytest tests
+TEST_DATABASE_URL="$TEST_DATABASE_URL_VALUE" TEST_DATABASE_SCHEMA="$TEST_DATABASE_SCHEMA_VALUE" .venv/bin/pytest tests
 
 step "Run API lint"
-DATABASE_URL="$DATABASE_URL_VALUE" .venv/bin/ruff check app tests --ignore B008,DTZ001,DTZ007,FLY002,I001,UP046
+.venv/bin/ruff check app tests --ignore B008,DTZ001,DTZ007,FLY002,I001,UP046
 
 cd "$ROOT_DIR"
 

@@ -4,10 +4,10 @@ FastAPI service for fin-hub.
 
 ## 本地开发
 
-推荐从仓库根目录启动本地 SQLite 版本：
+推荐从仓库根目录启动本地 PostgreSQL 版本：
 
 ```bash
-scripts/dev-api-sqlite.sh
+scripts/dev-api-postgres.sh
 ```
 
 手动启动：
@@ -15,9 +15,9 @@ scripts/dev-api-sqlite.sh
 ```bash
 uv venv --python python3.12 .venv
 .venv/bin/uv pip install -e ".[dev]"
-DATABASE_URL="sqlite+pysqlite:///./data/dev.db" .venv/bin/alembic upgrade head
-DATABASE_URL="sqlite+pysqlite:///./data/dev.db" .venv/bin/python -m app.dev_seed
-DATABASE_URL="sqlite+pysqlite:///./data/dev.db" .venv/bin/uvicorn app.main:app --reload --port 8000
+DATABASE_URL="postgresql+psycopg://finhub:finhub@localhost:5432/finhub" .venv/bin/alembic upgrade head
+DATABASE_URL="postgresql+psycopg://finhub:finhub@localhost:5432/finhub" .venv/bin/python -m app.dev_seed
+DATABASE_URL="postgresql+psycopg://finhub:finhub@localhost:5432/finhub" .venv/bin/uvicorn app.main:app --reload --port 8000
 ```
 
 默认开发账号：
@@ -46,7 +46,7 @@ apps/api/.venv/bin/pytest apps/api/tests
 - 报表汇总、明细、CSV 导出
 - 股东授权登录和报表鉴权
 - 操作日志
-- SQLite 数据库备份
+- PostgreSQL 备份策略状态
 
 ## 已实现 API 模块
 
@@ -72,7 +72,7 @@ apps/api/.venv/bin/pytest apps/api/tests
 
 ```bash
 cd apps/api
-DATABASE_URL="sqlite+pysqlite:///./data/dev.db" .venv/bin/alembic upgrade head
+DATABASE_URL="postgresql+psycopg://finhub:finhub@localhost:5432/finhub" .venv/bin/alembic upgrade head
 ```
 
 迁移文件位于：
@@ -87,5 +87,5 @@ Docker Compose 开发环境会在 API 容器启动时自动执行迁移，并在
 - 钉钉 App Secret 不通过 API 明文返回。
 - 后台写操作使用 Cookie 会话鉴权。
 - 股东小程序使用 Bearer Token，报表接口按授权门店过滤。
-- SQLite 备份文件包含完整业务数据和配置，不应外传。
+- PostgreSQL 备份文件包含完整业务数据和配置，不应外传。
 - PostgreSQL 生产环境建议使用 `pg_dump`、托管数据库快照或云厂商备份策略。

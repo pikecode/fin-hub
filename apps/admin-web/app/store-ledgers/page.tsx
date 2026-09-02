@@ -7,27 +7,35 @@ import {
   Card,
   Col,
   Empty,
+  Input,
   Row,
   Select,
   Space,
   Statistic,
-  Tag,
   Typography,
+  Spin,
 } from "antd";
 import {
   BankOutlined,
-  FileTextOutlined,
-  ReconciliationOutlined,
+  CalendarOutlined,
+  EnvironmentOutlined,
   RightOutlined,
+  SafetyCertificateOutlined,
   ShopOutlined,
-  WalletOutlined,
+  SearchOutlined,
+  DollarOutlined,
+  WarningOutlined,
+  CheckCircleOutlined,
+  ClockCircleOutlined,
 } from "@ant-design/icons";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import type { FinancialAnalyticsStoreItem, Ledger, Store } from "@fin-hub/shared-types";
-import { formatMoney } from "@fin-hub/shared-utils";
 import { AppShell } from "../components/AppShell";
+import { MoneyDisplay } from "../components/MoneyDisplay";
+import { StatusBadge } from "../components/StatusBadge";
 import { apiClient } from "../lib/api";
+import { getLedgers, getMyStores } from "../lib/referenceData";
 
 interface StoreLedgerCard {
   store: Store;
@@ -52,6 +60,7 @@ export default function StoreLedgersPage() {
   const [ledgers, setLedgers] = useState<Ledger[]>([]);
   const [analyticsStores, setAnalyticsStores] = useState<FinancialAnalyticsStoreItem[]>([]);
   const [statusFilter, setStatusFilter] = useState<"active" | "all">("active");
+  const [keyword, setKeyword] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
@@ -61,15 +70,24 @@ export default function StoreLedgersPage() {
       setIsLoading(true);
       setErrorMessage(null);
       try {
-        const [storePage, ledgerPage, analytics] = await Promise.all([
-          apiClient.auth.myStores(),
-          apiClient.ledgers.list("?page_size=500"),
-          apiClient.reports.analytics(),
+        const [storePage, ledgerPage] = await Promise.all([
+          getMyStores(),
+          getLedgers(),
         ]);
         if (!ignore) {
           setStores(storePage);
-          setLedgers(ledgerPage.items);
-          setAnalyticsStores(analytics.stores);
+          setLedgers(ledgerPage);
+          setIsLoading(false);
+        }
+        try {
+          const analytics = await apiClient.reports.analytics();
+          if (!ignore) {
+            setAnalyticsStores(analytics.stores);
+          }
+        } catch {
+          if (!ignore) {
+            setAnalyticsStores([]);
+          }
         }
       } catch (error) {
         if (!ignore) setErrorMessage(error instanceof Error ? error.message : "无法加载门店套帐");
@@ -87,106 +105,316 @@ export default function StoreLedgersPage() {
     () => new Map(analyticsStores.map((item) => [item.store_id, item])),
     [analyticsStores],
   );
+
   const cards: StoreLedgerCard[] = stores
     .filter((store) => statusFilter === "all" || store.status === "active")
+    .filter((store) => {
+      const value = keyword.trim().toLowerCase();
+      if (!value) return true;
+      return [store.name, store.address].filter(Boolean).some((text) => String(text).toLowerCase().includes(value));
+    })
     .map((store) => ({
       store,
       ledger: latestLedgerForStore(ledgers, store.id),
       analytics: analyticsByStoreId.get(store.id),
     }));
 
+  // 统计数据
+  const stats = useMemo(() => {
+    const totalStores = stores.filter((s) => s.status === "active").length;
+    const totalIncome = analyticsStores.reduce((sum, a) => sum + Number(a.income_amount || 0), 0);
+    const totalUnmatched = analyticsStores.reduce((sum, a) => sum + (a.unmatched_bank_count || 0), 0);
+    const totalPending = analyticsStores.reduce((sum, a) => sum + (a.pending_expense_count || 0), 0);
+
+    return {
+      totalStores,
+      totalIncome,
+      totalUnmatched,
+      totalPending,
+    };
+  }, [stores, analyticsStores]);
+
   return (
     <AppShell
-      title="门店套帐"
-      kicker="先选择门店，再进入该门店的银行流水、审批单、营业收入和对账管理"
+      title="门店账套"
+      kicker="STORE LEDGERS"
       action={
         <Space>
+          <Input
+            prefix={<SearchOutlined />}
+            allowClear
+            placeholder="搜索门店名称或地址"
+            value={keyword}
+            onChange={(event) => setKeyword(event.target.value)}
+            style={{ width: 240 }}
+          />
           <Select
             value={statusFilter}
+            style={{ width: 140 }}
             options={[
               { label: "仅启用门店", value: "active" },
               { label: "全部门店", value: "all" },
             ]}
             onChange={setStatusFilter}
           />
-          <Button onClick={() => router.push("/stores")}>维护门店资料</Button>
+          <Button onClick={() => router.push("/stores")}>门店管理</Button>
         </Space>
       }
     >
-      {errorMessage ? <Alert className="dashboard-alert" message={errorMessage} type="warning" showIcon /> : null}
-      <Card
-        className="store-ledger-entry-panel"
-        title="选择门店"
-        loading={isLoading}
-      >
-        {cards.length ? (
-          <Row gutter={[16, 16]}>
-            {cards.map(({ store, ledger, analytics }) => (
-              <Col key={store.id} xs={24} md={12} xl={8}>
-                <button
-                  type="button"
-                  className="store-ledger-card"
-                  onClick={() => router.push(storeLedgerPath(store.id, ledger?.period))}
-                >
-                  <div className="store-ledger-card__header">
-                    <span className="store-ledger-card__icon">
-                      <ShopOutlined />
-                    </span>
-                    <span className="store-ledger-card__title">
-                      <Typography.Text strong>{store.name}</Typography.Text>
-                      <Typography.Text type="secondary">{ledger?.period ?? "暂无账套"}</Typography.Text>
-                    </span>
-                    <RightOutlined />
-                  </div>
-                  <div className="store-ledger-card__status">
-                    <Tag color={store.status === "active" ? "green" : "default"}>
-                      {store.status === "active" ? "启用" : "停用"}
-                    </Tag>
-                    {ledger ? (
-                      <Tag color={ledger.status === "closed" ? "green" : "gold"}>
-                        {ledger.status === "closed" ? "已封账" : "做账中"}
-                      </Tag>
-                    ) : (
-                      <Tag>未建账套</Tag>
-                    )}
-                  </div>
-                  <Row gutter={12} className="store-ledger-card__metrics">
-                    <Col span={8}>
-                      <Statistic title="营业收入" value={formatMoney(analytics?.income_amount ?? 0)} />
-                    </Col>
-                    <Col span={8}>
-                      <Statistic title="未匹配流水" value={analytics?.unmatched_bank_count ?? 0} />
-                    </Col>
-                    <Col span={8}>
-                      <Statistic title="待付审批" value={analytics?.pending_expense_count ?? 0} />
-                    </Col>
-                  </Row>
-                  <div className="store-ledger-card__actions">
-                    <Badge status={(analytics?.unmatched_bank_count ?? 0) > 0 ? "warning" : "success"} />
-                    <span>进入门店套帐</span>
-                  </div>
-                </button>
-              </Col>
-            ))}
-          </Row>
-        ) : (
-          <Empty description="暂无可维护门店" />
+      <Space direction="vertical" size={24} style={{ width: "100%", display: "flex" }}>
+        {/* 统计卡片 */}
+        <Row gutter={16}>
+          <Col span={6}>
+            <Card>
+              <Statistic
+                title="启用门店"
+                value={stats.totalStores}
+                suffix="家"
+                prefix={<ShopOutlined style={{ color: "#14b8a6" }} />}
+                valueStyle={{ color: "#14b8a6" }}
+              />
+            </Card>
+          </Col>
+          <Col span={6}>
+            <Card>
+              <Statistic
+                title="本期总收入"
+                value={stats.totalIncome}
+                precision={2}
+                prefix={<DollarOutlined style={{ color: "#10b981" }} />}
+                valueStyle={{ color: "#10b981" }}
+              />
+            </Card>
+          </Col>
+          <Col span={6}>
+            <Card>
+              <Statistic
+                title="未匹配流水"
+                value={stats.totalUnmatched}
+                suffix="笔"
+                prefix={<WarningOutlined style={{ color: "#f59e0b" }} />}
+                valueStyle={{ color: stats.totalUnmatched > 0 ? "#f59e0b" : "#525252" }}
+              />
+            </Card>
+          </Col>
+          <Col span={6}>
+            <Card>
+              <Statistic
+                title="待付款项"
+                value={stats.totalPending}
+                suffix="笔"
+                prefix={<ClockCircleOutlined style={{ color: "#ef4444" }} />}
+                valueStyle={{ color: stats.totalPending > 0 ? "#ef4444" : "#525252" }}
+              />
+            </Card>
+          </Col>
+        </Row>
+
+        {errorMessage && (
+          <Alert message="加载失败" description={errorMessage} type="error" showIcon closable />
         )}
-      </Card>
-      <Row gutter={[16, 16]} className="store-ledger-module-strip">
-        <Col xs={24} md={6}>
-          <Card><Statistic prefix={<BankOutlined />} title="银行流水" value="导入 / 录入" /></Card>
-        </Col>
-        <Col xs={24} md={6}>
-          <Card><Statistic prefix={<FileTextOutlined />} title="审批单" value="同步 / 查看" /></Card>
-        </Col>
-        <Col xs={24} md={6}>
-          <Card><Statistic prefix={<ReconciliationOutlined />} title="对账" value="候选 / 确认" /></Card>
-        </Col>
-        <Col xs={24} md={6}>
-          <Card><Statistic prefix={<WalletOutlined />} title="营业收入" value="渠道 / 每日" /></Card>
-        </Col>
-      </Row>
+
+        {/* 门店卡片列表 */}
+        <Card
+          title={
+            <Space>
+              <ShopOutlined />
+              <span>门店列表</span>
+              <Badge count={cards.length} style={{ backgroundColor: "#14b8a6" }} />
+            </Space>
+          }
+          extra={
+            isLoading && (
+              <Space>
+                <Spin size="small" />
+                <Typography.Text type="secondary">加载中...</Typography.Text>
+              </Space>
+            )
+          }
+        >
+          {cards.length ? (
+            <Row gutter={[16, 16]}>
+              {cards.map(({ store, ledger, analytics }) => {
+                const hasIssues = (analytics?.unmatched_bank_count ?? 0) > 0 || (analytics?.pending_expense_count ?? 0) > 0;
+
+                return (
+                  <Col key={store.id} xs={24} sm={12} lg={8} xl={6}>
+                    <Card
+                      hoverable
+                      onClick={() => router.push(storeLedgerPath(store.id, ledger?.period))}
+                      style={{
+                        height: "100%",
+                        border: hasIssues ? "1px solid #fbbf24" : undefined,
+                      }}
+                      styles={{
+                        body: { padding: 20 },
+                      }}
+                    >
+                      {/* 顶部：门店信息 */}
+                      <Space direction="vertical" size={12} style={{ width: "100%" }}>
+                        <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
+                          <div
+                            style={{
+                              width: 48,
+                              height: 48,
+                              borderRadius: 8,
+                              background: "linear-gradient(135deg, #14b8a6 0%, #0d9488 100%)",
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              flexShrink: 0,
+                            }}
+                          >
+                            <ShopOutlined style={{ fontSize: 24, color: "white" }} />
+                          </div>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <Typography.Title
+                              level={5}
+                              style={{ margin: 0, marginBottom: 4 }}
+                              ellipsis
+                            >
+                              {store.name}
+                            </Typography.Title>
+                            <Typography.Text
+                              type="secondary"
+                              style={{ fontSize: 12 }}
+                              ellipsis
+                            >
+                              <EnvironmentOutlined /> {store.address || "未填写地址"}
+                            </Typography.Text>
+                          </div>
+                        </div>
+
+                        {/* 状态标签 */}
+                        <Space size={4} wrap>
+                          <StatusBadge
+                            status={store.status === "active" ? "active" : "inactive"}
+                          />
+                          {ledger ? (
+                            <Badge
+                              count={
+                                <Space size={4}>
+                                  <CalendarOutlined />
+                                  <span>{ledger.period}</span>
+                                </Space>
+                              }
+                              style={{
+                                backgroundColor: ledger.status === "closed" ? "#10b981" : "#f59e0b",
+                                fontSize: 12,
+                              }}
+                            />
+                          ) : (
+                            <Badge count="未建账套" style={{ backgroundColor: "#d1d5db" }} />
+                          )}
+                        </Space>
+
+                        {/* 分隔线 */}
+                        <div style={{ height: 1, background: "#f0f0f0", margin: "4px 0" }} />
+
+                        {/* 指标 */}
+                        <Space direction="vertical" size={8} style={{ width: "100%" }}>
+                          <div style={{ display: "flex", justifyContent: "space-between" }}>
+                            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                              本期收入
+                            </Typography.Text>
+                            <MoneyDisplay value={Number(analytics?.income_amount ?? 0)} />
+                          </div>
+                          <div style={{ display: "flex", justifyContent: "space-between" }}>
+                            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                              未匹配流水
+                            </Typography.Text>
+                            <Typography.Text
+                              strong
+                              style={{
+                                color: (analytics?.unmatched_bank_count ?? 0) > 0 ? "#f59e0b" : "#525252",
+                              }}
+                            >
+                              {analytics?.unmatched_bank_count ?? 0} 笔
+                            </Typography.Text>
+                          </div>
+                          <div style={{ display: "flex", justifyContent: "space-between" }}>
+                            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                              待付款项
+                            </Typography.Text>
+                            <Typography.Text
+                              strong
+                              style={{
+                                color: (analytics?.pending_expense_count ?? 0) > 0 ? "#ef4444" : "#525252",
+                              }}
+                            >
+                              {analytics?.pending_expense_count ?? 0} 笔
+                            </Typography.Text>
+                          </div>
+                        </Space>
+
+                        {/* 底部：操作区 */}
+                        <div
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "space-between",
+                            paddingTop: 8,
+                            borderTop: "1px solid #f0f0f0",
+                          }}
+                        >
+                          <Space size={4}>
+                            {ledger?.status === "closed" ? (
+                              <>
+                                <SafetyCertificateOutlined style={{ color: "#10b981" }} />
+                                <Typography.Text style={{ fontSize: 12, color: "#10b981" }}>
+                                  已封账
+                                </Typography.Text>
+                              </>
+                            ) : ledger ? (
+                              <>
+                                <ClockCircleOutlined style={{ color: "#f59e0b" }} />
+                                <Typography.Text style={{ fontSize: 12, color: "#f59e0b" }}>
+                                  做账中
+                                </Typography.Text>
+                              </>
+                            ) : (
+                              <>
+                                <WarningOutlined style={{ color: "#d1d5db" }} />
+                                <Typography.Text style={{ fontSize: 12, color: "#737373" }}>
+                                  待初始化
+                                </Typography.Text>
+                              </>
+                            )}
+                          </Space>
+
+                          <Space size={4} style={{ color: "#14b8a6", cursor: "pointer" }}>
+                            <BankOutlined />
+                            <Typography.Text style={{ fontSize: 12, color: "#14b8a6" }}>
+                              进入账套
+                            </Typography.Text>
+                            <RightOutlined style={{ fontSize: 10 }} />
+                          </Space>
+                        </div>
+                      </Space>
+                    </Card>
+                  </Col>
+                );
+              })}
+            </Row>
+          ) : isLoading ? (
+            <div style={{ textAlign: "center", padding: 48 }}>
+              <Spin size="large" />
+              <Typography.Text type="secondary" style={{ display: "block", marginTop: 16 }}>
+                加载门店数据...
+              </Typography.Text>
+            </div>
+          ) : (
+            <Empty
+              description="暂无门店数据"
+              image={Empty.PRESENTED_IMAGE_SIMPLE}
+            >
+              <Button type="primary" onClick={() => router.push("/stores")}>
+                添加门店
+              </Button>
+            </Empty>
+          )}
+        </Card>
+      </Space>
     </AppShell>
   );
 }

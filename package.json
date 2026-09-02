@@ -5,6 +5,8 @@
   "packageManager": "pnpm@10.30.1",
   "scripts": {
     "build:packages": "pnpm --filter @fin-hub/shared-types build && pnpm --filter @fin-hub/shared-utils build && pnpm --filter @fin-hub/shared-api-client build",
+    "dev": "scripts/dev.sh",
+    "dev:api": "scripts/dev-api-postgres.sh",
     "dev:admin": "pnpm --filter @fin-hub/admin-web dev",
     "dev:miniapp": "pnpm --filter @fin-hub/shareholder-miniapp dev:weapp",
     "build": "pnpm -r build",

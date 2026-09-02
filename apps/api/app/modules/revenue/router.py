@@ -4,7 +4,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.database import get_session
-from app.models import Ledger, LedgerStatus, MasterDataStatus, RevenueChannel, RevenueRecord, User
+from app.models import BankTransaction, Ledger, LedgerStatus, MasterDataStatus, RevenueBankMatch, RevenueChannel, RevenueRecord, User
 from app.modules.audit.service import write_audit_log
 from app.modules.auth.permissions import (
     ensure_permission,
@@ -246,3 +246,50 @@ def update_revenue_record(
         raise HTTPException(status_code=409, detail="Revenue record already exists") from exc
     session.refresh(record)
     return ApiEnvelope(data=record)
+
+
+@router.delete("/{record_id}", response_model=ApiEnvelope[RevenueRecordRead])
+def delete_revenue_record(
+    record_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> ApiEnvelope[RevenueRecordRead]:
+    ensure_permission(session, current_user, "revenue.manage")
+    record = session.get(RevenueRecord, record_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Revenue record not found")
+    ensure_store_access(session, current_user, record.store_id)
+    ensure_open_ledger(session, record.store_id, record.ledger_period)
+    existing_match = session.scalar(
+        select(RevenueBankMatch)
+        .join(BankTransaction, RevenueBankMatch.bank_transaction_id == BankTransaction.id)
+        .where(
+            BankTransaction.store_id == record.store_id,
+            BankTransaction.ledger_period == record.ledger_period,
+            RevenueBankMatch.channel == record.channel,
+            RevenueBankMatch.revenue_start_date <= record.revenue_date,
+            RevenueBankMatch.revenue_end_date >= record.revenue_date,
+            RevenueBankMatch.status != "rejected",
+        )
+        .limit(1)
+    )
+    if existing_match is not None:
+        raise HTTPException(status_code=409, detail="Revenue record already matched")
+
+    deleted = RevenueRecordRead.model_validate(record)
+    write_audit_log(
+        session,
+        actor=audit_actor(current_user),
+        action="revenue_record.delete",
+        resource_type="revenue_record",
+        resource_id=record.id,
+        summary=f"删除营业收入：{record.channel} {record.gross_amount}",
+        metadata={
+            "store_id": record.store_id,
+            "ledger_period": record.ledger_period,
+            "revenue_date": record.revenue_date,
+        },
+    )
+    session.delete(record)
+    session.commit()
+    return ApiEnvelope(data=deleted)

@@ -45,10 +45,10 @@ from app.schemas import (
 
 router = APIRouter(prefix="/bank-transactions", tags=["bank"])
 
-BANK_IMPORT_TEMPLATE_HEADERS = ["发生时间", "方向", "金额", "对方户名", "对方账号", "摘要", "流水号"]
+BANK_IMPORT_TEMPLATE_HEADERS = ["发生时间", "类型", "金额", "备注", "流水号"]
 BANK_IMPORT_TEMPLATE_ROWS = [
-    ["2026-08-20 10:00:00", "收入", "1200.00", "门店营业款", "1001", "营业款", "BANK-EXAMPLE-001"],
-    ["2026-08-21 11:30:00", "支出", "300.00", "物料供应商", "2002", "物料款", "BANK-EXAMPLE-002"],
+    ["2026-08-20 10:00:00", "收入", "1200.00", "营业款", "BANK-EXAMPLE-001"],
+    ["2026-08-21 11:30:00", "支出", "300.00", "物料款", "BANK-EXAMPLE-002"],
 ]
 
 
@@ -114,6 +114,8 @@ def create_bank_transaction(
     current_user: User = Depends(get_current_user),
 ) -> ApiEnvelope[BankTransactionRead]:
     ensure_permission(session, current_user, "reconciliation.manage")
+    if not payload.store_id:
+        raise HTTPException(status_code=422, detail="Store is required")
     ensure_store_access(session, current_user, payload.store_id)
     transaction = BankTransaction(**normalize_bank_assignment(session, payload))
     session.add(transaction)
@@ -216,6 +218,47 @@ def update_bank_transaction(
     return ApiEnvelope(data=transaction)
 
 
+@router.delete("/{transaction_id}", response_model=ApiEnvelope[BankTransactionRead])
+def delete_bank_transaction(
+    transaction_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> ApiEnvelope[BankTransactionRead]:
+    ensure_permission(session, current_user, "reconciliation.manage")
+    transaction = session.get(BankTransaction, transaction_id)
+    if transaction is None:
+        raise HTTPException(status_code=404, detail="Bank transaction not found")
+    ensure_store_access(session, current_user, transaction.store_id)
+    if Decimal(transaction.matched_amount or 0) > 0:
+        raise HTTPException(status_code=409, detail="Bank transaction already matched")
+    has_expense_match = session.scalar(
+        select(ExpenseBankMatch).where(ExpenseBankMatch.bank_transaction_id == transaction_id).limit(1)
+    )
+    has_revenue_match = session.scalar(
+        select(RevenueBankMatch).where(RevenueBankMatch.bank_transaction_id == transaction_id).limit(1)
+    )
+    if has_expense_match or has_revenue_match:
+        raise HTTPException(status_code=409, detail="Bank transaction already has match records")
+
+    deleted = BankTransactionRead.model_validate(transaction)
+    write_audit_log(
+        session,
+        actor=audit_actor(current_user),
+        action="bank_transaction.delete",
+        resource_type="bank_transaction",
+        resource_id=transaction.id,
+        summary=f"删除银行流水：{transaction.amount}",
+        metadata={
+            "store_id": transaction.store_id,
+            "ledger_period": transaction.ledger_period,
+            "direction": transaction.direction,
+        },
+    )
+    session.delete(transaction)
+    session.commit()
+    return ApiEnvelope(data=deleted)
+
+
 def pick(row: dict[str, str | None], *names: str) -> str:
     for name in names:
         value = row.get(name)
@@ -267,7 +310,7 @@ def parse_import_payload(row: dict[str, str | None], store_id: str | None, ledge
         "store_id": store_id,
         "ledger_period": ledger_period or (occurred_at.strftime("%Y-%m") if store_id else None),
         "occurred_at": occurred_at,
-        "direction": parse_direction(pick(row, "direction", "方向", "收支方向", "收入还是支出")),
+        "direction": parse_direction(pick(row, "direction", "方向", "类型", "收支方向", "收入还是支出")),
         "amount": Decimal(amount_text.replace(",", "")),
         "counterparty_name": pick(row, "counterparty_name", "对方户名", "交易对方") or None,
         "counterparty_account": pick(row, "counterparty_account", "对方账号") or None,
@@ -318,7 +361,7 @@ async def preview_bank_transactions_file(
     if ledger_period and not store_id:
         raise HTTPException(status_code=422, detail="Store is required when ledger period is provided")
     if store_id and ledger_period:
-        ensure_open_ledger(session, store_id, ledger_period)
+        ensure_open_or_create_ledger(session, store_id, ledger_period)
     content = await file.read()
 
     duplicate_count = 0
@@ -370,7 +413,7 @@ async def import_bank_transactions_file(
     if ledger_period and not store_id:
         raise HTTPException(status_code=422, detail="Store is required when ledger period is provided")
     if store_id and ledger_period:
-        ensure_open_ledger(session, store_id, ledger_period)
+        ensure_open_or_create_ledger(session, store_id, ledger_period)
     content = await file.read()
 
     job = SyncJob(

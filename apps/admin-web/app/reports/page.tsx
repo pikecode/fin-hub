@@ -1,5 +1,6 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import { Alert, Button, Card, DatePicker, Drawer, Empty, Form, Select, Space, Statistic, Table, Tabs, Tag } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import dayjs from "dayjs";
@@ -23,10 +24,21 @@ import type {
 } from "@fin-hub/shared-types";
 import { formatMoney, formatPeriod } from "@fin-hub/shared-utils";
 import { AppShell } from "../components/AppShell";
-import { CategoryPieChart } from "../components/CategoryPieChart";
-import { ComparisonBarChart } from "../components/ComparisonBarChart";
-import { TrendChart } from "../components/TrendChart";
 import { apiClient } from "../lib/api";
+import { getLedgers, getStores } from "../lib/referenceData";
+
+const TrendChart = dynamic(() => import("../components/TrendChart").then((module) => module.TrendChart), {
+  ssr: false,
+  loading: () => <Card loading style={{ minHeight: 340 }} />,
+});
+const CategoryPieChart = dynamic(() => import("../components/CategoryPieChart").then((module) => module.CategoryPieChart), {
+  ssr: false,
+  loading: () => <Card loading style={{ minHeight: 340 }} />,
+});
+const ComparisonBarChart = dynamic(() => import("../components/ComparisonBarChart").then((module) => module.ComparisonBarChart), {
+  ssr: false,
+  loading: () => <Card loading style={{ minHeight: 380 }} />,
+});
 
 interface ReportFilterValues {
   store_id?: string;
@@ -94,13 +106,13 @@ export default function ReportsPage() {
     setErrorMessage(null);
     try {
       const [storePage, ledgerPage, reportSummaries, report] = await Promise.all([
-        apiClient.stores.list("?page_size=500"),
-        apiClient.ledgers.list("?page_size=500"),
+        getStores(),
+        getLedgers(),
         apiClient.reports.storeSummaries(),
         apiClient.reports.analytics(),
       ]);
-      setStores(storePage.items);
-      setLedgers(ledgerPage.items);
+      setStores(storePage);
+      setLedgers(ledgerPage);
       setSummaries(reportSummaries);
       setAnalytics(report);
       if (reportSummaries[0]) {

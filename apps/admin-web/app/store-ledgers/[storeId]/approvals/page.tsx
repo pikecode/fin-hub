@@ -1,75 +1,250 @@
 "use client";
 
-import { Alert, Button, Card, Descriptions, Drawer, Empty, List, Space, Statistic, Table, Tag, Typography } from "antd";
-import type { ColumnsType } from "antd/es/table";
-import { useParams, useRouter } from "next/navigation";
+import { Alert, Button, Card, Descriptions, Drawer, Empty, Image, Input, Space, Table, Tag, Typography } from "antd";
+import { useParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
-import type { ApprovalInstance, Attachment, ExpenseItem, Ledger, ReconciliationRecord, Store } from "@fin-hub/shared-types";
-import { formatMoney } from "@fin-hub/shared-utils";
+import type { ApprovalInstance, ApprovalTemplate, Attachment, Ledger, Store } from "@fin-hub/shared-types";
 import { AppShell } from "../../../components/AppShell";
+import { EnterpriseTable } from "../../../components/EnterpriseTable";
+import type { EnterpriseTableColumn } from "../../../components/EnterpriseTable";
 import { StoreLedgerWorkspaceNav } from "../../../components/StoreLedgerWorkspaceNav";
 import { apiClient } from "../../../lib/api";
+import { getApprovalTemplates, getStoreLedgers, getStores } from "../../../lib/referenceData";
 import { useClientSearchParams } from "../../../lib/searchParams";
 
 function periodOfDate(value?: string | null) {
   return value ? value.slice(0, 7) : "";
 }
 
-function formatDateTime(value?: string | null) {
-  return value ? value.replace("T", " ").slice(0, 16) : "-";
+type DingTalkFormField = {
+  id?: string;
+  name?: string;
+  componentType?: string;
+  component_type?: string;
+  value?: unknown;
+};
+
+type DingTalkTableRow = Record<string, unknown>;
+
+function formatBeijingDateTime(value?: string | null) {
+  if (!value) return "-";
+  const normalized = value.endsWith("Z") ? value : `${value}Z`;
+  return new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  })
+    .format(new Date(normalized))
+    .replace(/\//g, "-");
 }
 
-function approvalTitle(instance: ApprovalInstance) {
-  return instance.approval_no || instance.dingtalk_instance_id;
-}
-
-function parseList(value?: string | null): string[] {
-  if (!value) return [];
+function approvalPayload(instance: ApprovalInstance) {
+  if (!instance.raw_payload) return null;
   try {
-    const decoded = JSON.parse(value);
-    return Array.isArray(decoded) ? decoded.map(String) : [];
+    return JSON.parse(instance.raw_payload) as Record<string, unknown>;
   } catch {
-    return [];
+    return null;
   }
 }
 
-function syncStatusColor(status?: string | null) {
-  if (!status || status === "none") return "green";
-  if (status.includes("removed") || status.includes("changed")) return "orange";
-  return "default";
+function approvalTitle(instance: ApprovalInstance) {
+  const payload = approvalPayload(instance);
+  const title = payload?.title ?? payload?.titleName;
+  if (typeof title === "string" && title) return title;
+  return instance.approval_no || instance.dingtalk_instance_id;
 }
 
-function paymentStatusLabel(status?: string | null) {
-  if (status === "paid") return "已付款";
-  if (status === "partial_paid") return "部分付款";
-  if (status === "no_bank_flow") return "无需银行流水";
-  return "未付款";
+function applicantDisplayName(instance: ApprovalInstance) {
+  if (instance.applicant_name) return instance.applicant_name;
+  const matched = approvalTitle(instance).match(/^(.+?)提交的/);
+  if (matched?.[1]) return matched[1];
+  return instance.applicant_user_id || "-";
 }
 
-function processingStatusTag(status?: string | null) {
-  if (status === "matched") return <Tag color="green">已匹配</Tag>;
-  if (status === "partial_matched") return <Tag color="blue">部分匹配</Tag>;
-  if (status === "pending_match") return <Tag color="orange">待匹配</Tag>;
-  if (status === "pending_classification") return <Tag color="gold">待分类</Tag>;
-  if (status === "sync_conflict") return <Tag color="red">同步待处理</Tag>;
-  return <Tag color="orange">未解析</Tag>;
+function approvalDepartmentName(instance: ApprovalInstance) {
+  if (instance.department_name) return instance.department_name;
+  const payload = approvalPayload(instance);
+  const directName = payload?.originator_dept_name ?? payload?.originatorDeptName;
+  if (typeof directName === "string" && directName) return directName;
+  const parsed = payload?._fin_hub_parse;
+  if (parsed && typeof parsed === "object") {
+    const parsedName = (parsed as Record<string, unknown>).originator_dept_name;
+    if (typeof parsedName === "string" && parsedName) return parsedName;
+  }
+  return "-";
+}
+
+function approvalStatusMeta(status: string) {
+  const normalized = status.toUpperCase();
+  const statusMap: Record<string, { label: string; color: string }> = {
+    APPROVED: { label: "已通过", color: "green" },
+    AGREE: { label: "已通过", color: "green" },
+    COMPLETED: { label: "已完成", color: "green" },
+    TERMINATED: { label: "已撤销", color: "gold" },
+    CANCELED: { label: "已取消", color: "default" },
+    CANCELLED: { label: "已取消", color: "default" },
+    REJECTED: { label: "已拒绝", color: "red" },
+    REFUSE: { label: "已拒绝", color: "red" },
+    REFUSED: { label: "已拒绝", color: "red" },
+    RUNNING: { label: "审批中", color: "blue" },
+    NEW: { label: "审批中", color: "blue" },
+  };
+  return statusMap[normalized] ?? { label: status || "-", color: "default" };
+}
+
+function parseDingTalkTableValue(value: unknown): DingTalkTableRow[] {
+  if (!value) return [];
+  if (typeof value === "string") {
+    try {
+      return parseDingTalkTableValue(JSON.parse(value));
+    } catch {
+      return [];
+    }
+  }
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((row) => {
+      if (!row || typeof row !== "object") return null;
+      const source = row as Record<string, unknown>;
+      const cells = source.rowValue ?? source.row_value ?? source.value;
+      if (!Array.isArray(cells)) return source;
+      const parsed: DingTalkTableRow = {};
+      cells.forEach((cell) => {
+        if (!cell || typeof cell !== "object") return;
+        const item = cell as Record<string, unknown>;
+        const label = item.label ?? item.name ?? item.title;
+        if (!label) return;
+        parsed[String(label)] = item.value ?? item.ext_value ?? item.extValue ?? "";
+      });
+      return parsed;
+    })
+    .filter((row): row is DingTalkTableRow => Boolean(row));
+}
+
+function parseUrlValues(value: unknown): string[] {
+  if (!value) return [];
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (/^https?:\/\//i.test(trimmed)) return [trimmed];
+    try {
+      return parseUrlValues(JSON.parse(trimmed));
+    } catch {
+      return [];
+    }
+  }
+  if (Array.isArray(value)) return value.flatMap((item) => parseUrlValues(item));
+  if (typeof value === "object") {
+    const source = value as Record<string, unknown>;
+    return parseUrlValues(source.url ?? source.downloadUrl ?? source.download_url);
+  }
+  return [];
+}
+
+function isImageUrl(value: string) {
+  return /\.(apng|avif|gif|jpe?g|png|webp)(\?.*)?$/i.test(value);
+}
+
+function isImageAttachment(attachment: Attachment) {
+  const contentType = attachment.content_type || "";
+  if (contentType.startsWith("image/")) return true;
+  return /\.(apng|avif|gif|jpe?g|png|webp)$/i.test(attachment.file_name);
+}
+
+function externalAttachmentUrl(attachment: Attachment) {
+  const value = attachment.external_file_id;
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value);
+    const url = parsed?.url ?? parsed?.downloadUrl ?? parsed?.download_url;
+    return typeof url === "string" && /^https?:\/\//i.test(url) ? url : null;
+  } catch {
+    return /^https?:\/\//i.test(value) ? value : null;
+  }
+}
+
+function renderDingTalkValue(value: unknown) {
+  const urls = parseUrlValues(value);
+  if (urls.length > 0) {
+    return (
+      <Space wrap size={8}>
+        {urls.map((url) =>
+          isImageUrl(url) ? (
+            <Image key={url} src={url} alt="报销凭证" width={72} height={96} style={{ objectFit: "cover", borderRadius: 4 }} />
+          ) : (
+            <Button key={url} size="small" href={url} target="_blank" rel="noreferrer">
+              打开链接
+            </Button>
+          ),
+        )}
+      </Space>
+    );
+  }
+  return (
+    <Typography.Text className="json-preview">
+      {typeof value === "string" ? value : JSON.stringify(value)}
+    </Typography.Text>
+  );
+}
+
+function fieldLabel(field: DingTalkFormField) {
+  return field.name || field.id || "字段";
+}
+
+function fieldValue(field: DingTalkFormField) {
+  return field.value ?? (field as Record<string, unknown>).ext_value ?? (field as Record<string, unknown>).extValue;
+}
+
+function payloadArray(payload: unknown, ...keys: string[]) {
+  if (!payload || typeof payload !== "object") return [];
+  const source = payload as Record<string, unknown>;
+  for (const key of keys) {
+    const value = source[key];
+    if (Array.isArray(value)) return value.filter((item) => item && typeof item === "object") as Record<string, unknown>[];
+  }
+  return [];
+}
+
+function operationTitle(record: Record<string, unknown>) {
+  return String(record.name ?? record.task_name ?? record.activity_name ?? record.type ?? "审批节点");
+}
+
+function operationActor(record: Record<string, unknown>) {
+  return String(record.user_name ?? record.userid ?? record.userId ?? record.operator ?? "-");
+}
+
+function operationAction(record: Record<string, unknown>) {
+  return String(record.action ?? record.result ?? record.status ?? "-");
+}
+
+function operationTime(record: Record<string, unknown>) {
+  const value = record.date ?? record.time ?? record.create_time ?? record.finish_time;
+  return value ? formatBeijingDateTime(String(value)) : "-";
+}
+
+function uniqueSelectOptions(values: Array<string | null | undefined>) {
+  return Array.from(new Set(values.filter((value): value is string => Boolean(value && value !== "-"))))
+    .sort((left, right) => left.localeCompare(right, "zh-CN"))
+    .map((value) => ({ text: value, value }));
 }
 
 export default function StoreLedgerApprovalsPage() {
   const params = useParams<{ storeId: string }>();
-  const router = useRouter();
   const searchParams = useClientSearchParams();
   const storeId = params.storeId;
   const [store, setStore] = useState<Store | null>(null);
   const [ledgers, setLedgers] = useState<Ledger[]>([]);
+  const [templates, setTemplates] = useState<ApprovalTemplate[]>([]);
   const [approvals, setApprovals] = useState<ApprovalInstance[]>([]);
-  const [matches, setMatches] = useState<ReconciliationRecord[]>([]);
   const [selectedApproval, setSelectedApproval] = useState<ApprovalInstance | null>(null);
-  const [detailExpenses, setDetailExpenses] = useState<ExpenseItem[]>([]);
   const [detailAttachments, setDetailAttachments] = useState<Attachment[]>([]);
-  const [isDetailLoading, setIsDetailLoading] = useState(false);
   const [selectedPeriod, setSelectedPeriod] = useState(searchParams.get("period") || "");
+  const [keyword, setKeyword] = useState("");
   const [isLoading, setIsLoading] = useState(true);
+  const [isApprovalLoading, setIsApprovalLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   useEffect(() => {
@@ -78,20 +253,17 @@ export default function StoreLedgerApprovalsPage() {
       setIsLoading(true);
       setErrorMessage(null);
       try {
-        const [storePage, ledgerPage, approvalPage, confirmedMatchPage, candidateMatchPage] = await Promise.all([
-          apiClient.stores.list("?page_size=500"),
-          apiClient.ledgers.list(`?store_id=${encodeURIComponent(storeId)}&page_size=200`),
-          apiClient.dingtalk.listApprovalInstances(`?store_id=${encodeURIComponent(storeId)}&page_size=500`),
-          apiClient.matches.reconciliationRecords(`?store_id=${encodeURIComponent(storeId)}&status=confirmed&page_size=200`),
-          apiClient.matches.reconciliationRecords(`?store_id=${encodeURIComponent(storeId)}&status=candidate&page_size=200`),
+        const [storePage, ledgerPage, templatePage] = await Promise.all([
+          getStores(),
+          getStoreLedgers(storeId),
+          getApprovalTemplates(500),
         ]);
         if (!ignore) {
-          const nextLedgers = ledgerPage.items.sort((left, right) => right.period.localeCompare(left.period));
-          setStore(storePage.items.find((item) => item.id === storeId) ?? null);
+          const nextLedgers = ledgerPage.sort((left, right) => right.period.localeCompare(left.period));
+          setStore(storePage.find((item) => item.id === storeId) ?? null);
           setLedgers(nextLedgers);
-          setApprovals(approvalPage.items);
-          setMatches([...confirmedMatchPage.items, ...candidateMatchPage.items]);
-          if (!selectedPeriod) setSelectedPeriod(nextLedgers[0]?.period ?? "");
+          setTemplates(templatePage);
+          setSelectedPeriod((current) => current || nextLedgers[0]?.period || "");
         }
       } catch (error) {
         if (!ignore) setErrorMessage(error instanceof Error ? error.message : "无法加载审批单");
@@ -103,156 +275,190 @@ export default function StoreLedgerApprovalsPage() {
     return () => {
       ignore = true;
     };
+  }, [storeId]);
+
+  useEffect(() => {
+    let ignore = false;
+    async function loadApprovals() {
+      if (!storeId) return;
+      setIsApprovalLoading(true);
+      setErrorMessage(null);
+      try {
+        const params = new URLSearchParams({ store_id: storeId, page_size: "500" });
+        if (selectedPeriod) params.set("ledger_period", selectedPeriod);
+        const approvalPage = await apiClient.dingtalk.listApprovalInstances(`?${params.toString()}`);
+        if (!ignore) {
+          setApprovals(approvalPage.items);
+        }
+      } catch (error) {
+        if (!ignore) setErrorMessage(error instanceof Error ? error.message : "无法加载审批单");
+      } finally {
+        if (!ignore) setIsApprovalLoading(false);
+      }
+    }
+    void loadApprovals();
+    return () => {
+      ignore = true;
+    };
   }, [selectedPeriod, storeId]);
 
   const periodOptions = useMemo(
     () => ledgers.map((ledger) => ({ label: ledger.period, value: ledger.period })),
     [ledgers],
   );
-  const filteredApprovals = selectedPeriod
-    ? approvals.filter((approval) => periodOfDate(approval.submit_at) === selectedPeriod)
-    : approvals;
-  const matchedAmountByExpenseId = useMemo(() => {
-    const map = new Map<string, number>();
-    for (const record of matches) {
-      const id = record.expense_item.id;
-      map.set(id, (map.get(id) ?? 0) + Number(record.match.amount || 0));
-    }
-    return map;
-  }, [matches]);
+  const templateNameById = useMemo(
+    () => new Map(templates.map((template) => [template.id, template.name])),
+    [templates],
+  );
+  const templateNameFilters = useMemo(
+    () => uniqueSelectOptions(approvals.map((approval) => templateNameById.get(approval.template_id))),
+    [approvals, templateNameById],
+  );
+  const applicantFilters = useMemo(
+    () => uniqueSelectOptions(approvals.map((approval) => applicantDisplayName(approval))),
+    [approvals],
+  );
+  const departmentFilters = useMemo(
+    () => uniqueSelectOptions(approvals.map((approval) => approvalDepartmentName(approval))),
+    [approvals],
+  );
+  const approvalStatusFilters = useMemo(
+    () => uniqueSelectOptions(approvals.map((approval) => approvalStatusMeta(approval.approval_status).label)),
+    [approvals],
+  );
+  const filteredApprovals = approvals
+    .filter((approval) => !selectedPeriod || periodOfDate(approval.submit_at) === selectedPeriod)
+    .filter((approval) => {
+      const value = keyword.trim().toLowerCase();
+      if (!value) return true;
+      return [
+        approval.approval_no,
+        approval.dingtalk_instance_id,
+        approval.applicant_name,
+        approval.applicant_user_id,
+        approval.department_name,
+        approval.approval_status,
+        approvalStatusMeta(approval.approval_status).label,
+        templateNameById.get(approval.template_id),
+      ].filter(Boolean).some((text) => String(text).toLowerCase().includes(value));
+    });
+  const selectedApprovalPayload = useMemo(() => {
+    return selectedApproval ? approvalPayload(selectedApproval) : null;
+  }, [selectedApproval]);
+  const selectedApprovalFields = useMemo<DingTalkFormField[]>(() => {
+    const fields = selectedApprovalPayload?.form_component_values ?? selectedApprovalPayload?.formComponentValues;
+    return Array.isArray(fields) ? fields.filter((item) => item && typeof item === "object") : [];
+  }, [selectedApprovalPayload]);
+  const selectedApprovalBasicFields = useMemo(() => {
+    return selectedApprovalFields.filter((field) => {
+      const componentType = field.componentType ?? field.component_type;
+      return componentType !== "TableField" && !parseDingTalkTableValue(fieldValue(field)).length;
+    });
+  }, [selectedApprovalFields]);
+  const selectedApprovalTables = useMemo(() => {
+    return selectedApprovalFields
+      .map((field) => ({
+        name: fieldLabel(field),
+        rows: parseDingTalkTableValue(fieldValue(field)),
+      }))
+      .filter((table) => table.rows.length > 0);
+  }, [selectedApprovalFields]);
+  const selectedApprovalOperations = useMemo(
+    () => payloadArray(selectedApprovalPayload, "operation_records", "operationRecords", "tasks", "task_list", "taskList"),
+    [selectedApprovalPayload],
+  );
 
   async function openApprovalDetail(approval: ApprovalInstance) {
     setSelectedApproval(approval);
-    setIsDetailLoading(true);
     try {
-      const [expensePage, attachmentPage] = await Promise.all([
-        apiClient.expenseItems.list(`?approval_instance_id=${encodeURIComponent(approval.id)}&page_size=200`),
-        apiClient.attachments.list(`?resource_type=approval_instance&resource_id=${encodeURIComponent(approval.id)}&page_size=100`),
-      ]);
-      setDetailExpenses(expensePage.items);
+      const attachmentPage = await apiClient.attachments.list(`?resource_type=approval_instance&resource_id=${encodeURIComponent(approval.id)}&page_size=100`);
       setDetailAttachments(attachmentPage.items);
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "无法加载审批单详情");
     } finally {
-      setIsDetailLoading(false);
     }
   }
 
-  function goReconciliation(approval?: ApprovalInstance | null) {
-    const params = new URLSearchParams();
-    params.set("store_id", storeId);
-    if (selectedPeriod) params.set("ledger_period", selectedPeriod);
-    const approvalNo = approval ? approval.approval_no || approval.dingtalk_instance_id : "";
-    if (approvalNo) params.set("approval_no", approvalNo);
-    router.push(`/finance/reconciliation?${params.toString()}`);
-  }
-
-  const columns: ColumnsType<ApprovalInstance> = [
-    { title: "审批编号", dataIndex: "approval_no", render: (value, record) => <Button type="link" onClick={() => openApprovalDetail(record)}>{value || record.dingtalk_instance_id}</Button> },
-    { title: "申请人", dataIndex: "applicant_name", render: (value) => value || "-" },
-    { title: "部门", dataIndex: "department_name", render: (value) => value || "-" },
+  const columns: EnterpriseTableColumn<ApprovalInstance>[] = [
     {
+      key: "approval_no",
+      title: "审批编号",
+      dataIndex: "approval_no",
+      width: 170,
+      ellipsis: true,
+      render: (value) =>
+        value ? (
+          <Typography.Text code ellipsis={{ tooltip: value }} className="approval-no-cell">
+            {value}
+          </Typography.Text>
+        ) : (
+          "-"
+        ),
+    },
+    {
+      key: "template_name",
+      title: "模板名称",
+      width: 180,
+      filters: templateNameFilters,
+      onFilter: (value, record) => templateNameById.get(record.template_id) === value,
+      render: (_, record) => templateNameById.get(record.template_id) || "-",
+    },
+    {
+      key: "applicant_name",
+      title: "申请人",
+      dataIndex: "applicant_name",
+      width: 150,
+      filters: applicantFilters,
+      onFilter: (value, record) => applicantDisplayName(record) === value,
+      render: (_, record) => (
+        <Space direction="vertical" size={0}>
+          <Typography.Text>{applicantDisplayName(record)}</Typography.Text>
+          {record.applicant_user_id ? (
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {record.applicant_user_id}
+            </Typography.Text>
+          ) : null}
+        </Space>
+      ),
+    },
+    {
+      key: "department_name",
+      title: "部门",
+      width: 220,
+      filters: departmentFilters,
+      onFilter: (value, record) => approvalDepartmentName(record) === value,
+      render: (_, record) => approvalDepartmentName(record),
+    },
+    {
+      key: "approval_status",
       title: "状态",
       dataIndex: "approval_status",
-      render: (value: string) => <Tag color={value?.toLowerCase?.().includes("reject") ? "red" : "green"}>{value || "-"}</Tag>,
-    },
-    {
-      title: "明细",
-      render: (_, record) => record.expense_item_count
-        ? `${record.classified_expense_item_count}/${record.expense_item_count} 已分类`
-        : "未解析",
-    },
-    {
-      title: "金额",
-      render: (_, record) => {
-        return (
-          <Space direction="vertical" size={0}>
-            <Typography.Text>{formatMoney(record.total_expense_amount)}</Typography.Text>
-            <Typography.Text type="secondary">已匹配 {formatMoney(record.confirmed_match_amount)}</Typography.Text>
-          </Space>
-        );
+      filters: approvalStatusFilters,
+      onFilter: (value, record) => approvalStatusMeta(record.approval_status).label === value,
+      render: (value: string) => {
+        const meta = approvalStatusMeta(value);
+        return <Tag color={meta.color}>{meta.label}</Tag>;
       },
     },
+    { key: "submit_at", title: "提交时间", dataIndex: "submit_at", render: (value) => value?.replace("T", " ").slice(0, 16) || "-" },
+    { key: "approved_at", title: "通过时间", dataIndex: "approved_at", render: (value) => value?.replace("T", " ").slice(0, 16) || "-" },
     {
-      title: "处理状态",
-      render: (_, record) => (
-        <Space direction="vertical" size={0}>
-          {processingStatusTag(record.processing_status)}
-          {record.candidate_match_count ? <Typography.Text type="secondary">候选 {record.candidate_match_count}</Typography.Text> : null}
-        </Space>
-      ),
-    },
-    { title: "提交时间", dataIndex: "submit_at", render: formatDateTime },
-    {
+      key: "actions",
       title: "操作",
-      width: 150,
+      fixed: "right",
+      width: 90,
+      className: "table-action-column",
       render: (_, record) => (
-        <Space>
-          <Button size="small" onClick={() => openApprovalDetail(record)}>详情</Button>
-          <Button size="small" type="primary" disabled={record.processing_status === "unparsed"} onClick={() => goReconciliation(record)}>去对账</Button>
-        </Space>
-      ),
-    },
-  ];
-  const detailExpenseColumns: ColumnsType<ExpenseItem> = [
-    { title: "行", dataIndex: "approval_line_no", width: 56, render: (value) => value || "-" },
-    { title: "来源", dataIndex: "approval_line_source_type", width: 96, render: (value) => <Tag>{value || "整单"}</Tag> },
-    { title: "摘要", dataIndex: "description" },
-    { title: "金额", dataIndex: "amount", width: 110, render: (value: string) => formatMoney(value) },
-    {
-      title: "分类",
-      width: 160,
-      render: (_, record) => record.category_l1 || record.category_l2 ? [record.category_l1, record.category_l2].filter(Boolean).join(" / ") : <Tag color="orange">待分类</Tag>,
-    },
-    {
-      title: "匹配",
-      width: 150,
-      render: (_, record) => (
-        <Space direction="vertical" size={0}>
-          <Tag color={record.payment_status === "paid" ? "green" : record.payment_status === "partial_paid" ? "blue" : "orange"}>
-            {paymentStatusLabel(record.payment_status)}
-          </Tag>
-          <Typography.Text type="secondary">{formatMoney(matchedAmountByExpenseId.get(record.id) ?? 0)}</Typography.Text>
-        </Space>
-      ),
-    },
-    {
-      title: "同步",
-      width: 120,
-      render: (_, record) => (
-        <Tag color={syncStatusColor(record.sync_conflict_status)}>
-          {record.sync_conflict_status && record.sync_conflict_status !== "none" ? record.sync_conflict_status : "正常"}
-        </Tag>
-      ),
-    },
-    {
-      title: "操作",
-      width: 96,
-      render: (_, record) => (
-        <Button
-          size="small"
-          type="link"
-          onClick={() => goReconciliation(selectedApproval)}
-          disabled={!record.approval_instance_id}
-        >
-          去对账
+        <Button type="link" onClick={() => openApprovalDetail(record)}>
+          详情
         </Button>
       ),
     },
   ];
-  const detailTotal = detailExpenses.reduce((sum, item) => sum + Number(item.amount || 0), 0);
-  const detailMatched = detailExpenses.reduce((sum, item) => sum + (matchedAmountByExpenseId.get(item.id) ?? 0), 0);
-
   return (
     <AppShell
       title={`${store?.name ?? "门店"}审批单管理`}
-      kicker={selectedPeriod ? `账期：${selectedPeriod}` : "按门店查看审批单"}
-      action={
-        <Space>
-          <Button onClick={() => goReconciliation()}>进入对账</Button>
-          <Button type="primary" onClick={() => router.push("/dingtalk")}>同步审批单</Button>
-        </Space>
-      }
+      kicker={selectedPeriod ? `账期：${selectedPeriod}，仅用于搜索和查看审批单` : "按门店搜索和查看审批单"}
     >
       <StoreLedgerWorkspaceNav
         storeId={storeId}
@@ -264,96 +470,190 @@ export default function StoreLedgerApprovalsPage() {
         onPeriodChange={setSelectedPeriod}
       />
       {errorMessage ? <Alert className="dashboard-alert" message={errorMessage} type="warning" showIcon /> : null}
-      <Card title="审批单列表" loading={isLoading}>
-        {filteredApprovals.length ? (
-          <Table
+      <Card
+        title="审批单列表"
+        loading={isLoading}
+        extra={
+          <Input.Search
+            allowClear
+            placeholder="搜索编号、模板、申请人、部门"
+            value={keyword}
+            onChange={(event) => setKeyword(event.target.value)}
+            style={{ width: 280 }}
+          />
+        }
+      >
+        {filteredApprovals.length || isApprovalLoading ? (
+          <EnterpriseTable<ApprovalInstance>
             rowKey="id"
+            loading={isLoading || isApprovalLoading}
             columns={columns}
             dataSource={filteredApprovals}
             onRow={(record) => ({ onDoubleClick: () => openApprovalDetail(record) })}
+            pagination={{ defaultPageSize: 8, showSizeChanger: true }}
+            showDensityToggle
+            showColumnSettings
+            fixedColumns={{ left: ["approval_no"], right: ["actions"] }}
           />
         ) : (
           <Empty description="当前门店账期暂无审批单" />
         )}
       </Card>
       <Drawer
-        title={selectedApproval ? `审批单详情：${approvalTitle(selectedApproval)}` : "审批单详情"}
+        title={selectedApproval ? approvalTitle(selectedApproval) || selectedApproval.approval_no || "审批实例详情" : "审批实例详情"}
         open={Boolean(selectedApproval)}
         onClose={() => setSelectedApproval(null)}
-        width={980}
+        extra={selectedApproval ? <Button onClick={() => setSelectedApproval(null)}>关闭</Button> : null}
+        width={1080}
+        className="dingtalk-approval-detail"
       >
         {selectedApproval ? (
-          <Space direction="vertical" size="middle" style={{ width: "100%" }}>
-            <Descriptions column={3} size="small" bordered>
-              <Descriptions.Item label="审批编号">{approvalTitle(selectedApproval)}</Descriptions.Item>
-              <Descriptions.Item label="申请人">{selectedApproval.applicant_name || "-"}</Descriptions.Item>
-              <Descriptions.Item label="部门">{selectedApproval.department_name || "-"}</Descriptions.Item>
-              <Descriptions.Item label="审批状态">{selectedApproval.approval_status}</Descriptions.Item>
-              <Descriptions.Item label="提交时间">{formatDateTime(selectedApproval.submit_at)}</Descriptions.Item>
-              <Descriptions.Item label="完成时间">{formatDateTime(selectedApproval.approved_at)}</Descriptions.Item>
-            </Descriptions>
-            <Space size="large" wrap>
-              <Statistic title="费用明细" value={detailExpenses.length} suffix="条" />
-              <Statistic title="审批金额" value={formatMoney(detailTotal)} />
-              <Statistic title="已匹配银行流水" value={formatMoney(detailMatched)} />
-              <Statistic title="未匹配金额" value={formatMoney(Math.max(detailTotal - detailMatched, 0))} />
-            </Space>
-            <Button type="primary" onClick={() => goReconciliation(selectedApproval)} disabled={!detailExpenses.length}>
-              去对账处理
-            </Button>
-            <Card title="费用明细" loading={isDetailLoading}>
-              <Table rowKey="id" columns={detailExpenseColumns} dataSource={detailExpenses} pagination={false} size="small" />
-            </Card>
-            <Card title="收款账户">
-              {detailExpenses[0] ? (
-                <Descriptions column={2} size="small">
-                  <Descriptions.Item label="收款人">{detailExpenses[0].payee_name || detailExpenses[0].payee_account || "-"}</Descriptions.Item>
-                  <Descriptions.Item label="银行">{detailExpenses[0].payee_bank_name || "-"}</Descriptions.Item>
-                  <Descriptions.Item label="支行/开户地">{detailExpenses[0].payee_bank_branch || "-"}</Descriptions.Item>
-                  <Descriptions.Item label="账号">{detailExpenses[0].payee_account_no || detailExpenses[0].payee_account || "-"}</Descriptions.Item>
-                  <Descriptions.Item label="账户类型">{detailExpenses[0].payee_account_type || "-"}</Descriptions.Item>
-                  <Descriptions.Item label="校验状态">{detailExpenses[0].payee_account_verify_status || "-"}</Descriptions.Item>
-                </Descriptions>
-              ) : (
-                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无收款账户信息" />
-              )}
-            </Card>
-            <Card title="审批单附件">
-              {detailAttachments.length ? (
-                <List
-                  dataSource={detailAttachments}
-                  renderItem={(item) => (
-                    <List.Item>
-                      <Space>
-                        <Typography.Text>{item.file_name}</Typography.Text>
-                        <Tag>{item.download_status}</Tag>
-                      </Space>
-                    </List.Item>
+          <Space direction="vertical" size={16} className="full-width">
+            <div className="dingtalk-approval-hero">
+              <div className="dingtalk-approval-hero__main">
+                <Space wrap size={8}>
+                  <Tag color={approvalStatusMeta(selectedApproval.approval_status).color}>
+                    {approvalStatusMeta(selectedApproval.approval_status).label}
+                  </Tag>
+                  <Tag>{templateNameById.get(selectedApproval.template_id) || "未知模板"}</Tag>
+                </Space>
+                <Typography.Title level={4}>
+                  {approvalTitle(selectedApproval) || selectedApproval.approval_no || selectedApproval.dingtalk_instance_id}
+                </Typography.Title>
+                <Space wrap className="dingtalk-approval-hero__meta">
+                  <span>申请人：{applicantDisplayName(selectedApproval)}</span>
+                  <span>部门：{approvalDepartmentName(selectedApproval)}</span>
+                  <span>提交：{formatBeijingDateTime(selectedApproval.submit_at)}</span>
+                  <span>完成：{formatBeijingDateTime(selectedApproval.approved_at)}</span>
+                </Space>
+              </div>
+            </div>
+
+            <div className="dingtalk-approval-layout">
+              <div className="dingtalk-approval-layout__main">
+                <Card size="small" title="审批详情">
+                  {selectedApprovalBasicFields.length ? (
+                    <div className="dingtalk-approval-field-list">
+                      {selectedApprovalBasicFields.map((field, index) => (
+                        <div className="dingtalk-approval-field" key={`${fieldLabel(field)}-${index}`}>
+                          <div className="dingtalk-approval-field__label">{fieldLabel(field)}</div>
+                          <div className="dingtalk-approval-field__value">{renderDingTalkValue(fieldValue(field))}</div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <Typography.Text type="secondary">暂无审批字段</Typography.Text>
                   )}
-                />
-              ) : (
-                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无附件" />
-              )}
-            </Card>
-            <Card title="人工编辑保护">
-              {detailExpenses.some((item) => parseList(item.user_edited_fields_json).length) ? (
-                <List
-                  dataSource={detailExpenses.filter((item) => parseList(item.user_edited_fields_json).length)}
-                  renderItem={(item) => (
-                    <List.Item>
-                      <Typography.Text>{item.description}：{parseList(item.user_edited_fields_json).join("、")}</Typography.Text>
-                    </List.Item>
+                </Card>
+
+                {selectedApprovalTables.map((table) => {
+                  const keys = Array.from(new Set(table.rows.flatMap((row) => Object.keys(row))));
+                  return (
+                    <Card size="small" title={table.name} key={table.name}>
+                      <Table
+                        size="small"
+                        rowKey={(_, index) => `${table.name}-${index}`}
+                        pagination={false}
+                        dataSource={table.rows}
+                        columns={keys.map((key) => ({
+                          title: key,
+                          dataIndex: key,
+                          render: renderDingTalkValue,
+                        }))}
+                      />
+                    </Card>
+                  );
+                })}
+
+                <Card size="small" title="报销凭证与附件">
+                  {detailAttachments.length ? (
+                    <div className="dingtalk-attachment-list">
+                      {detailAttachments.map((attachment) => {
+                        const sourceUrl = externalAttachmentUrl(attachment);
+                        const statusColor = attachment.download_status === "stored" ? "green" : attachment.download_status === "failed" ? "red" : "gold";
+                        const statusLabel = attachment.download_status === "stored" ? "已下载" : attachment.download_status === "failed" ? "失败" : "待下载";
+                        return (
+                          <div className="dingtalk-attachment-item" key={attachment.id}>
+                            <div className={`dingtalk-attachment-item__icon${isImageAttachment(attachment) ? " is-image" : ""}`}>
+                              {isImageAttachment(attachment) ? "图" : "文"}
+                            </div>
+                            <div className="dingtalk-attachment-item__main">
+                              <Typography.Text strong ellipsis={{ tooltip: attachment.file_name }}>
+                                {attachment.file_name || "钉钉凭证"}
+                              </Typography.Text>
+                              <Space size={6} wrap>
+                                <Tag color={statusColor}>{statusLabel}</Tag>
+                                {attachment.content_type ? <Typography.Text type="secondary">{attachment.content_type}</Typography.Text> : null}
+                              </Space>
+                            </div>
+                            {sourceUrl ? (
+                              <Button size="small" href={sourceUrl} target="_blank" rel="noreferrer">
+                                源链接
+                              </Button>
+                            ) : null}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <Typography.Text type="secondary">暂无附件</Typography.Text>
                   )}
-                />
-              ) : (
-                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无人工覆盖字段" />
-              )}
-            </Card>
+                </Card>
+
+                <Card size="small" title="原始数据">
+                  <pre className="json-block">
+                    {selectedApproval.raw_payload
+                      ? JSON.stringify(selectedApprovalPayload ?? selectedApproval.raw_payload, null, 2)
+                      : "-"}
+                  </pre>
+                </Card>
+              </div>
+
+              <div className="dingtalk-approval-layout__side">
+                <Card size="small" title="流程">
+                  {selectedApprovalOperations.length ? (
+                    <div className="dingtalk-flow-list">
+                      {selectedApprovalOperations.map((record, index) => (
+                        <div className="dingtalk-flow-item" key={`operation-${index}`}>
+                          <div className="dingtalk-flow-item__dot">{index + 1}</div>
+                          <div className="dingtalk-flow-item__body">
+                            <div className="dingtalk-flow-item__head">
+                              <Typography.Text strong>{operationTitle(record)}</Typography.Text>
+                              <Typography.Text type="secondary">{operationTime(record)}</Typography.Text>
+                            </div>
+                            <Typography.Text>{operationActor(record)}</Typography.Text>
+                            <Space size={6} wrap>
+                              <Tag color="blue">{operationAction(record)}</Tag>
+                              {record.remark || record.comment || record.reason ? (
+                                <Typography.Text type="secondary">
+                                  {String(record.remark ?? record.comment ?? record.reason)}
+                                </Typography.Text>
+                              ) : null}
+                            </Space>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <Typography.Text type="secondary">当前同步数据暂无流程记录</Typography.Text>
+                  )}
+                </Card>
+
+                <Card size="small" title="基础信息">
+                  <Descriptions size="small" column={1}>
+                    <Descriptions.Item label="审批编号">{selectedApproval.approval_no || "-"}</Descriptions.Item>
+                    <Descriptions.Item label="实例 ID">{selectedApproval.dingtalk_instance_id}</Descriptions.Item>
+                    <Descriptions.Item label="申请人 User ID">{selectedApproval.applicant_user_id || "-"}</Descriptions.Item>
+                  </Descriptions>
+                </Card>
+
+              </div>
+            </div>
           </Space>
         ) : null}
       </Drawer>
       <Typography.Paragraph type="secondary" className="store-ledger-page-note">
-        审批单按提交时间归入账期；审批数据来自钉钉同步，费用入账和对账在对账管理中完成。
+        审批单按提交时间归入账期；本页仅用于搜索、筛选和查看审批单详情。
       </Typography.Paragraph>
     </AppShell>
   );

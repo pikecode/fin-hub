@@ -7,7 +7,8 @@ import dayjs from "dayjs";
 export type FilterType = "text" | "select" | "date" | "dateRange" | "number" | "numberRange";
 
 export interface FilterConfig {
-  key: string;
+  key?: string;
+  name?: string;
   label: string;
   type: FilterType;
   placeholder?: string;
@@ -25,6 +26,7 @@ export interface SmartFilterBarProps {
   filters: FilterConfig[];
   value?: Record<string, any>;
   onChange?: (values: Record<string, any>) => void;
+  onFilter?: (values: Record<string, any>) => void;
   savedFilters?: SavedFilter[];
   onSaveFilter?: (name: string, values: Record<string, any>) => void;
   onLoadFilter?: (filter: SavedFilter) => void;
@@ -38,6 +40,7 @@ export function SmartFilterBar({
   filters,
   value = {},
   onChange,
+  onFilter,
   savedFilters = [],
   onSaveFilter,
   onLoadFilter,
@@ -60,7 +63,7 @@ export function SmartFilterBar({
     return Object.entries(localValues)
       .filter(([_, val]) => val !== undefined && val !== null && val !== "")
       .map(([key, val]) => {
-        const filter = filters.find((f) => f.key === key);
+        const filter = filters.find((f) => (f.name ?? f.key) === key);
         return {
           key,
           label: filter?.label || key,
@@ -87,6 +90,7 @@ export function SmartFilterBar({
     const newValues = { ...localValues, [key]: val };
     setLocalValues(newValues);
     onChange?.(newValues);
+    onFilter?.(newValues);
   }
 
   function handleRemoveFilter(key: string) {
@@ -94,11 +98,13 @@ export function SmartFilterBar({
     delete newValues[key];
     setLocalValues(newValues);
     onChange?.(newValues);
+    onFilter?.(newValues);
   }
 
   function handleClearAll() {
     setLocalValues({});
     onChange?.({});
+    onFilter?.({});
   }
 
   function handleSaveFilter() {
@@ -109,7 +115,8 @@ export function SmartFilterBar({
   }
 
   function renderFilterInput(filter: FilterConfig) {
-    const val = localValues[filter.key];
+    const filterKey = filter.name ?? filter.key ?? filter.label;
+    const val = localValues[filterKey];
 
     switch (filter.type) {
       case "select":
@@ -117,7 +124,7 @@ export function SmartFilterBar({
           <Select
             placeholder={filter.placeholder || `选择${filter.label}`}
             value={val}
-            onChange={(v) => handleFilterChange(filter.key, v)}
+            onChange={(v) => handleFilterChange(filterKey, v)}
             options={filter.options}
             allowClear
             style={{ minWidth: 150 }}
@@ -129,7 +136,7 @@ export function SmartFilterBar({
           <DatePicker
             placeholder={filter.placeholder || `选择${filter.label}`}
             value={val ? dayjs(val) : null}
-            onChange={(date) => handleFilterChange(filter.key, date?.toISOString())}
+            onChange={(date) => handleFilterChange(filterKey, date?.toISOString())}
             style={{ minWidth: 150 }}
           />
         );
@@ -141,7 +148,7 @@ export function SmartFilterBar({
             value={val ? [dayjs(val[0]), dayjs(val[1])] : null}
             onChange={(dates) =>
               handleFilterChange(
-                filter.key,
+                filterKey,
                 dates ? [dates[0]?.toISOString(), dates[1]?.toISOString()] : null
               )
             }
@@ -156,7 +163,7 @@ export function SmartFilterBar({
           <Input
             placeholder={filter.placeholder || `输入${filter.label}`}
             value={val}
-            onChange={(e) => handleFilterChange(filter.key, e.target.value)}
+            onChange={(e) => handleFilterChange(filterKey, e.target.value)}
             allowClear
             style={{ minWidth: 150 }}
           />
@@ -193,7 +200,7 @@ export function SmartFilterBar({
         {/* 快速筛选字段 */}
         <Space size={8} wrap>
           {quickFilters.map((filter) => (
-            <div key={filter.key} className="filter-input-wrapper">
+            <div key={filter.name ?? filter.key ?? filter.label} className="filter-input-wrapper">
               {renderFilterInput(filter)}
             </div>
           ))}
@@ -263,7 +270,13 @@ export function SmartFilterBar({
             <Button onClick={handleClearAll}>清空全部</Button>
             <Space>
               <Button onClick={() => setAdvancedOpen(false)}>取消</Button>
-              <Button type="primary" onClick={() => setAdvancedOpen(false)}>
+              <Button
+                type="primary"
+                onClick={() => {
+                  onFilter?.(localValues);
+                  setAdvancedOpen(false);
+                }}
+              >
                 应用筛选
               </Button>
             </Space>
@@ -272,7 +285,7 @@ export function SmartFilterBar({
       >
         <Space direction="vertical" size={16} style={{ width: "100%" }}>
           {advancedFilters.map((filter) => (
-            <div key={filter.key}>
+            <div key={filter.name ?? filter.key ?? filter.label}>
               <label style={{ display: "block", marginBottom: 8, fontWeight: 600, color: "#525252" }}>
                 {filter.label}
               </label>

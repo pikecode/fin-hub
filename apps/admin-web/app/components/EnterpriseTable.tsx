@@ -12,7 +12,8 @@ export interface BatchAction {
   label: string;
   icon?: any;
   danger?: boolean;
-  onClick: (selectedKeys: Key[], selectedRows: any[]) => void;
+  onClick?: (selectedKeys: Key[], selectedRows: any[]) => void;
+  onExecute?: (selectedKeys: Key[], selectedRows: any[]) => void;
 }
 
 export interface EnterpriseTableColumn<T> extends Omit<ColumnType<T>, "key"> {
@@ -36,6 +37,7 @@ export interface EnterpriseTableProps<T> extends Omit<TableProps<T>, "columns"> 
 
   // 导出
   exportable?: boolean;
+  exportFileName?: string;
   onExport?: (format: "csv" | "excel" | "json") => void;
 
   // 列设置
@@ -57,12 +59,14 @@ export function EnterpriseTable<T extends Record<string, any>>({
   onDensityChange,
   showDensityToggle = true,
   exportable = false,
+  exportFileName,
   onExport,
   showColumnSettings = false,
   fixedColumns,
   rowSelection,
   ...restProps
 }: EnterpriseTableProps<T>) {
+  void exportFileName;
   const tableDataSource = Array.from(dataSource as readonly T[]);
   const [selectedRowKeys, setSelectedRowKeys] = useState<Key[]>([]);
   const [selectedRows, setSelectedRows] = useState<T[]>([]);
@@ -167,7 +171,7 @@ export function EnterpriseTable<T extends Record<string, any>>({
       icon: action.icon,
       danger: action.danger,
       onClick: () => {
-        action.onClick(selectedRowKeys, selectedRows);
+        (action.onExecute ?? action.onClick)?.(selectedRowKeys, selectedRows);
       },
     })),
   };
@@ -281,7 +285,7 @@ export function EnterpriseTable<T extends Record<string, any>>({
                 <Button
                   key={action.key}
                   icon={action.icon}
-                  onClick={() => action.onClick(selectedRowKeys, selectedRows)}
+                  onClick={() => (action.onExecute ?? action.onClick)?.(selectedRowKeys, selectedRows)}
                   danger={action.danger}
                 >
                   {action.label}

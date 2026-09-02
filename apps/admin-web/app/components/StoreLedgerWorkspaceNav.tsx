@@ -11,9 +11,9 @@ import {
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import type { Store } from "@fin-hub/shared-types";
-import { apiClient } from "../lib/api";
+import { getMyStores } from "../lib/referenceData";
 
-type StoreLedgerTabKey = "overview" | "bank" | "approvals" | "revenue" | "matching";
+type StoreLedgerTabKey = "overview" | "bank" | "approvals" | "revenue" | "revenueMatching" | "matching";
 
 interface StoreLedgerWorkspaceNavProps {
   storeId: string;
@@ -32,6 +32,7 @@ const tabItems: Array<{ key: StoreLedgerTabKey; label: string; icon: any }> = [
   { key: "bank", label: "银行流水", icon: <BankOutlined /> },
   { key: "approvals", label: "审批单", icon: <FileTextOutlined /> },
   { key: "revenue", label: "营业收入", icon: <WalletOutlined /> },
+  { key: "revenueMatching", label: "收入对账", icon: <ReconciliationOutlined /> },
   { key: "matching", label: "对账管理", icon: <ReconciliationOutlined /> },
 ];
 
@@ -54,6 +55,11 @@ function modulePath(storeId: string, key: StoreLedgerTabKey, period?: string) {
     const query = new URLSearchParams({ store_id: storeId });
     if (period) query.set("ledger_period", period);
     return `/finance/reconciliation?${query.toString()}`;
+  }
+  if (key === "revenueMatching") {
+    const query = new URLSearchParams({ store_id: storeId });
+    if (period) query.set("ledger_period", period);
+    return `/finance/revenue-reconciliation?${query.toString()}`;
   }
   const params = period ? `?period=${encodeURIComponent(period)}` : "";
   return `/store-ledgers/${storeId}/approvals${params}`;
@@ -81,7 +87,7 @@ export function StoreLedgerWorkspaceNav({
   useEffect(() => {
     let ignore = false;
     setIsStoreLoading(true);
-    apiClient.auth.myStores()
+    getMyStores()
       .then((items) => {
         if (!ignore) setStores(items);
       })

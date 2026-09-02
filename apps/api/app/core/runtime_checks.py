@@ -25,18 +25,19 @@ def is_localhost_origin(origin: str) -> bool:
     return "localhost" in origin or "127.0.0.1" in origin
 
 
-def production_startup_errors() -> list[str]:
-    if not is_production_environment():
-        return []
-
+def startup_errors() -> list[str]:
     errors: list[str] = []
     try:
         database_backend = make_url(settings.database_url).get_backend_name()
     except ArgumentError:
         errors.append("DATABASE_URL 格式无效")
         database_backend = ""
-    if database_backend == "sqlite":
-        errors.append("生产环境不能使用 SQLite 数据库")
+    if database_backend and database_backend != "postgresql":
+        errors.append("系统仅支持 PostgreSQL 数据库")
+
+    if not is_production_environment():
+        return errors
+
     if is_weak_secret():
         errors.append("生产环境 SECRET_KEY 必须设置为至少 32 位强随机值")
 
@@ -54,8 +55,11 @@ def production_startup_errors() -> list[str]:
     return errors
 
 
+def production_startup_errors() -> list[str]:
+    return startup_errors()
+
+
 def validate_production_startup() -> None:
-    errors = production_startup_errors()
+    errors = startup_errors()
     if errors:
-        detail = "; ".join(errors)
-        raise RuntimeError(f"生产启动配置检查失败：{detail}")
+        raise RuntimeError(f"启动配置检查失败：{'; '.join(errors)}")

@@ -296,6 +296,10 @@ export function createApiClient(options: ApiClientOptions) {
           method: "PATCH",
           body: JSON.stringify(payload),
         }),
+      delete: (id: string) =>
+        request<RevenueRecord>(`/api/revenue-records/${id}`, {
+          method: "DELETE",
+        }),
     },
     attachments: {
       list: (params = "") => request<Page<Attachment>>(`/api/attachments${params}`),
@@ -325,6 +329,10 @@ export function createApiClient(options: ApiClientOptions) {
         request<BankTransaction>(`/api/bank-transactions/${id}`, {
           method: "PATCH",
           body: JSON.stringify(payload),
+        }),
+      delete: (id: string) =>
+        request<BankTransaction>(`/api/bank-transactions/${id}`, {
+          method: "DELETE",
         }),
       importFile: (payload: FormData) =>
         request<BankImportResult>("/api/bank-transactions/import", {
@@ -395,6 +403,10 @@ export function createApiClient(options: ApiClientOptions) {
         }),
       rejectRevenue: (id: string) =>
         request<RevenueBankMatch>(`/api/matches/revenue/${id}/reject`, {
+          method: "POST",
+        }),
+      unmatchRevenue: (id: string) =>
+        request<RevenueBankMatch>(`/api/matches/revenue/${id}/unmatch`, {
           method: "POST",
         }),
     },

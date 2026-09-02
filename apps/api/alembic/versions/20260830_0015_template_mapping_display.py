@@ -32,9 +32,8 @@ def upgrade() -> None:
     if "show_in_detail" not in existing_columns:
         op.add_column("template_field_mappings", sa.Column("show_in_detail", sa.Boolean(), nullable=False, server_default=sa.true()))
 
-    if op.get_context().dialect.name != "sqlite":
-        op.alter_column("template_field_mappings", "show_in_list", server_default=None)
-        op.alter_column("template_field_mappings", "show_in_detail", server_default=None)
+    op.alter_column("template_field_mappings", "show_in_list", server_default=None)
+    op.alter_column("template_field_mappings", "show_in_detail", server_default=None)
 
 
 def downgrade() -> None:

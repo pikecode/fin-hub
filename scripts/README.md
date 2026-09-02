@@ -2,29 +2,63 @@
 
 ## 本地开发
 
-### `dev-api-sqlite.sh`
+### `dev.sh`
 
-启动本地 SQLite 版 API：
+一键启动本地 API 和后台：
 
 ```bash
-scripts/dev-api-sqlite.sh
+scripts/dev.sh
+```
+
+也可以使用：
+
+```bash
+pnpm dev
 ```
 
 脚本会执行：
 
+- 启动 API 到 `http://localhost:8000`。
+- 启动后台到 `http://localhost:3000`。
+- 输出日志到 `/tmp/fin-hub-api.log` 和 `/tmp/fin-hub-admin-web.log`。
+
+### `dev-api-postgres.sh`
+
+启动本地 PostgreSQL 版 API：
+
+```bash
+scripts/dev-api-postgres.sh
+```
+
+脚本会执行：
+
+- 通过 Docker Compose 启动 PostgreSQL 和 Redis，除非设置 `START_DOCKER_INFRA=false`。
 - 创建 `apps/api/.venv`，如果尚不存在。
 - 安装 API 依赖。
 - 执行 Alembic 迁移。
 - 写入开发样例数据。
 - 启动 `uvicorn` 到 `http://localhost:8000`。
 
-默认数据库：
+默认数据库连接：
 
 ```text
-apps/api/data/dev.db
+postgresql+psycopg://finhub:finhub@localhost:5432/finhub
 ```
 
 可通过 `DATABASE_URL` 覆盖。
+
+## 生产部署
+
+### `deploy-prod.sh`
+
+在服务器上构建并启动生产环境：
+
+```bash
+cp .env.production.example .env.production
+scripts/deploy-prod.sh
+```
+
+脚本会检查 Docker、`.env.production` 必填变量，构建生产镜像，并通过 `infra/docker/docker-compose.prod.yml` 启动 PostgreSQL、Redis、API、后台管理端和 Nginx。
 
 ## 交付验收
 
@@ -38,7 +72,8 @@ scripts/preflight.sh
 
 脚本会执行：
 
-- 检查 `pnpm`、`curl`、`node`、`uv`。
+- 检查 `pnpm`、`curl`、`node`、`docker`、`uv`。
+- 启动 PostgreSQL 和 Redis。
 - 安装 API 依赖。
 - 执行 Alembic 迁移。
 - 运行 API 全量测试和 ruff。
@@ -106,4 +141,4 @@ reports/diagnostics/fin-hub-diagnostics-YYYYMMDDHHMMSS.tar.gz
 
 ## 后续可补
 
-- 旧 SQLite 数据迁移脚本。
+- 旧系统数据迁移脚本。

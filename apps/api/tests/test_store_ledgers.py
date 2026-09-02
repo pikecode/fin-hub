@@ -3,7 +3,7 @@ from datetime import datetime
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from app.models import ApprovalInstance
+from app.models import ApprovalInstance, ApprovalTemplate
 
 
 def test_store_ledger_workspace_returns_period_metrics(client: TestClient, session: Session) -> None:
@@ -42,6 +42,14 @@ def test_store_ledger_workspace_returns_period_metrics(client: TestClient, sessi
             "amount": "98.00",
         },
     )
+    session.add(
+        ApprovalTemplate(
+            id="template-workspace",
+            process_code="PROC-WORKSPACE",
+            name="套帐聚合测试模板",
+        )
+    )
+    session.commit()
     session.add(
         ApprovalInstance(
             template_id="template-workspace",

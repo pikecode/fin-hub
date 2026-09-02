@@ -27,8 +27,7 @@ def upgrade() -> None:
             "expense_bank_matches",
             sa.Column("bank_occurred", sa.Boolean(), nullable=False, server_default=sa.true()),
         )
-    if op.get_context().dialect.name != "sqlite":
-        op.alter_column("expense_bank_matches", "bank_occurred", server_default=None)
+    op.alter_column("expense_bank_matches", "bank_occurred", server_default=None)
 
 
 def downgrade() -> None:

@@ -15,7 +15,7 @@
 - 查看钉钉 Corp ID、App Key、App Secret 配置状态。
 - 查看管理员 User ID、钉盘 Union ID、同步状态。
 - 查看数据库类型和备份能力。
-- 下载 SQLite 数据库备份。
+- 展示 PostgreSQL 备份策略。
 - 展示 API、生产就绪状态、钉钉配置、文件存储、密钥、跨域和数据库等交付检查项。
 
 ## API
@@ -28,7 +28,7 @@
 
 - `GET /api/system/readiness`
 - `GET /api/system/database-backup/status`
-- `GET /api/system/database-backup/download`
+- `GET /api/system/database-backup/download`：保留兼容入口，统一返回 409 并提示使用 PostgreSQL 原生备份。
 
 权限：
 
@@ -44,7 +44,7 @@
 
 当前检查项：
 
-- 数据库：生产环境使用 SQLite 为阻断项。
+- 数据库：非 PostgreSQL 为阻断项。
 - 服务端密钥：`SECRET_KEY` 使用默认值或长度小于 32 为阻断项。
 - 跨域来源：生产环境 `CORS_ORIGINS` 包含 localhost 为阻断项。
 - 文件存储：`FILE_STORAGE_ROOT` 父目录不存在为阻断项。
@@ -54,19 +54,13 @@
 
 当前支持：
 
-- SQLite 文件数据库。
-
-导出方式：
-
-- 使用 SQLite 原生 backup API 复制在线数据库。
-- 备份文件写入 `FILE_STORAGE_ROOT/database-backups/`。
-- 下载接口返回 `.db` 文件。
-- 导出动作写入审计日志：`system.database_backup.download`。
+- 展示 PostgreSQL 数据库类型。
+- 提示使用 `pg_dump`、托管数据库快照或云厂商备份策略。
 
 当前不支持：
 
-- SQLite 内存数据库。
-- PostgreSQL 后台直连导出。
+- 后台直连导出数据库。
+- 在应用进程内生成数据库备份文件。
 
 PostgreSQL 生产环境建议：
 
@@ -78,4 +72,4 @@ PostgreSQL 生产环境建议：
 - 备份文件包含完整业务数据和配置数据，不应外传。
 - 钉钉 App Secret 不在后台页面和 API 响应中回显。
 - 生产环境应使用服务端环境变量或 KMS/Secret Manager 保存密钥。
-- 下载数据库备份需要后台管理员登录态。
+- 数据库备份状态和兼容下载入口需要后台管理员登录态。

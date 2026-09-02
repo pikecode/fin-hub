@@ -9,6 +9,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.core.database import SessionLocal
 from app.core.runtime_checks import validate_production_startup
+from app.middleware.rate_limit import create_rate_limit_middleware
+from app.middleware.security_headers import create_security_headers_middleware
 from app.modules.attachments.router import router as attachments_router
 from app.modules.audit.router import router as audit_router
 from app.modules.auth.router import router as auth_router
@@ -67,6 +69,14 @@ def create_app() -> FastAPI:
         openapi_url="/openapi.json",
         lifespan=lifespan,
     )
+
+    # 安全响应头
+    enable_hsts = settings.app_env in {"production", "prod"}
+    app.add_middleware(create_security_headers_middleware(enable_hsts=enable_hsts))
+
+    # 限流中间件（敏感路径更严格）
+    app.add_middleware(create_rate_limit_middleware(requests_per_minute=120))
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,

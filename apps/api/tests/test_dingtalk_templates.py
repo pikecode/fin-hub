@@ -181,6 +181,41 @@ def test_list_approval_instances_filters_by_store(client: TestClient, session) -
     assert [item["store_id"] for item in items] == [store_a]
 
 
+def test_list_approval_instances_orders_by_submit_time_desc(client: TestClient, session) -> None:
+    store_id = client.post("/api/stores", json={"name": "蘑说审批排序店"}).json()["data"]["id"]
+    template_id = client.post(
+        "/api/dingtalk/templates",
+        json={"process_code": "PROC-APPROVAL-SORT", "name": "审批排序模板", "is_enabled": True},
+    ).json()["data"]["id"]
+    session.add_all(
+        [
+            ApprovalInstance(
+                template_id=template_id,
+                dingtalk_instance_id="approval-sort-old",
+                approval_no="SORT-OLD",
+                approval_status="approved",
+                store_id=store_id,
+                submit_at=datetime(2026, 8, 1, 10, 0, 0),
+            ),
+            ApprovalInstance(
+                template_id=template_id,
+                dingtalk_instance_id="approval-sort-new",
+                approval_no="SORT-NEW",
+                approval_status="approved",
+                store_id=store_id,
+                submit_at=datetime(2026, 8, 2, 10, 0, 0),
+            ),
+        ]
+    )
+    session.commit()
+
+    response = client.get(f"/api/dingtalk/approval-instances?store_id={store_id}&page_size=20")
+
+    assert response.status_code == 200
+    items = response.json()["data"]["items"]
+    assert [item["approval_no"] for item in items] == ["SORT-NEW", "SORT-OLD"]
+
+
 def test_list_approval_instances_returns_expense_aggregation(client: TestClient, session) -> None:
     store_id = client.post("/api/stores", json={"name": "蘑说审批聚合店"}).json()["data"]["id"]
     template_id = client.post(

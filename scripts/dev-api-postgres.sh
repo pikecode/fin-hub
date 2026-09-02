@@ -3,7 +3,12 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 API_DIR="$ROOT_DIR/apps/api"
-DATABASE_URL_VALUE="${DATABASE_URL:-sqlite+pysqlite:///$API_DIR/data/dev.db}"
+DATABASE_URL_VALUE="${DATABASE_URL:-postgresql+psycopg://finhub:finhub@localhost:5432/finhub}"
+START_DOCKER_INFRA="${START_DOCKER_INFRA:-true}"
+
+if [ "$START_DOCKER_INFRA" = "true" ] && command -v docker >/dev/null 2>&1; then
+  docker compose -f "$ROOT_DIR/infra/docker/docker-compose.yml" up -d postgres redis
+fi
 
 cd "$API_DIR"
 

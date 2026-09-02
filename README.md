@@ -26,16 +26,22 @@ scripts/                  # 本地启动和后续运维脚本
 pnpm install
 ```
 
-启动 API，本地 SQLite 版本：
+一键启动本地开发服务：
 
 ```bash
-scripts/dev-api-sqlite.sh
+scripts/dev.sh
 ```
 
-启动后台：
+也可以使用：
 
 ```bash
-pnpm dev:admin
+pnpm dev
+```
+
+只启动 API：
+
+```bash
+scripts/dev-api-postgres.sh
 ```
 
 启动股东小程序：
@@ -69,10 +75,10 @@ Compose 会启动 PostgreSQL、Redis、API 和后台管理端。API 容器启动
 
 ```bash
 cp .env.production.example .env.production
-docker compose --env-file .env.production -f infra/docker/docker-compose.prod.yml up --build -d
+scripts/deploy-prod.sh
 ```
 
-生产环境 API 启动时会拒绝弱 `SECRET_KEY`、SQLite 数据库、空 `CORS_ORIGINS` 或包含 localhost 的跨域配置。
+API 启动时只允许 PostgreSQL。生产环境还会拒绝弱 `SECRET_KEY`、空 `CORS_ORIGINS` 或包含 localhost 的跨域配置。
 
 ## 验证命令
 
@@ -132,7 +138,7 @@ scripts/preflight.sh
 - `/shareholder-grants`：股东授权管理
 - `/audit`：操作日志
 - `/users`：后台用户管理
-- `/settings`：系统设置、集成状态、SQLite 备份下载
+- `/settings`：系统设置、集成状态、PostgreSQL 备份策略提示
 
 ## 当前小程序页面
 

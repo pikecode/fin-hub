@@ -1,10 +1,16 @@
 "use client";
 
-import { Alert, Button, Card, DatePicker, Form, Input, Modal, Select, Space, Table, Tag, Upload } from "antd";
+import { Alert, Button, Card, DatePicker, Form, Input, Modal, Select, Space, Table, Upload, message } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import type { UploadFile } from "antd/es/upload/interface";
 import dayjs from "dayjs";
 import { useEffect, useMemo, useState } from "react";
+import {
+  PlusOutlined,
+  UploadOutlined,
+  DownloadOutlined,
+  FileTextOutlined,
+} from "@ant-design/icons";
 import type {
   Attachment,
   ExpenseCategory,
@@ -13,9 +19,14 @@ import type {
   Store,
   Supplier,
 } from "@fin-hub/shared-types";
-import { formatMoney } from "@fin-hub/shared-utils";
 import { AppShell } from "../components/AppShell";
+import { MoneyDisplay } from "../components/MoneyDisplay";
+import { StatusBadge } from "../components/StatusBadge";
+import { EnterpriseTable } from "../components/EnterpriseTable";
+import type { EnterpriseTableColumn } from "../components/EnterpriseTable";
+import { SmartFilterBar } from "../components/SmartFilterBar";
 import { apiClient } from "../lib/api";
+import { getExpenseCategories, getLedgers, getStores } from "../lib/referenceData";
 
 interface ExpenseFormValues {
   ledger_period: string;
@@ -99,19 +110,19 @@ export default function ExpensesPage() {
     setErrorMessage(null);
     try {
       const [storePage, ledgerPage, categoryPage, supplierPage, itemPage] = await Promise.all([
-        apiClient.stores.list("?page_size=200"),
-        apiClient.ledgers.list("?page_size=200"),
-        apiClient.categories.list("?page_size=500"),
+        getStores(),
+        getLedgers(),
+        getExpenseCategories(),
         apiClient.suppliers.list("?page_size=500"),
         apiClient.expenseItems.list(buildFilterParams(filters ?? filterForm.getFieldsValue())),
       ]);
-      setStores(storePage.items);
-      setLedgers(ledgerPage.items);
-      setCategories(categoryPage.items);
+      setStores(storePage);
+      setLedgers(ledgerPage);
+      setCategories(categoryPage);
       setSuppliers(supplierPage.items);
       setItems(itemPage.items);
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "无法加载支出明细");
+      setErrorMessage(error instanceof Error ? error.message : "加载失败");
     } finally {
       setIsLoading(false);
     }
@@ -120,15 +131,6 @@ export default function ExpensesPage() {
   useEffect(() => {
     loadData();
   }, []);
-
-  async function submitFilters(values: ExpenseFilterValues) {
-    await loadData(values);
-  }
-
-  async function resetFilters() {
-    filterForm.resetFields();
-    await loadData({});
-  }
 
   async function submitItem(values: ExpenseFormValues) {
     const [storeId, period] = values.ledger_period.split("|");
@@ -145,19 +147,21 @@ export default function ExpensesPage() {
       };
       if (editingItem) {
         await apiClient.expenseItems.update(editingItem.id, payload);
+        message.success("更新成功");
       } else {
         await apiClient.expenseItems.create({
           ...payload,
           store_id: storeId,
           ledger_period: period,
         });
+        message.success("创建成功");
       }
       setIsModalOpen(false);
       setEditingItem(null);
       form.resetFields();
       await loadData();
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "无法新增支出明细");
+      message.error(error instanceof Error ? error.message : "操作失败");
     } finally {
       setIsLoading(false);
     }
@@ -198,91 +202,153 @@ export default function ExpensesPage() {
       const page = await apiClient.attachments.list(`?resource_type=expense_item&resource_id=${itemId}&page_size=100`);
       setAttachments(page.items);
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "无法加载附件");
+      message.error("加载附件失败");
     } finally {
       setIsAttachmentLoading(false);
     }
   }
 
   async function uploadAttachment() {
-    const file = uploadFileList[0]?.originFileObj;
-    if (!attachmentItem || !file) {
-      setErrorMessage("请选择要上传的附件");
+    if (!uploadFileList.length || !attachmentItem) {
+      message.warning("请选择文件");
       return;
     }
+    const file = uploadFileList[0].originFileObj;
+    if (!file) return;
     setIsAttachmentLoading(true);
-    setErrorMessage(null);
     try {
-      const formData = new FormData();
-      formData.append("file", file);
-      await apiClient.attachments.upload("expense_item", attachmentItem.id, formData);
+      const payload = new FormData();
+      payload.append("file", file);
+      await apiClient.attachments.upload("expense_item", attachmentItem.id, payload);
+      message.success("上传成功");
       setUploadFileList([]);
       await loadAttachments(attachmentItem.id);
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "无法上传附件");
+      message.error("上传失败");
     } finally {
       setIsAttachmentLoading(false);
     }
   }
 
   async function downloadAttachment(attachment: Attachment) {
-    setIsAttachmentLoading(true);
-    setErrorMessage(null);
     try {
       const blob = await apiClient.attachments.download(attachment.id);
-      const url = URL.createObjectURL(blob);
+      const url = window.URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
       link.download = attachment.file_name;
       link.click();
-      URL.revokeObjectURL(url);
+      window.URL.revokeObjectURL(url);
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "无法下载附件");
-    } finally {
-      setIsAttachmentLoading(false);
+      message.error("下载失败");
     }
   }
 
   async function archiveDingtalkAttachment(attachment: Attachment) {
     setIsAttachmentLoading(true);
-    setErrorMessage(null);
     try {
       await apiClient.attachments.downloadDingtalk(attachment.id);
+      message.success("归档成功");
       if (attachmentItem) {
         await loadAttachments(attachmentItem.id);
       }
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "无法归档钉钉附件");
+      message.error("归档失败");
     } finally {
       setIsAttachmentLoading(false);
     }
   }
 
-  const columns: ColumnsType<ExpenseItem> = [
-    { title: "门店", dataIndex: "store_id", render: (value) => storesById.get(value)?.name ?? "未知门店" },
-    { title: "账期", dataIndex: "ledger_period" },
-    { title: "支出日期", dataIndex: "expense_date", render: (value) => value || "-" },
-    { title: "说明", dataIndex: "description" },
-    { title: "金额", dataIndex: "amount", render: (value: string) => formatMoney(value) },
-    { title: "分类", dataIndex: "category_l1", render: (value) => value || <Tag color="gold">未分类</Tag> },
-    { title: "供应商", dataIndex: "supplier_name", render: (value) => value || <Tag>未关联</Tag> },
+  const columns: EnterpriseTableColumn<ExpenseItem>[] = [
+    {
+      title: "门店",
+      key: "store_id",
+      dataIndex: "store_id",
+      width: 140,
+      render: (value) => storesById.get(value)?.name ?? "未知门店",
+    },
+    {
+      title: "账期",
+      key: "ledger_period",
+      dataIndex: "ledger_period",
+      width: 90,
+    },
+    {
+      title: "支出日期",
+      key: "expense_date",
+      dataIndex: "expense_date",
+      width: 110,
+      render: (value) => value || "-",
+    },
+    {
+      title: "说明",
+      key: "description",
+      dataIndex: "description",
+      ellipsis: true,
+    },
+    {
+      title: "金额",
+      key: "amount",
+      dataIndex: "amount",
+      width: 120,
+      align: "right",
+      render: (value: string) => <MoneyDisplay value={Number(value)} />,
+    },
+    {
+      title: "分类",
+      key: "category_l1",
+      dataIndex: "category_l1",
+      width: 120,
+      render: (value) => value || <StatusBadge status="uncategorized" text="未分类" />,
+    },
+    {
+      title: "供应商",
+      key: "supplier_name",
+      dataIndex: "supplier_name",
+      width: 140,
+      ellipsis: true,
+      render: (value) => value || <StatusBadge status="unlinked" text="未关联" />,
+    },
     {
       title: "付款状态",
+      key: "payment_status",
       dataIndex: "payment_status",
-      render: (value: ExpenseItem["payment_status"]) =>
-        value === "paid" ? <Tag color="green">已付款</Tag> : <Tag color="gold">待匹配</Tag>,
+      width: 100,
+      render: (value: ExpenseItem["payment_status"]) => {
+        const statusMap = {
+          paid: { status: "paid" as const, text: "已付款" },
+          partial_paid: { status: "partial" as const, text: "部分付款" },
+          unpaid: { status: "pending" as const, text: "待付款" },
+          no_bank_flow: { status: "none" as const, text: "无流水" },
+        };
+        const config = statusMap[value] || statusMap.unpaid;
+        return <StatusBadge status={config.status} text={config.text} />;
+      },
     },
     {
       title: "操作",
-      width: 170,
+      key: "actions",
+      width: 180,
+      fixed: "right",
       render: (_, record) => {
         const ledger = ledgersByKey.get(`${record.store_id}|${record.ledger_period}`);
+        const isClosed = ledger?.status === "closed";
         return (
-          <Space>
-            <Button type="link" disabled={ledger?.status === "closed"} onClick={() => openEditModal(record)}>
+          <Space size="small">
+            <Button
+              type="link"
+              size="small"
+              disabled={isClosed}
+              onClick={() => openEditModal(record)}
+            >
               编辑
             </Button>
-            <Button type="link" onClick={() => openAttachmentModal(record)}>
+            <Button
+              type="link"
+              size="small"
+              icon={<FileTextOutlined />}
+              onClick={() => openAttachmentModal(record)}
+            >
               凭证
             </Button>
           </Space>
@@ -292,14 +358,27 @@ export default function ExpensesPage() {
   ];
 
   const attachmentColumns: ColumnsType<Attachment> = [
-    { title: "文件名", dataIndex: "file_name" },
-    { title: "来源", dataIndex: "source", width: 90, render: (value) => (value === "dingtalk" ? "钉钉" : "手工") },
+    {
+      title: "文件名",
+      dataIndex: "file_name",
+      ellipsis: true,
+    },
+    {
+      title: "来源",
+      dataIndex: "source",
+      width: 90,
+      render: (value) => (value === "dingtalk" ? "钉钉" : "手工"),
+    },
     {
       title: "状态",
       dataIndex: "download_status",
-      width: 110,
-      render: (value: Attachment["download_status"]) =>
-        value === "stored" ? <Tag color="green">已归档</Tag> : <Tag color="gold">待下载</Tag>,
+      width: 100,
+      render: (value: Attachment["download_status"]) => (
+        <StatusBadge
+          status={value === "stored" ? "stored" : "pending"}
+          text={value === "stored" ? "已归档" : "待下载"}
+        />
+      ),
     },
     {
       title: "大小",
@@ -309,14 +388,24 @@ export default function ExpensesPage() {
     },
     {
       title: "操作",
-      width: 150,
+      width: 120,
       render: (_, record) =>
         record.download_status === "stored" ? (
-          <Button type="link" onClick={() => downloadAttachment(record)}>
+          <Button
+            type="link"
+            size="small"
+            icon={<DownloadOutlined />}
+            onClick={() => downloadAttachment(record)}
+          >
             下载
           </Button>
         ) : (
-          <Button type="link" disabled={record.source !== "dingtalk"} onClick={() => archiveDingtalkAttachment(record)}>
+          <Button
+            type="link"
+            size="small"
+            disabled={record.source !== "dingtalk"}
+            onClick={() => archiveDingtalkAttachment(record)}
+          >
             归档
           </Button>
         ),
@@ -326,46 +415,56 @@ export default function ExpensesPage() {
   return (
     <AppShell
       title="支出明细"
-      action={<Button type="primary" onClick={openCreateModal}>新增支出</Button>}
+      kicker="EXPENSES"
+      action={
+        <Button type="primary" icon={<PlusOutlined />} onClick={openCreateModal}>
+          新增支出
+        </Button>
+      }
     >
-      {errorMessage ? (
-        <Alert className="dashboard-alert" message={errorMessage} type="warning" showIcon />
-      ) : null}
-      <Card title="支出明细列表">
-        <Form form={filterForm} layout="inline" onFinish={submitFilters} className="table-filter-form">
-          <Form.Item name="store_id" label="门店">
-            <Select
-              allowClear
-              className="filter-select"
-              options={stores.map((store) => ({ label: store.name, value: store.id }))}
-            />
-          </Form.Item>
-          <Form.Item name="ledger_period" label="账期">
-            <Select allowClear className="filter-select" options={ledgerPeriodOptions} />
-          </Form.Item>
-          <Form.Item name="payment_status" label="付款状态">
-            <Select
-              allowClear
-              className="filter-select"
-              options={[
+      <Space direction="vertical" size={16} style={{ width: "100%", display: "flex" }}>
+        {errorMessage && (
+          <Alert message="加载失败" description={errorMessage} type="error" showIcon closable />
+        )}
+
+        <SmartFilterBar
+          filters={[
+            {
+              name: "store_id",
+              label: "门店",
+              type: "select",
+              options: stores.map((s) => ({ label: s.name, value: s.id })),
+            },
+            {
+              name: "ledger_period",
+              label: "账期",
+              type: "select",
+              options: ledgerPeriodOptions,
+            },
+            {
+              name: "payment_status",
+              label: "付款状态",
+              type: "select",
+              options: [
                 { label: "未付款", value: "unpaid" },
                 { label: "部分付款", value: "partial_paid" },
                 { label: "已付款", value: "paid" },
                 { label: "无银行流水", value: "no_bank_flow" },
-              ]}
-            />
-          </Form.Item>
-          <Form.Item>
-            <Space>
-              <Button type="primary" htmlType="submit" loading={isLoading}>
-                筛选
-              </Button>
-              <Button onClick={resetFilters}>重置</Button>
-            </Space>
-          </Form.Item>
-        </Form>
-        <Table rowKey="id" loading={isLoading} columns={columns} dataSource={items} />
-      </Card>
+              ],
+            },
+          ]}
+          onFilter={(values) => loadData(values)}
+        />
+
+        <EnterpriseTable
+          rowKey="id"
+          columns={columns}
+          dataSource={items}
+          loading={isLoading}
+          exportFileName="支出明细"
+        />
+      </Space>
+
       <Modal
         title={editingItem ? "编辑支出" : "新增支出"}
         open={isModalOpen}
@@ -381,7 +480,7 @@ export default function ExpensesPage() {
             <Select disabled={Boolean(editingItem)} options={openLedgerOptions} />
           </Form.Item>
           <Form.Item name="expense_date" label="支出日期">
-            <DatePicker className="full-width" />
+            <DatePicker style={{ width: "100%" }} />
           </Form.Item>
           <Form.Item name="description" label="支出说明" rules={[{ required: true }]}>
             <Input />
@@ -408,8 +507,14 @@ export default function ExpensesPage() {
           </Form.Item>
         </Form>
       </Modal>
+
       <Modal
-        title={attachmentItem ? `${attachmentItem.description} 凭证` : "凭证"}
+        title={
+          <Space>
+            <FileTextOutlined />
+            <span>{attachmentItem ? `${attachmentItem.description} 凭证` : "凭证"}</span>
+          </Space>
+        }
         open={isAttachmentModalOpen}
         onCancel={() => {
           setIsAttachmentModalOpen(false);
@@ -419,26 +524,33 @@ export default function ExpensesPage() {
         footer={null}
         width={760}
       >
-        <Space className="table-filter-form">
-          <Upload
-            beforeUpload={() => false}
-            fileList={uploadFileList}
-            maxCount={1}
-            onChange={({ fileList }) => setUploadFileList(fileList.slice(-1))}
-          >
-            <Button>选择文件</Button>
-          </Upload>
-          <Button type="primary" loading={isAttachmentLoading} onClick={uploadAttachment}>
-            上传凭证
-          </Button>
+        <Space direction="vertical" size={16} style={{ width: "100%" }}>
+          <Space>
+            <Upload
+              beforeUpload={() => false}
+              fileList={uploadFileList}
+              maxCount={1}
+              onChange={({ fileList }) => setUploadFileList(fileList.slice(-1))}
+            >
+              <Button icon={<UploadOutlined />}>选择文件</Button>
+            </Upload>
+            <Button
+              type="primary"
+              loading={isAttachmentLoading}
+              onClick={uploadAttachment}
+            >
+              上传凭证
+            </Button>
+          </Space>
+          <Table
+            rowKey="id"
+            size="small"
+            loading={isAttachmentLoading}
+            columns={attachmentColumns}
+            dataSource={attachments}
+            pagination={{ pageSize: 5 }}
+          />
         </Space>
-        <Table
-          rowKey="id"
-          loading={isAttachmentLoading}
-          columns={attachmentColumns}
-          dataSource={attachments}
-          pagination={{ pageSize: 5 }}
-        />
       </Modal>
     </AppShell>
   );

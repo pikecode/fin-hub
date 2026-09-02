@@ -29,8 +29,7 @@ def upgrade() -> None:
             "users",
             sa.Column("permissions_configured", sa.Boolean(), nullable=False, server_default=sa.false()),
         )
-    if op.get_context().dialect.name != "sqlite":
-        op.alter_column("users", "permissions_configured", server_default=None)
+    op.alter_column("users", "permissions_configured", server_default=None)
 
 
 def downgrade() -> None:

@@ -54,7 +54,7 @@ export default function SettingsPage() {
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
-      link.download = `fin-hub-backup-${new Date().toISOString().slice(0, 19).replace(/[-:T]/g, "")}.db`;
+      link.download = `fin-hub-backup-${new Date().toISOString().slice(0, 19).replace(/[-:T]/g, "")}.dump`;
       link.click();
       URL.revokeObjectURL(url);
       await loadData();
@@ -166,7 +166,7 @@ export default function SettingsPage() {
             {backupStatus?.supported ? <Tag color="green">可导出</Tag> : <Tag color="gold">需外部备份</Tag>}
           </Descriptions.Item>
           <Descriptions.Item label="说明">{backupStatus?.message || "未检查"}</Descriptions.Item>
-          <Descriptions.Item label="数据库文件">{backupStatus?.database_path || "-"}</Descriptions.Item>
+          <Descriptions.Item label="备份方式">PostgreSQL 原生备份</Descriptions.Item>
         </Descriptions>
       </Card>
 

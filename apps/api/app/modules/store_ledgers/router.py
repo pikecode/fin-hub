@@ -55,7 +55,6 @@ def latest_period(ledgers: list[Ledger], requested_period: str | None) -> str:
 def read_store_ledger_workspace(
     store_id: str,
     period: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}$"),
-    preview_size: int = Query(default=8, ge=1, le=50),
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> ApiEnvelope[StoreLedgerWorkspaceRead]:
@@ -163,7 +162,6 @@ def read_store_ledger_workspace(
             select(BankTransaction)
             .where(BankTransaction.store_id == store_id, BankTransaction.ledger_period == selected_period)
             .order_by(BankTransaction.occurred_at.desc())
-            .limit(preview_size)
         )
     )
     revenue_records = list(
@@ -171,7 +169,6 @@ def read_store_ledger_workspace(
             select(RevenueRecord)
             .where(RevenueRecord.store_id == store_id, RevenueRecord.ledger_period == selected_period)
             .order_by(RevenueRecord.revenue_date.desc(), RevenueRecord.created_at.desc())
-            .limit(preview_size)
         )
     )
     approval_instances = list(
@@ -183,7 +180,6 @@ def read_store_ledger_workspace(
                 ApprovalInstance.submit_at < next_start,
             )
             .order_by(ApprovalInstance.submit_at.desc())
-            .limit(preview_size)
         )
     )
     revenue_matches = list(
@@ -192,7 +188,6 @@ def read_store_ledger_workspace(
             .join(BankTransaction, RevenueBankMatch.bank_transaction_id == BankTransaction.id)
             .where(BankTransaction.store_id == store_id, BankTransaction.ledger_period == selected_period)
             .order_by(RevenueBankMatch.created_at.desc())
-            .limit(preview_size)
         )
     )
 

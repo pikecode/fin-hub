@@ -213,6 +213,48 @@ def test_import_bank_transactions_for_store_derives_period_per_row(client: TestC
     assert {transaction["ledger_period"] for transaction in transactions} == {"2026-08", "2026-09"}
 
 
+def test_import_bank_transactions_creates_missing_fixed_ledger(client: TestClient) -> None:
+    store_id = client.post("/api/stores", json={"name": "蘑说固定账期导入店"}).json()["data"]["id"]
+    csv_content = "\n".join(
+        [
+            "日期,收入还是支出,金额,备注",
+            "2026-08-20,支出,300.00,门店报销付款",
+        ]
+    )
+
+    response = client.post(
+        "/api/bank-transactions/import",
+        data={"store_id": store_id, "ledger_period": "2026-08", "started_by": "tester"},
+        files={"file": ("bank.csv", csv_content.encode("utf-8"), "text/csv")},
+    )
+
+    assert response.status_code == 201
+    assert response.json()["data"]["created_count"] == 1
+    transactions = client.get(f"/api/bank-transactions?store_id={store_id}&ledger_period=2026-08").json()["data"]["items"]
+    assert transactions[0]["summary"] == "门店报销付款"
+    ledger_response = client.get(f"/api/ledgers?store_id={store_id}&period=2026-08")
+    assert ledger_response.json()["data"]["total"] == 1
+
+
+def test_preview_bank_transactions_creates_missing_fixed_ledger_for_validation(client: TestClient) -> None:
+    store_id = client.post("/api/stores", json={"name": "蘑说固定账期预览店"}).json()["data"]["id"]
+    csv_content = "\n".join(
+        [
+            "日期,收入还是支出,金额,备注",
+            "2026-08-20,支出,300.00,门店报销付款",
+        ]
+    )
+
+    response = client.post(
+        "/api/bank-transactions/import/preview",
+        data={"store_id": store_id, "ledger_period": "2026-08"},
+        files={"file": ("bank.csv", csv_content.encode("utf-8"), "text/csv")},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["valid_count"] == 1
+
+
 def test_preview_bank_transactions_import(client: TestClient) -> None:
     store_id = client.post("/api/stores", json={"name": "蘑说流水预览店"}).json()["data"]["id"]
     client.post("/api/ledgers", json={"store_id": store_id, "period": "2026-08"})

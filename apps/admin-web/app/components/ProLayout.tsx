@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { Layout, Menu, Avatar, Dropdown, Button, Breadcrumb } from "antd";
 import type { MenuProps } from "antd";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
@@ -26,6 +26,9 @@ import type { CurrentUser, PermissionKey } from "@fin-hub/shared-types";
 import { apiClient } from "../lib/api";
 
 const { Sider, Content } = Layout;
+
+let cachedCurrentUser: CurrentUser | null = null;
+let pendingCurrentUser: Promise<CurrentUser> | null = null;
 
 interface NavItem {
   key: string;
@@ -183,7 +186,7 @@ function currentStoreIdFromPath(pathname: string) {
 
 function selectedMenuKey(pathname: string, hasStoreContext: boolean) {
   if (/^\/store-ledgers(\/|$)/.test(pathname)) return "/store-ledgers";
-  if (hasStoreContext && ["/bank", "/revenue", "/finance/reconciliation"].includes(pathname)) return "/store-ledgers";
+  if (hasStoreContext && ["/bank", "/revenue", "/finance/reconciliation", "/finance/revenue-reconciliation"].includes(pathname)) return "/store-ledgers";
   return pathname;
 }
 
@@ -257,27 +260,42 @@ export function ProLayout({ title, kicker, action, children }: ProLayoutProps) {
   const [collapsed, setCollapsed] = useState(false);
   const [displayName, setDisplayName] = useState<string | null>(null);
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
-  const visibleTree = visibleNavigationTree(currentUser);
-  const activeNav = navTrail(pathname, visibleTree, hasStoreContext);
-  const menuItems = menuItemsForTree(visibleTree);
-  const defaultOpenKeys = defaultOpenKeysForPath(pathname, visibleTree, hasStoreContext);
+  const visibleTree = useMemo(() => visibleNavigationTree(currentUser), [currentUser]);
+  const activeNav = useMemo(() => navTrail(pathname, visibleTree, hasStoreContext), [pathname, visibleTree, hasStoreContext]);
+  const menuItems = useMemo(() => menuItemsForTree(visibleTree), [visibleTree]);
+  const defaultOpenKeys = useMemo(
+    () => defaultOpenKeysForPath(pathname, visibleTree, hasStoreContext),
+    [pathname, visibleTree, hasStoreContext],
+  );
 
   useEffect(() => {
     const name = localStorage.getItem("user_name");
     setDisplayName(name);
-    apiClient.auth.me()
+    if (cachedCurrentUser) {
+      setCurrentUser(cachedCurrentUser);
+      setDisplayName(cachedCurrentUser.display_name);
+      return;
+    }
+    pendingCurrentUser = pendingCurrentUser ?? apiClient.auth.me();
+    pendingCurrentUser
       .then((user) => {
+        cachedCurrentUser = user;
+        pendingCurrentUser = null;
         setCurrentUser(user);
         setDisplayName(user.display_name);
         localStorage.setItem("user_name", user.display_name);
       })
       .catch(() => {
+        cachedCurrentUser = null;
+        pendingCurrentUser = null;
         router.push("/login");
       });
   }, [router]);
 
   async function logout() {
     await apiClient.auth.logout();
+    cachedCurrentUser = null;
+    pendingCurrentUser = null;
     localStorage.removeItem("user_name");
     router.push("/login");
   }
@@ -285,7 +303,9 @@ export function ProLayout({ title, kicker, action, children }: ProLayoutProps) {
   function handleMenuClick({ key }: { key: string }) {
     const item = findNavItemByKey(visibleTree, key);
     if (!item || item.children?.length) return;
-    router.push(item.href ?? item.key);
+    const href = item.href ?? item.key;
+    if (href === pathname) return;
+    router.push(href);
   }
 
   const userMenu: MenuProps = {

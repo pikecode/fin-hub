@@ -8,9 +8,9 @@ def test_database_backup_status_requires_admin(client: TestClient) -> None:
     response = client.get("/api/system/database-backup/status")
     assert response.status_code == 200
     data = response.json()["data"]
-    assert data["backend"] == "sqlite"
+    assert data["backend"] == "postgresql"
     assert data["supported"] is False
-    assert "原生备份工具" in data["message"] or "SQLite 数据库文件不存在" in data["message"]
+    assert "pg_dump" in data["message"]
 
 
 def test_database_backup_download_rejects_unsupported_database(client: TestClient) -> None:
@@ -29,7 +29,7 @@ def test_system_readiness_reports_blocking_production_issues(client: TestClient,
     assert data["environment"] == "production"
     assert data["ready"] is False
     checks = {item["key"]: item for item in data["checks"]}
-    assert checks["database"]["status"] == "error"
+    assert checks["database"]["status"] == "ok"
     assert checks["secret-key"]["status"] == "error"
     assert checks["cors"]["status"] == "error"
 
@@ -58,14 +58,14 @@ def test_system_readiness_allows_local_with_warnings(client: TestClient, monkeyp
 
 def test_production_startup_validation_blocks_unsafe_config(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(settings, "app_env", "production")
-    monkeypatch.setattr(settings, "database_url", "sqlite+pysqlite:///./data/dev.db")
+    monkeypatch.setattr(settings, "database_url", "mysql+pymysql://finhub:secret@localhost:3306/finhub")
     monkeypatch.setattr(settings, "secret_key", "dev-secret")
     monkeypatch.setattr(settings, "cors_origin_csv", "http://localhost:3000")
     monkeypatch.setattr(settings, "file_storage_root", str(tmp_path / "files"))
 
     errors = production_startup_errors()
 
-    assert any("SQLite" in error for error in errors)
+    assert any("PostgreSQL" in error for error in errors)
     assert any("SECRET_KEY" in error for error in errors)
     assert any("localhost" in error for error in errors)
 
