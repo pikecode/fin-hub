@@ -37,6 +37,15 @@ from app.schemas import (
 router = APIRouter(prefix="/revenue-records", tags=["revenue"])
 channels_router = APIRouter(prefix="/revenue-channels", tags=["revenue"])
 
+DEFAULT_REVENUE_CHANNELS: tuple[tuple[str, int, bool], ...] = (
+    ("美团团购", 10, True),
+    ("美团点评买单", 20, True),
+    ("抖音团购", 30, True),
+    ("扫码收款", 40, True),
+    ("商场代金券", 50, False),
+)
+DEFAULT_REVENUE_CHANNEL_NAMES = {name for name, _, _ in DEFAULT_REVENUE_CHANNELS}
+
 
 def period_from_revenue_date(revenue_date) -> str:
     return revenue_date.strftime("%Y-%m")
@@ -70,11 +79,31 @@ def normalize_revenue_assignment(session: Session, data: dict) -> dict:
 
 
 def ensure_active_channel(session: Session, channel_name: str) -> None:
+    ensure_default_revenue_channels(session)
     channel = session.scalar(select(RevenueChannel).where(RevenueChannel.name == channel_name))
     if channel is None:
         raise HTTPException(status_code=404, detail="Revenue channel not found")
     if channel.status != MasterDataStatus.ACTIVE.value:
         raise HTTPException(status_code=409, detail="Revenue channel is inactive")
+
+
+def ensure_default_revenue_channels(session: Session) -> bool:
+    existing_names = set(session.scalars(select(RevenueChannel.name)).all())
+    created = False
+    for name, sort_order, requires_bank_match in DEFAULT_REVENUE_CHANNELS:
+        if name in existing_names:
+            continue
+        session.add(
+            RevenueChannel(
+                name=name,
+                sort_order=sort_order,
+                requires_bank_match=requires_bank_match,
+            )
+        )
+        created = True
+    if created:
+        session.flush()
+    return created
 
 
 @channels_router.get("", response_model=ApiEnvelope[Page[RevenueChannelRead]])
@@ -85,7 +114,14 @@ def list_revenue_channels(
     current_user: User = Depends(get_current_user),
 ) -> ApiEnvelope[Page[RevenueChannelRead]]:
     ensure_permission(session, current_user, "revenue.view")
-    query = select(RevenueChannel).order_by(RevenueChannel.sort_order.asc(), RevenueChannel.created_at.asc())
+    seeded = ensure_default_revenue_channels(session)
+    if seeded:
+        session.commit()
+    query = (
+        select(RevenueChannel)
+        .where(RevenueChannel.name.in_(DEFAULT_REVENUE_CHANNEL_NAMES))
+        .order_by(RevenueChannel.sort_order.asc(), RevenueChannel.created_at.asc())
+    )
     items, total = paginate(session, query, page, page_size)
     return ApiEnvelope(data=Page(items=items, total=total, page=page, page_size=page_size))
 

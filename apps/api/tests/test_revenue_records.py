@@ -1,6 +1,21 @@
 from fastapi.testclient import TestClient
 
 
+def test_revenue_channel_list_bootstraps_default_channels(client: TestClient) -> None:
+    client.post("/api/revenue-channels", json={"name": "美团", "sort_order": 999, "requires_bank_match": True})
+    response = client.get("/api/revenue-channels")
+    assert response.status_code == 200
+    channels = response.json()["data"]["items"]
+    assert [channel["name"] for channel in channels] == [
+        "美团团购",
+        "美团点评买单",
+        "抖音团购",
+        "扫码收款",
+        "商场代金券",
+    ]
+    assert all(channel["name"] != "美团" for channel in channels)
+
+
 def test_create_update_revenue_record_and_report(client: TestClient) -> None:
     store_id = client.post("/api/stores", json={"name": "蘑说收入店"}).json()["data"]["id"]
     client.post("/api/ledgers", json={"store_id": store_id, "period": "2026-08"})
@@ -243,7 +258,6 @@ def test_revenue_records_respect_user_store_scope(client: TestClient) -> None:
             "display_name": "收入受限",
             "password": "secret123",
             "role": "finance",
-            "permissions": ["revenue.view", "revenue.manage"],
             "store_ids": [first_store_id],
         },
     )
