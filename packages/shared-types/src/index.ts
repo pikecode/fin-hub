@@ -4,7 +4,7 @@ export type MoneyDirection = "income" | "expense";
 export type MatchStatus = "candidate" | "confirmed" | "rejected";
 export type AttachmentStatus = "stored" | "placeholder" | "failed";
 export type ExpensePaymentStatus = "unpaid" | "partial_paid" | "paid" | "no_bank_flow";
-export type UserRole = "admin" | "finance" | "viewer";
+export type UserRole = string;
 export type PermissionKey =
   | "dashboard.view"
   | "reconciliation.view"
@@ -34,6 +34,7 @@ export interface Page<T> {
 export interface Store {
   id: string;
   name: string;
+  group_id?: string | null;
   dingtalk_dept_id?: string | null;
   status: StoreStatus;
   contact_person?: string | null;
@@ -45,6 +46,7 @@ export interface Store {
 
 export interface StoreCreate {
   name: string;
+  group_id?: string | null;
   dingtalk_dept_id?: string | null;
   contact_person?: string | null;
   phone?: string | null;
@@ -53,11 +55,31 @@ export interface StoreCreate {
 
 export interface StoreUpdate {
   name?: string | null;
+  group_id?: string | null;
   dingtalk_dept_id?: string | null;
   contact_person?: string | null;
   phone?: string | null;
   address?: string | null;
   status?: StoreStatus | null;
+}
+
+export interface StoreGroup {
+  id: string;
+  name: string;
+  sort_order: number;
+  store_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface StoreGroupCreate {
+  name: string;
+  sort_order?: number;
+}
+
+export interface StoreGroupUpdate {
+  name?: string | null;
+  sort_order?: number | null;
 }
 
 export interface Ledger {
@@ -244,6 +266,7 @@ export interface UserAccount {
   updated_at: string;
   permissions: PermissionKey[];
   store_ids: string[];
+  store_group_ids: string[];
 }
 
 export interface UserAccountCreate {
@@ -251,8 +274,8 @@ export interface UserAccountCreate {
   display_name: string;
   password: string;
   role: UserRole;
-  permissions?: PermissionKey[];
   store_ids?: string[];
+  store_group_ids?: string[];
 }
 
 export interface UserAccountUpdate {
@@ -260,8 +283,45 @@ export interface UserAccountUpdate {
   password?: string | null;
   role?: UserRole | null;
   status?: "active" | "disabled" | null;
-  permissions?: PermissionKey[] | null;
   store_ids?: string[] | null;
+  store_group_ids?: string[] | null;
+}
+
+export interface RolePermissionRead {
+  role: UserRole;
+  permissions: PermissionKey[];
+}
+
+export interface StoreGroupScope {
+  id: string;
+  name: string;
+}
+
+export interface RolePermissionUpdate {
+  permissions: PermissionKey[];
+}
+
+export interface RoleRead {
+  id: string;
+  key: string;
+  name: string;
+  sort_order: number;
+  is_system: boolean;
+  is_admin: boolean;
+  permissions: PermissionKey[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RoleCreate {
+  key: string;
+  name: string;
+  sort_order?: number;
+}
+
+export interface RoleUpdate {
+  name?: string | null;
+  sort_order?: number | null;
 }
 
 export interface ShareholderAccessGrant {
@@ -549,6 +609,7 @@ export interface DingTalkAutoSyncSetting {
   sync_approvals: boolean;
   next_run_at?: string | null;
   last_run_at?: string | null;
+  approval_watermark_at?: string | null;
   last_job_id?: string | null;
   last_status?: string | null;
   last_error?: string | null;
@@ -634,6 +695,34 @@ export interface TemplateFieldMappingReorderItem {
 
 export interface TemplateFieldMappingReorderRequest {
   items: TemplateFieldMappingReorderItem[];
+}
+
+export interface ApprovalTemplateNode {
+  id: string;
+  template_id: string;
+  activity_id: string;
+  node_name: string;
+  node_type?: string | null;
+  sort_order: number;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ApprovalTemplateNodeCreate {
+  activity_id: string;
+  node_name: string;
+  node_type?: string | null;
+  sort_order?: number;
+  is_active?: boolean;
+}
+
+export interface ApprovalTemplateNodeUpdate {
+  activity_id?: string | null;
+  node_name?: string | null;
+  node_type?: string | null;
+  sort_order?: number | null;
+  is_active?: boolean | null;
 }
 
 export interface TemplateFieldCandidate {
@@ -733,6 +822,24 @@ export interface DingTalkDepartmentSyncResult {
   stores: Store[];
 }
 
+export interface DingTalkSyncReadiness {
+  sync_mode: string;
+  config_ready: boolean;
+  department_ready: boolean;
+  store_mapping_ready: boolean;
+  template_ready: boolean;
+  approval_sync_ready: boolean;
+  department_count: number;
+  store_candidate_count: number;
+  mapped_store_count: number;
+  template_count: number;
+  enabled_template_count: number;
+  configured_enabled_template_count: number;
+  unconfigured_enabled_templates: string[];
+  blockers: string[];
+  warnings: string[];
+}
+
 export interface StartApprovalSyncRequest {
   template_id?: string | null;
   started_by?: string;
@@ -741,6 +848,17 @@ export interface StartApprovalSyncRequest {
   page_size?: number;
   max_pages?: number;
   skip_existing?: boolean;
+  run_async?: boolean;
+}
+
+export interface StartStoreApprovalSyncRequest {
+  store_id: string;
+  ledger_period: string;
+  template_id?: string | null;
+  started_by?: string;
+  start_at?: string | null;
+  end_at?: string | null;
+  skip_existing?: boolean;
 }
 
 export interface ResumeApprovalSyncRequest {
@@ -748,12 +866,13 @@ export interface ResumeApprovalSyncRequest {
   page_size?: number;
   max_pages?: number;
   skip_existing?: boolean;
+  run_async?: boolean;
 }
 
 export interface SyncJob {
   id: string;
   job_type: string;
-  status: "pending" | "running" | "succeeded" | "failed";
+  status: "pending" | "running" | "succeeded" | "failed" | "canceled";
   started_by?: string | null;
   started_at?: string | null;
   finished_at?: string | null;
@@ -767,6 +886,16 @@ export interface SyncJob {
   raw_summary?: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface StoreApprovalSyncResult {
+  job: SyncJob;
+  store_id: string;
+  ledger_period: string;
+  scanned_count: number;
+  matched_count: number;
+  outside_scope_count: number;
+  unresolved_store_count: number;
 }
 
 export interface BankImportRowError {
@@ -824,6 +953,7 @@ export interface ApprovalInstance {
   dingtalk_modified_at?: string | null;
   raw_payload?: string | null;
   synced_job_id?: string | null;
+  node_name_map?: Record<string, string>;
   expense_item_count: number;
   classified_expense_item_count: number;
   matched_expense_item_count: number;
@@ -1036,4 +1166,5 @@ export interface CurrentUser {
   role: UserRole;
   permissions: PermissionKey[];
   store_ids: string[];
+  store_group_ids: string[];
 }

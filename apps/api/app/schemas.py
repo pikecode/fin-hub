@@ -1,8 +1,8 @@
-from datetime import date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Generic, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.models import (
     AttachmentStatus,
@@ -12,7 +12,6 @@ from app.models import (
     MatchStatus,
     ShareholderGrantStatus,
     StoreStatus,
-    UserRole,
 )
 
 T = TypeVar("T")
@@ -43,40 +42,74 @@ class CurrentUser(BaseModel):
     id: str
     username: str
     display_name: str
-    role: UserRole
+    role: str
     permissions: list[str] = []
     store_ids: list[str] = []
+    store_group_ids: list[str] = []
 
 
 class UserCreate(BaseModel):
     username: str = Field(min_length=1, max_length=80)
     display_name: str = Field(min_length=1, max_length=80)
     password: str = Field(min_length=8, max_length=120)
-    role: UserRole = UserRole.FINANCE
-    permissions: list[str] | None = None
+    role: str = Field(default="finance", min_length=1, max_length=24)
     store_ids: list[str] = []
+    store_group_ids: list[str] = []
 
 
 class UserUpdate(BaseModel):
     display_name: str | None = Field(default=None, min_length=1, max_length=80)
     password: str | None = Field(default=None, min_length=8, max_length=120)
-    role: UserRole | None = None
+    role: str | None = Field(default=None, min_length=1, max_length=24)
     status: str | None = Field(default=None, pattern=r"^(active|disabled)$")
-    permissions: list[str] | None = None
     store_ids: list[str] | None = None
+    store_group_ids: list[str] | None = None
 
 
 class UserRead(BaseModel):
     id: str
     username: str
     display_name: str
-    role: UserRole
+    role: str
     status: str
     last_login_at: datetime | None
     created_at: datetime
     updated_at: datetime
     permissions: list[str] = []
     store_ids: list[str] = []
+    store_group_ids: list[str] = []
+
+
+class RolePermissionRead(BaseModel):
+    role: str
+    permissions: list[str] = []
+
+
+class RolePermissionUpdate(BaseModel):
+    permissions: list[str] = []
+
+
+class RoleCreate(BaseModel):
+    key: str = Field(min_length=1, max_length=24)
+    name: str = Field(min_length=1, max_length=80)
+    sort_order: int = 0
+
+
+class RoleUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=80)
+    sort_order: int | None = None
+
+
+class RoleRead(BaseModel):
+    id: str
+    key: str
+    name: str
+    sort_order: int
+    is_system: bool
+    is_admin: bool = False
+    permissions: list[str] = []
+    created_at: datetime
+    updated_at: datetime
 
 
 class ShareholderAccessGrantCreate(BaseModel):
@@ -116,6 +149,7 @@ class ShareholderLoginResponse(BaseModel):
 
 class StoreCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
+    group_id: str | None = None
     dingtalk_dept_id: str | None = None
     contact_person: str | None = None
     phone: str | None = None
@@ -124,6 +158,7 @@ class StoreCreate(BaseModel):
 
 class StoreUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
+    group_id: str | None = None
     dingtalk_dept_id: str | None = None
     contact_person: str | None = None
     phone: str | None = None
@@ -136,6 +171,25 @@ class StoreRead(StoreCreate):
 
     id: str
     status: StoreStatus
+    created_at: datetime
+    updated_at: datetime
+
+
+class StoreGroupCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    sort_order: int = 0
+
+
+class StoreGroupUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    sort_order: int | None = None
+
+
+class StoreGroupRead(StoreGroupCreate):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    store_count: int = 0
     created_at: datetime
     updated_at: datetime
 
@@ -517,6 +571,7 @@ class DingTalkAutoSyncSettingRead(BaseModel):
     sync_approvals: bool
     next_run_at: datetime | None
     last_run_at: datetime | None
+    approval_watermark_at: datetime | None
     last_job_id: str | None
     last_status: str | None
     last_error: str | None
@@ -586,6 +641,31 @@ class TemplateFieldMappingReorderRequest(BaseModel):
     items: list[TemplateFieldMappingReorderItem]
 
 
+class ApprovalTemplateNodeCreate(BaseModel):
+    activity_id: str = Field(min_length=1, max_length=120)
+    node_name: str = Field(min_length=1, max_length=160)
+    node_type: str | None = Field(default=None, max_length=60)
+    sort_order: int = 0
+    is_active: bool = True
+
+
+class ApprovalTemplateNodeUpdate(BaseModel):
+    activity_id: str | None = Field(default=None, min_length=1, max_length=120)
+    node_name: str | None = Field(default=None, min_length=1, max_length=160)
+    node_type: str | None = Field(default=None, max_length=60)
+    sort_order: int | None = None
+    is_active: bool | None = None
+
+
+class ApprovalTemplateNodeRead(ApprovalTemplateNodeCreate):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    template_id: str
+    created_at: datetime
+    updated_at: datetime
+
+
 class TemplateFieldCandidate(BaseModel):
     source_field_id: str | None = None
     source_field_name: str
@@ -632,6 +712,24 @@ class DingTalkDepartmentSyncResult(BaseModel):
     updated_count: int
     skipped_count: int
     stores: list[StoreRead]
+
+
+class DingTalkSyncReadiness(BaseModel):
+    sync_mode: str
+    config_ready: bool
+    department_ready: bool
+    store_mapping_ready: bool
+    template_ready: bool
+    approval_sync_ready: bool
+    department_count: int
+    store_candidate_count: int
+    mapped_store_count: int
+    template_count: int
+    enabled_template_count: int
+    configured_enabled_template_count: int
+    unconfigured_enabled_templates: list[str] = []
+    blockers: list[str] = []
+    warnings: list[str] = []
 
 
 class LedgerReportSummary(BaseModel):
@@ -807,16 +905,66 @@ class StartApprovalSyncRequest(BaseModel):
     started_by: str = Field(default="system", max_length=80)
     start_at: datetime | None = None
     end_at: datetime | None = None
-    page_size: int = Field(default=20, ge=1, le=100)
-    max_pages: int = Field(default=20, ge=1, le=200)
+    page_size: int = Field(default=10, ge=1, le=10)
+    max_pages: int = Field(default=100, ge=1, le=100)
     skip_existing: bool = True
+    run_async: bool = False
+
+    @model_validator(mode="after")
+    def validate_time_range(self) -> "StartApprovalSyncRequest":
+        start_at = (
+            self.start_at.astimezone(UTC).replace(tzinfo=None)
+            if self.start_at and self.start_at.tzinfo
+            else self.start_at
+        )
+        end_at = (
+            self.end_at.astimezone(UTC).replace(tzinfo=None)
+            if self.end_at and self.end_at.tzinfo
+            else self.end_at
+        )
+        if start_at and end_at and end_at < start_at:
+            raise ValueError("结束时间不能早于开始时间")
+        if start_at and end_at and end_at - start_at > timedelta(days=120):
+            raise ValueError("单次审批同步时间范围不能超过 120 天")
+        return self
+
+
+class StartStoreApprovalSyncRequest(BaseModel):
+    store_id: str = Field(min_length=1, max_length=32)
+    ledger_period: str = Field(pattern=r"^\d{4}-(0[1-9]|1[0-2])$")
+    template_id: str | None = None
+    started_by: str = Field(default="system", max_length=80)
+    start_at: datetime | None = None
+    end_at: datetime | None = None
+    skip_existing: bool = True
+
+    @model_validator(mode="after")
+    def validate_time_range(self) -> "StartStoreApprovalSyncRequest":
+        if (self.start_at is None) != (self.end_at is None):
+            raise ValueError("开始时间和结束时间必须同时提供")
+        start_at = (
+            self.start_at.astimezone(UTC).replace(tzinfo=None)
+            if self.start_at and self.start_at.tzinfo
+            else self.start_at
+        )
+        end_at = (
+            self.end_at.astimezone(UTC).replace(tzinfo=None)
+            if self.end_at and self.end_at.tzinfo
+            else self.end_at
+        )
+        if start_at and end_at and end_at <= start_at:
+            raise ValueError("结束时间必须晚于开始时间")
+        if start_at and end_at and end_at - start_at > timedelta(days=120):
+            raise ValueError("单次审批同步时间范围不能超过 120 天")
+        return self
 
 
 class ResumeApprovalSyncRequest(BaseModel):
     started_by: str = Field(default="system", max_length=80)
-    page_size: int = Field(default=20, ge=1, le=100)
-    max_pages: int = Field(default=20, ge=1, le=200)
+    page_size: int = Field(default=10, ge=1, le=10)
+    max_pages: int = Field(default=100, ge=1, le=100)
     skip_existing: bool = True
+    run_async: bool = False
 
 
 class SyncJobRead(BaseModel):
@@ -838,6 +986,16 @@ class SyncJobRead(BaseModel):
     raw_summary: str | None
     created_at: datetime
     updated_at: datetime
+
+
+class StoreApprovalSyncResult(BaseModel):
+    job: SyncJobRead
+    store_id: str
+    ledger_period: str
+    scanned_count: int
+    matched_count: int
+    outside_scope_count: int
+    unresolved_store_count: int
 
 
 class DingTalkAutoSyncRunResult(BaseModel):
@@ -910,6 +1068,7 @@ class ApprovalInstanceRead(BaseModel):
     dingtalk_modified_at: datetime | None = None
     raw_payload: str | None
     synced_job_id: str | None
+    node_name_map: dict[str, str] = Field(default_factory=dict)
     expense_item_count: int = 0
     classified_expense_item_count: int = 0
     matched_expense_item_count: int = 0

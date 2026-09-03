@@ -46,13 +46,21 @@ class DingTalkClient:
         return str(token)
 
     def list_processes_by_user(self, user_id: str, offset: int = 0, size: int = 100) -> list[dict[str, Any]]:
-        data = self._post_oapi_json(
-            "/topapi/process/listbyuserid",
-            {"userid": user_id, "offset": offset, "size": size},
-        )
-        result = data.get("result") or {}
-        items = result.get("process_list") or result.get("list") or []
-        return [item for item in items if isinstance(item, dict)]
+        page_size = min(max(size, 1), 100)
+        current_offset = max(offset, 0)
+        processes: list[dict[str, Any]] = []
+        while True:
+            data = self._post_oapi_json(
+                "/topapi/process/listbyuserid",
+                {"userid": user_id, "offset": current_offset, "size": page_size},
+            )
+            result = data.get("result") or {}
+            items = [item for item in (result.get("process_list") or result.get("list") or []) if isinstance(item, dict)]
+            processes.extend(items)
+            if len(items) < page_size:
+                return processes
+            current_offset += page_size
+            sleep(0.1)
 
     def list_child_departments(self, dept_id: int | str = 1) -> list[dict[str, Any]]:
         data = self._post_oapi_json(
@@ -70,6 +78,7 @@ class DingTalkClient:
         cursor: int = 0,
         size: int = 20,
     ) -> tuple[list[str], int | None]:
+        page_size = min(max(size, 1), 10)
         data = self._post_oapi_json(
             "/topapi/processinstance/listids",
             {
@@ -77,7 +86,7 @@ class DingTalkClient:
                 "start_time": start_time_ms,
                 "end_time": end_time_ms,
                 "cursor": cursor,
-                "size": size,
+                "size": page_size,
             },
         )
         result = data.get("result") or {}

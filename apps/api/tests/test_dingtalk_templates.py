@@ -1,5 +1,5 @@
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from fastapi.testclient import TestClient
 from sqlalchemy import select
@@ -17,8 +17,81 @@ from app.models import (
     MatchStatus,
     SyncJob,
     TemplateFieldMapping,
+    utc_now,
 )
-from app.modules.dingtalk.client import DingTalkClientError
+from app.modules.dingtalk.client import DingTalkClient, DingTalkClientError, DingTalkCredentials
+
+
+def enable_synced_templates(client: TestClient) -> list[dict]:
+    templates = client.get("/api/dingtalk/templates?page_size=200").json()["data"]["items"]
+    for template in templates:
+        client.patch(f"/api/dingtalk/templates/{template['id']}", json={"is_enabled": True})
+    return client.get("/api/dingtalk/templates?page_size=200").json()["data"]["items"]
+
+
+def test_dingtalk_client_list_processes_by_user_paginates(monkeypatch) -> None:
+    import httpx
+
+    monkeypatch.setattr("app.modules.dingtalk.client.sleep", lambda _seconds: None)
+    requested_offsets: list[int] = []
+
+    def response(url: str, payload: dict) -> httpx.Response:
+        return httpx.Response(200, json=payload, request=httpx.Request("POST", url))
+
+    def fake_post(url: str, **kwargs):
+        if url.endswith("/v1.0/oauth2/accessToken"):
+            return response(url, {"accessToken": "token-1"})
+
+        payload = kwargs["json"]
+        offset = payload["offset"]
+        requested_offsets.append(offset)
+        if offset == 0:
+            processes = [
+                {"process_code": f"PROC-{index}", "name": f"审批模板 {index}"}
+                for index in range(100)
+            ]
+        elif offset == 100:
+            processes = [{"process_code": "PROC-100", "name": "审批模板 100"}]
+        else:
+            processes = []
+        return response(url, {"errcode": 0, "result": {"process_list": processes}})
+
+    monkeypatch.setattr("app.modules.dingtalk.client.httpx.post", fake_post)
+
+    client = DingTalkClient(DingTalkCredentials(app_key="key", app_secret="secret"))
+    processes = client.list_processes_by_user("admin-user")
+
+    assert len(processes) == 101
+    assert requested_offsets == [0, 100]
+
+
+def test_dingtalk_client_clamps_process_instance_page_size(monkeypatch) -> None:
+    import httpx
+
+    requested_sizes: list[int] = []
+
+    def response(url: str, payload: dict) -> httpx.Response:
+        return httpx.Response(200, json=payload, request=httpx.Request("POST", url))
+
+    def fake_post(url: str, **kwargs):
+        if url.endswith("/v1.0/oauth2/accessToken"):
+            return response(url, {"accessToken": "token-1"})
+        requested_sizes.append(kwargs["json"]["size"])
+        return response(url, {"errcode": 0, "result": {"list": [], "next_cursor": None}})
+
+    monkeypatch.setattr("app.modules.dingtalk.client.httpx.post", fake_post)
+
+    client = DingTalkClient(DingTalkCredentials(app_key="key", app_secret="secret"))
+    ids, next_cursor = client.list_process_instance_ids(
+        "PROC-1",
+        start_time_ms=1786752000000,
+        end_time_ms=1786838400000,
+        size=100,
+    )
+
+    assert ids == []
+    assert next_cursor is None
+    assert requested_sizes == [10]
 
 
 def test_sync_templates_and_upsert_mapping(client: TestClient) -> None:
@@ -30,6 +103,7 @@ def test_sync_templates_and_upsert_mapping(client: TestClient) -> None:
     assert templates_response.status_code == 200
     templates = templates_response.json()["data"]["items"]
     assert len(templates) == 2
+    assert [template["is_enabled"] for template in templates] == [False, False]
     template_id = templates[0]["id"]
 
     mapping_response = client.post(
@@ -83,9 +157,114 @@ def test_sync_templates_and_upsert_mapping(client: TestClient) -> None:
     assert client.get(f"/api/dingtalk/templates/{template_id}/mappings").json()["data"] == []
 
 
+def test_template_nodes_are_returned_with_approval_instance(client: TestClient, session) -> None:
+    client.post("/api/dingtalk/templates/sync")
+    template_id = client.get("/api/dingtalk/templates").json()["data"]["items"][0]["id"]
+    client.patch(f"/api/dingtalk/templates/{template_id}", json={"is_enabled": True})
+
+    create_response = client.post(
+        f"/api/dingtalk/templates/{template_id}/nodes",
+        json={
+            "activity_id": "be99_0251",
+            "node_name": "财务审批",
+            "node_type": "approval",
+            "sort_order": 1,
+            "is_active": True,
+        },
+    )
+    assert create_response.status_code == 201
+    node = create_response.json()["data"]
+    assert node["node_name"] == "财务审批"
+
+    session.add(
+        ApprovalInstance(
+            template_id=template_id,
+            dingtalk_instance_id="node-name-instance",
+            approval_no="202609030001",
+            approval_status="agree",
+            raw_payload=json.dumps(
+                {
+                    "business_id": "202609030001",
+                    "tasks": [{"activity_id": "be99_0251", "userid": "user-1"}],
+                    "form_component_values": [],
+                },
+                ensure_ascii=False,
+            ),
+        )
+    )
+    session.commit()
+
+    instance_response = client.get(f"/api/dingtalk/approval-instances?template_id={template_id}")
+    assert instance_response.status_code == 200
+    instance = instance_response.json()["data"]["items"][0]
+    assert instance["node_name_map"] == {"be99_0251": "财务审批"}
+
+    update_response = client.patch(
+        f"/api/dingtalk/templates/{template_id}/nodes/{node['id']}",
+        json={"node_name": "出纳复核"},
+    )
+    assert update_response.status_code == 200
+    assert update_response.json()["data"]["node_name"] == "出纳复核"
+
+    delete_response = client.delete(f"/api/dingtalk/templates/{template_id}/nodes/{node['id']}")
+    assert delete_response.status_code == 200
+    assert delete_response.json()["data"]["ok"] is True
+
+
+def test_cancel_running_sync_job(client: TestClient, session) -> None:
+    running_job = SyncJob(
+        job_type="dingtalk_approval_sync",
+        status="running",
+        started_by="tester",
+        started_at=utc_now(),
+    )
+    finished_job = SyncJob(
+        job_type="dingtalk_approval_sync",
+        status="succeeded",
+        started_by="tester",
+        started_at=utc_now(),
+        finished_at=utc_now(),
+    )
+    session.add_all([running_job, finished_job])
+    session.commit()
+
+    response = client.post(f"/api/dingtalk/sync-jobs/{running_job.id}/cancel")
+    assert response.status_code == 200
+    assert response.json()["data"]["status"] == "canceled"
+    assert response.json()["data"]["error_message"] == "同步已取消"
+
+    conflict_response = client.post(f"/api/dingtalk/sync-jobs/{finished_job.id}/cancel")
+    assert conflict_response.status_code == 409
+
+
+def test_sync_templates_preserves_existing_enabled_state(client: TestClient) -> None:
+    sync_response = client.post("/api/dingtalk/templates/sync")
+    assert sync_response.status_code == 200
+
+    templates = client.get("/api/dingtalk/templates").json()["data"]["items"]
+    template_id = templates[0]["id"]
+    enable_response = client.patch(f"/api/dingtalk/templates/{template_id}", json={"is_enabled": True})
+    assert enable_response.status_code == 200
+    assert enable_response.json()["data"]["is_enabled"] is True
+
+    sync_again_response = client.post("/api/dingtalk/templates/sync")
+    assert sync_again_response.status_code == 200
+
+    enabled_template = client.get(f"/api/dingtalk/templates/{template_id}").json()["data"]
+    other_templates = [
+        template
+        for template in client.get("/api/dingtalk/templates").json()["data"]["items"]
+        if template["id"] != template_id
+    ]
+    assert enabled_template["is_enabled"] is True
+    assert all(template["is_enabled"] is False for template in other_templates)
+
+
 def test_auto_sync_setting_and_manual_run(client: TestClient, session) -> None:
     store_id = client.post("/api/stores", json={"name": "蘑说自动同步店"}).json()["data"]["id"]
     client.post("/api/ledgers", json={"store_id": store_id, "period": "2026-08"})
+    client.post("/api/dingtalk/templates/sync")
+    enable_synced_templates(client)
 
     setting_response = client.get("/api/dingtalk/auto-sync/settings")
     assert setting_response.status_code == 200
@@ -112,7 +291,7 @@ def test_auto_sync_setting_and_manual_run(client: TestClient, session) -> None:
     result = run_response.json()["data"]
     assert result["job"]["job_type"] == "dingtalk_auto_sync"
     assert result["job"]["status"] == "succeeded"
-    assert result["template_sync"]["created"] == 2
+    assert result["template_sync"]["created"] == 0
     assert result["job"]["success_count"] == 2
 
     saved_setting = session.scalar(select(DingTalkAutoSyncSetting))
@@ -449,6 +628,7 @@ def test_start_approval_sync_creates_job_instance_and_expense(client: TestClient
     store_id = client.post("/api/stores", json={"name": "蘑说同步店"}).json()["data"]["id"]
     client.post("/api/ledgers", json={"store_id": store_id, "period": "2026-08"})
     client.post("/api/dingtalk/templates/sync")
+    enable_synced_templates(client)
 
     response = client.post("/api/dingtalk/approval-sync", json={"started_by": "tester"})
     assert response.status_code == 201
@@ -468,6 +648,26 @@ def test_start_approval_sync_creates_job_instance_and_expense(client: TestClient
     assert expense_response.status_code == 200
     descriptions = [item["description"] for item in expense_response.json()["data"]["items"]]
     assert any("同步样例" in description for description in descriptions)
+
+
+def test_start_store_approval_sync_scopes_results_to_store_ledger(client: TestClient) -> None:
+    store_id = client.post("/api/stores", json={"name": "门店账期同步店"}).json()["data"]["id"]
+    client.post("/api/ledgers", json={"store_id": store_id, "period": "2026-08"})
+    client.post("/api/dingtalk/templates/sync")
+    enable_synced_templates(client)
+
+    response = client.post(
+        "/api/dingtalk/store-approval-sync",
+        json={"store_id": store_id, "ledger_period": "2026-08", "started_by": "tester"},
+    )
+
+    assert response.status_code == 201
+    result = response.json()["data"]
+    assert result["job"]["job_type"] == "dingtalk_store_approval_sync"
+    assert result["scanned_count"] == 2
+    assert result["matched_count"] == 2
+    assert result["outside_scope_count"] == 0
+    assert result["unresolved_store_count"] == 0
 
 
 def test_dingtalk_config_encrypts_secret(client: TestClient, session) -> None:
@@ -629,9 +829,9 @@ def test_real_approval_sync_keeps_resume_cursor_when_max_pages_reached(client: T
     )
     assert response.status_code == 201
     job = response.json()["data"]
-    assert job["status"] == "succeeded"
-    assert job["next_cursor"] == "PROC-LIMIT:1"
-    assert job["error_message"] == "DingTalk approval sync paused at max_pages; resume is available"
+    assert job["status"] == "failed"
+    assert json.loads(job["next_cursor"]) == {"cursors": {"PROC-LIMIT": 1}}
+    assert job["error_message"] == "DingTalk approval sync is incomplete; resume is required before advancing the sync window"
 
 
 def test_resume_approval_sync_uses_saved_cursor(client: TestClient, monkeypatch) -> None:
@@ -694,8 +894,8 @@ def test_resume_approval_sync_uses_saved_cursor(client: TestClient, monkeypatch)
         },
     )
     first_job = first_response.json()["data"]
-    assert first_job["status"] == "succeeded"
-    assert first_job["next_cursor"] == "PROC-RESUME:1"
+    assert first_job["status"] == "failed"
+    assert json.loads(first_job["next_cursor"]) == {"cursors": {"PROC-RESUME": 1}}
 
     resume_response = client.post(
         f"/api/dingtalk/sync-jobs/{first_job['id']}/resume",
@@ -704,8 +904,8 @@ def test_resume_approval_sync_uses_saved_cursor(client: TestClient, monkeypatch)
     assert resume_response.status_code == 201
     resume_job = resume_response.json()["data"]
     assert resume_job["status"] == "succeeded"
-    assert resume_job["processed_count"] == 1
-    assert resume_job["success_count"] == 1
+    assert resume_job["processed_count"] == 2
+    assert resume_job["success_count"] == 2
     assert resume_job["next_cursor"] is None
     assert resume_job["request_start_at"].startswith("2026-08-01")
     assert resume_job["request_end_at"].startswith("2026-08-31")
@@ -715,6 +915,61 @@ def test_resume_approval_sync_uses_saved_cursor(client: TestClient, monkeypatch)
     descriptions = [item["description"] for item in expense_response.json()["data"]["items"]]
     assert "续跑同步 instance-1" in descriptions
     assert "续跑同步 instance-2" in descriptions
+
+
+def test_approval_sync_preserves_cursors_for_multiple_templates(client: TestClient, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "dingtalk_sync_mode", "real")
+    client.put(
+        "/api/dingtalk/config",
+        json={"app_key": "ding-app-key", "app_secret": "super-secret"},
+    )
+    for process_code in ("PROC-CURSOR-A", "PROC-CURSOR-B"):
+        client.post(
+            "/api/dingtalk/templates",
+            json={"process_code": process_code, "name": process_code, "is_enabled": True},
+        )
+
+    class FakeDingTalkClient:
+        def __init__(self) -> None:
+            self.cursors: list[tuple[str, int]] = []
+
+        def list_process_instance_ids(self, process_code, start_time_ms, end_time_ms, cursor=0, size=20):
+            self.cursors.append((process_code, cursor))
+            return ([f"{process_code}-{cursor}"], 1) if cursor == 0 else ([], None)
+
+        def get_process_instance(self, instance_id):
+            return {
+                "process_instance_id": instance_id,
+                "business_id": instance_id,
+                "status": "approved",
+                "create_time": 1786752000000,
+                "form_component_values": [],
+            }
+
+    fake_client = FakeDingTalkClient()
+    monkeypatch.setattr("app.modules.dingtalk.router.dingtalk_client", lambda config: fake_client)
+    first_response = client.post(
+        "/api/dingtalk/approval-sync",
+        json={"started_by": "tester", "page_size": 1, "max_pages": 1},
+    )
+    assert first_response.status_code == 201
+    first_job = first_response.json()["data"]
+    assert json.loads(first_job["next_cursor"]) == {
+        "cursors": {"PROC-CURSOR-A": 1, "PROC-CURSOR-B": 1}
+    }
+
+    resume_response = client.post(
+        f"/api/dingtalk/sync-jobs/{first_job['id']}/resume",
+        json={"started_by": "tester", "page_size": 1, "max_pages": 1},
+    )
+    assert resume_response.status_code == 201
+    assert resume_response.json()["data"]["next_cursor"] is None
+    assert fake_client.cursors == [
+        ("PROC-CURSOR-A", 0),
+        ("PROC-CURSOR-B", 0),
+        ("PROC-CURSOR-A", 1),
+        ("PROC-CURSOR-B", 1),
+    ]
 
 
 def test_department_pull_preview_and_sync_creates_store(client: TestClient, monkeypatch) -> None:
@@ -985,6 +1240,159 @@ def test_auto_sync_uses_skip_existing_setting(client: TestClient, session, monke
 
     assert response.status_code == 201
     assert get_calls == ["auto-existing-instance"]
+
+
+def test_auto_sync_advances_approval_watermark_to_completed_window_with_overlap(
+    client: TestClient, session, monkeypatch
+) -> None:
+    monkeypatch.setattr(settings, "dingtalk_sync_mode", "real")
+    client.put(
+        "/api/dingtalk/config",
+        json={"app_key": "ding-app-key", "app_secret": "super-secret"},
+    )
+    client.post(
+        "/api/dingtalk/templates",
+        json={"process_code": "PROC-WATERMARK", "name": "水位模板", "is_enabled": True},
+    )
+    client.put(
+        "/api/dingtalk/auto-sync/settings",
+        json={"sync_departments": False, "sync_templates": False, "sync_approvals": True},
+    )
+    windows: list[tuple[int, int]] = []
+
+    class FakeDingTalkClient:
+        def list_process_instance_ids(self, process_code, start_time_ms, end_time_ms, cursor=0, size=20):
+            windows.append((start_time_ms, end_time_ms))
+            return [], None
+
+    monkeypatch.setattr("app.modules.dingtalk.router.dingtalk_client", lambda config: FakeDingTalkClient())
+    first_response = client.post("/api/dingtalk/auto-sync/run")
+    assert first_response.status_code == 201
+    first_job = first_response.json()["data"]["job"]
+    first_window_end = datetime.fromisoformat(first_job["request_end_at"])
+    setting = session.scalar(select(DingTalkAutoSyncSetting))
+    assert setting is not None
+    assert setting.approval_watermark_at == first_window_end
+    assert setting.last_run_at >= setting.approval_watermark_at
+    assert windows[0][1] - windows[0][0] <= 120 * 24 * 60 * 60 * 1000
+
+    first_watermark = setting.approval_watermark_at
+    second_response = client.post("/api/dingtalk/auto-sync/run")
+    assert second_response.status_code == 201
+    assert windows[1][0] == int((first_watermark - timedelta(minutes=10)).timestamp() * 1000)
+
+
+def test_auto_sync_failure_keeps_approval_watermark_and_window_for_retry(
+    client: TestClient, session, monkeypatch
+) -> None:
+    monkeypatch.setattr(settings, "dingtalk_sync_mode", "real")
+    client.put(
+        "/api/dingtalk/config",
+        json={"app_key": "ding-app-key", "app_secret": "super-secret"},
+    )
+    client.post(
+        "/api/dingtalk/templates",
+        json={"process_code": "PROC-WATERMARK-ERROR", "name": "失败水位模板", "is_enabled": True},
+    )
+    client.put(
+        "/api/dingtalk/auto-sync/settings",
+        json={"sync_departments": False, "sync_templates": False, "sync_approvals": True},
+    )
+    setting = session.scalar(select(DingTalkAutoSyncSetting))
+    assert setting is not None
+    original_watermark = utc_now() - timedelta(hours=2)
+    setting.approval_watermark_at = original_watermark
+    session.commit()
+
+    class FakeDingTalkClient:
+        def list_process_instance_ids(self, process_code, start_time_ms, end_time_ms, cursor=0, size=20):
+            raise DingTalkClientError("temporary DingTalk error")
+
+    monkeypatch.setattr("app.modules.dingtalk.router.dingtalk_client", lambda config: FakeDingTalkClient())
+    response = client.post("/api/dingtalk/auto-sync/run")
+    assert response.status_code == 201
+    assert response.json()["data"]["job"]["status"] == "failed"
+    session.refresh(setting)
+    assert setting.approval_watermark_at == original_watermark
+    assert setting.approval_resume_state is not None
+
+
+def test_auto_sync_refreshes_pending_approval_not_returned_by_new_window(
+    client: TestClient, session, monkeypatch
+) -> None:
+    monkeypatch.setattr(settings, "dingtalk_sync_mode", "real")
+    client.put(
+        "/api/dingtalk/config",
+        json={"app_key": "ding-app-key", "app_secret": "super-secret"},
+    )
+    store_id = client.post(
+        "/api/stores",
+        json={"name": "历史待处理审批门店", "dingtalk_dept_id": "dept-pending-refresh"},
+    ).json()["data"]["id"]
+    template_id = client.post(
+        "/api/dingtalk/templates",
+        json={"process_code": "PROC-PENDING-REFRESH", "name": "待处理刷新模板", "is_enabled": True},
+    ).json()["data"]["id"]
+    for standard_field, source_field_name in [
+        ("store", "门店"),
+        ("amount", "金额"),
+        ("expense_date", "日期"),
+        ("description", "说明"),
+    ]:
+        client.post(
+            f"/api/dingtalk/templates/{template_id}/mappings",
+            json={"standard_field": standard_field, "source_field_name": source_field_name},
+        )
+    session.add(
+        ApprovalInstance(
+            template_id=template_id,
+            dingtalk_instance_id="old-pending-instance",
+            approval_status="running",
+            parse_status="unparsed",
+            processing_status="unparsed",
+            submit_at=utc_now() - timedelta(days=30),
+        )
+    )
+    session.commit()
+    client.put(
+        "/api/dingtalk/auto-sync/settings",
+        json={"sync_departments": False, "sync_templates": False, "sync_approvals": True},
+    )
+    detail_calls: list[str] = []
+
+    class FakeDingTalkClient:
+        def list_process_instance_ids(self, process_code, start_time_ms, end_time_ms, cursor=0, size=20):
+            return [], None
+
+        def get_process_instance(self, instance_id):
+            detail_calls.append(instance_id)
+            return {
+                "process_instance_id": instance_id,
+                "business_id": "NO-PENDING-REFRESH",
+                "originator_dept_id": "dept-pending-refresh",
+                "status": "COMPLETED",
+                "result": "agree",
+                "create_time": "2026-08-01 10:00:00",
+                "finish_time": "2026-09-01 10:00:00",
+                "form_component_values": [
+                    {"name": "门店", "value": "历史待处理审批门店"},
+                    {"name": "金额", "value": "66.00"},
+                    {"name": "日期", "value": "2026-09-01"},
+                    {"name": "说明", "value": "历史审批补拉"},
+                ],
+            }
+
+    monkeypatch.setattr("app.modules.dingtalk.router.dingtalk_client", lambda config: FakeDingTalkClient())
+    response = client.post("/api/dingtalk/auto-sync/run")
+    assert response.status_code == 201
+    assert detail_calls == ["old-pending-instance"]
+    instance = session.scalar(
+        select(ApprovalInstance).where(ApprovalInstance.dingtalk_instance_id == "old-pending-instance")
+    )
+    assert instance is not None
+    assert instance.store_id == store_id
+    assert instance.parse_status == "parsed"
+    assert instance.approved_at is not None
 
 
 def test_real_approval_sync_returns_failed_job_on_dingtalk_error(client: TestClient, monkeypatch) -> None:

@@ -6,16 +6,17 @@ from time import sleep
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.crypto import decrypt_secret, encrypt_secret
-from app.core.database import get_session
+from app.core.database import SessionLocal, get_session
 from app.models import (
     ApprovalInstance,
     ApprovalTemplate,
+    ApprovalTemplateNode,
     Attachment,
     AttachmentStatus,
     DingTalkAutoSyncSetting,
@@ -47,6 +48,9 @@ from app.schemas import (
     ApprovalParsePreview,
     ApprovalReparseRequest,
     ApprovalReparseResult,
+    ApprovalTemplateNodeCreate,
+    ApprovalTemplateNodeRead,
+    ApprovalTemplateNodeUpdate,
     ApprovalTemplateCreate,
     ApprovalTemplateRead,
     ApprovalTemplateUpdate,
@@ -59,6 +63,7 @@ from app.schemas import (
     DingTalkDepartmentRead,
     DingTalkDepartmentSyncPreview,
     DingTalkDepartmentSyncResult,
+    DingTalkSyncReadiness,
     Page,
     ResumeApprovalSyncRequest,
     StartApprovalSyncRequest,
@@ -82,7 +87,7 @@ router = APIRouter(
 AUTO_SYNC_TIMEZONE = ZoneInfo("Asia/Shanghai")
 AUTO_SYNC_DEPARTMENT_ROOT_ID = "1"
 AUTO_SYNC_DEPARTMENT_MAX_DEPTH = 8
-AUTO_SYNC_APPROVAL_PAGE_SIZE = 20
+AUTO_SYNC_APPROVAL_PAGE_SIZE = 10
 AUTO_SYNC_APPROVAL_MAX_PAGES = 100
 AUTO_SYNC_INITIAL_APPROVAL_LOOKBACK_DAYS = 120
 APPROVAL_SYNC_MAX_WINDOW_DAYS = 120
@@ -90,6 +95,10 @@ APPROVAL_SYNC_MAX_LOOKBACK_DAYS = 365
 APPROVAL_SYNC_OVERLAP = timedelta(minutes=10)
 COMPLETED_APPROVAL_STATUSES = {"agree", "approved", "completed", "finish", "success"}
 RESYNC_PROCESSING_STATUSES = {"unparsed", "sync_conflict", "pending_classification"}
+
+
+class ApprovalSyncCanceled(Exception):
+    pass
 
 
 def template_mapping_status(session: Session, template_id: str) -> str:
@@ -115,6 +124,93 @@ def template_read(session: Session, template: ApprovalTemplate) -> ApprovalTempl
         raw_snapshot=template.raw_snapshot,
         created_at=template.created_at,
         updated_at=template.updated_at,
+    )
+
+
+def build_sync_readiness(session: Session) -> DingTalkSyncReadiness:
+    config = get_or_create_config(session)
+    sync_mode = settings.dingtalk_sync_mode.lower()
+    config_ready = bool(dingtalk_credentials(config))
+    department_count = session.scalar(
+        select(func.count()).select_from(DingTalkDepartmentModel).where(DingTalkDepartmentModel.is_active.is_(True))
+    ) or 0
+    store_candidate_count = session.scalar(
+        select(func.count())
+        .select_from(DingTalkDepartmentModel)
+        .where(
+            DingTalkDepartmentModel.is_active.is_(True),
+            DingTalkDepartmentModel.is_store_candidate.is_(True),
+        )
+    ) or 0
+    mapped_store_count = session.scalar(
+        select(func.count())
+        .select_from(DingTalkDepartmentModel)
+        .where(
+            DingTalkDepartmentModel.is_active.is_(True),
+            DingTalkDepartmentModel.is_store_candidate.is_(True),
+            DingTalkDepartmentModel.store_id.is_not(None),
+        )
+    ) or 0
+    template_count = session.scalar(select(func.count()).select_from(ApprovalTemplate)) or 0
+    enabled_templates = list(
+        session.scalars(
+            select(ApprovalTemplate)
+            .where(ApprovalTemplate.is_enabled.is_(True))
+            .order_by(ApprovalTemplate.created_at.asc())
+        )
+    )
+    enabled_template_ids = [template.id for template in enabled_templates]
+    configured_template_ids: set[str] = set()
+    if enabled_template_ids:
+        configured_template_ids = set(
+            session.scalars(
+                select(TemplateFieldMapping.template_id)
+                .where(
+                    TemplateFieldMapping.template_id.in_(enabled_template_ids),
+                    ~TemplateFieldMapping.standard_field.startswith("display:"),
+                )
+                .distinct()
+            )
+        )
+
+    unconfigured_enabled_templates = [
+        template.name for template in enabled_templates if template.id not in configured_template_ids
+    ]
+    blockers: list[str] = []
+    warnings: list[str] = []
+    if not config_ready:
+        blockers.append("钉钉应用凭证未配置完整")
+    if department_count == 0:
+        blockers.append("请先同步钉钉部门快照")
+    if mapped_store_count == 0:
+        blockers.append("请先把候选门店部门落库或映射到门店")
+    if template_count == 0:
+        blockers.append("请先同步审批模板")
+    if template_count > 0 and not enabled_templates:
+        blockers.append("请至少启用一个审批模板")
+    if unconfigured_enabled_templates:
+        blockers.append("启用的审批模板需要先配置解析规则")
+    if store_candidate_count > 0 and mapped_store_count < store_candidate_count:
+        warnings.append("还有候选门店部门未完成门店映射")
+    if sync_mode != "real":
+        warnings.append("当前审批同步模式是 mock，审批模板和审批列表会使用本地演示数据；部门同步仍会读取钉钉部门接口")
+
+    return DingTalkSyncReadiness(
+        sync_mode=sync_mode,
+        config_ready=config_ready,
+        department_ready=department_count > 0,
+        store_mapping_ready=mapped_store_count > 0,
+        template_ready=bool(enabled_templates) and not unconfigured_enabled_templates,
+        approval_sync_ready=not blockers,
+        department_count=department_count,
+        store_candidate_count=store_candidate_count,
+        mapped_store_count=mapped_store_count,
+        template_count=template_count,
+        enabled_template_count=len(enabled_templates),
+        configured_enabled_template_count=len(configured_template_ids),
+        unconfigured_enabled_templates=unconfigured_enabled_templates[:8],
+        blockers=blockers,
+        warnings=warnings,
     )
 
 
@@ -220,6 +316,14 @@ def update_config(
     session.commit()
     session.refresh(config)
     return ApiEnvelope(data=mask_config(config))
+
+
+@router.get("/sync-readiness", response_model=ApiEnvelope[DingTalkSyncReadiness])
+def read_sync_readiness(
+    session: Session = Depends(get_session),
+    _: User = Depends(require_permission("dingtalk.view")),
+) -> ApiEnvelope[DingTalkSyncReadiness]:
+    return ApiEnvelope(data=build_sync_readiness(session))
 
 
 @router.post("/connection-test", response_model=ApiEnvelope[dict[str, str]])
@@ -514,6 +618,7 @@ def sync_templates_core(session: Session) -> dict[str, int]:
             template = ApprovalTemplate(
                 process_code=process_code,
                 name=name,
+                is_enabled=False,
                 last_sync_at=now,
                 raw_snapshot=raw_snapshot,
             )
@@ -564,6 +669,125 @@ def list_template_mappings(
         .order_by(TemplateFieldMapping.sort_order.asc(), TemplateFieldMapping.created_at.asc())
     ).all()
     return ApiEnvelope(data=mappings)
+
+
+@router.get(
+    "/templates/{template_id}/nodes",
+    response_model=ApiEnvelope[list[ApprovalTemplateNodeRead]],
+)
+def list_template_nodes(
+    template_id: str,
+    session: Session = Depends(get_session),
+) -> ApiEnvelope[list[ApprovalTemplateNodeRead]]:
+    if session.get(ApprovalTemplate, template_id) is None:
+        raise HTTPException(status_code=404, detail="Template not found")
+    nodes = session.scalars(
+        select(ApprovalTemplateNode)
+        .where(ApprovalTemplateNode.template_id == template_id)
+        .order_by(ApprovalTemplateNode.sort_order.asc(), ApprovalTemplateNode.created_at.asc())
+    ).all()
+    return ApiEnvelope(data=nodes)
+
+
+@router.post(
+    "/templates/{template_id}/nodes",
+    response_model=ApiEnvelope[ApprovalTemplateNodeRead],
+    status_code=201,
+)
+def upsert_template_node(
+    template_id: str,
+    payload: ApprovalTemplateNodeCreate,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_permission("dingtalk.manage")),
+) -> ApiEnvelope[ApprovalTemplateNodeRead]:
+    template = session.get(ApprovalTemplate, template_id)
+    if template is None:
+        raise HTTPException(status_code=404, detail="Template not found")
+    node = session.scalar(
+        select(ApprovalTemplateNode).where(
+            ApprovalTemplateNode.template_id == template_id,
+            ApprovalTemplateNode.activity_id == payload.activity_id,
+        )
+    )
+    if node is None:
+        node = ApprovalTemplateNode(template_id=template_id, **payload.model_dump())
+        session.add(node)
+    else:
+        for key, value in payload.model_dump().items():
+            setattr(node, key, value)
+    write_audit_log(
+        session,
+        actor=audit_actor(current_user),
+        action="dingtalk.template_node.upsert",
+        resource_type="approval_template_node",
+        resource_id=node.id,
+        summary=f"维护审批节点：{payload.activity_id} -> {payload.node_name}",
+        metadata={"template_id": template.id, "template_name": template.name},
+    )
+    session.commit()
+    session.refresh(node)
+    return ApiEnvelope(data=node)
+
+
+@router.patch(
+    "/templates/{template_id}/nodes/{node_id}",
+    response_model=ApiEnvelope[ApprovalTemplateNodeRead],
+)
+def update_template_node(
+    template_id: str,
+    node_id: str,
+    payload: ApprovalTemplateNodeUpdate,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_permission("dingtalk.manage")),
+) -> ApiEnvelope[ApprovalTemplateNodeRead]:
+    if session.get(ApprovalTemplate, template_id) is None:
+        raise HTTPException(status_code=404, detail="Template not found")
+    node = session.get(ApprovalTemplateNode, node_id)
+    if node is None or node.template_id != template_id:
+        raise HTTPException(status_code=404, detail="Template node not found")
+    for key, value in payload.model_dump(exclude_unset=True).items():
+        setattr(node, key, value)
+    write_audit_log(
+        session,
+        actor=audit_actor(current_user),
+        action="dingtalk.template_node.update",
+        resource_type="approval_template_node",
+        resource_id=node.id,
+        summary=f"更新审批节点：{node.activity_id}",
+        metadata={"template_id": template_id},
+    )
+    session.commit()
+    session.refresh(node)
+    return ApiEnvelope(data=node)
+
+
+@router.delete(
+    "/templates/{template_id}/nodes/{node_id}",
+    response_model=ApiEnvelope[dict[str, bool]],
+)
+def delete_template_node(
+    template_id: str,
+    node_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_permission("dingtalk.manage")),
+) -> ApiEnvelope[dict[str, bool]]:
+    if session.get(ApprovalTemplate, template_id) is None:
+        raise HTTPException(status_code=404, detail="Template not found")
+    node = session.get(ApprovalTemplateNode, node_id)
+    if node is None or node.template_id != template_id:
+        raise HTTPException(status_code=404, detail="Template node not found")
+    write_audit_log(
+        session,
+        actor=audit_actor(current_user),
+        action="dingtalk.template_node.delete",
+        resource_type="approval_template_node",
+        resource_id=node.id,
+        summary=f"删除审批节点：{node.activity_id}",
+        metadata={"template_id": template_id},
+    )
+    session.delete(node)
+    session.commit()
+    return ApiEnvelope(data={"ok": True})
 
 
 def candidate_label(value: dict[str, Any]) -> str | None:
@@ -814,6 +1038,16 @@ def approval_raw_payload(instance: ApprovalInstance) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def template_node_name_map(session: Session, template_id: str) -> dict[str, str]:
+    nodes = session.scalars(
+        select(ApprovalTemplateNode).where(
+            ApprovalTemplateNode.template_id == template_id,
+            ApprovalTemplateNode.is_active.is_(True),
+        )
+    ).all()
+    return {node.activity_id: node.node_name for node in nodes}
+
+
 def approval_originator_dept_id(payload: dict[str, Any]) -> str | None:
     value = payload.get("originator_dept_id") or payload.get("originatorDeptId")
     return parse_text(value)
@@ -877,8 +1111,10 @@ def approval_instance_read(
         last_parsed_at=instance.last_parsed_at,
         submit_at=instance.submit_at,
         approved_at=instance.approved_at,
+        dingtalk_modified_at=instance.dingtalk_modified_at,
         raw_payload=instance.raw_payload,
         synced_job_id=instance.synced_job_id,
+        node_name_map=template_node_name_map(session, instance.template_id),
         expense_item_count=stats["expense_item_count"],
         classified_expense_item_count=stats["classified_expense_item_count"],
         matched_expense_item_count=stats["matched_expense_item_count"],
@@ -2035,16 +2271,31 @@ def create_dingtalk_attachment_placeholders(
     resource_id: str,
     values: list[dict[str, str | None]],
 ) -> None:
+    seen_external_ids: set[str] = set()
     for item in values:
         external_file_id = item.get("external_file_id")
-        if not external_file_id:
+        if not external_file_id or external_file_id in seen_external_ids:
             continue
-        exists = session.scalar(
-            select(Attachment).where(
-                Attachment.source == "dingtalk",
-                Attachment.external_file_id == external_file_id,
-            )
+        seen_external_ids.add(external_file_id)
+        pending_exists = any(
+            isinstance(pending, Attachment)
+            and pending.resource_type == resource_type
+            and pending.resource_id == resource_id
+            and pending.source == "dingtalk"
+            and pending.external_file_id == external_file_id
+            for pending in session.new
         )
+        if pending_exists:
+            continue
+        with session.no_autoflush:
+            exists = session.scalar(
+                select(Attachment).where(
+                    Attachment.resource_type == resource_type,
+                    Attachment.resource_id == resource_id,
+                    Attachment.source == "dingtalk",
+                    Attachment.external_file_id == external_file_id,
+                )
+            )
         if exists is not None:
             continue
         session.add(
@@ -2803,6 +3054,16 @@ def approval_needs_detail_resync(instance: ApprovalInstance) -> bool:
     return isinstance(parsed, dict) and parsed.get("expense_parse_status") == "skipped"
 
 
+def ensure_sync_job_not_canceled(session: Session, job: SyncJob) -> None:
+    session.flush()
+    session.refresh(job)
+    if job.status == SyncJobStatus.CANCELED.value:
+        job.finished_at = job.finished_at or utc_now()
+        job.error_message = job.error_message or "同步已取消"
+        session.commit()
+        raise ApprovalSyncCanceled
+
+
 def run_approval_sync(
     session: Session,
     *,
@@ -2818,6 +3079,7 @@ def run_approval_sync(
     handled_instance_ids: set[str] = set()
     resume_cursors = resume_cursors or {}
     for template in templates:
+        ensure_sync_job_not_canceled(session, job)
         if should_use_real_dingtalk():
             config = get_or_create_config(session)
             client = dingtalk_client(config)
@@ -2830,6 +3092,7 @@ def run_approval_sync(
             template_skipped_existing = 0
             template_next_cursor: str | None = None
             for page_index in range(max_pages):
+                ensure_sync_job_not_canceled(session, job)
                 ids, next_cursor = client.list_process_instance_ids(
                     template.process_code,
                     int(start_at.timestamp() * 1000),
@@ -2839,6 +3102,7 @@ def run_approval_sync(
                 )
                 template_next_cursor = str(next_cursor) if next_cursor is not None else None
                 for instance_id in ids:
+                    ensure_sync_job_not_canceled(session, job)
                     handled_instance_ids.add(instance_id)
                     job.processed_count += 1
                     template_processed += 1
@@ -2883,6 +3147,7 @@ def run_approval_sync(
                 }
             )
         else:
+            ensure_sync_job_not_canceled(session, job)
             job.processed_count += 1
             instance = create_expense_from_instance(session, template, job)
             if instance is None:
@@ -2922,6 +3187,7 @@ def run_approval_sync(
             config = get_or_create_config(session)
             client = dingtalk_client(config)
             for instance in retry_instances:
+                ensure_sync_job_not_canceled(session, job)
                 if instance.dingtalk_instance_id in handled_instance_ids or not approval_needs_detail_resync(instance):
                     continue
                 # ✅ 再次获取排他锁，防止并发修改
@@ -2949,6 +3215,7 @@ def run_approval_sync(
 
     if retry_refreshed_count:
         template_summaries.append({"retry_refreshed_count": retry_refreshed_count})
+    ensure_sync_job_not_canceled(session, job)
     job.next_cursor = serialize_sync_cursors(incomplete_cursors)
     if incomplete_cursors:
         job.status = SyncJobStatus.FAILED.value
@@ -3260,9 +3527,87 @@ def run_auto_sync_now(
     return ApiEnvelope(data=execute_auto_sync(session, setting, started_by=audit_actor(current_user)))
 
 
+def execute_approval_sync_job(
+    job_id: str,
+    template_ids: list[str],
+    *,
+    page_size: int,
+    max_pages: int,
+    skip_existing: bool,
+    actor: str,
+    action: str = "dingtalk.approval_sync",
+    resume_cursors: dict[str, int] | None = None,
+) -> None:
+    with SessionLocal() as session:
+        job = session.get(SyncJob, job_id)
+        if job is None:
+            return
+        templates = list(
+            session.scalars(
+                select(ApprovalTemplate)
+                .where(
+                    ApprovalTemplate.id.in_(template_ids),
+                    ApprovalTemplate.is_enabled.is_(True),
+                )
+                .order_by(ApprovalTemplate.created_at.asc())
+            )
+        )
+        try:
+            run_approval_sync(
+                session,
+                job=job,
+                templates=templates,
+                page_size=page_size,
+                max_pages=max_pages,
+                skip_existing=skip_existing,
+                resume_cursors=resume_cursors,
+            )
+            write_audit_log(
+                session,
+                actor=actor,
+                action=action,
+                resource_type="sync_job",
+                resource_id=job.id,
+                summary=f"同步钉钉审批：成功 {job.success_count} 条，失败 {job.failed_count} 条",
+            )
+            session.commit()
+        except ApprovalSyncCanceled:
+            write_audit_log(
+                session,
+                actor=actor,
+                action=f"{action}.canceled",
+                resource_type="sync_job",
+                resource_id=job.id,
+                summary="取消钉钉审批同步",
+            )
+            session.commit()
+        except DingTalkClientError as exc:
+            job.status = SyncJobStatus.FAILED.value
+            job.failed_count += 1
+            job.error_message = str(exc)
+            job.finished_at = utc_now()
+            job.raw_summary = json.dumps({"error": str(exc)}, ensure_ascii=False)
+            write_audit_log(
+                session,
+                actor=actor,
+                action=f"{action}.failed",
+                resource_type="sync_job",
+                resource_id=job.id,
+                summary=f"同步钉钉审批失败：{exc}",
+            )
+            session.commit()
+        except Exception as exc:
+            job.status = SyncJobStatus.FAILED.value
+            job.error_message = str(exc)
+            job.finished_at = utc_now()
+            session.commit()
+            raise
+
+
 @router.post("/approval-sync", response_model=ApiEnvelope[SyncJobRead], status_code=201)
 def start_approval_sync(
     payload: StartApprovalSyncRequest,
+    background_tasks: BackgroundTasks,
     session: Session = Depends(get_session),
     current_user: User = Depends(require_permission("dingtalk.manage")),
 ) -> ApiEnvelope[SyncJobRead]:
@@ -3281,16 +3626,30 @@ def start_approval_sync(
         requested_start_at,
         requested_end_at,
     )
+    actor = audit_actor(current_user, payload.started_by)
     job = SyncJob(
         job_type="dingtalk_approval_sync",
         status=SyncJobStatus.RUNNING.value,
-        started_by=audit_actor(current_user, payload.started_by),
+        started_by=actor,
         started_at=utc_now(),
         request_start_at=requested_start_at,
         request_end_at=requested_end_at,
     )
     session.add(job)
     session.flush()
+    if payload.run_async:
+        session.commit()
+        background_tasks.add_task(
+            execute_approval_sync_job,
+            job.id,
+            [template.id for template in templates],
+            page_size=payload.page_size,
+            max_pages=payload.max_pages,
+            skip_existing=payload.skip_existing,
+            actor=actor,
+        )
+        session.refresh(job)
+        return ApiEnvelope(data=job)
 
     try:
         run_approval_sync(
@@ -3303,11 +3662,21 @@ def start_approval_sync(
         )
         write_audit_log(
             session,
-            actor=audit_actor(current_user, payload.started_by),
+            actor=actor,
             action="dingtalk.approval_sync",
             resource_type="sync_job",
             resource_id=job.id,
             summary=f"同步钉钉审批：成功 {job.success_count} 条，失败 {job.failed_count} 条",
+        )
+        session.commit()
+    except ApprovalSyncCanceled:
+        write_audit_log(
+            session,
+            actor=actor,
+            action="dingtalk.approval_sync.canceled",
+            resource_type="sync_job",
+            resource_id=job.id,
+            summary="取消钉钉审批同步",
         )
         session.commit()
     except DingTalkClientError as exc:
@@ -3318,7 +3687,7 @@ def start_approval_sync(
         job.raw_summary = json.dumps({"error": str(exc)}, ensure_ascii=False)
         write_audit_log(
             session,
-            actor=audit_actor(current_user, payload.started_by),
+            actor=actor,
             action="dingtalk.approval_sync.failed",
             resource_type="sync_job",
             resource_id=job.id,
@@ -3467,6 +3836,7 @@ def start_store_approval_sync(
 def resume_approval_sync(
     job_id: str,
     payload: ResumeApprovalSyncRequest,
+    background_tasks: BackgroundTasks,
     session: Session = Depends(get_session),
     current_user: User = Depends(require_permission("dingtalk.manage")),
 ) -> ApiEnvelope[SyncJobRead]:
@@ -3487,10 +3857,11 @@ def resume_approval_sync(
     if len(templates) != len(resume_cursors):
         raise HTTPException(status_code=404, detail="Approval template for cursor not found")
 
+    actor = audit_actor(current_user, payload.started_by)
     job = SyncJob(
         job_type="dingtalk_approval_sync",
         status=SyncJobStatus.RUNNING.value,
-        started_by=audit_actor(current_user, payload.started_by),
+        started_by=actor,
         started_at=utc_now(),
         request_start_at=previous_job.request_start_at,
         request_end_at=previous_job.request_end_at,
@@ -3498,6 +3869,21 @@ def resume_approval_sync(
     )
     session.add(job)
     session.flush()
+    if payload.run_async:
+        session.commit()
+        background_tasks.add_task(
+            execute_approval_sync_job,
+            job.id,
+            [template.id for template in templates],
+            page_size=payload.page_size,
+            max_pages=payload.max_pages,
+            skip_existing=payload.skip_existing,
+            actor=actor,
+            action="dingtalk.approval_sync.resume",
+            resume_cursors=resume_cursors,
+        )
+        session.refresh(job)
+        return ApiEnvelope(data=job)
 
     try:
         run_approval_sync(
@@ -3511,11 +3897,22 @@ def resume_approval_sync(
         )
         write_audit_log(
             session,
-            actor=audit_actor(current_user, payload.started_by),
+            actor=actor,
             action="dingtalk.approval_sync.resume",
             resource_type="sync_job",
             resource_id=job.id,
             summary=f"续跑钉钉审批同步：成功 {job.success_count} 条，失败 {job.failed_count} 条",
+            metadata={"previous_job_id": previous_job.id, "resume_cursor": previous_job.next_cursor},
+        )
+        session.commit()
+    except ApprovalSyncCanceled:
+        write_audit_log(
+            session,
+            actor=actor,
+            action="dingtalk.approval_sync.resume.canceled",
+            resource_type="sync_job",
+            resource_id=job.id,
+            summary="取消钉钉审批续跑",
             metadata={"previous_job_id": previous_job.id, "resume_cursor": previous_job.next_cursor},
         )
         session.commit()
@@ -3527,7 +3924,7 @@ def resume_approval_sync(
         job.raw_summary = json.dumps({"error": str(exc), "previous_job_id": previous_job.id}, ensure_ascii=False)
         write_audit_log(
             session,
-            actor=audit_actor(current_user, payload.started_by),
+            actor=actor,
             action="dingtalk.approval_sync.resume.failed",
             resource_type="sync_job",
             resource_id=job.id,
@@ -3541,6 +3938,35 @@ def resume_approval_sync(
         job.finished_at = utc_now()
         session.commit()
         raise
+    session.refresh(job)
+    return ApiEnvelope(data=job)
+
+
+@router.post("/sync-jobs/{job_id}/cancel", response_model=ApiEnvelope[SyncJobRead])
+def cancel_sync_job(
+    job_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_permission("dingtalk.manage")),
+) -> ApiEnvelope[SyncJobRead]:
+    job = session.get(SyncJob, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Sync job not found")
+    if job.status != SyncJobStatus.RUNNING.value:
+        raise HTTPException(status_code=409, detail="Only running sync jobs can be canceled")
+    if job.job_type not in {"dingtalk_approval_sync", "dingtalk_store_approval_sync", "dingtalk_auto_sync"}:
+        raise HTTPException(status_code=409, detail="This sync job type cannot be canceled")
+    job.status = SyncJobStatus.CANCELED.value
+    job.error_message = "同步已取消"
+    job.finished_at = utc_now()
+    write_audit_log(
+        session,
+        actor=audit_actor(current_user),
+        action="dingtalk.sync_job.cancel",
+        resource_type="sync_job",
+        resource_id=job.id,
+        summary=f"取消同步任务：{job.job_type}",
+    )
+    session.commit()
     session.refresh(job)
     return ApiEnvelope(data=job)
 

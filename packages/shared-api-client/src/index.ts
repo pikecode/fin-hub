@@ -7,6 +7,9 @@ import type {
   AttachmentAccessUrl,
   ApprovalTemplate,
   ApprovalTemplateCreate,
+  ApprovalTemplateNode,
+  ApprovalTemplateNodeCreate,
+  ApprovalTemplateNodeUpdate,
   ApprovalTemplateUpdate,
   Attachment,
   AuditLog,
@@ -27,6 +30,7 @@ import type {
   DingTalkDepartmentPullResult,
   DingTalkDepartmentSyncPreview,
   DingTalkDepartmentSyncResult,
+  DingTalkSyncReadiness,
   ExpenseBankMatch,
   ExpenseCategory,
   ExpenseCategoryCreate,
@@ -59,20 +63,30 @@ import type {
   RevenueRecordCreate,
   RevenueRecordUpdate,
   ResumeApprovalSyncRequest,
+  RoleCreate,
+  RolePermissionRead,
+  RolePermissionUpdate,
+  RoleRead,
+  RoleUpdate,
   ShareholderAccessGrant,
   ShareholderAccessGrantCreate,
   ShareholderAccessGrantUpdate,
   Store,
+  StoreGroup,
+  StoreGroupCreate,
+  StoreGroupUpdate,
   StoreComparisonReport,
   StoreCreate,
   StoreUpdate,
   StoreLedgerWorkspace,
   StoreReportSummary,
   StartApprovalSyncRequest,
+  StartStoreApprovalSyncRequest,
   Supplier,
   SupplierCreate,
   SupplierUpdate,
   SyncJob,
+  StoreApprovalSyncResult,
   SystemReadinessReport,
   TemplateFieldCandidate,
   TemplateFieldCandidateSampleRequest,
@@ -134,7 +148,11 @@ export function createApiClient(options: ApiClientOptions) {
     });
     const payload = await response.json().catch(() => null);
     if (!response.ok) {
-      throw new ApiError(response.statusText || "Request failed", response.status, payload);
+      const detail =
+        payload && typeof payload === "object" && "detail" in payload && typeof (payload as { detail?: unknown }).detail === "string"
+          ? (payload as { detail: string }).detail
+          : null;
+      throw new ApiError(detail || response.statusText || "Request failed", response.status, payload);
     }
     return (payload as ApiEnvelope<T>).data ?? payload;
   }
@@ -146,7 +164,11 @@ export function createApiClient(options: ApiClientOptions) {
     });
     if (!response.ok) {
       const payload = await response.json().catch(() => null);
-      throw new ApiError(response.statusText || "Request failed", response.status, payload);
+      const detail =
+        payload && typeof payload === "object" && "detail" in payload && typeof (payload as { detail?: unknown }).detail === "string"
+          ? (payload as { detail: string }).detail
+          : null;
+      throw new ApiError(detail || response.statusText || "Request failed", response.status, payload);
     }
     return response.blob();
   }
@@ -176,6 +198,16 @@ export function createApiClient(options: ApiClientOptions) {
     },
     stores: {
       list: (params = "") => request<Page<Store>>(`/api/stores${params}`),
+      listGroups: () => request<StoreGroup[]>("/api/stores/groups"),
+      createGroup: (payload: StoreGroupCreate) =>
+        request<StoreGroup>("/api/stores/groups", { method: "POST", body: JSON.stringify(payload) }),
+      updateGroup: (id: string, payload: StoreGroupUpdate) =>
+        request<StoreGroup>(`/api/stores/groups/${id}`, {
+          method: "PATCH",
+          body: JSON.stringify(payload),
+        }),
+      deleteGroup: (id: string) =>
+        request<{ ok: boolean }>(`/api/stores/groups/${id}`, { method: "DELETE" }),
       create: (payload: StoreCreate) =>
         request<Store>("/api/stores", { method: "POST", body: JSON.stringify(payload) }),
       update: (id: string, payload: StoreUpdate) =>
@@ -206,6 +238,23 @@ export function createApiClient(options: ApiClientOptions) {
     },
     auditLogs: {
       list: (params = "") => request<Page<AuditLog>>(`/api/audit-logs${params}`),
+    },
+    roles: {
+      list: () => request<RoleRead[]>("/api/roles"),
+      create: (payload: RoleCreate) =>
+        request<RoleRead>("/api/roles", { method: "POST", body: JSON.stringify(payload) }),
+      update: (key: string, payload: RoleUpdate) =>
+        request<RoleRead>(`/api/roles/${key}`, {
+          method: "PATCH",
+          body: JSON.stringify(payload),
+        }),
+      delete: (key: string) => request<{ ok: boolean }>(`/api/roles/${key}`, { method: "DELETE" }),
+      listPermissions: () => request<RolePermissionRead[]>("/api/roles/permissions"),
+      updatePermissions: (role: string, payload: RolePermissionUpdate) =>
+        request<RolePermissionRead>(`/api/roles/${role}/permissions`, {
+          method: "PUT",
+          body: JSON.stringify(payload),
+        }),
     },
     users: {
       list: (params = "") => request<Page<UserAccount>>(`/api/users${params}`),
@@ -434,6 +483,7 @@ export function createApiClient(options: ApiClientOptions) {
         request<DingTalkAutoSyncRunResult>("/api/dingtalk/auto-sync/run", {
           method: "POST",
         }),
+      readSyncReadiness: () => request<DingTalkSyncReadiness>("/api/dingtalk/sync-readiness"),
       testConnection: () =>
         request<{ status: string; access_token_prefix: string }>("/api/dingtalk/connection-test", {
           method: "POST",
@@ -462,6 +512,22 @@ export function createApiClient(options: ApiClientOptions) {
         }),
       listMappings: (templateId: string) =>
         request<TemplateFieldMapping[]>(`/api/dingtalk/templates/${templateId}/mappings`),
+      listTemplateNodes: (templateId: string) =>
+        request<ApprovalTemplateNode[]>(`/api/dingtalk/templates/${templateId}/nodes`),
+      upsertTemplateNode: (templateId: string, payload: ApprovalTemplateNodeCreate) =>
+        request<ApprovalTemplateNode>(`/api/dingtalk/templates/${templateId}/nodes`, {
+          method: "POST",
+          body: JSON.stringify(payload),
+        }),
+      updateTemplateNode: (templateId: string, nodeId: string, payload: ApprovalTemplateNodeUpdate) =>
+        request<ApprovalTemplateNode>(`/api/dingtalk/templates/${templateId}/nodes/${nodeId}`, {
+          method: "PATCH",
+          body: JSON.stringify(payload),
+        }),
+      deleteTemplateNode: (templateId: string, nodeId: string) =>
+        request<{ ok: boolean }>(`/api/dingtalk/templates/${templateId}/nodes/${nodeId}`, {
+          method: "DELETE",
+        }),
       listFieldCandidates: (templateId: string) =>
         request<TemplateFieldCandidate[]>(`/api/dingtalk/templates/${templateId}/field-candidates`),
       pullTemplateSampleApproval: (templateId: string) =>
@@ -504,10 +570,19 @@ export function createApiClient(options: ApiClientOptions) {
           method: "POST",
           body: JSON.stringify(payload),
         }),
+      startStoreApprovalSync: (payload: StartStoreApprovalSyncRequest) =>
+        request<StoreApprovalSyncResult>("/api/dingtalk/store-approval-sync", {
+          method: "POST",
+          body: JSON.stringify(payload),
+        }),
       resumeApprovalSync: (jobId: string, payload: ResumeApprovalSyncRequest) =>
         request<SyncJob>(`/api/dingtalk/sync-jobs/${jobId}/resume`, {
           method: "POST",
           body: JSON.stringify(payload),
+        }),
+      cancelSyncJob: (jobId: string) =>
+        request<SyncJob>(`/api/dingtalk/sync-jobs/${jobId}/cancel`, {
+          method: "POST",
         }),
       listSyncJobs: (params = "") => request<Page<SyncJob>>(`/api/dingtalk/sync-jobs${params}`),
       listApprovalInstances: (params = "") =>

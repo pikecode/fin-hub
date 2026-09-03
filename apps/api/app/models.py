@@ -55,6 +55,7 @@ class SyncJobStatus(StrEnum):
     RUNNING = "running"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
+    CANCELED = "canceled"
 
 
 class AttachmentStatus(StrEnum):
@@ -94,7 +95,6 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(240), nullable=False)
     role: Mapped[str] = mapped_column(String(24), default=UserRole.ADMIN.value, nullable=False)
     status: Mapped[str] = mapped_column(String(24), default=UserStatus.ACTIVE.value, nullable=False)
-    permissions_configured: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
@@ -102,17 +102,43 @@ class User(Base):
     )
 
 
-class UserPermission(Base):
-    __tablename__ = "user_permissions"
+class Role(Base):
+    __tablename__ = "roles"
+    __table_args__ = (UniqueConstraint("key", name="uq_roles_key"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    key: Mapped[str] = mapped_column(String(24), nullable=False)
+    name: Mapped[str] = mapped_column(String(80), nullable=False)
+    sort_order: Mapped[int] = mapped_column(default=0, nullable=False)
+    is_system: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+
+class RolePermission(Base):
+    __tablename__ = "role_permissions"
     __table_args__ = (
-        UniqueConstraint("user_id", "permission", name="uq_user_permission"),
-        Index("ix_user_permissions_user_id", "user_id"),
+        UniqueConstraint("role", "permission", name="uq_role_permission"),
+        Index("ix_role_permissions_role", "role"),
     )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
-    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
+    role: Mapped[str] = mapped_column(String(24), nullable=False)
     permission: Mapped[str] = mapped_column(String(80), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+
+
+class RolePermissionSetting(Base):
+    __tablename__ = "role_permission_settings"
+
+    role: Mapped[str] = mapped_column(String(24), primary_key=True)
+    permissions_configured: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utc_now, onupdate=utc_now, nullable=False
+    )
 
 
 class UserStorePermission(Base):
@@ -129,11 +155,41 @@ class UserStorePermission(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
 
 
+class UserStoreGroupPermission(Base):
+    __tablename__ = "user_store_group_permissions"
+    __table_args__ = (
+        UniqueConstraint("user_id", "group_id", name="uq_user_store_group_permission"),
+        Index("ix_user_store_group_permissions_user_id", "user_id"),
+        Index("ix_user_store_group_permissions_group_id", "group_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
+    group_id: Mapped[str] = mapped_column(ForeignKey("store_groups.id", ondelete="CASCADE"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+
+
+class StoreGroup(Base):
+    __tablename__ = "store_groups"
+    __table_args__ = (UniqueConstraint("name", name="uq_store_groups_name"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    sort_order: Mapped[int] = mapped_column(default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+    stores: Mapped[list["Store"]] = relationship(back_populates="group")
+
+
 class Store(Base):
     __tablename__ = "stores"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
     name: Mapped[str] = mapped_column(String(120), nullable=False)
+    group_id: Mapped[str | None] = mapped_column(ForeignKey("store_groups.id", ondelete="SET NULL"))
     dingtalk_dept_id: Mapped[str | None] = mapped_column(String(120))
     status: Mapped[str] = mapped_column(String(24), default=StoreStatus.ACTIVE.value, nullable=False)
     contact_person: Mapped[str | None] = mapped_column(String(80))
@@ -145,6 +201,7 @@ class Store(Base):
     )
 
     ledgers: Mapped[list["Ledger"]] = relationship(back_populates="store")
+    group: Mapped[StoreGroup | None] = relationship(back_populates="stores")
 
 
 class Ledger(Base):
@@ -325,7 +382,13 @@ class Attachment(Base):
     __tablename__ = "attachments"
     __table_args__ = (
         Index("ix_attachments_resource", "resource_type", "resource_id"),
-        UniqueConstraint("source", "external_file_id", name="uq_attachment_external_file"),
+        UniqueConstraint(
+            "resource_type",
+            "resource_id",
+            "source",
+            "external_file_id",
+            name="uq_attachment_resource_external_file",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
@@ -482,6 +545,8 @@ class DingTalkAutoSyncSetting(Base):
     sync_approvals: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     next_run_at: Mapped[datetime | None] = mapped_column(DateTime)
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime)
+    approval_watermark_at: Mapped[datetime | None] = mapped_column(DateTime)
+    approval_resume_state: Mapped[str | None] = mapped_column(Text)
     last_job_id: Mapped[str | None] = mapped_column(ForeignKey("sync_jobs.id"))
     last_status: Mapped[str | None] = mapped_column(String(24))
     last_error: Mapped[str | None] = mapped_column(Text)
@@ -532,6 +597,10 @@ class ApprovalTemplate(Base):
         back_populates="template",
         cascade="all, delete-orphan",
     )
+    nodes: Mapped[list["ApprovalTemplateNode"]] = relationship(
+        back_populates="template",
+        cascade="all, delete-orphan",
+    )
 
 
 class TemplateFieldMapping(Base):
@@ -560,6 +629,28 @@ class TemplateFieldMapping(Base):
     template: Mapped[ApprovalTemplate] = relationship(back_populates="mappings")
 
 
+class ApprovalTemplateNode(Base):
+    __tablename__ = "approval_template_nodes"
+    __table_args__ = (
+        UniqueConstraint("template_id", "activity_id", name="uq_approval_template_node_activity"),
+        Index("ix_approval_template_nodes_template", "template_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    template_id: Mapped[str] = mapped_column(ForeignKey("approval_templates.id"), nullable=False)
+    activity_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    node_name: Mapped[str] = mapped_column(String(160), nullable=False)
+    node_type: Mapped[str | None] = mapped_column(String(60))
+    sort_order: Mapped[int] = mapped_column(default=0, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+    template: Mapped[ApprovalTemplate] = relationship(back_populates="nodes")
+
+
 class SyncJob(Base):
     __tablename__ = "sync_jobs"
     __table_args__ = (Index("ix_sync_jobs_type_status", "job_type", "status"),)
@@ -572,7 +663,7 @@ class SyncJob(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime)
     request_start_at: Mapped[datetime | None] = mapped_column(DateTime)
     request_end_at: Mapped[datetime | None] = mapped_column(DateTime)
-    next_cursor: Mapped[str | None] = mapped_column(String(80))
+    next_cursor: Mapped[str | None] = mapped_column(Text)
     processed_count: Mapped[int] = mapped_column(default=0, nullable=False)
     success_count: Mapped[int] = mapped_column(default=0, nullable=False)
     failed_count: Mapped[int] = mapped_column(default=0, nullable=False)

@@ -1,9 +1,10 @@
 "use client";
 
-import { Alert, Button, Card, Descriptions, Drawer, Empty, Image, Input, Space, Table, Tag, Typography } from "antd";
+import { Alert, Button, Card, DatePicker, Descriptions, Drawer, Empty, Image, Input, Modal, Space, Table, Tag, Typography, message } from "antd";
+import dayjs from "dayjs";
 import { useParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
-import type { ApprovalInstance, ApprovalTemplate, Attachment, Ledger, Store } from "@fin-hub/shared-types";
+import type { ApprovalInstance, ApprovalTemplate, Attachment, Ledger, Store, StoreApprovalSyncResult } from "@fin-hub/shared-types";
 import { AppShell } from "../../../components/AppShell";
 import { EnterpriseTable } from "../../../components/EnterpriseTable";
 import type { EnterpriseTableColumn } from "../../../components/EnterpriseTable";
@@ -16,6 +17,18 @@ function periodOfDate(value?: string | null) {
   return value ? value.slice(0, 7) : "";
 }
 
+type SyncDateRange = [dayjs.Dayjs, dayjs.Dayjs];
+
+function syncRangeForPeriod(period: string): SyncDateRange | null {
+  const periodStart = dayjs(`${period}-01`);
+  if (!periodStart.isValid()) return null;
+  const start = periodStart.startOf("day");
+  const end = periodStart.add(1, "month").subtract(1, "day").endOf("day");
+  const latestAllowed = dayjs().endOf("day");
+  if (start.isAfter(latestAllowed)) return null;
+  return [start, end.isAfter(latestAllowed) ? latestAllowed : end];
+}
+
 type DingTalkFormField = {
   id?: string;
   name?: string;
@@ -25,6 +38,11 @@ type DingTalkFormField = {
 };
 
 type DingTalkTableRow = Record<string, unknown>;
+
+type ImagePreviewState = {
+  title: string;
+  url: string;
+};
 
 function formatBeijingDateTime(value?: string | null) {
   if (!value) return "-";
@@ -208,8 +226,17 @@ function payloadArray(payload: unknown, ...keys: string[]) {
   return [];
 }
 
-function operationTitle(record: Record<string, unknown>) {
-  return String(record.name ?? record.task_name ?? record.activity_name ?? record.type ?? "审批节点");
+function operationActivityId(record: Record<string, unknown>) {
+  const value = record.activity_id ?? record.activityId ?? record.activity_code ?? record.activityCode;
+  return value ? String(value) : "";
+}
+
+function operationTitle(record: Record<string, unknown>, nodeNameMap?: Record<string, string>) {
+  const activityId = operationActivityId(record);
+  if (activityId && nodeNameMap?.[activityId]) return nodeNameMap[activityId];
+  const title = record.name ?? record.task_name ?? record.activity_name ?? record.type;
+  if (title) return String(title);
+  return activityId ? `审批节点 ${activityId}` : "审批节点";
 }
 
 function operationActor(record: Record<string, unknown>) {
@@ -241,10 +268,16 @@ export default function StoreLedgerApprovalsPage() {
   const [approvals, setApprovals] = useState<ApprovalInstance[]>([]);
   const [selectedApproval, setSelectedApproval] = useState<ApprovalInstance | null>(null);
   const [detailAttachments, setDetailAttachments] = useState<Attachment[]>([]);
+  const [imagePreview, setImagePreview] = useState<ImagePreviewState | null>(null);
   const [selectedPeriod, setSelectedPeriod] = useState(searchParams.get("period") || "");
   const [keyword, setKeyword] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [isApprovalLoading, setIsApprovalLoading] = useState(false);
+  const [isStoreSyncing, setIsStoreSyncing] = useState(false);
+  const [isStoreSyncModalOpen, setIsStoreSyncModalOpen] = useState(false);
+  const [storeSyncResult, setStoreSyncResult] = useState<StoreApprovalSyncResult | null>(null);
+  const [storeSyncError, setStoreSyncError] = useState<string | null>(null);
+  const [storeSyncDateRange, setStoreSyncDateRange] = useState<SyncDateRange | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   useEffect(() => {
@@ -342,6 +375,57 @@ export default function StoreLedgerApprovalsPage() {
         templateNameById.get(approval.template_id),
       ].filter(Boolean).some((text) => String(text).toLowerCase().includes(value));
     });
+  async function syncStoreApprovals() {
+    if (!selectedPeriod || !storeSyncDateRange) {
+      message.warning("请先选择账期");
+      return;
+    }
+    setIsStoreSyncing(true);
+    setErrorMessage(null);
+    setStoreSyncError(null);
+    try {
+      const result = await apiClient.dingtalk.startStoreApprovalSync({
+        store_id: storeId,
+        ledger_period: selectedPeriod,
+        started_by: "store-ledger",
+        start_at: storeSyncDateRange[0].toISOString(),
+        end_at: storeSyncDateRange[1].toISOString(),
+        skip_existing: false,
+      });
+      const params = new URLSearchParams({
+        store_id: storeId,
+        ledger_period: selectedPeriod,
+        page_size: "500",
+      });
+      const approvalPage = await apiClient.dingtalk.listApprovalInstances(`?${params.toString()}`);
+      setApprovals(approvalPage.items);
+      setStoreSyncResult(result);
+      if (result.job.status === "failed") {
+        message.warning(result.job.error_message || "审批同步已完成，但存在未处理的数据");
+      } else {
+        message.success(
+          `审批同步完成：归入当前门店账期 ${result.matched_count} 条`,
+        );
+      }
+    } catch (error) {
+      const nextError = error instanceof Error ? error.message : "无法同步本门店审批";
+      setStoreSyncError(nextError);
+      setErrorMessage(nextError);
+    } finally {
+      setIsStoreSyncing(false);
+    }
+  }
+
+  function openStoreSyncModal() {
+    if (!selectedPeriod) {
+      message.warning("请先选择账期");
+      return;
+    }
+    setStoreSyncResult(null);
+    setStoreSyncError(null);
+    setStoreSyncDateRange(syncRangeForPeriod(selectedPeriod));
+    setIsStoreSyncModalOpen(true);
+  }
   const selectedApprovalPayload = useMemo(() => {
     return selectedApproval ? approvalPayload(selectedApproval) : null;
   }, [selectedApproval]);
@@ -376,6 +460,19 @@ export default function StoreLedgerApprovalsPage() {
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "无法加载审批单详情");
     } finally {
+    }
+  }
+
+  async function openAttachmentAccessUrl(attachment: Attachment) {
+    try {
+      const data = await apiClient.attachments.accessUrl(attachment.id);
+      if (isImageAttachment(attachment) || isImageUrl(data.url)) {
+        setImagePreview({ title: data.file_name || attachment.file_name || "图片预览", url: data.url });
+        return;
+      }
+      window.open(data.url, "_blank", "noopener,noreferrer");
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "无法获取钉钉附件链接");
     }
   }
 
@@ -474,13 +571,18 @@ export default function StoreLedgerApprovalsPage() {
         title="审批单列表"
         loading={isLoading}
         extra={
-          <Input.Search
-            allowClear
-            placeholder="搜索编号、模板、申请人、部门"
-            value={keyword}
-            onChange={(event) => setKeyword(event.target.value)}
-            style={{ width: 280 }}
-          />
+          <Space size={8}>
+            <Input.Search
+              allowClear
+              placeholder="搜索编号、模板、申请人、部门"
+              value={keyword}
+              onChange={(event) => setKeyword(event.target.value)}
+              style={{ width: 280 }}
+            />
+            <Button type="primary" loading={isStoreSyncing} disabled={!selectedPeriod} onClick={openStoreSyncModal}>
+              同步本账期审批
+            </Button>
+          </Space>
         }
       >
         {filteredApprovals.length || isApprovalLoading ? (
@@ -499,6 +601,74 @@ export default function StoreLedgerApprovalsPage() {
           <Empty description="当前门店账期暂无审批单" />
         )}
       </Card>
+      <Modal
+        title="同步本门店审批"
+        open={isStoreSyncModalOpen}
+        onCancel={() => setIsStoreSyncModalOpen(false)}
+        onOk={() => {
+          if (storeSyncResult) {
+            setIsStoreSyncModalOpen(false);
+            return;
+          }
+          void syncStoreApprovals();
+        }}
+        okText={storeSyncResult ? "完成" : "开始同步"}
+        cancelText="关闭"
+        confirmLoading={isStoreSyncing}
+        okButtonProps={{ disabled: !selectedPeriod || !storeSyncDateRange }}
+        destroyOnHidden
+      >
+        <Space direction="vertical" size={16} className="full-width">
+          <Descriptions size="small" column={1}>
+            <Descriptions.Item label="门店">{store?.name ?? "-"}</Descriptions.Item>
+            <Descriptions.Item label="账期">{selectedPeriod || "-"}</Descriptions.Item>
+          </Descriptions>
+          <div>
+            <Typography.Text strong>审批提交日期</Typography.Text>
+            <DatePicker.RangePicker
+              className="full-width"
+              value={storeSyncDateRange}
+              format="YYYY-MM-DD"
+              disabled={isStoreSyncing || Boolean(storeSyncResult)}
+              disabledDate={(current) => {
+                const range = selectedPeriod ? syncRangeForPeriod(selectedPeriod) : null;
+                return Boolean(
+                  !range
+                  || current.isBefore(range[0], "day")
+                  || current.isAfter(range[1], "day")
+                  || current.isAfter(dayjs(), "day"),
+                );
+              }}
+              onChange={(dates) => {
+                setStoreSyncDateRange(dates as SyncDateRange | null);
+                setStoreSyncResult(null);
+                setStoreSyncError(null);
+              }}
+            />
+            <Typography.Text type="secondary">
+              默认当前账期整月，可按需要缩小范围。
+            </Typography.Text>
+          </div>
+          <Alert
+            type="info"
+            showIcon
+            message="同步方式"
+            description="钉钉只能按审批模板和提交时间查询，不能直接按本地门店筛选。系统会逐条读取审批详情，通过审批表单中的门店字段或发起部门归属识别门店；只有归属当前门店和账期的数据会出现在本页。"
+          />
+          <Typography.Text type="secondary">
+            本次会重新读取该账期内已存在的审批详情，以同步审批状态和明细变更；已做对账的费用明细仍按现有保护规则处理。
+          </Typography.Text>
+          {storeSyncError ? <Alert type="error" showIcon message={storeSyncError} /> : null}
+          {storeSyncResult ? (
+            <Descriptions size="small" bordered column={1} title="同步结果">
+              <Descriptions.Item label="已扫描审批">{storeSyncResult.scanned_count} 条</Descriptions.Item>
+              <Descriptions.Item label="归入当前门店账期">{storeSyncResult.matched_count} 条</Descriptions.Item>
+              <Descriptions.Item label="不属于当前范围">{storeSyncResult.outside_scope_count} 条</Descriptions.Item>
+              <Descriptions.Item label="未能识别门店">{storeSyncResult.unresolved_store_count} 条</Descriptions.Item>
+            </Descriptions>
+          ) : null}
+        </Space>
+      </Modal>
       <Drawer
         title={selectedApproval ? approvalTitle(selectedApproval) || selectedApproval.approval_no || "审批实例详情" : "审批实例详情"}
         open={Boolean(selectedApproval)}
@@ -570,8 +740,8 @@ export default function StoreLedgerApprovalsPage() {
                     <div className="dingtalk-attachment-list">
                       {detailAttachments.map((attachment) => {
                         const sourceUrl = externalAttachmentUrl(attachment);
-                        const statusColor = attachment.download_status === "stored" ? "green" : attachment.download_status === "failed" ? "red" : "gold";
-                        const statusLabel = attachment.download_status === "stored" ? "已下载" : attachment.download_status === "failed" ? "失败" : "待下载";
+                        const statusColor = attachment.download_status === "failed" ? "red" : "blue";
+                        const statusLabel = attachment.download_status === "failed" ? "链接异常" : "在线查看";
                         return (
                           <div className="dingtalk-attachment-item" key={attachment.id}>
                             <div className={`dingtalk-attachment-item__icon${isImageAttachment(attachment) ? " is-image" : ""}`}>
@@ -586,11 +756,16 @@ export default function StoreLedgerApprovalsPage() {
                                 {attachment.content_type ? <Typography.Text type="secondary">{attachment.content_type}</Typography.Text> : null}
                               </Space>
                             </div>
-                            {sourceUrl ? (
-                              <Button size="small" href={sourceUrl} target="_blank" rel="noreferrer">
-                                源链接
+                            <Space size={6}>
+                              {sourceUrl ? (
+                                <Button size="small" href={sourceUrl} target="_blank" rel="noreferrer">
+                                  源链接
+                                </Button>
+                              ) : null}
+                              <Button size="small" onClick={() => openAttachmentAccessUrl(attachment)}>
+                                {isImageAttachment(attachment) ? "预览" : "打开"}
                               </Button>
-                            ) : null}
+                            </Space>
                           </div>
                         );
                       })}
@@ -618,7 +793,7 @@ export default function StoreLedgerApprovalsPage() {
                           <div className="dingtalk-flow-item__dot">{index + 1}</div>
                           <div className="dingtalk-flow-item__body">
                             <div className="dingtalk-flow-item__head">
-                              <Typography.Text strong>{operationTitle(record)}</Typography.Text>
+                              <Typography.Text strong>{operationTitle(record, selectedApproval.node_name_map)}</Typography.Text>
                               <Typography.Text type="secondary">{operationTime(record)}</Typography.Text>
                             </div>
                             <Typography.Text>{operationActor(record)}</Typography.Text>
@@ -652,6 +827,15 @@ export default function StoreLedgerApprovalsPage() {
           </Space>
         ) : null}
       </Drawer>
+      <Modal
+        title={imagePreview?.title || "图片预览"}
+        open={Boolean(imagePreview)}
+        footer={null}
+        width={760}
+        onCancel={() => setImagePreview(null)}
+      >
+        {imagePreview ? <Image src={imagePreview.url} alt={imagePreview.title} width="100%" /> : null}
+      </Modal>
       <Typography.Paragraph type="secondary" className="store-ledger-page-note">
         审批单按提交时间归入账期；本页仅用于搜索、筛选和查看审批单详情。
       </Typography.Paragraph>

@@ -244,18 +244,12 @@ export default function ExpensesPage() {
     }
   }
 
-  async function archiveDingtalkAttachment(attachment: Attachment) {
-    setIsAttachmentLoading(true);
+  async function openDingtalkAttachment(attachment: Attachment) {
     try {
-      await apiClient.attachments.downloadDingtalk(attachment.id);
-      message.success("归档成功");
-      if (attachmentItem) {
-        await loadAttachments(attachmentItem.id);
-      }
+      const data = await apiClient.attachments.accessUrl(attachment.id);
+      window.open(data.url, "_blank", "noopener,noreferrer");
     } catch (error) {
-      message.error("归档失败");
-    } finally {
-      setIsAttachmentLoading(false);
+      message.error("无法打开钉钉附件");
     }
   }
 
@@ -376,7 +370,7 @@ export default function ExpensesPage() {
       render: (value: Attachment["download_status"]) => (
         <StatusBadge
           status={value === "stored" ? "stored" : "pending"}
-          text={value === "stored" ? "已归档" : "待下载"}
+          text={value === "stored" ? "已上传" : "在线附件"}
         />
       ),
     },
@@ -404,9 +398,9 @@ export default function ExpensesPage() {
             type="link"
             size="small"
             disabled={record.source !== "dingtalk"}
-            onClick={() => archiveDingtalkAttachment(record)}
+            onClick={() => openDingtalkAttachment(record)}
           >
-            归档
+            打开
           </Button>
         ),
     },
