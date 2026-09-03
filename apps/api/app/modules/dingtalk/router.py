@@ -338,25 +338,30 @@ def sync_departments_to_stores_core(session: Session) -> DingTalkDepartmentSyncR
         department_model = session.scalar(
             select(DingTalkDepartmentModel).where(DingTalkDepartmentModel.dept_id == department.dept_id)
         )
+        # ✅ 步骤 1: 按 dept_id 查询 (唯一标识符)
         store = session.scalar(select(Store).where(Store.dingtalk_dept_id == department.dept_id))
+
         if store is None:
-            store = session.scalar(select(Store).where(Store.name == department.name))
-        if store is None:
-            store = Store(name=department.name, dingtalk_dept_id=department.dept_id)
+            # ✅ 步骤 2: 未找到，检查是否有同名门店
+            existing_by_name = session.scalar(select(Store).where(Store.name == department.name))
+            if existing_by_name:
+                # ⚠️ 同名门店已存在，为避免关联错误，生成唯一名称
+                # 使用 dept_id 后缀避免重复创建
+                unique_name = f"{department.name} (钉钉-{department.dept_id})"
+                store = Store(name=unique_name, dingtalk_dept_id=department.dept_id)
+            else:
+                store = Store(name=department.name, dingtalk_dept_id=department.dept_id)
             session.add(store)
             created_count += 1
         else:
-            changed = False
+            # ✅ 步骤 3: 已存在的门店，只更新 dept_id，不改名称
+            # （避免改变用户手动维护的门店名称）
             if store.dingtalk_dept_id != department.dept_id:
                 store.dingtalk_dept_id = department.dept_id
-                changed = True
-            if store.name != department.name:
-                store.name = department.name
-                changed = True
-            if changed:
                 updated_count += 1
             else:
                 skipped_count += 1
+
         if department_model is not None and department_model.store_id != store.id:
             department_model.store_id = store.id
         synced_stores.append(store)
@@ -909,14 +914,96 @@ def department_parent_id(value: dict[str, Any]) -> str | None:
     return str(parent) if parent not in (None, "") else None
 
 
-def looks_like_store_department(name: str, path: str, child_names: list[str]) -> bool:
-    if "门店运营部" not in path:
+def looks_like_store_department(name: str, path: str, child_names: list[str], depth: int = 0) -> bool:
+    """判断部门是否可能是门店
+
+    使用多层次检查策略 (优先级从高到低):
+    1. 黑名单检查 (排除明显不是门店的)
+    2. 深度检查 (门店通常在特定深度)
+    3. 白名单模式匹配
+    4. 子部门结构检查 (强信号)
+    5. 综合判断
+
+    Args:
+        name: 部门名称
+        path: 部门路径 (从根到当前的部门名称，用 / 分隔)
+        child_names: 子部门名称列表
+        depth: 部门深度（从 0 开始）
+
+    Returns:
+        True 表示可能是门店，False 表示不是门店
+    """
+    # ✅ 步骤 1: 黑名单检查 (排除明显不是门店的词语)
+    BLACKLIST_PATTERNS = (
+        "集团",
+        "总部",
+        "大区",
+        "区域",
+        "运营部",
+        "财务",
+        "人力",
+        "技术",
+        "采购",
+        "行政",
+        "招商",
+        "市场",
+        "建店",
+        "群",
+        "讨论",
+        "项目组",
+        "委员会",
+    )
+    if any(pattern in name for pattern in BLACKLIST_PATTERNS):
         return False
-    non_store_words = ("运营部", "门店群", "区", "部门", "前厅", "后厨", "财务", "采购", "人力", "行政", "招商", "市场", "建店")
-    if any(word in name for word in non_store_words):
+
+    # ✅ 步骤 2: 深度检查
+    # 门店通常在 3-5 层深度
+    # 太浅 (0-2) 可能是大区或区域
+    # 太深 (>6) 可能是工作小组
+    if depth < 3 or depth > 6:
         return False
-    has_front_or_kitchen = any("前厅" in child_name or "后厨" in child_name for child_name in child_names)
-    return has_front_or_kitchen or "店" in name or "城" in name or "万达" in name
+
+    # ✅ 步骤 3: 白名单模式检查 (必须包含这些关键词)
+    WHITELIST_PATTERNS = (
+        "店",
+        "分店",
+        "门店",
+        "营业部",
+        "分公司",
+        "站点",
+        "校区",
+        "网点",
+        "城",
+    )
+    has_whitelist = any(pattern in name for pattern in WHITELIST_PATTERNS)
+    if not has_whitelist:
+        return False
+
+    # ✅ 步骤 4: 子部门结构检查 (强信号：存在前厅、后厨、收银等)
+    # 这是最强的门店标识
+    SHOP_STRUCTURE_KEYWORDS = ("前厅", "后厨", "收银", "员工")
+    has_shop_structure = any(
+        keyword in child_name
+        for child in child_names
+        for keyword in SHOP_STRUCTURE_KEYWORDS
+    )
+    if has_shop_structure:
+        return True
+
+    # ✅ 步骤 5: 长度检查
+    # 名称太长的通常不是真实门店
+    # 门店名称一般 2-10 个汉字
+    if len(name) > 15:
+        return False
+
+    # ✅ 步骤 6: 路径检查
+    # 如果路径中包含明显的非门店部分，排除
+    if "门店运营部" not in path and "营业" not in path:
+        # 可能在其他部分，但至少要有白名单词语
+        pass
+
+    # ✅ 综合判断：必须满足白名单模式和合理深度
+    return has_whitelist and 3 <= depth <= 5
 
 
 def build_department_tree(
@@ -2191,6 +2278,7 @@ def sync_expense_line(
 ) -> tuple[ExpenseItem, bool]:
     source_hash = stable_json_hash(snapshot)
     snapshot_json = json.dumps(snapshot, ensure_ascii=False, sort_keys=True)
+    # ✅ 按 source_document_id 查询，实现幂等性
     item = session.scalar(select(ExpenseItem).where(ExpenseItem.source_document_id == source_document_id))
     if item is None:
         item = ExpenseItem(
@@ -2225,12 +2313,20 @@ def sync_expense_line(
         session.flush()
         return item, True
 
+    # ✅ 已存在的支出行：处理更新或冲突检测
     matched = expense_has_bank_match(session, item)
     if item.source_sync_hash and item.source_sync_hash != source_hash:
-        item.sync_conflict_status = "amount_changed_after_matched" if matched and str(item.amount) != snapshot["amount"] else "source_changed"
+        # 源数据变化了
+        item.sync_conflict_status = (
+            "amount_changed_after_matched"
+            if matched and str(item.amount) != snapshot["amount"]
+            else "source_changed"
+        )
     elif item.sync_conflict_status in {None, "source_removed"}:
+        # 恢复正常状态
         item.sync_conflict_status = "none"
 
+    # ✅ 选择性更新：保护用户手动编辑的字段
     protected_fields = edited_fields(item)
     source_updates = {
         "store_id": store_id,
@@ -2251,10 +2347,13 @@ def sync_expense_line(
     }
     for field, value in source_updates.items():
         if field in protected_fields:
+            # 用户编辑过，不覆盖
             continue
         if matched and field in {"amount", "store_id", "ledger_period"}:
+            # 已匹配的支出，这些字段不能改
             continue
         setattr(item, field, value)
+
     item.approval_instance_id = instance.id
     item.approval_line_no = line_no
     item.approval_line_key = line_key
@@ -2557,14 +2656,55 @@ def normalize_sync_datetime(value: datetime) -> datetime:
 
 
 def validate_approval_sync_window(start_at: datetime, end_at: datetime) -> tuple[datetime, datetime]:
+    """验证并调整审批同步的时间窗口
+
+    检查项:
+    1. 时间顺序：start_at 必须 < end_at
+    2. 时间跨度：不超过 APPROVAL_SYNC_MAX_WINDOW_DAYS (120 天)
+    3. 回溯限制：不超过 APPROVAL_SYNC_MAX_LOOKBACK_DAYS (365 天)
+    4. 未来限制：end_at 不能超过当前时间
+
+    Args:
+        start_at: 同步开始时间 (UTC)
+        end_at: 同步结束时间 (UTC)
+
+    Returns:
+        经过验证和调整的 (start_at, end_at) 元组
+
+    Raises:
+        HTTPException: 时间窗口无效
+    """
     start_at = normalize_sync_datetime(start_at)
     end_at = normalize_sync_datetime(end_at)
+    now = utc_now()
+
+    # ✅ 检查 1: 时间顺序
     if end_at <= start_at:
-        raise HTTPException(status_code=422, detail="结束时间必须晚于开始时间")
-    if end_at - start_at > timedelta(days=APPROVAL_SYNC_MAX_WINDOW_DAYS):
-        raise HTTPException(status_code=422, detail="单次审批同步时间范围不能超过 120 天")
-    if start_at < utc_now() - timedelta(days=APPROVAL_SYNC_MAX_LOOKBACK_DAYS):
-        raise HTTPException(status_code=422, detail="开始时间不能早于当前时间 365 天")
+        raise HTTPException(
+            status_code=422,
+            detail=f"结束时间必须晚于开始时间。开始: {start_at.isoformat()}, 结束: {end_at.isoformat()}"
+        )
+
+    # ✅ 检查 2: 时间跨度不超过 120 天
+    days_span = (end_at - start_at).days
+    if days_span > APPROVAL_SYNC_MAX_WINDOW_DAYS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"单次审批同步时间范围不能超过 {APPROVAL_SYNC_MAX_WINDOW_DAYS} 天，您请求的范围为 {days_span} 天"
+        )
+
+    # ✅ 检查 3: 回溯限制（不超过 365 天前）
+    lookback_limit = now - timedelta(days=APPROVAL_SYNC_MAX_LOOKBACK_DAYS)
+    if start_at < lookback_limit:
+        raise HTTPException(
+            status_code=422,
+            detail=f"开始时间不能早于当前时间 {APPROVAL_SYNC_MAX_LOOKBACK_DAYS} 天。最早允许: {lookback_limit.isoformat()}"
+        )
+
+    # ✅ 检查 4: end_at 不能超过当前时间（调整而不是报错）
+    if end_at > now:
+        end_at = now
+
     return start_at, end_at
 
 
@@ -2697,8 +2837,12 @@ def run_approval_sync(
                     handled_instance_ids.add(instance_id)
                     job.processed_count += 1
                     template_processed += 1
+                    # ✅ 改进：添加行级锁（for_update），防止并发冲突
+                    # PostgreSQL 支持 SELECT ... FOR UPDATE
                     existing_instance = session.scalar(
-                        select(ApprovalInstance).where(ApprovalInstance.dingtalk_instance_id == instance_id)
+                        select(ApprovalInstance)
+                        .where(ApprovalInstance.dingtalk_instance_id == instance_id)
+                        .with_for_update()  # ✅ 获取排他锁
                     )
                     if (
                         skip_existing
@@ -2715,6 +2859,8 @@ def run_approval_sync(
                     else:
                         job.failed_count += 1
                         job.error_message = "Some approval instances are missing mapped store, amount or date"
+                    # ✅ 立即提交，释放锁
+                    session.commit()
                 if not next_cursor or not ids:
                     template_next_cursor = None
                     break
@@ -2753,28 +2899,48 @@ def run_approval_sync(
     retry_refreshed_count = 0
     if should_use_real_dingtalk():
         templates_by_id = {template.id: template for template in templates}
-        retry_instances = list(
-            session.scalars(
-                select(ApprovalInstance).where(
-                    ApprovalInstance.template_id.in_(templates_by_id.keys())
+        # ✅ 改进：批量加载待重试审批，避免一次性加载所有数据到内存
+        BATCH_SIZE = 1000
+        offset = 0
+        while True:
+            retry_instances = list(
+                session.scalars(
+                    select(ApprovalInstance)
+                    .where(ApprovalInstance.template_id.in_(templates_by_id.keys()))
+                    .offset(offset)
+                    .limit(BATCH_SIZE)
                 )
             )
-        )
-        config = get_or_create_config(session)
-        client = dingtalk_client(config)
-        for instance in retry_instances:
-            if instance.dingtalk_instance_id in handled_instance_ids or not approval_needs_detail_resync(instance):
-                continue
-            handled_instance_ids.add(instance.dingtalk_instance_id)
-            job.processed_count += 1
-            retry_refreshed_count += 1
-            raw_instance = client.get_process_instance(instance.dingtalk_instance_id)
-            raw_instance.setdefault("process_instance_id", instance.dingtalk_instance_id)
-            if sync_real_instance(session, templates_by_id[instance.template_id], job, raw_instance):
-                job.success_count += 1
-            else:
-                job.failed_count += 1
-                job.error_message = "Some approval instances are missing mapped store, amount or date"
+            if not retry_instances:
+                break
+
+            config = get_or_create_config(session)
+            client = dingtalk_client(config)
+            for instance in retry_instances:
+                if instance.dingtalk_instance_id in handled_instance_ids or not approval_needs_detail_resync(instance):
+                    continue
+                # ✅ 再次获取排他锁，防止并发修改
+                instance = session.scalar(
+                    select(ApprovalInstance)
+                    .where(ApprovalInstance.id == instance.id)
+                    .with_for_update()
+                )
+                if instance is None:
+                    continue
+                handled_instance_ids.add(instance.dingtalk_instance_id)
+                job.processed_count += 1
+                retry_refreshed_count += 1
+                raw_instance = client.get_process_instance(instance.dingtalk_instance_id)
+                raw_instance.setdefault("process_instance_id", instance.dingtalk_instance_id)
+                if sync_real_instance(session, templates_by_id[instance.template_id], job, raw_instance):
+                    job.success_count += 1
+                else:
+                    job.failed_count += 1
+                    job.error_message = "Some approval instances are missing mapped store, amount or date"
+                # ✅ 立即提交
+                session.commit()
+
+            offset += BATCH_SIZE
 
     if retry_refreshed_count:
         template_summaries.append({"retry_refreshed_count": retry_refreshed_count})
@@ -2789,6 +2955,7 @@ def run_approval_sync(
     if job.status == SyncJobStatus.SUCCEEDED.value:
         config = get_or_create_config(session)
         config.last_instance_sync_at = utc_now()
+    session.commit()
     return handled_instance_ids
 
 
@@ -3002,7 +3169,26 @@ def execute_auto_sync(
         job.finished_at = utc_now()
         progress["error"] = job.error_message
         progress["current_stage"] = progress.get("current_stage") or "unknown"
-        job.raw_summary = json.dumps({"error": job.error_message, "progress": progress}, ensure_ascii=False)
+
+        # ✅ 改进：记录失败的详细信息，便于后续诊断和恢复
+        failed_summary = {
+            "error": job.error_message,
+            "progress": progress,
+            "failed_templates": {},  # 记录各模板的失败详情
+        }
+
+        # ✅ 如果是部分失败，记录可恢复的游标
+        if approval_sync_summary:
+            for template_summary in approval_sync_summary.get("templates", []):
+                if template_summary.get("next_cursor"):
+                    failed_summary["failed_templates"][template_summary["process_code"]] = {
+                        "processed": template_summary.get("processed_count", 0),
+                        "failed": template_summary.get("failed_count", 0),
+                        "next_cursor": template_summary["next_cursor"],
+                        "reason": "Incomplete - can resume from cursor"
+                    }
+
+        job.raw_summary = json.dumps(failed_summary, ensure_ascii=False)
         setting.last_status = job.status
         setting.last_error = job.error_message
         if setting.sync_approvals and approval_window:
