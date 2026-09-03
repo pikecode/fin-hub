@@ -37,6 +37,7 @@ from app.modules.approvals.status import (
     refresh_approval_processing_status,
 )
 from app.modules.audit.service import write_audit_log
+from app.modules.auth.permissions import ensure_permission, ensure_store_access
 from app.modules.auth.router import audit_actor, require_permission
 from app.modules.common import paginate
 from app.modules.dingtalk.client import DingTalkClient, DingTalkClientError, DingTalkCredentials
@@ -61,6 +62,8 @@ from app.schemas import (
     Page,
     ResumeApprovalSyncRequest,
     StartApprovalSyncRequest,
+    StartStoreApprovalSyncRequest,
+    StoreApprovalSyncResult,
     SyncJobRead,
     TemplateFieldCandidate,
     TemplateFieldCandidateSampleRequest,
@@ -79,9 +82,12 @@ router = APIRouter(
 AUTO_SYNC_TIMEZONE = ZoneInfo("Asia/Shanghai")
 AUTO_SYNC_DEPARTMENT_ROOT_ID = "1"
 AUTO_SYNC_DEPARTMENT_MAX_DEPTH = 8
-AUTO_SYNC_APPROVAL_PAGE_SIZE = 100
-AUTO_SYNC_APPROVAL_MAX_PAGES = 500
-AUTO_SYNC_INITIAL_APPROVAL_LOOKBACK_DAYS = 3650
+AUTO_SYNC_APPROVAL_PAGE_SIZE = 20
+AUTO_SYNC_APPROVAL_MAX_PAGES = 100
+AUTO_SYNC_INITIAL_APPROVAL_LOOKBACK_DAYS = 120
+APPROVAL_SYNC_MAX_WINDOW_DAYS = 120
+APPROVAL_SYNC_MAX_LOOKBACK_DAYS = 365
+APPROVAL_SYNC_OVERLAP = timedelta(minutes=10)
 COMPLETED_APPROVAL_STATUSES = {"agree", "approved", "completed", "finish", "success"}
 RESYNC_PROCESSING_STATUSES = {"unparsed", "sync_conflict", "pending_classification"}
 
@@ -2372,6 +2378,7 @@ def sync_real_instance(
     instance.approval_status = parse_text(raw_instance.get("result") or raw_instance.get("status")) or "unknown"
     instance.submit_at = DingTalkClient.parse_time(raw_instance.get("create_time") or raw_instance.get("createTime"))
     instance.approved_at = DingTalkClient.parse_time(raw_instance.get("finish_time") or raw_instance.get("finishTime"))
+    # instance.dingtalk_modified_at = DingTalkClient.parse_time(raw_instance.get("modify_time") or raw_instance.get("modifyTime"))  # TODO: 等待数据库迁移
     instance.raw_payload = json.dumps(raw_instance, ensure_ascii=False)
     instance.synced_job_id = job.id
     session.flush()
@@ -2508,20 +2515,136 @@ def sync_real_instance(
     return True
 
 
-def parse_sync_cursor(value: str | None) -> tuple[str, int] | None:
-    if not value or ":" not in value:
-        return None
+def parse_sync_cursors(value: str | None) -> dict[str, int]:
+    if not value:
+        return {}
+    try:
+        payload = json.loads(value)
+    except json.JSONDecodeError:
+        payload = None
+    if isinstance(payload, dict):
+        cursors = payload.get("cursors", payload)
+        if isinstance(cursors, dict):
+            parsed: dict[str, int] = {}
+            for process_code, cursor in cursors.items():
+                try:
+                    cursor_value = int(cursor)
+                except (TypeError, ValueError):
+                    continue
+                if isinstance(process_code, str) and process_code and cursor_value >= 0:
+                    parsed[process_code] = cursor_value
+            return parsed
+    if ":" not in value:
+        return {}
     process_code, cursor_text = value.split(":", 1)
     try:
         cursor = int(cursor_text)
     except ValueError:
+        return {}
+    return {process_code: cursor} if process_code and cursor >= 0 else {}
+
+
+def serialize_sync_cursors(cursors: dict[str, int]) -> str | None:
+    if not cursors:
         return None
-    if not process_code or cursor < 0:
+    return json.dumps({"cursors": cursors}, ensure_ascii=False, sort_keys=True)
+
+
+def normalize_sync_datetime(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(UTC).replace(tzinfo=None)
+
+
+def validate_approval_sync_window(start_at: datetime, end_at: datetime) -> tuple[datetime, datetime]:
+    start_at = normalize_sync_datetime(start_at)
+    end_at = normalize_sync_datetime(end_at)
+    if end_at <= start_at:
+        raise HTTPException(status_code=422, detail="结束时间必须晚于开始时间")
+    if end_at - start_at > timedelta(days=APPROVAL_SYNC_MAX_WINDOW_DAYS):
+        raise HTTPException(status_code=422, detail="单次审批同步时间范围不能超过 120 天")
+    if start_at < utc_now() - timedelta(days=APPROVAL_SYNC_MAX_LOOKBACK_DAYS):
+        raise HTTPException(status_code=422, detail="开始时间不能早于当前时间 365 天")
+    return start_at, end_at
+
+
+def parse_auto_sync_resume_state(
+    value: str | None,
+) -> tuple[datetime, datetime, dict[str, int]] | None:
+    if not value:
         return None
-    return process_code, cursor
+    try:
+        payload = json.loads(value)
+        start_at = datetime.fromisoformat(str(payload["start_at"]))
+        end_at = datetime.fromisoformat(str(payload["end_at"]))
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+    try:
+        start_at, end_at = validate_approval_sync_window(start_at, end_at)
+    except HTTPException:
+        return None
+    cursors = parse_sync_cursors(json.dumps({"cursors": payload.get("cursors", {})}))
+    return start_at, end_at, cursors
+
+
+def serialize_auto_sync_resume_state(
+    start_at: datetime,
+    end_at: datetime,
+    cursors: dict[str, int],
+) -> str:
+    return json.dumps(
+        {
+            "start_at": start_at.isoformat(),
+            "end_at": end_at.isoformat(),
+            "cursors": cursors,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+
+
+def should_skip_stable_approval(instance: ApprovalInstance, sync_window_days: int = 30) -> bool:
+    """判断是否可以跳过稳定的审批（完成超过 N 天且状态正常）
+
+    稳定的审批满足：
+    1. 已完成状态（不会再变化）
+    2. 已成功解析且关联门店
+    3. 完成时间超过 sync_window_days 天
+
+    Args:
+        instance: 审批实例
+        sync_window_days: 同步窗口天数，默认 30 天
+
+    Returns:
+        True 表示可以跳过（审批稳定），False 表示需要同步
+    """
+    # 审批未完成 → 不跳过
+    if instance.approval_status.lower() not in COMPLETED_APPROVAL_STATUSES:
+        return False
+
+    # 解析失败或未关联门店 → 不跳过
+    if instance.parse_status != "parsed" or instance.store_id is None:
+        return False
+
+    # 完成时间为空 → 不跳过
+    if instance.approved_at is None:
+        return False
+
+    # 完成时间超过 N 天 → 可以跳过（认为审批已稳定）
+    days_since_completion = (utc_now() - instance.approved_at).days
+    return days_since_completion > sync_window_days
 
 
 def approval_needs_detail_resync(instance: ApprovalInstance) -> bool:
+    """判断已存在的审批是否需要重新从钉钉拉取详情
+
+    需要重新同步的情况：
+    1. 审批状态不是完成状态（可能还在流转）
+    2. 没有关联门店（解析不完整）
+    3. 解析状态不是已解析
+    4. 处理状态需要重新同步
+    5. 解析被跳过（缺少必填字段）
+    """
     if instance.approval_status.lower() not in COMPLETED_APPROVAL_STATUSES:
         return True
     if instance.store_id is None:
@@ -2543,10 +2666,12 @@ def run_approval_sync(
     page_size: int,
     max_pages: int,
     skip_existing: bool = True,
-    resume_cursor: tuple[str, int] | None = None,
-) -> None:
+    resume_cursors: dict[str, int] | None = None,
+) -> set[str]:
     template_summaries: list[dict[str, Any]] = []
-    incomplete_sync = False
+    incomplete_cursors: dict[str, int] = {}
+    handled_instance_ids: set[str] = set()
+    resume_cursors = resume_cursors or {}
     for template in templates:
         if should_use_real_dingtalk():
             config = get_or_create_config(session)
@@ -2555,7 +2680,7 @@ def run_approval_sync(
             start_at = job.request_start_at or end_at - timedelta(days=31)
             job.request_start_at = start_at
             job.request_end_at = end_at
-            cursor = resume_cursor[1] if resume_cursor and resume_cursor[0] == template.process_code else 0
+            cursor = resume_cursors.get(template.process_code, 0)
             template_processed = 0
             template_skipped_existing = 0
             template_next_cursor: str | None = None
@@ -2569,6 +2694,7 @@ def run_approval_sync(
                 )
                 template_next_cursor = str(next_cursor) if next_cursor is not None else None
                 for instance_id in ids:
+                    handled_instance_ids.add(instance_id)
                     job.processed_count += 1
                     template_processed += 1
                     existing_instance = session.scalar(
@@ -2578,6 +2704,7 @@ def run_approval_sync(
                         skip_existing
                         and existing_instance is not None
                         and not approval_needs_detail_resync(existing_instance)
+                        and should_skip_stable_approval(existing_instance, sync_window_days=30)
                     ):
                         template_skipped_existing += 1
                         continue
@@ -2593,17 +2720,15 @@ def run_approval_sync(
                     break
                 cursor = next_cursor
             else:
-                incomplete_sync = True
                 if template_next_cursor:
-                    job.next_cursor = f"{template.process_code}:{template_next_cursor}"
-                job.error_message = "DingTalk approval sync paused at max_pages; resume is available"
+                    incomplete_cursors[template.process_code] = int(template_next_cursor)
             template_summaries.append(
                 {
                     "template_id": template.id,
                     "process_code": template.process_code,
                     "processed_count": template_processed,
                     "skipped_existing_count": template_skipped_existing,
-                    "next_cursor": job.next_cursor,
+                    "next_cursor": template_next_cursor,
                 }
             )
         else:
@@ -2613,6 +2738,7 @@ def run_approval_sync(
                 job.failed_count += 1
                 job.error_message = "No store available for approval sync"
             else:
+                handled_instance_ids.add(instance.dingtalk_instance_id)
                 job.success_count += 1
             template_summaries.append(
                 {
@@ -2623,13 +2749,47 @@ def run_approval_sync(
                 }
             )
         template.last_sync_at = utc_now()
-    if not incomplete_sync:
-        job.next_cursor = None
-    job.status = SyncJobStatus.SUCCEEDED.value if job.failed_count == 0 else SyncJobStatus.FAILED.value
+
+    retry_refreshed_count = 0
+    if should_use_real_dingtalk():
+        templates_by_id = {template.id: template for template in templates}
+        retry_instances = list(
+            session.scalars(
+                select(ApprovalInstance).where(
+                    ApprovalInstance.template_id.in_(templates_by_id.keys())
+                )
+            )
+        )
+        config = get_or_create_config(session)
+        client = dingtalk_client(config)
+        for instance in retry_instances:
+            if instance.dingtalk_instance_id in handled_instance_ids or not approval_needs_detail_resync(instance):
+                continue
+            handled_instance_ids.add(instance.dingtalk_instance_id)
+            job.processed_count += 1
+            retry_refreshed_count += 1
+            raw_instance = client.get_process_instance(instance.dingtalk_instance_id)
+            raw_instance.setdefault("process_instance_id", instance.dingtalk_instance_id)
+            if sync_real_instance(session, templates_by_id[instance.template_id], job, raw_instance):
+                job.success_count += 1
+            else:
+                job.failed_count += 1
+                job.error_message = "Some approval instances are missing mapped store, amount or date"
+
+    if retry_refreshed_count:
+        template_summaries.append({"retry_refreshed_count": retry_refreshed_count})
+    job.next_cursor = serialize_sync_cursors(incomplete_cursors)
+    if incomplete_cursors:
+        job.status = SyncJobStatus.FAILED.value
+        job.error_message = "DingTalk approval sync is incomplete; resume is required before advancing the sync window"
+    else:
+        job.status = SyncJobStatus.SUCCEEDED.value if job.failed_count == 0 else SyncJobStatus.FAILED.value
     job.finished_at = utc_now()
     job.raw_summary = json.dumps({"templates": template_summaries}, ensure_ascii=False)
-    config = get_or_create_config(session)
-    config.last_instance_sync_at = utc_now()
+    if job.status == SyncJobStatus.SUCCEEDED.value:
+        config = get_or_create_config(session)
+        config.last_instance_sync_at = utc_now()
+    return handled_instance_ids
 
 
 @router.get("/auto-sync/settings", response_model=ApiEnvelope[DingTalkAutoSyncSettingRead])
@@ -2701,6 +2861,7 @@ def execute_auto_sync(
     department_sync: DingTalkDepartmentSyncResult | None = None
     template_sync: dict[str, int] | None = None
     approval_sync_summary: dict[str, Any] | None = None
+    approval_window: tuple[datetime, datetime] | None = None
 
     def department_pull_summary(result: DingTalkDepartmentPullResult | None) -> dict[str, int] | None:
         if result is None:
@@ -2745,29 +2906,46 @@ def execute_auto_sync(
             update_progress("templates_sync", "succeeded", **template_sync)
 
         if setting.sync_approvals:
+            resume_state = parse_auto_sync_resume_state(setting.approval_resume_state)
+            if resume_state:
+                start_at, end_at, resume_cursors = resume_state
+            else:
+                end_at = utc_now()
+                start_at = (
+                    setting.approval_watermark_at - APPROVAL_SYNC_OVERLAP
+                    if setting.approval_watermark_at
+                    else end_at - timedelta(days=AUTO_SYNC_INITIAL_APPROVAL_LOOKBACK_DAYS)
+                )
+                start_at, end_at = validate_approval_sync_window(start_at, end_at)
+                resume_cursors = {}
+            approval_window = (start_at, end_at)
             update_progress(
                 "approvals_sync",
                 "running",
                 page_size=AUTO_SYNC_APPROVAL_PAGE_SIZE,
                 max_pages=AUTO_SYNC_APPROVAL_MAX_PAGES,
-                incremental_start_at=setting.last_run_at.isoformat()
-                if setting.last_run_at
-                else None,
+                incremental_start_at=start_at.isoformat(),
+                incremental_end_at=end_at.isoformat(),
+                resuming=bool(resume_state),
             )
-            end_at = utc_now()
             job.request_end_at = end_at
-            job.request_start_at = setting.last_run_at or (
-                end_at - timedelta(days=AUTO_SYNC_INITIAL_APPROVAL_LOOKBACK_DAYS)
+            job.request_start_at = start_at
+            templates_query = (
+                select(ApprovalTemplate)
+                .where(ApprovalTemplate.is_enabled.is_(True))
+                .order_by(ApprovalTemplate.created_at.asc())
             )
+            if resume_cursors:
+                templates_query = templates_query.where(
+                    ApprovalTemplate.process_code.in_(resume_cursors)
+                )
             templates = list(
                 session.scalars(
-                    select(ApprovalTemplate)
-                    .where(ApprovalTemplate.is_enabled.is_(True))
-                    .order_by(ApprovalTemplate.created_at.asc())
+                    templates_query
                 )
             )
             if not templates:
-                raise HTTPException(status_code=404, detail="No enabled approval templates")
+                raise HTTPException(status_code=404, detail="No enabled approval templates for approval sync")
             run_approval_sync(
                 session,
                 job=job,
@@ -2775,8 +2953,18 @@ def execute_auto_sync(
                 page_size=AUTO_SYNC_APPROVAL_PAGE_SIZE,
                 max_pages=AUTO_SYNC_APPROVAL_MAX_PAGES,
                 skip_existing=setting.skip_existing,
+                resume_cursors=resume_cursors,
             )
             approval_sync_summary = json.loads(job.raw_summary) if job.raw_summary else None
+            if job.status == SyncJobStatus.SUCCEEDED.value and not job.next_cursor:
+                setting.approval_watermark_at = end_at
+                setting.approval_resume_state = None
+            else:
+                setting.approval_resume_state = serialize_auto_sync_resume_state(
+                    start_at,
+                    end_at,
+                    parse_sync_cursors(job.next_cursor),
+                )
             update_progress(
                 "approvals_sync",
                 job.status,
@@ -2817,6 +3005,12 @@ def execute_auto_sync(
         job.raw_summary = json.dumps({"error": job.error_message, "progress": progress}, ensure_ascii=False)
         setting.last_status = job.status
         setting.last_error = job.error_message
+        if setting.sync_approvals and approval_window:
+            setting.approval_resume_state = serialize_auto_sync_resume_state(
+                approval_window[0],
+                approval_window[1],
+                parse_sync_cursors(job.next_cursor),
+            )
     setting.last_run_at = utc_now()
     setting.last_job_id = job.id
     refresh_auto_sync_next_run(setting)
@@ -2888,13 +3082,21 @@ def start_approval_sync(
     if not templates:
         raise HTTPException(status_code=404, detail="No enabled approval templates")
 
+    requested_end_at = normalize_sync_datetime(payload.end_at or utc_now())
+    requested_start_at = normalize_sync_datetime(
+        payload.start_at or requested_end_at - timedelta(days=31)
+    )
+    requested_start_at, requested_end_at = validate_approval_sync_window(
+        requested_start_at,
+        requested_end_at,
+    )
     job = SyncJob(
         job_type="dingtalk_approval_sync",
         status=SyncJobStatus.RUNNING.value,
         started_by=audit_actor(current_user, payload.started_by),
         started_at=utc_now(),
-        request_start_at=payload.start_at,
-        request_end_at=payload.end_at,
+        request_start_at=requested_start_at,
+        request_end_at=requested_end_at,
     )
     session.add(job)
     session.flush()
@@ -2942,6 +3144,134 @@ def start_approval_sync(
     return ApiEnvelope(data=job)
 
 
+@router.post(
+    "/store-approval-sync",
+    response_model=ApiEnvelope[StoreApprovalSyncResult],
+    status_code=201,
+)
+def start_store_approval_sync(
+    payload: StartStoreApprovalSyncRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_permission("dingtalk.view")),
+) -> ApiEnvelope[StoreApprovalSyncResult]:
+    ensure_permission(session, current_user, "reconciliation.manage")
+    ensure_store_access(session, current_user, payload.store_id)
+
+    store = session.get(Store, payload.store_id)
+    if store is None:
+        raise HTTPException(status_code=404, detail="Store not found")
+    period_year, period_month = (int(part) for part in payload.ledger_period.split("-"))
+    period_local_start = datetime(period_year, period_month, 1, tzinfo=AUTO_SYNC_TIMEZONE)
+    period_local_end = (
+        datetime(period_year + 1, 1, 1, tzinfo=AUTO_SYNC_TIMEZONE)
+        if period_month == 12
+        else datetime(period_year, period_month + 1, 1, tzinfo=AUTO_SYNC_TIMEZONE)
+    )
+    period_start = normalize_sync_datetime(period_local_start)
+    period_end = normalize_sync_datetime(period_local_end)
+    if session.scalar(
+        select(Ledger.id).where(
+            Ledger.store_id == payload.store_id,
+            Ledger.period == payload.ledger_period,
+        )
+    ) is None:
+        raise HTTPException(status_code=404, detail="Ledger not found")
+
+    query = select(ApprovalTemplate).where(ApprovalTemplate.is_enabled.is_(True))
+    if payload.template_id:
+        query = query.where(ApprovalTemplate.id == payload.template_id)
+    templates = session.scalars(query.order_by(ApprovalTemplate.created_at.asc())).all()
+    if not templates:
+        raise HTTPException(status_code=404, detail="No enabled approval templates")
+
+    requested_start_at = normalize_sync_datetime(payload.start_at) if payload.start_at else period_start
+    requested_end_at = normalize_sync_datetime(payload.end_at) if payload.end_at else period_end
+    request_start_at, request_end_at = validate_approval_sync_window(
+        requested_start_at,
+        min(requested_end_at, utc_now()),
+    )
+    job = SyncJob(
+        job_type="dingtalk_store_approval_sync",
+        status=SyncJobStatus.RUNNING.value,
+        started_by=audit_actor(current_user, payload.started_by),
+        started_at=utc_now(),
+        request_start_at=request_start_at,
+        request_end_at=request_end_at,
+    )
+    session.add(job)
+    session.flush()
+
+    try:
+        handled_instance_ids = run_approval_sync(
+            session,
+            job=job,
+            templates=templates,
+            page_size=AUTO_SYNC_APPROVAL_PAGE_SIZE,
+            max_pages=100,
+            skip_existing=payload.skip_existing,
+        )
+        session.flush()
+        handled_instances = list(
+            session.scalars(
+                select(ApprovalInstance).where(
+                    ApprovalInstance.dingtalk_instance_id.in_(handled_instance_ids)
+                )
+            )
+        ) if handled_instance_ids else []
+        matched_instances = [
+            instance
+            for instance in handled_instances
+            if instance.store_id == payload.store_id
+            and instance.submit_at is not None
+            and request_start_at <= instance.submit_at < request_end_at
+        ]
+        unresolved_store_count = sum(instance.store_id is None for instance in handled_instances)
+        result = StoreApprovalSyncResult(
+            job=SyncJobRead.model_validate(job),
+            store_id=payload.store_id,
+            ledger_period=payload.ledger_period,
+            scanned_count=job.processed_count,
+            matched_count=len(matched_instances),
+            outside_scope_count=len(handled_instances) - len(matched_instances) - unresolved_store_count,
+            unresolved_store_count=unresolved_store_count,
+        )
+        summary = json.loads(job.raw_summary) if job.raw_summary else {}
+        summary["store_scope"] = {
+            "store_id": payload.store_id,
+            "ledger_period": payload.ledger_period,
+            "matched_count": result.matched_count,
+            "outside_scope_count": result.outside_scope_count,
+            "unresolved_store_count": result.unresolved_store_count,
+        }
+        job.raw_summary = json.dumps(summary, ensure_ascii=False)
+        write_audit_log(
+            session,
+            actor=audit_actor(current_user, payload.started_by),
+            action="dingtalk.store_approval_sync",
+            resource_type="sync_job",
+            resource_id=job.id,
+            summary=f"同步门店账期审批：{store.name} {payload.ledger_period}，归入 {result.matched_count} 条",
+            metadata=result.model_dump(mode="json", exclude={"job"}),
+        )
+        session.commit()
+    except DingTalkClientError as exc:
+        job.status = SyncJobStatus.FAILED.value
+        job.failed_count += 1
+        job.error_message = str(exc)
+        job.finished_at = utc_now()
+        job.raw_summary = json.dumps({"error": str(exc)}, ensure_ascii=False)
+        session.commit()
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except Exception:
+        job.status = SyncJobStatus.FAILED.value
+        job.finished_at = utc_now()
+        session.commit()
+        raise
+    session.refresh(job)
+    result.job = SyncJobRead.model_validate(job)
+    return ApiEnvelope(data=result)
+
+
 @router.post("/sync-jobs/{job_id}/resume", response_model=ApiEnvelope[SyncJobRead], status_code=201)
 def resume_approval_sync(
     job_id: str,
@@ -2952,17 +3282,18 @@ def resume_approval_sync(
     previous_job = session.get(SyncJob, job_id)
     if previous_job is None:
         raise HTTPException(status_code=404, detail="Sync job not found")
-    resume_cursor = parse_sync_cursor(previous_job.next_cursor)
-    if previous_job.job_type != "dingtalk_approval_sync" or resume_cursor is None:
+    resume_cursors = parse_sync_cursors(previous_job.next_cursor)
+    if previous_job.job_type != "dingtalk_approval_sync" or not resume_cursors:
         raise HTTPException(status_code=409, detail="Sync job has no resumable cursor")
-    process_code, _cursor = resume_cursor
-    template = session.scalar(
-        select(ApprovalTemplate).where(
-            ApprovalTemplate.process_code == process_code,
-            ApprovalTemplate.is_enabled.is_(True),
+    templates = list(
+        session.scalars(
+            select(ApprovalTemplate).where(
+                ApprovalTemplate.process_code.in_(resume_cursors),
+                ApprovalTemplate.is_enabled.is_(True),
+            )
         )
     )
-    if template is None:
+    if len(templates) != len(resume_cursors):
         raise HTTPException(status_code=404, detail="Approval template for cursor not found")
 
     job = SyncJob(
@@ -2981,11 +3312,11 @@ def resume_approval_sync(
         run_approval_sync(
             session,
             job=job,
-            templates=[template],
+            templates=templates,
             page_size=payload.page_size,
             max_pages=payload.max_pages,
             skip_existing=payload.skip_existing,
-            resume_cursor=resume_cursor,
+            resume_cursors=resume_cursors,
         )
         write_audit_log(
             session,
@@ -3049,7 +3380,12 @@ def list_approval_instances(
     page_size: int = 50,
     session: Session = Depends(get_session),
 ) -> ApiEnvelope[Page[ApprovalInstanceRead]]:
-    query = select(ApprovalInstance).order_by(
+    query = select(ApprovalInstance).join(
+        ApprovalTemplate,
+        ApprovalInstance.template_id == ApprovalTemplate.id,
+    ).where(
+        ApprovalTemplate.is_enabled.is_(True),
+    ).order_by(
         ApprovalInstance.submit_at.desc().nullslast(),
         ApprovalInstance.created_at.desc(),
     )

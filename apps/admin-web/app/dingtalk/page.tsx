@@ -11,7 +11,6 @@ import {
   Form,
   Image,
   Input,
-  InputNumber,
   Modal,
   Row,
   Select,
@@ -57,9 +56,9 @@ interface DingTalkFormValues {
 
 interface ApprovalSyncFormValues {
   template_id?: string;
-  time_range?: [dayjs.Dayjs, dayjs.Dayjs];
-  page_size?: number;
-  max_pages?: number;
+  start_at?: dayjs.Dayjs;
+  end_at?: dayjs.Dayjs;
+  sync_to_now?: boolean;
   skip_existing?: boolean;
 }
 
@@ -628,9 +627,23 @@ export default function DingTalkPage() {
   const instanceTemplateFilter = instanceTemplateFilterId
     ? templates.find((template) => template.id === instanceTemplateFilterId) ?? null
     : null;
-  const displayedApprovalInstances = instanceTemplateFilterId
-    ? approvalInstances.filter((instance) => instance.template_id === instanceTemplateFilterId)
-    : approvalInstances;
+  const enabledTemplateIds = useMemo(
+    () => new Set(templates.filter((t) => t.is_enabled).map((t) => t.id)),
+    [templates],
+  );
+  const displayedApprovalInstances = useMemo(() => {
+    let instances = instanceTemplateFilterId
+      ? approvalInstances.filter((instance) => instance.template_id === instanceTemplateFilterId)
+      : approvalInstances;
+    return instances.filter((instance) => enabledTemplateIds.has(instance.template_id));
+  }, [instanceTemplateFilterId, approvalInstances, enabledTemplateIds]);
+  const syncExecutionLogs = useMemo(
+    () =>
+      syncJobs.filter((job) =>
+        ["dingtalk_auto_sync", "dingtalk_approval_sync"].includes(job.job_type),
+      ),
+    [syncJobs],
+  );
   const approvalStatusFilters = useMemo(
     () => {
       const filters = new Map<string, { text: string; value: string }>();
@@ -693,8 +706,9 @@ export default function DingTalkPage() {
     const results = await Promise.allSettled([
       apiClient.dingtalk.readConfig(),
       apiClient.dingtalk.readAutoSyncSetting(),
+      apiClient.dingtalk.listSyncJobs("?page_size=50"),
     ]);
-    const [configResult, autoSyncResult] = results;
+    const [configResult, autoSyncResult, jobResult] = results;
     const errors: string[] = [];
 
     if (configResult.status === "fulfilled") {
@@ -707,6 +721,12 @@ export default function DingTalkPage() {
       applyAutoSyncSetting(autoSyncResult.value);
     } else {
       errors.push(dingtalkPageErrorMessage(autoSyncResult.reason, "无法读取自动同步设置"));
+    }
+
+    if (jobResult.status === "fulfilled") {
+      setSyncJobs(jobResult.value.items);
+    } else {
+      errors.push(dingtalkPageErrorMessage(jobResult.reason, "无法读取同步执行日志"));
     }
 
     if (errors.length) {
@@ -943,9 +963,20 @@ export default function DingTalkPage() {
   function openSyncModal() {
     syncForm.setFieldsValue({
       template_id: instanceTemplateFilterId ?? selectedTemplate?.id,
-      time_range: [dayjs().subtract(7, "day"), dayjs()],
-      page_size: 10,
-      max_pages: 5,
+      start_at: dayjs().subtract(7, "day"),
+      end_at: undefined,
+      sync_to_now: true,
+      skip_existing: true,
+    });
+    setIsSyncModalOpen(true);
+  }
+
+  function openManualSyncModal() {
+    syncForm.setFieldsValue({
+      template_id: undefined,
+      start_at: dayjs().subtract(7, "day"),
+      end_at: undefined,
+      sync_to_now: true,
       skip_existing: true,
     });
     setIsSyncModalOpen(true);
@@ -957,23 +988,26 @@ export default function DingTalkPage() {
   }
 
   async function startApprovalSync(values: ApprovalSyncFormValues) {
+    const endAt = values.sync_to_now ? dayjs() : values.end_at;
+    if (values.start_at && endAt && endAt.diff(values.start_at, "day", true) > 120) {
+      message.error("单次审批同步时间范围不能超过 120 天");
+      return;
+    }
     setIsLoading(true);
     try {
       const job = await apiClient.dingtalk.startApprovalSync({
         template_id: values.template_id,
         started_by: "admin",
-        start_at: values.time_range?.[0]?.toISOString(),
-        end_at: values.time_range?.[1]?.toISOString(),
-        page_size: values.page_size ?? 20,
-        max_pages: values.max_pages ?? 20,
+        start_at: values.start_at?.toISOString(),
+        end_at: values.sync_to_now ? undefined : values.end_at?.toISOString(),
         skip_existing: values.skip_existing ?? true,
       });
       setIsSyncModalOpen(false);
       await loadInstancesTab(true);
-      if (job.status === "failed") {
-        message.error(job.error_message || "审批列表同步失败");
-      } else if (job.next_cursor) {
+      if (job.next_cursor) {
         message.warning("审批列表已同步一部分，可在同步任务中续跑");
+      } else if (job.status === "failed") {
+        message.error(job.error_message || "审批列表同步失败");
       } else {
         message.success("审批列表增量同步完成");
       }
@@ -995,10 +1029,10 @@ export default function DingTalkPage() {
         skip_existing: true,
       });
       await loadInstancesTab(true);
-      if (nextJob.status === "failed") {
-        message.error(nextJob.error_message || "审批同步续跑失败");
-      } else if (nextJob.next_cursor) {
+      if (nextJob.next_cursor) {
         message.warning("审批同步续跑已处理一部分，可继续续跑");
+      } else if (nextJob.status === "failed") {
+        message.error(nextJob.error_message || "审批同步续跑失败");
       } else {
         message.success("审批同步续跑完成");
       }
@@ -1414,6 +1448,62 @@ export default function DingTalkPage() {
   ];
 
   const hasResumableSyncJob = syncJobs.some((job) => Boolean(job.next_cursor));
+  const syncExecutionLogColumns: EnterpriseTableColumn<SyncJob>[] = [
+    { key: "job_type", title: "执行类型", dataIndex: "job_type", width: 140, render: (value) => syncJobTypeLabel(value) },
+    {
+      key: "status",
+      title: "状态",
+      dataIndex: "status",
+      width: 90,
+      render: (value: SyncJob["status"], record) => {
+        if (record.next_cursor) return <Tag color="blue">可续跑</Tag>;
+        if (value === "succeeded") return <Tag color="green">成功</Tag>;
+        if (value === "failed") return <Tag color="red">失败</Tag>;
+        if (value === "running") return <Tag color="blue">运行中</Tag>;
+        return <Tag>等待中</Tag>;
+      },
+    },
+    {
+      key: "time_window",
+      title: "审批日期范围",
+      width: 280,
+      render: (_, record) =>
+        record.request_start_at || record.request_end_at
+          ? `${formatBeijingDateTime(record.request_start_at)} 至 ${formatBeijingDateTime(record.request_end_at)}`
+          : "按自动增量窗口",
+    },
+    { key: "processed_count", title: "处理", dataIndex: "processed_count", width: 72 },
+    { key: "success_count", title: "成功", dataIndex: "success_count", width: 72 },
+    { key: "failed_count", title: "失败", dataIndex: "failed_count", width: 72 },
+    {
+      key: "error_message",
+      title: "结果",
+      width: 260,
+      render: (_, record) =>
+        record.error_message ? (
+          <Typography.Text type="danger" ellipsis={{ tooltip: record.error_message }}>
+            {record.error_message}
+          </Typography.Text>
+        ) : (
+          renderSyncJobSummary(record)
+        ),
+    },
+    { key: "started_by", title: "发起人", dataIndex: "started_by", width: 110, render: (value) => value || "-" },
+    {
+      key: "started_at",
+      title: "开始时间",
+      dataIndex: "started_at",
+      width: 160,
+      render: (value) => formatBeijingDateTime(value),
+    },
+    {
+      key: "finished_at",
+      title: "结束时间",
+      dataIndex: "finished_at",
+      width: 160,
+      render: (value) => formatBeijingDateTime(value),
+    },
+  ];
   const jobColumns: EnterpriseTableColumn<SyncJob>[] = [
     { key: "job_type", title: "任务类型", dataIndex: "job_type", width: 140, render: (value) => syncJobTypeLabel(value) },
     {
@@ -1422,7 +1512,7 @@ export default function DingTalkPage() {
       dataIndex: "status",
       width: 90,
       render: (value: SyncJob["status"], record) => {
-        if (value === "succeeded" && record.next_cursor) return <Tag color="blue">可续跑</Tag>;
+        if (record.next_cursor) return <Tag color="blue">可续跑</Tag>;
         if (value === "succeeded") return <Tag color="green">成功</Tag>;
         if (value === "failed") return <Tag color="red">失败</Tag>;
         if (value === "running") return <Tag color="blue">运行中</Tag>;
@@ -1571,84 +1661,100 @@ export default function DingTalkPage() {
             key: "auto-sync",
             label: "自动同步",
             children: (
-              <Card
-                title="自动同步任务"
-                extra={
-                  <Space>
-                    <Tag color={autoSyncSetting?.enabled ? "green" : "default"}>
-                      {autoSyncSetting?.enabled ? "已启用" : "未启用"}
-                    </Tag>
-                    <Button onClick={runAutoSync} loading={isLoading}>
-                      立即执行
-                    </Button>
-                    <Button type="primary" onClick={() => autoSyncForm.submit()} loading={isLoading}>
-                      保存设置
-                    </Button>
-                  </Space>
-                }
-              >
-                <Space direction="vertical" size={16} className="full-width">
-                  <Space wrap>
-                    <Tag color="cyan">
-                      上次执行 {autoSyncSetting?.last_run_at ? formatBeijingDateTime(autoSyncSetting.last_run_at) : "尚未执行"}
-                    </Tag>
-                    <Tag color={autoSyncSetting?.last_status === "failed" ? "red" : "green"}>
-                      上次状态 {autoSyncSetting?.last_status ?? "-"}
-                    </Tag>
-                    <Tag>
-                      下次计划 {formatBeijingDateTime(autoSyncSetting?.next_run_at)}
-                    </Tag>
-                    {autoSyncSetting?.last_error ? <Tag color="red">{autoSyncSetting.last_error}</Tag> : null}
-                  </Space>
+              <Space direction="vertical" size={16} className="full-width">
+                <Card
+                  title="自动同步任务"
+                  extra={
+                    <Space>
+                      <Tag color={autoSyncSetting?.enabled ? "green" : "default"}>
+                        {autoSyncSetting?.enabled ? "已启用" : "未启用"}
+                      </Tag>
+                      <Button onClick={runAutoSync} loading={isLoading}>
+                        立即执行自动任务
+                      </Button>
+                      <Button onClick={openManualSyncModal} loading={isLoading}>
+                        手动同步审批
+                      </Button>
+                      <Button type="primary" onClick={() => autoSyncForm.submit()} loading={isLoading}>
+                        保存设置
+                      </Button>
+                    </Space>
+                  }
+                >
+                  <Space direction="vertical" size={16} className="full-width">
+                    <Space wrap>
+                      <Tag color="cyan">
+                        上次执行 {autoSyncSetting?.last_run_at ? formatBeijingDateTime(autoSyncSetting.last_run_at) : "尚未执行"}
+                      </Tag>
+                      <Tag color={autoSyncSetting?.last_status === "failed" ? "red" : "green"}>
+                        上次状态 {autoSyncSetting?.last_status ?? "-"}
+                      </Tag>
+                      <Tag>
+                        下次计划 {formatBeijingDateTime(autoSyncSetting?.next_run_at)}
+                      </Tag>
+                      {autoSyncSetting?.last_error ? <Tag color="red">{autoSyncSetting.last_error}</Tag> : null}
+                    </Space>
 
-                  <Alert
-                    type="info"
-                    showIcon
-                    message="自动同步会在每天设定时间执行：全量拉取部门并同步门店、同步审批模板、增量同步审批列表。只有启用的审批模板会参与审批同步。"
+                    <Alert
+                      type="info"
+                      showIcon
+                      message="计划任务和“立即执行自动任务”都会按下方开关执行部门、门店、模板和审批同步；首次审批自动同步仅覆盖最近 120 天，历史数据请用“手动同步审批”分段补拉。"
+                    />
+
+                    <Form
+                      form={autoSyncForm}
+                      layout="vertical"
+                      onFinish={submitAutoSyncSetting}
+                      initialValues={{
+                        enabled: false,
+                        scheduled_time: "02:15",
+                        sync_departments: true,
+                        sync_templates: true,
+                        sync_approvals: true,
+                      }}
+                    >
+                      <Row gutter={[16, 0]}>
+                        <Col xs={24} md={8}>
+                          <Form.Item name="enabled" label="启用计划任务" valuePropName="checked">
+                            <Switch />
+                          </Form.Item>
+                        </Col>
+                        <Col xs={24} md={8}>
+                          <Form.Item name="scheduled_time" label="每天开始时间（北京时间）" rules={[{ required: true }]}>
+                            <Select options={AUTO_SYNC_TIME_OPTIONS} />
+                          </Form.Item>
+                        </Col>
+                        <Col xs={24} md={8}>
+                          <Form.Item name="sync_departments" label="同步部门和门店" valuePropName="checked">
+                            <Switch />
+                          </Form.Item>
+                        </Col>
+                        <Col xs={24} md={8}>
+                          <Form.Item name="sync_templates" label="同步审批模板" valuePropName="checked">
+                            <Switch />
+                          </Form.Item>
+                        </Col>
+                        <Col xs={24} md={8}>
+                          <Form.Item name="sync_approvals" label="同步审批列表" valuePropName="checked">
+                            <Switch />
+                          </Form.Item>
+                        </Col>
+                      </Row>
+                    </Form>
+                  </Space>
+                </Card>
+                <Card title="执行日志">
+                  <EnterpriseTable<SyncJob>
+                    rowKey="id"
+                    loading={isLoading}
+                    columns={syncExecutionLogColumns}
+                    dataSource={syncExecutionLogs}
+                    pagination={{ defaultPageSize: 8, showSizeChanger: true }}
+                    showDensityToggle
+                    showColumnSettings
                   />
-
-                  <Form
-                    form={autoSyncForm}
-                    layout="vertical"
-                    onFinish={submitAutoSyncSetting}
-                    initialValues={{
-                      enabled: false,
-                      scheduled_time: "02:15",
-                      sync_departments: true,
-                      sync_templates: true,
-                      sync_approvals: true,
-                    }}
-                  >
-                    <Row gutter={[16, 0]}>
-                      <Col xs={24} md={8}>
-                        <Form.Item name="enabled" label="启用计划任务" valuePropName="checked">
-                          <Switch />
-                        </Form.Item>
-                      </Col>
-                      <Col xs={24} md={8}>
-                        <Form.Item name="scheduled_time" label="每天开始时间（北京时间）" rules={[{ required: true }]}>
-                          <Select options={AUTO_SYNC_TIME_OPTIONS} />
-                        </Form.Item>
-                      </Col>
-                      <Col xs={24} md={8}>
-                        <Form.Item name="sync_departments" label="同步部门和门店" valuePropName="checked">
-                          <Switch />
-                        </Form.Item>
-                      </Col>
-                      <Col xs={24} md={8}>
-                        <Form.Item name="sync_templates" label="同步审批模板" valuePropName="checked">
-                          <Switch />
-                        </Form.Item>
-                      </Col>
-                      <Col xs={24} md={8}>
-                        <Form.Item name="sync_approvals" label="同步审批列表" valuePropName="checked">
-                          <Switch />
-                        </Form.Item>
-                      </Col>
-                    </Row>
-                  </Form>
-                </Space>
-              </Card>
+                </Card>
+              </Space>
             ),
           },
           {
@@ -2082,7 +2188,7 @@ export default function DingTalkPage() {
         )}
       </Modal>
       <Modal
-        title="同步审批实例"
+        title="手动同步审批实例"
         open={isSyncModalOpen}
         onCancel={() => setIsSyncModalOpen(false)}
         onOk={() => syncForm.submit()}
@@ -2092,7 +2198,7 @@ export default function DingTalkPage() {
           form={syncForm}
           layout="vertical"
           onFinish={startApprovalSync}
-          initialValues={{ page_size: 10, max_pages: 5, skip_existing: true }}
+          initialValues={{ sync_to_now: true, skip_existing: true }}
         >
           <Form.Item name="template_id" label="审批模板">
             <Select
@@ -2106,17 +2212,51 @@ export default function DingTalkPage() {
               }))}
             />
           </Form.Item>
-          <Form.Item name="time_range" label="同步时间窗口">
-            <DatePicker.RangePicker showTime className="full-width" />
+          <Row gutter={16}>
+            <Col span={12}>
+              <Form.Item name="start_at" label="开始时间" rules={[{ required: true, message: "请选择开始时间" }]}>
+                <DatePicker
+                  showTime
+                  className="full-width"
+                  disabledDate={(current) => current.isBefore(dayjs().subtract(365, "day").startOf("day")) || current.isAfter(dayjs().endOf("day"))}
+                />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item noStyle shouldUpdate={(previous, current) => previous.sync_to_now !== current.sync_to_now}>
+                {({ getFieldValue }) =>
+                  getFieldValue("sync_to_now") ? null : (
+                    <Form.Item name="end_at" label="结束时间" rules={[{ required: true, message: "请选择结束时间" }]}>
+                      <DatePicker
+                        showTime
+                        className="full-width"
+                        disabledDate={(current) => {
+                          const startAt = syncForm.getFieldValue("start_at") as dayjs.Dayjs | undefined;
+                          return (
+                            current.isAfter(dayjs().endOf("day")) ||
+                            (startAt ? current.isBefore(startAt.startOf("day")) || current.isAfter(startAt.add(120, "day").endOf("day")) : false)
+                          );
+                        }}
+                      />
+                    </Form.Item>
+                  )
+                }
+              </Form.Item>
+            </Col>
+          </Row>
+          <Form.Item
+            name="sync_to_now"
+            label="结束时间"
+            valuePropName="checked"
+            extra="开启后不需要设置结束时间，将同步至实际执行时刻。"
+          >
+            <Switch checkedChildren="同步至当前时间" unCheckedChildren="指定结束时间" />
           </Form.Item>
+          <Typography.Text type="secondary">
+            钉钉仅支持同步最近 365 天内的数据，单次日期范围最多 120 天。
+          </Typography.Text>
           <Form.Item name="skip_existing" label="跳过本地已有审批" initialValue={true}>
             <Switch />
-          </Form.Item>
-          <Form.Item name="page_size" label="每页数量" rules={[{ required: true }]}>
-            <InputNumber min={1} max={100} className="full-width" />
-          </Form.Item>
-          <Form.Item name="max_pages" label="最大页数" rules={[{ required: true }]}>
-            <InputNumber min={1} max={200} className="full-width" />
           </Form.Item>
         </Form>
       </Modal>
