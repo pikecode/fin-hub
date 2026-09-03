@@ -104,6 +104,31 @@ class DingTalkClient:
             raise DingTalkClientError(f"DingTalk approval instance missing: {data}")
         return result
 
+    def forecast_process_nodes(
+        self,
+        process_code: str,
+        user_id: str,
+        dept_id: str,
+        form_component_values: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        token = self.get_access_token()
+        response = httpx.post(
+            f"{self.api_base_url}/v1.0/workflow/processes/forecast",
+            headers={"x-acs-dingtalk-access-token": token},
+            json={
+                "processCode": process_code,
+                "userId": user_id,
+                "deptId": dept_id,
+                "formComponentValues": form_component_values or [],
+            },
+            timeout=self.timeout,
+        )
+        data = self._read_json(response)
+        result = data.get("result") or data
+        if not isinstance(result, dict):
+            raise DingTalkClientError(f"DingTalk approval process nodes missing: {data}")
+        return result
+
     def get_drive_download_url(self, space_id: str, file_id: str, union_id: str) -> str:
         token = self.get_access_token()
         response = httpx.get(

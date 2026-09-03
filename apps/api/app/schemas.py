@@ -561,6 +561,7 @@ class DingTalkAutoSyncSettingRead(BaseModel):
     scheduled_time: str
     interval_minutes: int
     window_days: int
+    approval_overlap_days: int
     root_dept_id: str
     max_depth: int
     page_size: int

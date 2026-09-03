@@ -8,6 +8,7 @@ from app.core.config import settings
 from app.models import (
     ApprovalInstance,
     ApprovalTemplate,
+    ApprovalTemplateNode,
     BankTransaction,
     DingTalkAutoSyncSetting,
     DingTalkConfig,
@@ -94,6 +95,49 @@ def test_dingtalk_client_clamps_process_instance_page_size(monkeypatch) -> None:
     assert requested_sizes == [10]
 
 
+def test_dingtalk_client_forecast_process_nodes(monkeypatch) -> None:
+    import httpx
+
+    calls: list[dict] = []
+
+    def response(url: str, payload: dict) -> httpx.Response:
+        return httpx.Response(200, json=payload, request=httpx.Request("POST", url))
+
+    def fake_post(url: str, **kwargs):
+        calls.append({"url": url, **kwargs})
+        if url.endswith("/v1.0/oauth2/accessToken"):
+            return response(url, {"accessToken": "token-1"})
+        return response(
+            url,
+            {
+                "result": {
+                    "nodes": [
+                        {
+                            "activityId": "finance-approve",
+                            "activityName": "财务审批",
+                            "activityType": "APPROVAL",
+                        }
+                    ]
+                }
+            },
+        )
+
+    monkeypatch.setattr("app.modules.dingtalk.client.httpx.post", fake_post)
+
+    client = DingTalkClient(DingTalkCredentials(app_key="key", app_secret="secret"))
+    result = client.forecast_process_nodes("PROC-1", "user-1", "dept-1")
+
+    assert result["nodes"][0]["activityId"] == "finance-approve"
+    assert calls[1]["url"].endswith("/v1.0/workflow/processes/forecast")
+    assert calls[1]["headers"] == {"x-acs-dingtalk-access-token": "token-1"}
+    assert calls[1]["json"] == {
+        "processCode": "PROC-1",
+        "userId": "user-1",
+        "deptId": "dept-1",
+        "formComponentValues": [],
+    }
+
+
 def test_sync_templates_and_upsert_mapping(client: TestClient) -> None:
     sync_response = client.post("/api/dingtalk/templates/sync")
     assert sync_response.status_code == 200
@@ -155,6 +199,81 @@ def test_sync_templates_and_upsert_mapping(client: TestClient) -> None:
     assert delete_response.status_code == 200
     assert delete_response.json()["data"]["ok"] is True
     assert client.get(f"/api/dingtalk/templates/{template_id}/mappings").json()["data"] == []
+
+
+def test_real_sync_templates_auto_upserts_template_nodes(
+    client: TestClient,
+    session,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(settings, "dingtalk_sync_mode", "real")
+    client.put(
+        "/api/dingtalk/config",
+        json={
+            "app_key": "ding-app-key",
+            "app_secret": "super-secret",
+            "admin_user_id": "admin-user",
+        },
+    )
+    store_id = client.post(
+        "/api/stores",
+        json={"name": "节点同步门店", "dingtalk_dept_id": "dept-node"},
+    ).json()["data"]["id"]
+    assert store_id
+
+    class FakeDingTalkClient:
+        def list_processes_by_user(self, user_id):
+            assert user_id == "admin-user"
+            return [{"process_code": "PROC-NODE", "name": "自动节点模板"}]
+
+        def forecast_process_nodes(self, process_code, user_id, dept_id, form_component_values=None):
+            assert process_code == "PROC-NODE"
+            assert user_id == "admin-user"
+            assert dept_id == "dept-node"
+            assert form_component_values is None
+            return {
+                "result": {
+                    "forecastNodeVOS": [
+                        {
+                            "activityId": "finance-approve",
+                            "activityName": "财务审批",
+                            "activityType": "APPROVAL",
+                        },
+                        {
+                            "activity_id": "cashier-pay",
+                            "node_name": "出纳付款",
+                            "node_type": "CC",
+                        },
+                    ]
+                }
+            }
+
+    monkeypatch.setattr("app.modules.dingtalk.router.dingtalk_client", lambda config: FakeDingTalkClient())
+
+    response = client.post("/api/dingtalk/templates/sync")
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["created"] == 1
+    assert data["node_created"] == 2
+    assert data["node_failed"] == 0
+
+    template = client.get("/api/dingtalk/templates").json()["data"]["items"][0]
+    nodes = client.get(f"/api/dingtalk/templates/{template['id']}/nodes").json()["data"]
+    assert [(node["activity_id"], node["node_name"]) for node in nodes] == [
+        ("finance-approve", "财务审批"),
+        ("cashier-pay", "出纳付款"),
+    ]
+
+    existing = session.scalar(
+        select(ApprovalTemplateNode).where(ApprovalTemplateNode.activity_id == "finance-approve")
+    )
+    assert existing is not None
+    existing.node_name = "旧财务审批"
+    session.commit()
+
+    second_response = client.post("/api/dingtalk/templates/sync")
+    assert second_response.status_code == 200
+    assert second_response.json()["data"]["node_updated"] == 1
 
 
 def test_template_nodes_are_returned_with_approval_instance(client: TestClient, session) -> None:

@@ -48,10 +48,10 @@ from app.schemas import (
     ApprovalParsePreview,
     ApprovalReparseRequest,
     ApprovalReparseResult,
+    ApprovalTemplateCreate,
     ApprovalTemplateNodeCreate,
     ApprovalTemplateNodeRead,
     ApprovalTemplateNodeUpdate,
-    ApprovalTemplateCreate,
     ApprovalTemplateRead,
     ApprovalTemplateUpdate,
     DingTalkAutoSyncRunResult,
@@ -586,11 +586,13 @@ def update_template(
 
 def sync_templates_core(session: Session) -> dict[str, int]:
     config = get_or_create_config(session)
+    dingtalk: DingTalkClient | None = None
     if should_use_real_dingtalk():
         if not config.admin_user_id:
             raise HTTPException(status_code=409, detail="DingTalk admin user id is not configured")
         try:
-            processes = dingtalk_client(config).list_processes_by_user(config.admin_user_id)
+            dingtalk = dingtalk_client(config)
+            processes = dingtalk.list_processes_by_user(config.admin_user_id)
         except DingTalkClientError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
         samples = [
@@ -610,6 +612,9 @@ def sync_templates_core(session: Session) -> dict[str, int]:
     now = utc_now()
     created = 0
     updated = 0
+    node_created = 0
+    node_updated = 0
+    node_failed = 0
     for process_code, name, raw_snapshot in samples:
         template = session.scalar(
             select(ApprovalTemplate).where(ApprovalTemplate.process_code == process_code)
@@ -630,8 +635,162 @@ def sync_templates_core(session: Session) -> dict[str, int]:
             template.name = name
             template.raw_snapshot = raw_snapshot
             template.last_sync_at = now
+        session.flush()
+        if dingtalk is not None and config.admin_user_id:
+            dept_id = forecast_dept_id_for_template_sync(session)
+            try:
+                forecast = dingtalk.forecast_process_nodes(process_code, config.admin_user_id, dept_id)
+            except DingTalkClientError:
+                node_failed += 1
+            else:
+                node_result = sync_template_nodes_from_forecast(session, template, forecast)
+                node_created += node_result["created"]
+                node_updated += node_result["updated"]
     config.last_template_sync_at = now
-    return {"pulled": len(samples), "created": created, "updated": updated}
+    return {
+        "pulled": len(samples),
+        "created": created,
+        "updated": updated,
+        "node_created": node_created,
+        "node_updated": node_updated,
+        "node_failed": node_failed,
+    }
+
+
+def forecast_dept_id_for_template_sync(session: Session) -> str:
+    store_dept_id = session.scalar(
+        select(Store.dingtalk_dept_id)
+        .where(Store.dingtalk_dept_id.is_not(None))
+        .order_by(Store.created_at.asc())
+        .limit(1)
+    )
+    if store_dept_id:
+        return str(store_dept_id)
+    department_dept_id = session.scalar(
+        select(DingTalkDepartmentModel.dept_id)
+        .where(DingTalkDepartmentModel.is_active.is_(True))
+        .order_by(DingTalkDepartmentModel.depth.asc(), DingTalkDepartmentModel.created_at.asc())
+        .limit(1)
+    )
+    return str(department_dept_id or "1")
+
+
+def forecast_node_value(record: dict[str, Any], *keys: str) -> str | None:
+    for key in keys:
+        value = record.get(key)
+        if value not in (None, ""):
+            return str(value)
+    return None
+
+
+def extract_forecast_nodes(payload: Any) -> list[dict[str, str | int | None]]:
+    nodes: list[dict[str, str | int | None]] = []
+
+    def walk(value: Any) -> None:
+        if isinstance(value, list):
+            for item in value:
+                walk(item)
+            return
+        if not isinstance(value, dict):
+            return
+
+        activity_id = forecast_node_value(
+            value,
+            "activity_id",
+            "activityId",
+            "activity_code",
+            "activityCode",
+            "node_id",
+            "nodeId",
+        )
+        node_name = forecast_node_value(
+            value,
+            "activity_name",
+            "activityName",
+            "node_name",
+            "nodeName",
+            "name",
+            "title",
+        )
+        if activity_id and node_name:
+            nodes.append(
+                {
+                    "activity_id": activity_id,
+                    "node_name": node_name,
+                    "node_type": forecast_node_value(
+                        value,
+                        "node_type",
+                        "nodeType",
+                        "activity_type",
+                        "activityType",
+                        "type",
+                    ),
+                }
+            )
+
+        for child in value.values():
+            if isinstance(child, (dict, list)):
+                walk(child)
+
+    walk(payload)
+
+    deduped: list[dict[str, str | int | None]] = []
+    seen: set[str] = set()
+    for index, node in enumerate(nodes, start=1):
+        activity_id = str(node["activity_id"])
+        if activity_id in seen:
+            continue
+        seen.add(activity_id)
+        deduped.append({**node, "sort_order": index})
+    return deduped
+
+
+def sync_template_nodes_from_forecast(
+    session: Session,
+    template: ApprovalTemplate,
+    forecast: dict[str, Any],
+) -> dict[str, int]:
+    nodes = extract_forecast_nodes(forecast)
+    created = 0
+    updated = 0
+    for node_data in nodes:
+        activity_id = str(node_data["activity_id"])
+        node = session.scalar(
+            select(ApprovalTemplateNode).where(
+                ApprovalTemplateNode.template_id == template.id,
+                ApprovalTemplateNode.activity_id == activity_id,
+            )
+        )
+        if node is None:
+            session.add(
+                ApprovalTemplateNode(
+                    template_id=template.id,
+                    activity_id=activity_id,
+                    node_name=str(node_data["node_name"]),
+                    node_type=node_data["node_type"],
+                    sort_order=int(node_data["sort_order"] or 0),
+                    is_active=True,
+                )
+            )
+            created += 1
+            continue
+
+        next_node_name = str(node_data["node_name"])
+        next_node_type = node_data["node_type"]
+        next_sort_order = int(node_data["sort_order"] or 0)
+        changed = (
+            node.node_name != next_node_name
+            or node.node_type != next_node_type
+            or node.sort_order != next_sort_order
+            or not node.is_active
+        )
+        if changed:
+            node.node_name = next_node_name
+            node.node_type = next_node_type
+            node.sort_order = next_sort_order
+            node.is_active = True
+            updated += 1
+    return {"created": created, "updated": updated}
 
 
 @router.post("/templates/sync", response_model=ApiEnvelope[dict[str, int]])
@@ -3350,10 +3509,13 @@ def execute_auto_sync(
                 start_at, end_at, resume_cursors = resume_state
             else:
                 end_at = utc_now()
+                # ✅ 改进：使用配置的 window_days 和 overlap_days
+                approval_window_days = setting.window_days
+                approval_overlap_days = setting.approval_overlap_days
                 start_at = (
-                    setting.approval_watermark_at - APPROVAL_SYNC_OVERLAP
+                    setting.approval_watermark_at - timedelta(days=approval_overlap_days)
                     if setting.approval_watermark_at
-                    else end_at - timedelta(days=AUTO_SYNC_INITIAL_APPROVAL_LOOKBACK_DAYS)
+                    else end_at - timedelta(days=approval_window_days)
                 )
                 start_at, end_at = validate_approval_sync_window(start_at, end_at)
                 resume_cursors = {}
