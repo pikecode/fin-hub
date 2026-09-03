@@ -28,6 +28,7 @@ from app.modules.metrics.router import router as metrics_router
 from app.modules.reports.router import router as reports_router
 from app.modules.revenue.router import channels_router as revenue_channels_router
 from app.modules.revenue.router import router as revenue_router
+from app.modules.roles.router import router as roles_router
 from app.modules.shareholder_auth.router import router as shareholder_auth_router
 from app.modules.store_ledgers.router import router as store_ledgers_router
 from app.modules.stores.router import router as stores_router
@@ -98,6 +99,7 @@ def create_app() -> FastAPI:
     app.include_router(users_router, prefix="/api")
     app.include_router(shareholder_auth_router, prefix="/api")
     app.include_router(system_router, prefix="/api")
+    app.include_router(roles_router, prefix="/api")
     app.include_router(stores_router, prefix="/api")
     app.include_router(store_ledgers_router, prefix="/api")
     app.include_router(ledgers_router, prefix="/api")

@@ -9,7 +9,7 @@ from app.core.security import (
     hash_password,
     verify_password,
 )
-from app.models import Store, User, UserRole, UserStatus, utc_now
+from app.models import Store, User, UserRole, UserStatus, UserStoreGroupPermission, utc_now
 from app.modules.auth.permissions import (
     effective_permissions,
     effective_store_ids,
@@ -31,6 +31,13 @@ def to_current_user(session: Session, user: User) -> CurrentUser:
         role=user.role,
         permissions=effective_permissions(session, user),
         store_ids=effective_store_ids(session, user),
+        store_group_ids=list(
+            session.scalars(
+                select(UserStoreGroupPermission.group_id).where(
+                    UserStoreGroupPermission.user_id == user.id
+                )
+            )
+        ),
     )
 
 

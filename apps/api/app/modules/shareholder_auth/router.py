@@ -7,9 +7,9 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_session
 from app.core.security import hash_password, verify_password
-from app.models import ShareholderAccessGrant, Store, User, UserRole, utc_now
+from app.models import ShareholderAccessGrant, Store, User, utc_now
 from app.modules.audit.service import write_audit_log
-from app.modules.auth.router import audit_actor, require_roles
+from app.modules.auth.router import audit_actor, require_permission
 from app.modules.common import paginate
 from app.modules.shareholder_auth.service import (
     create_shareholder_token,
@@ -92,7 +92,7 @@ def list_shareholder_grants(
     page: int = 1,
     page_size: int = 50,
     session: Session = Depends(get_session),
-    _: User = Depends(require_roles(UserRole.ADMIN)),
+    _: User = Depends(require_permission("settings.manage")),
 ) -> ApiEnvelope[Page[ShareholderAccessGrantRead]]:
     query = select(ShareholderAccessGrant).order_by(ShareholderAccessGrant.created_at.desc())
     items, total = paginate(session, query, page, page_size)
@@ -114,7 +114,7 @@ def list_shareholder_grants(
 def create_shareholder_grant(
     payload: ShareholderAccessGrantCreate,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_roles(UserRole.ADMIN)),
+    current_user: User = Depends(require_permission("settings.manage")),
 ) -> ApiEnvelope[ShareholderAccessGrantRead]:
     validate_store_ids(session, payload.store_ids)
     grant = ShareholderAccessGrant(
@@ -151,7 +151,7 @@ def update_shareholder_grant(
     grant_id: str,
     payload: ShareholderAccessGrantUpdate,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_roles(UserRole.ADMIN)),
+    current_user: User = Depends(require_permission("settings.manage")),
 ) -> ApiEnvelope[ShareholderAccessGrantRead]:
     grant = session.get(ShareholderAccessGrant, grant_id)
     if grant is None:

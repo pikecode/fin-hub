@@ -70,13 +70,24 @@ def test_user_permissions_and_store_scope_are_persisted(client: TestClient) -> N
             "display_name": "受限财务",
             "password": "secret123",
             "role": "finance",
-            "permissions": ["stores.view", "reconciliation.view"],
             "store_ids": [first_store_id],
         },
     )
     assert create_response.status_code == 201
     created_user = create_response.json()["data"]
-    assert created_user["permissions"] == ["categories.view", "dingtalk.view", "reconciliation.view", "stores.view"]
+    assert created_user["permissions"] == [
+        "audit.view",
+        "categories.manage",
+        "categories.view",
+        "dashboard.view",
+        "dingtalk.view",
+        "reconciliation.manage",
+        "reconciliation.view",
+        "reports.view",
+        "revenue.manage",
+        "revenue.view",
+        "stores.view",
+    ]
     assert created_user["store_ids"] == [first_store_id]
 
     login_response = client.post(
@@ -85,7 +96,19 @@ def test_user_permissions_and_store_scope_are_persisted(client: TestClient) -> N
     )
     assert login_response.status_code == 200
     current_user = client.get("/api/auth/me").json()["data"]
-    assert current_user["permissions"] == ["categories.view", "dingtalk.view", "reconciliation.view", "stores.view"]
+    assert current_user["permissions"] == [
+        "audit.view",
+        "categories.manage",
+        "categories.view",
+        "dashboard.view",
+        "dingtalk.view",
+        "reconciliation.manage",
+        "reconciliation.view",
+        "reports.view",
+        "revenue.manage",
+        "revenue.view",
+        "stores.view",
+    ]
     assert current_user["store_ids"] == [first_store_id]
 
     stores_response = client.get("/api/stores?page_size=20")
@@ -99,15 +122,53 @@ def test_user_permissions_and_store_scope_are_persisted(client: TestClient) -> N
     assert [store["id"] for store in my_stores] == [first_store_id]
 
 
-def test_explicit_empty_permissions_do_not_fall_back_to_role_defaults(client: TestClient) -> None:
+def test_user_store_group_scope_expands_to_group_stores(client: TestClient) -> None:
+    group_id = client.post("/api/stores/groups", json={"name": "门店组 A"}).json()["data"]["id"]
+    first_store_id = client.post(
+        "/api/stores",
+        json={"name": "蘑说分组店 A", "group_id": group_id},
+    ).json()["data"]["id"]
+    second_store_id = client.post(
+        "/api/stores",
+        json={"name": "蘑说分组店 B", "group_id": group_id},
+    ).json()["data"]["id"]
+
+    create_response = client.post(
+        "/api/users",
+        json={
+            "username": "group_scoped",
+            "display_name": "分组权限",
+            "password": "secret123",
+            "role": "finance",
+            "store_group_ids": [group_id],
+        },
+    )
+    assert create_response.status_code == 201
+    created_user = create_response.json()["data"]
+    assert created_user["store_group_ids"] == [group_id]
+    assert set(created_user["store_ids"]) == {first_store_id, second_store_id}
+
+    login_response = client.post(
+        "/api/auth/login",
+        json={"username": "group_scoped", "password": "secret123"},
+    )
+    assert login_response.status_code == 200
+    current_user = client.get("/api/auth/me").json()["data"]
+    assert current_user["store_group_ids"] == [group_id]
+    assert set(current_user["store_ids"]) == {first_store_id, second_store_id}
+
+
+def test_role_permissions_drive_user_access(client: TestClient) -> None:
+    update_role = client.put("/api/roles/viewer/permissions", json={"permissions": []})
+    assert update_role.status_code == 200
+
     create_response = client.post(
         "/api/users",
         json={
             "username": "no_permission_finance",
             "display_name": "无权限财务",
             "password": "secret123",
-            "role": "finance",
-            "permissions": [],
+            "role": "viewer",
             "store_ids": [],
         },
     )

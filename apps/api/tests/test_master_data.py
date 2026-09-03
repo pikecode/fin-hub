@@ -1,4 +1,8 @@
 from fastapi.testclient import TestClient
+from sqlalchemy.orm import Session
+
+from app.core.security import hash_password
+from app.models import User
 
 
 def test_category_and_supplier_master_data(client: TestClient) -> None:
@@ -90,3 +94,79 @@ def test_update_category_and_supplier_status(client: TestClient) -> None:
     logs = client.get("/api/audit-logs?page_size=20").json()["data"]["items"]
     assert any(log["action"] == "category.update" for log in logs)
     assert any(log["action"] == "supplier.update" for log in logs)
+
+
+def test_admin_can_manage_virtual_store_groups_and_assign_stores(client: TestClient) -> None:
+    group_response = client.post(
+        "/api/stores/groups",
+        json={"name": "华东区域", "sort_order": 10},
+    )
+    assert group_response.status_code == 201
+    group = group_response.json()["data"]
+
+    store_response = client.post(
+        "/api/stores",
+        json={"name": "蘑说分组门店", "group_id": group["id"]},
+    )
+    assert store_response.status_code == 201
+    store = store_response.json()["data"]
+    assert store["group_id"] == group["id"]
+
+    groups_response = client.get("/api/stores/groups")
+    assert groups_response.status_code == 200
+    assert groups_response.json()["data"] == [
+        {
+            **group,
+            "store_count": 1,
+        }
+    ]
+
+    delete_response = client.delete(f"/api/stores/groups/{group['id']}")
+    assert delete_response.status_code == 200
+    assert delete_response.json()["data"] == {"ok": True}
+
+    stores_response = client.get("/api/stores?page_size=20")
+    assert stores_response.status_code == 200
+    assert stores_response.json()["data"]["items"][0]["id"] == store["id"]
+    assert stores_response.json()["data"]["items"][0]["group_id"] is None
+
+
+def test_non_admin_cannot_manage_or_assign_virtual_store_groups(
+    client: TestClient,
+    session: Session,
+) -> None:
+    group_id = client.post("/api/stores/groups", json={"name": "直营门店"}).json()["data"]["id"]
+    store_id = client.post("/api/stores", json={"name": "蘑说权限分组门店"}).json()["data"]["id"]
+    session.add(
+        User(
+            username="store_operator",
+            display_name="门店运营",
+            password_hash=hash_password("secret123"),
+            role="finance",
+            status="active",
+        )
+    )
+    session.commit()
+
+    login_response = client.post(
+        "/api/auth/login",
+        json={"username": "store_operator", "password": "secret123"},
+    )
+    assert login_response.status_code == 200
+
+    assert client.get("/api/stores/groups").status_code == 200
+    assert client.post("/api/stores/groups", json={"name": "无权限分组"}).status_code == 403
+    assert (
+        client.patch(
+            f"/api/stores/{store_id}",
+            json={"group_id": group_id},
+        ).status_code
+        == 403
+    )
+    assert (
+        client.patch(
+            f"/api/stores/{store_id}",
+            json={"group_id": None},
+        ).status_code
+        == 403
+    )

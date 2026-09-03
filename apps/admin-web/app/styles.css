@@ -2259,6 +2259,58 @@ select,
   min-height: 320px;
 }
 
+.revenue-channel-toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.revenue-channel-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+}
+
+.revenue-channel-card {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 12px;
+  text-align: left;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  box-shadow: none;
+  cursor: pointer;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease, background-color 0.16s ease, transform 0.16s ease;
+}
+
+.revenue-channel-card:hover {
+  border-color: #94a3b8;
+  background: #f8fafc;
+  transform: translateY(-1px);
+}
+
+.revenue-channel-card.is-selected {
+  background: #eff6ff;
+  border-color: #3b82f6;
+  box-shadow: 0 6px 18px rgba(59, 130, 246, 0.12);
+}
+
+.revenue-channel-card__main {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.revenue-channel-card__aside {
+  flex-shrink: 0;
+}
+
 .revenue-candidate-card {
   grid-template-columns: 36px minmax(0, 1fr) auto;
 }
@@ -2745,6 +2797,147 @@ select,
   max-width: 1440px;
 }
 
+.revenue-channel-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.revenue-channel-section__header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.revenue-channel-section__header .ant-typography {
+  margin-bottom: 0;
+}
+
+.revenue-channel-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+}
+
+.revenue-channel-card {
+  position: relative;
+  overflow: hidden;
+  min-height: 112px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: var(--shadow-sm);
+  transition: border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease, background 0.18s ease;
+}
+
+.revenue-channel-card:hover {
+  border-color: #cbd5e1;
+  box-shadow: var(--shadow-md);
+  transform: translateY(-1px);
+}
+
+.revenue-channel-card--selected {
+  border-color: var(--primary-500);
+  background: #ecfdf5;
+  box-shadow: 0 0 0 1px rgba(20, 184, 166, 0.24), 0 10px 24px rgba(15, 118, 110, 0.12);
+}
+
+.revenue-channel-card--selected::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 4px;
+  background: var(--primary-500);
+}
+
+.revenue-channel-card--selected:hover {
+  border-color: var(--primary-600);
+  box-shadow: 0 0 0 1px rgba(13, 148, 136, 0.28), 0 12px 28px rgba(15, 118, 110, 0.14);
+}
+
+.revenue-channel-card .ant-card-body {
+  position: relative;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px 12px 16px;
+}
+
+.revenue-channel-card--inactive {
+  opacity: 0.72;
+}
+
+.revenue-channel-card__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.revenue-channel-card__title-wrap {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+}
+
+.revenue-channel-card__title {
+  color: #0f172a;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.revenue-channel-card__amount {
+  color: #0f172a;
+  font-size: 22px;
+  font-weight: 800;
+  line-height: 1.2;
+}
+
+.revenue-channel-card--selected .revenue-channel-card__title,
+.revenue-channel-card--selected .revenue-channel-card__amount {
+  color: #0f766e;
+}
+
+.revenue-channel-card__metrics,
+.revenue-channel-card__footer,
+.revenue-channel-card__actions,
+.revenue-channel-card__bottom {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.revenue-channel-card__metrics,
+.revenue-channel-card__footer,
+.revenue-channel-card__bottom {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.revenue-channel-card__bottom {
+  margin-top: auto;
+}
+
+.revenue-channel-card__footer {
+  margin-top: auto;
+}
+
+.revenue-channel-card__actions {
+  margin-top: -4px;
+}
+
+.revenue-channel-card__actions .ant-btn-link {
+  padding-inline: 0;
+  height: 24px;
+}
+
 .maintenance-table-card {
   overflow: hidden;
 }
@@ -2772,6 +2965,33 @@ select,
 
 .maintenance-table-card .ant-table-container {
   border-top: 1px solid #eef2f7;
+}
+
+.revenue-entry-table .ant-table-thead > tr > th {
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.revenue-entry-table .ant-table-tbody > tr > td {
+  padding: 5px 10px;
+  height: 36px;
+  vertical-align: middle;
+}
+
+.revenue-entry-table .ant-table-cell {
+  white-space: nowrap;
+}
+
+.revenue-entry-table .ant-input {
+  min-height: 28px;
+  padding: 3px 8px;
+  font-size: 13px;
+}
+
+.revenue-entry-table .ant-typography {
+  margin-bottom: 0;
+  font-size: 13px;
 }
 
 .maintenance-table-card .ant-pagination {

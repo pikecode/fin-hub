@@ -366,19 +366,20 @@ def run() -> None:
         get_or_create_ledger(session, foshan.id, "2026-08", LedgerStatus.OPEN.value)
         get_or_create_ledger(session, guangzhou.id, "2026-08", LedgerStatus.CLOSED.value)
 
-        seed_revenue_channel(session, "美团", 10)
-        seed_revenue_channel(session, "抖音", 20)
-        seed_revenue_channel(session, "门店扫码", 30)
-        seed_revenue_channel(session, "现金", 40, requires_bank_match=False)
+        seed_revenue_channel(session, "美团团购", 10)
+        seed_revenue_channel(session, "美团点评买单", 20)
+        seed_revenue_channel(session, "抖音团购", 30)
+        seed_revenue_channel(session, "扫码收款", 40)
+        seed_revenue_channel(session, "商场代金券", 50, requires_bank_match=False)
 
         seed_revenue_record(
-            session, foshan.id, "2026-08", datetime(2026, 8, 12), "美团", "56820.00", "55210.00", "1610.00"
+            session, foshan.id, "2026-08", datetime(2026, 8, 12), "美团团购", "56820.00", "55210.00", "1610.00"
         )
         seed_revenue_record(
-            session, foshan.id, "2026-08", datetime(2026, 8, 12), "抖音", "32640.00", "31820.00", "820.00"
+            session, foshan.id, "2026-08", datetime(2026, 8, 12), "抖音团购", "32640.00", "31820.00", "820.00"
         )
         seed_revenue_record(
-            session, guangzhou.id, "2026-08", datetime(2026, 8, 12), "门店扫码", "42100.00", "42100.00", "0.00"
+            session, guangzhou.id, "2026-08", datetime(2026, 8, 12), "扫码收款", "42100.00", "42100.00", "0.00"
         )
 
         item_1 = seed_expense_item(session, foshan.id, "2026-08", "门店水电费", "1280.00", "房租水电", "供电公司")

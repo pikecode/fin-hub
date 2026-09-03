@@ -215,3 +215,24 @@ def test_store_ledger_workspace_excludes_whole_approval_summary_when_line_items_
     )
     assert approval_read["expense_item_count"] == 2
     assert approval_read["total_expense_amount"] == "100.00"
+
+
+def test_bank_transaction_create_auto_creates_ledger(client: TestClient) -> None:
+    store_id = client.post("/api/stores", json={"name": "蘑说流水自动建账店"}).json()["data"]["id"]
+
+    response = client.post(
+        "/api/bank-transactions",
+        json={
+            "store_id": store_id,
+            "ledger_period": "2026-08",
+            "occurred_at": "2026-08-21T10:30:00",
+            "direction": "expense",
+            "amount": "1280.00",
+            "counterparty_name": "供电公司",
+        },
+    )
+
+    assert response.status_code == 201
+    data = response.json()["data"]
+    assert data["store_id"] == store_id
+    assert data["ledger_period"] == "2026-08"

@@ -57,6 +57,7 @@ const syncStatusColor: Record<SyncJob["status"], string> = {
   running: "processing",
   succeeded: "success",
   failed: "error",
+  canceled: "default",
 };
 
 const syncStatusText: Record<SyncJob["status"], string> = {
@@ -64,6 +65,7 @@ const syncStatusText: Record<SyncJob["status"], string> = {
   running: "同步中",
   succeeded: "成功",
   failed: "失败",
+  canceled: "已取消",
 };
 
 function money(value?: string | number | null) {
