@@ -3,6 +3,7 @@
 import { Alert, Button, Card, DatePicker, Form, Input, Modal, Popconfirm, Select, Space, Table, Tabs, Upload, Typography, message } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import type { UploadFile } from "antd/es/upload/interface";
+import customParseFormat from "dayjs/plugin/customParseFormat";
 import dayjs from "dayjs";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Key } from "react";
@@ -33,6 +34,8 @@ import { apiClient } from "../lib/api";
 import { getLedgers, getStores } from "../lib/referenceData";
 import { useClientSearchParams } from "../lib/searchParams";
 
+dayjs.extend(customParseFormat);
+
 interface BankFormValues extends Omit<BankTransactionCreate, "occurred_at"> {
   ledger_key?: string;
   occurred_at?: dayjs.Dayjs;
@@ -45,35 +48,43 @@ interface BankFilterValues {
   unmatched_only?: boolean;
 }
 
-type BankEntryField = "occurred_at" | "direction" | "amount" | "summary";
+type BankEntryField = "occurred_at" | "direction" | "counterparty_name" | "counterparty_account" | "amount" | "summary";
 
 interface BankEntryRow {
   key: string;
   occurred_at: string;
   direction: "收入" | "支出";
+  counterparty_name: string;
+  counterparty_account: string;
   amount: string;
   summary: string;
 }
 
 const bankEntryHeaders: Record<BankEntryField, string> = {
-  occurred_at: "发生时间",
+  occurred_at: "发生日期",
   direction: "类型",
+  counterparty_name: "对方户名",
+  counterparty_account: "对方账号",
   amount: "金额",
   summary: "备注",
 };
+
+const bankEntryFields: BankEntryField[] = ["occurred_at", "direction", "counterparty_name", "counterparty_account", "amount", "summary"];
 
 function createBankEntryRows(count: number): BankEntryRow[] {
   return Array.from({ length: count }, (_, index) => ({
     key: `bank-entry-${Date.now()}-${index}`,
     occurred_at: "",
     direction: "支出",
+    counterparty_name: "",
+    counterparty_account: "",
     amount: "",
     summary: "",
   }));
 }
 
 function isBankEntryRowEmpty(row: BankEntryRow) {
-  return !row.occurred_at.trim() && !row.amount.trim();
+  return !row.occurred_at.trim() && !row.amount.trim() && !row.counterparty_name.trim() && !row.counterparty_account.trim() && !row.summary.trim();
 }
 
 function normalizeEntryDirection(value: string) {
@@ -83,16 +94,112 @@ function normalizeEntryDirection(value: string) {
   return "";
 }
 
+function normalizeEntryOccurredAt(value: string) {
+  const text = value.trim();
+  if (!text) return "";
+  const formats = [
+    "YYYY-MM-DD HH:mm:ss",
+    "YYYY-MM-DD HH:mm",
+    "YYYY/MM/DD HH:mm:ss",
+    "YYYY/MM/DD HH:mm",
+    "YYYY-MM-DD",
+    "YYYY/MM/DD",
+    "YYYY年MM月DD日 HH:mm:ss",
+    "YYYY年MM月DD日 HH:mm",
+    "YYYY年MM月DD日",
+  ];
+  const parsed = dayjs(text, formats, true);
+  if (parsed.isValid()) {
+    return parsed.format("YYYY-MM-DD");
+  }
+  const fallback = dayjs(text);
+  return fallback.isValid() ? fallback.format("YYYY-MM-DD") : text;
+}
+
+function parseEntryOccurredAt(value: string) {
+  const text = value.trim();
+  if (!text) return null;
+  const formats = [
+    "YYYY-MM-DD HH:mm:ss",
+    "YYYY-MM-DD HH:mm",
+    "YYYY/MM/DD HH:mm:ss",
+    "YYYY/MM/DD HH:mm",
+    "YYYY-MM-DD",
+    "YYYY/MM/DD",
+    "YYYY年MM月DD日 HH:mm:ss",
+    "YYYY年MM月DD日 HH:mm",
+    "YYYY年MM月DD日",
+  ];
+  const parsed = dayjs(text, formats, true);
+  if (parsed.isValid()) return parsed;
+  const fallback = dayjs(text);
+  return fallback.isValid() ? fallback : null;
+}
+
+function toBankOccurredAt(value: dayjs.Dayjs) {
+  return `${value.format("YYYY-MM-DD")}T00:00:00`;
+}
+
 function parsePastedEntryRows(text: string) {
   const rows = text
     .split(/\r?\n/)
     .map((row) => row.trimEnd())
     .filter((row) => row.trim());
   if (!rows.length) return [];
-  const headerWords = Object.values(bankEntryHeaders).concat(["发生时间", "交易时间", "方向", "收支方向", "摘要", "类型", "备注"]);
+  const headerWords = Object.values(bankEntryHeaders).concat([
+    "发生时间",
+    "发生日期",
+    "交易时间",
+    "方向",
+    "收支方向",
+    "摘要",
+    "类型",
+    "备注",
+    "对方户名",
+    "对方账号",
+    "户名",
+    "账号",
+  ]);
   const firstCells = rows[0].split("\t").map((cell) => cell.trim());
   const hasHeader = firstCells.some((cell) => headerWords.includes(cell));
   return (hasHeader ? rows.slice(1) : rows).map((row) => row.split("\t"));
+}
+
+function applyPastedEntryRows(
+  text: string,
+  rows: BankEntryRow[],
+  startRowIndex: number,
+  startField: BankEntryField,
+) {
+  const parsedRows = parsePastedEntryRows(text);
+  if (!parsedRows.length) return null;
+  const updatedRows = [...rows];
+  const startFieldIndex = bankEntryFields.indexOf(startField);
+  parsedRows.forEach((cells, rowOffset) => {
+    const rowIndex = startRowIndex + rowOffset;
+    if (rowIndex >= updatedRows.length) return;
+    cells.forEach((cell, cellOffset) => {
+      const field = bankEntryFields[startFieldIndex + cellOffset];
+      if (!field) return;
+      const value = cell.trim();
+      if (!value) return;
+      if (field === "occurred_at") {
+        updatedRows[rowIndex].occurred_at = normalizeEntryOccurredAt(value);
+      } else if (field === "direction") {
+        const normalized = normalizeEntryDirection(value);
+        if (normalized) updatedRows[rowIndex].direction = normalized as "收入" | "支出";
+      } else if (field === "counterparty_name") {
+        updatedRows[rowIndex].counterparty_name = value;
+      } else if (field === "counterparty_account") {
+        updatedRows[rowIndex].counterparty_account = value;
+      } else if (field === "amount") {
+        updatedRows[rowIndex].amount = value;
+      } else if (field === "summary") {
+        updatedRows[rowIndex].summary = value;
+      }
+    });
+  });
+  return updatedRows;
 }
 
 export default function BankPage() {
@@ -190,6 +297,8 @@ export default function BankPage() {
     form.setFieldsValue({
       direction: "expense",
       occurred_at: dayjs(),
+      counterparty_name: "",
+      counterparty_account: "",
     });
     setIsModalOpen(true);
   }
@@ -201,6 +310,8 @@ export default function BankPage() {
       occurred_at: dayjs(transaction.occurred_at),
       direction: transaction.direction,
       amount: transaction.amount,
+      counterparty_name: transaction.counterparty_name ?? "",
+      counterparty_account: transaction.counterparty_account ?? "",
       summary: transaction.summary ?? undefined,
     });
     setIsModalOpen(true);
@@ -209,6 +320,10 @@ export default function BankPage() {
   async function submitTransaction(values: BankFormValues) {
     if (!values.occurred_at) {
       message.warning("请选择发生时间");
+      return;
+    }
+    if (!values.counterparty_name?.trim()) {
+      message.warning("请填写对方户名");
       return;
     }
     const [formStoreId, formPeriod] = (values.ledger_key ?? "").split("|");
@@ -223,10 +338,11 @@ export default function BankPage() {
       const payload: BankTransactionCreate = {
         store_id: storeId,
         ledger_period: period,
-        occurred_at: values.occurred_at.toISOString(),
+        occurred_at: toBankOccurredAt(values.occurred_at),
         direction: values.direction || "expense",
         amount: values.amount,
-        counterparty_name: null,
+        counterparty_name: values.counterparty_name?.trim() || null,
+        counterparty_account: values.counterparty_account?.trim() || null,
         summary: values.summary ?? null,
       };
       if (editingTransaction) {
@@ -248,14 +364,14 @@ export default function BankPage() {
 
   function openEntryModal() {
     entryForm.resetFields();
+    setEntryRows(createBankEntryRows(10));
     if (queryStoreId && queryLedgerPeriod) {
       entryForm.setFieldValue("ledger_key", `${queryStoreId}|${queryLedgerPeriod}`);
     }
-    setEntryRows(createBankEntryRows(10));
     setIsEntryModalOpen(true);
   }
 
-  async function submitEntryBatch(values: { ledger_key: string }) {
+  async function submitEntryBatch(values: { ledger_key?: string }) {
     const [formStoreId, formPeriod] = (values.ledger_key ?? "").split("|");
     const storeId = formStoreId || queryStoreId;
     const period = formPeriod || queryLedgerPeriod;
@@ -270,15 +386,32 @@ export default function BankPage() {
     }
     setIsLoading(true);
     try {
-      const batch = nonEmptyRows.map((row) => ({
+    const batch: BankTransactionCreate[] = [];
+    for (const row of nonEmptyRows) {
+      const occurredAt = parseEntryOccurredAt(row.occurred_at);
+      if (!occurredAt) {
+        message.warning("批量录入中存在无效的发生时间");
+        return;
+      }
+      if (!row.counterparty_name.trim()) {
+        message.warning("批量录入中存在未填写对方户名的行");
+        return;
+      }
+      if (!row.amount.trim()) {
+        message.warning("批量录入中存在未填写金额的行");
+        return;
+      }
+      batch.push({
         store_id: storeId,
         ledger_period: period,
-        occurred_at: new Date(row.occurred_at).toISOString(),
-        direction: row.direction === "收入" ? ("income" as const) : ("expense" as const),
+        occurred_at: toBankOccurredAt(occurredAt),
+        direction: row.direction === "收入" ? "income" : "expense",
         amount: row.amount,
-        counterparty_name: null,
+        counterparty_name: row.counterparty_name.trim(),
+        counterparty_account: row.counterparty_account.trim() || null,
         summary: row.summary || null,
-      }));
+        });
+      }
       for (const transaction of batch) {
         await apiClient.bankTransactions.create(transaction);
       }
@@ -289,6 +422,15 @@ export default function BankPage() {
       message.error(error instanceof Error ? error.message : "录入失败");
     } finally {
       setIsLoading(false);
+    }
+  }
+
+  async function confirmEntryBatch() {
+    try {
+      const values = await entryForm.validateFields();
+      await submitEntryBatch(values);
+    } catch {
+      // keep modal open and let form display validation errors
     }
   }
 
@@ -303,11 +445,14 @@ export default function BankPage() {
       const updatedRows = [...entryRows];
       parsedRows.forEach((cells, index) => {
         if (index >= updatedRows.length) return;
-        const [timeValue, dirValue, amountValue] = cells;
-        const summaryValue = cells.length >= 5 ? cells[4] : cells[3];
-        if (timeValue?.trim()) updatedRows[index].occurred_at = timeValue.trim();
+        const [timeValue, dirValue, counterpartyNameValue, counterpartyAccountValue, amountValue] = cells;
+        const summaryValue = cells.length >= 6 ? cells[5] : cells[4] ?? cells[3];
+        const normalizedTime = timeValue?.trim() ? normalizeEntryOccurredAt(timeValue) : "";
+        if (normalizedTime) updatedRows[index].occurred_at = normalizedTime;
         const normalized = normalizeEntryDirection(dirValue);
         if (normalized) updatedRows[index].direction = normalized as "收入" | "支出";
+        if (counterpartyNameValue?.trim()) updatedRows[index].counterparty_name = counterpartyNameValue.trim();
+        if (counterpartyAccountValue?.trim()) updatedRows[index].counterparty_account = counterpartyAccountValue.trim();
         if (amountValue?.trim()) updatedRows[index].amount = amountValue.trim();
         if (summaryValue?.trim()) updatedRows[index].summary = summaryValue.trim();
       });
@@ -316,6 +461,10 @@ export default function BankPage() {
     } catch {
       message.error("无法读取剪贴板");
     }
+  }
+
+  function setAllEntryDirections(direction: "收入" | "支出") {
+    setEntryRows((rows) => rows.map((row) => ({ ...row, direction })));
   }
 
   function openImportModal() {
@@ -482,17 +631,35 @@ export default function BankPage() {
 
   const entryColumns: ColumnsType<BankEntryRow> = [
     {
-      title: "发生时间",
+      title: "发生日期",
       dataIndex: "occurred_at",
-      width: 180,
+      width: 140,
       render: (value, _, index) => (
-        <Input
-          value={value}
+        <DatePicker
+          value={value ? dayjs(value) : null}
           size="small"
-          placeholder="2026-08-30 14:30"
-          onChange={(e) => {
+          style={{ width: "100%" }}
+          format="YYYY-MM-DD"
+          inputRender={(inputProps) => {
+            const { size: _size, ...restInputProps } = inputProps;
+            return (
+              <Input
+                {...restInputProps}
+                onPaste={(event) => {
+                  const text = event.clipboardData.getData("text");
+                  if (!text.includes("\t") && !text.includes("\n")) return;
+                  event.preventDefault();
+                  const updated = applyPastedEntryRows(text, entryRows, index, "occurred_at");
+                  if (!updated) return;
+                  setEntryRows(updated);
+                  message.success("已粘贴流水数据");
+                }}
+              />
+            );
+          }}
+          onChange={(date) => {
             const updated = [...entryRows];
-            updated[index].occurred_at = e.target.value;
+            updated[index].occurred_at = date ? date.format("YYYY-MM-DD") : "";
             setEntryRows(updated);
           }}
         />
@@ -520,6 +687,58 @@ export default function BankPage() {
       ),
     },
     {
+      title: "对方户名",
+      dataIndex: "counterparty_name",
+      width: 180,
+      render: (value, _, index) => (
+        <Input
+          value={value}
+          size="small"
+          placeholder="必填"
+          onPaste={(event) => {
+            const text = event.clipboardData.getData("text");
+            if (!text.includes("\t") && !text.includes("\n")) return;
+            event.preventDefault();
+            const updated = applyPastedEntryRows(text, entryRows, index, "counterparty_name");
+            if (!updated) return;
+            setEntryRows(updated);
+            message.success("已粘贴流水数据");
+          }}
+          onChange={(e) => {
+            const updated = [...entryRows];
+            updated[index].counterparty_name = e.target.value;
+            setEntryRows(updated);
+          }}
+        />
+      ),
+    },
+    {
+      title: "对方账号",
+      dataIndex: "counterparty_account",
+      width: 180,
+      render: (value, _, index) => (
+        <Input
+          value={value}
+          size="small"
+          placeholder="选填"
+          onPaste={(event) => {
+            const text = event.clipboardData.getData("text");
+            if (!text.includes("\t") && !text.includes("\n")) return;
+            event.preventDefault();
+            const updated = applyPastedEntryRows(text, entryRows, index, "counterparty_account");
+            if (!updated) return;
+            setEntryRows(updated);
+            message.success("已粘贴流水数据");
+          }}
+          onChange={(e) => {
+            const updated = [...entryRows];
+            updated[index].counterparty_account = e.target.value;
+            setEntryRows(updated);
+          }}
+        />
+      ),
+    },
+    {
       title: "金额",
       dataIndex: "amount",
       width: 120,
@@ -527,6 +746,15 @@ export default function BankPage() {
         <Input
           value={value}
           size="small"
+          onPaste={(event) => {
+            const text = event.clipboardData.getData("text");
+            if (!text.includes("\t") && !text.includes("\n")) return;
+            event.preventDefault();
+            const updated = applyPastedEntryRows(text, entryRows, index, "amount");
+            if (!updated) return;
+            setEntryRows(updated);
+            message.success("已粘贴流水数据");
+          }}
           onChange={(e) => {
             const updated = [...entryRows];
             updated[index].amount = e.target.value;
@@ -542,6 +770,15 @@ export default function BankPage() {
         <Input
           value={value}
           size="small"
+          onPaste={(event) => {
+            const text = event.clipboardData.getData("text");
+            if (!text.includes("\t") && !text.includes("\n")) return;
+            event.preventDefault();
+            const updated = applyPastedEntryRows(text, entryRows, index, "summary");
+            if (!updated) return;
+            setEntryRows(updated);
+            message.success("已粘贴流水数据");
+          }}
           onChange={(e) => {
             const updated = [...entryRows];
             updated[index].summary = e.target.value;
@@ -554,7 +791,7 @@ export default function BankPage() {
 
   const previewColumns: ColumnsType<BankImportPreviewRow> = [
     { title: "行号", dataIndex: "row_number", width: 70 },
-    { title: "发生时间", dataIndex: "occurred_at", width: 160, render: (v) => v?.replace("T", " ").slice(0, 16) || "-" },
+    { title: "发生日期", dataIndex: "occurred_at", width: 120, render: (v) => v?.slice(0, 10) || "-" },
     {
       title: "类型",
       dataIndex: "direction",
@@ -641,8 +878,8 @@ export default function BankPage() {
               <Select disabled={Boolean(editingTransaction)} options={openLedgerOptions} />
             </Form.Item>
           )}
-          <Form.Item name="occurred_at" label="发生时间" rules={[{ required: true }]}>
-            <DatePicker showTime style={{ width: "100%" }} />
+          <Form.Item name="occurred_at" label="发生日期" rules={[{ required: true }]}>
+            <DatePicker style={{ width: "100%" }} />
           </Form.Item>
           <Form.Item name="direction" label="类型" rules={[{ required: true }]}>
             <Select
@@ -650,7 +887,13 @@ export default function BankPage() {
                 { label: "收入", value: "income" },
                 { label: "支出", value: "expense" },
               ]}
-            />
+              />
+          </Form.Item>
+          <Form.Item name="counterparty_name" label="对方户名" rules={[{ required: true, message: "请填写对方户名" }]}>
+            <Input />
+          </Form.Item>
+          <Form.Item name="counterparty_account" label="对方账号">
+            <Input />
           </Form.Item>
           <Form.Item name="amount" label="金额" rules={[{ required: true }]}>
             <Input />
@@ -665,8 +908,13 @@ export default function BankPage() {
         title="批量录入流水"
         open={isEntryModalOpen}
         destroyOnClose
-        onCancel={() => setIsEntryModalOpen(false)}
-        onOk={() => entryForm.submit()}
+        maskClosable={false}
+        keyboard={false}
+        onCancel={() => {
+          setIsEntryModalOpen(false);
+          setEntryRows(createBankEntryRows(10));
+        }}
+        onOk={() => void confirmEntryBatch()}
         confirmLoading={isLoading}
         width={900}
         okText="确认录入"
@@ -682,6 +930,8 @@ export default function BankPage() {
           <Space direction="vertical" style={{ width: "100%" }} size={12}>
             <Space wrap>
               <Button onClick={pasteFromClipboard}>读取剪贴板</Button>
+              <Button onClick={() => setAllEntryDirections("收入")}>全部收入</Button>
+              <Button onClick={() => setAllEntryDirections("支出")}>全部支出</Button>
               <Button onClick={() => setEntryRows(createBankEntryRows(10))}>清空</Button>
               <Button onClick={() => setEntryRows([...entryRows, ...createBankEntryRows(5)])}>增加 5 行</Button>
             </Space>
@@ -691,11 +941,9 @@ export default function BankPage() {
               pagination={false}
               dataSource={entryRows}
               columns={entryColumns}
-              scroll={{ x: 800, y: 400 }}
+              scroll={{ x: 1120, y: 400 }}
             />
-            <Typography.Text type="secondary">
-              可以从 Excel 复制整块数据后粘贴。格式：发生时间 | 类型 | 金额 | 备注
-            </Typography.Text>
+            <Typography.Text type="secondary">可以从 Excel 复制整块数据后粘贴。格式：日期 | 类型 | 对方户名 | 对方账号 | 金额 | 备注</Typography.Text>
           </Space>
         </Form>
       </Modal>

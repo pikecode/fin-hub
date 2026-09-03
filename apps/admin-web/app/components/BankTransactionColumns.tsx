@@ -9,10 +9,10 @@ export function getBankTransactionViewColumns(): BankTransactionViewColumn[] {
   return [
     {
       key: "occurred_at",
-      title: "发生时间",
+      title: "发生日期",
       dataIndex: "occurred_at",
-      width: 160,
-      render: (value: string) => value?.replace("T", " ").slice(0, 16) || "-",
+      width: 120,
+      render: (value: string) => value?.slice(0, 10) || "-",
     },
     {
       key: "direction",
@@ -22,6 +22,22 @@ export function getBankTransactionViewColumns(): BankTransactionViewColumn[] {
       render: (value: "income" | "expense") => (
         <StatusBadge status={value === "income" ? "income" : "expense"} text={value === "income" ? "收入" : "支出"} />
       ),
+    },
+    {
+      key: "counterparty_name",
+      title: "对方户名",
+      dataIndex: "counterparty_name",
+      width: 160,
+      ellipsis: true,
+      render: (value: string | null | undefined) => value || "-",
+    },
+    {
+      key: "counterparty_account",
+      title: "对方账号",
+      dataIndex: "counterparty_account",
+      width: 160,
+      ellipsis: true,
+      render: (value: string | null | undefined) => value || "-",
     },
     {
       key: "amount",

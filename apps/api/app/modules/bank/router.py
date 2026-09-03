@@ -76,7 +76,7 @@ def normalize_bank_assignment(session: Session, payload: BankTransactionCreate) 
         data["ledger_period"] = data["occurred_at"].strftime("%Y-%m")
         ensure_open_or_create_ledger(session, data["store_id"], data["ledger_period"])
     elif data["store_id"] and data["ledger_period"]:
-        ensure_open_ledger(session, data["store_id"], data["ledger_period"])
+        ensure_open_or_create_ledger(session, data["store_id"], data["ledger_period"])
     elif data["ledger_period"]:
         raise HTTPException(status_code=422, detail="Store is required when ledger period is provided")
     return data
@@ -179,7 +179,7 @@ def update_bank_transaction(
         updates["ledger_period"] = target_ledger_period
         ensure_open_or_create_ledger(session, target_store_id, target_ledger_period)
     elif target_store_id and target_ledger_period:
-        ensure_open_ledger(session, target_store_id, target_ledger_period)
+        ensure_open_or_create_ledger(session, target_store_id, target_ledger_period)
     elif target_ledger_period:
         raise HTTPException(status_code=422, detail="Store is required when ledger period is provided")
     new_amount = updates.get("amount")

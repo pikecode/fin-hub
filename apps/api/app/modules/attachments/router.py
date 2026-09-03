@@ -20,10 +20,9 @@ from app.models import (
     Ledger,
     LedgerStatus,
     User,
-    UserRole,
 )
 from app.modules.audit.service import write_audit_log
-from app.modules.auth.router import audit_actor, require_roles
+from app.modules.auth.router import audit_actor, require_permission
 from app.modules.common import paginate
 from app.modules.dingtalk.client import DingTalkClient, DingTalkClientError, DingTalkCredentials
 from app.schemas import ApiEnvelope, AttachmentAccessUrl, AttachmentRead, Page
@@ -133,7 +132,7 @@ async def upload_attachment(
     resource_id: str,
     file: UploadFile = File(...),
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+    current_user: User = Depends(require_permission("reconciliation.manage")),
 ) -> ApiEnvelope[AttachmentRead]:
     ensure_resource_for_upload(session, resource_type, resource_id)
     content = await file.read()
@@ -177,7 +176,7 @@ async def upload_attachment(
 def download_attachment(
     attachment_id: str,
     session: Session = Depends(get_session),
-    _: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+    _: User = Depends(require_permission("reconciliation.manage")),
 ) -> FileResponse:
     attachment = session.get(Attachment, attachment_id)
     if attachment is None:
@@ -199,7 +198,7 @@ def download_attachment(
 def get_attachment_access_url(
     attachment_id: str,
     session: Session = Depends(get_session),
-    _: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+    _: User = Depends(require_permission("reconciliation.manage")),
 ) -> ApiEnvelope[AttachmentAccessUrl]:
     attachment = session.get(Attachment, attachment_id)
     if attachment is None:
@@ -223,7 +222,7 @@ def get_attachment_access_url(
 def download_dingtalk_attachment(
     attachment_id: str,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+    current_user: User = Depends(require_permission("reconciliation.manage")),
 ) -> ApiEnvelope[AttachmentRead]:
     attachment = session.get(Attachment, attachment_id)
     if attachment is None:

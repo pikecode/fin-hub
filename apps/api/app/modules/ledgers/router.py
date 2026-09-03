@@ -19,11 +19,10 @@ from app.models import (
     RevenueRecord,
     Store,
     User,
-    UserRole,
     utc_now,
 )
 from app.modules.audit.service import write_audit_log
-from app.modules.auth.router import audit_actor, require_roles
+from app.modules.auth.router import audit_actor, require_permission
 from app.modules.common import paginate
 from app.schemas import (
     ApiEnvelope,
@@ -229,7 +228,7 @@ def list_ledgers(
 def create_ledger(
     payload: LedgerCreate,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+    current_user: User = Depends(require_permission("reconciliation.manage")),
 ) -> ApiEnvelope[LedgerRead]:
     ensure_store(session, payload.store_id)
     exists = session.scalar(
@@ -270,7 +269,7 @@ def close_ledger(
     ledger_id: str,
     payload: LedgerStatusChange,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+    current_user: User = Depends(require_permission("reconciliation.manage")),
 ) -> ApiEnvelope[LedgerRead]:
     ledger = session.get(Ledger, ledger_id)
     if ledger is None:
@@ -306,7 +305,7 @@ def reopen_ledger(
     ledger_id: str,
     payload: LedgerStatusChange,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+    current_user: User = Depends(require_permission("reconciliation.manage")),
 ) -> ApiEnvelope[LedgerRead]:
     ledger = session.get(Ledger, ledger_id)
     if ledger is None:

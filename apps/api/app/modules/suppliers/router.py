@@ -4,9 +4,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.database import get_session
-from app.models import Supplier, User, UserRole
+from app.models import Supplier, User
 from app.modules.audit.service import write_audit_log
-from app.modules.auth.router import audit_actor, require_roles
+from app.modules.auth.router import audit_actor, require_permission
 from app.modules.common import paginate
 from app.schemas import ApiEnvelope, Page, SupplierCreate, SupplierRead, SupplierUpdate
 
@@ -28,7 +28,7 @@ def list_suppliers(
 def create_supplier(
     payload: SupplierCreate,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+    current_user: User = Depends(require_permission("reconciliation.manage")),
 ) -> ApiEnvelope[SupplierRead]:
     supplier = Supplier(**payload.model_dump())
     session.add(supplier)
@@ -55,7 +55,7 @@ def update_supplier(
     supplier_id: str,
     payload: SupplierUpdate,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+    current_user: User = Depends(require_permission("reconciliation.manage")),
 ) -> ApiEnvelope[SupplierRead]:
     supplier = session.get(Supplier, supplier_id)
     if supplier is None:

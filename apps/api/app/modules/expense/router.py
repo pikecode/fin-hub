@@ -5,10 +5,10 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.core.database import get_session
-from app.models import ApprovalInstance, ExpenseItem, Ledger, LedgerStatus, User, UserRole
+from app.models import ApprovalInstance, ExpenseItem, Ledger, LedgerStatus, User
 from app.modules.approvals.status import refresh_approval_processing_status
 from app.modules.audit.service import write_audit_log
-from app.modules.auth.router import audit_actor, require_roles
+from app.modules.auth.router import audit_actor, require_permission
 from app.modules.common import paginate
 from app.schemas import ApiEnvelope, ExpenseItemCreate, ExpenseItemRead, ExpenseItemUpdate, Page
 
@@ -98,7 +98,7 @@ def list_expense_items(
 def create_expense_item(
     payload: ExpenseItemCreate,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+    current_user: User = Depends(require_permission("reconciliation.manage")),
 ) -> ApiEnvelope[ExpenseItemRead]:
     ensure_open_ledger(session, payload.store_id, payload.ledger_period)
     item = ExpenseItem(**payload.model_dump())
@@ -123,7 +123,7 @@ def update_expense_item(
     item_id: str,
     payload: ExpenseItemUpdate,
     session: Session = Depends(get_session),
-    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.FINANCE)),
+    current_user: User = Depends(require_permission("reconciliation.manage")),
 ) -> ApiEnvelope[ExpenseItemRead]:
     item = session.get(ExpenseItem, item_id)
     if item is None:
