@@ -2480,6 +2480,10 @@ def sync_real_instance(
     # instance.dingtalk_modified_at = DingTalkClient.parse_time(raw_instance.get("modify_time") or raw_instance.get("modifyTime"))  # TODO: 等待数据库迁移
     instance.raw_payload = json.dumps(raw_instance, ensure_ascii=False)
     instance.synced_job_id = job.id
+    # ✅ 保存钉钉修改时间，用于检测审批的后续修改
+    instance.dingtalk_modified_at = DingTalkClient.parse_time(
+        raw_instance.get("modify_time") or raw_instance.get("modifyTime")
+    )
     session.flush()
     create_dingtalk_attachment_placeholders(session, "approval_instance", instance.id, voucher_items)
 
@@ -2596,6 +2600,8 @@ def sync_real_instance(
     instance.parse_status = "parsed"
     instance.parse_error = None
     instance.last_parsed_at = utc_now()
+    # ✅ 记录本次同步时间，用于下次检测是否有修改
+    instance.last_synced_at = utc_now()
     instance.raw_payload = json.dumps(
         {
             **raw_instance,
@@ -2749,7 +2755,7 @@ def should_skip_stable_approval(instance: ApprovalInstance, sync_window_days: in
     稳定的审批满足：
     1. 已完成状态（不会再变化）
     2. 已成功解析且关联门店
-    3. 完成时间超过 sync_window_days 天
+    3. 完成时间或修改时间超过 sync_window_days 天
 
     Args:
         instance: 审批实例
@@ -2766,13 +2772,17 @@ def should_skip_stable_approval(instance: ApprovalInstance, sync_window_days: in
     if instance.parse_status != "parsed" or instance.store_id is None:
         return False
 
-    # 完成时间为空 → 不跳过
-    if instance.approved_at is None:
+    # ✅ 改进：使用最新的修改时间或完成时间
+    # 优先级：dingtalk_modified_at > approved_at > submit_at
+    ref_time = instance.dingtalk_modified_at or instance.approved_at or instance.submit_at
+
+    # 参考时间为空 → 不跳过
+    if ref_time is None:
         return False
 
-    # 完成时间超过 N 天 → 可以跳过（认为审批已稳定）
-    days_since_completion = (utc_now() - instance.approved_at).days
-    return days_since_completion > sync_window_days
+    # 参考时间超过 N 天 → 可以跳过（认为审批已稳定，不会再改）
+    days_since_change = (utc_now() - ref_time).days
+    return days_since_change > sync_window_days
 
 
 def approval_needs_detail_resync(instance: ApprovalInstance) -> bool:
@@ -2784,6 +2794,7 @@ def approval_needs_detail_resync(instance: ApprovalInstance) -> bool:
     3. 解析状态不是已解析
     4. 处理状态需要重新同步
     5. 解析被跳过（缺少必填字段）
+    6. ✅ 上次同步超过 N 天（可能有后续修改）
     """
     if instance.approval_status.lower() not in COMPLETED_APPROVAL_STATUSES:
         return True
@@ -2791,6 +2802,23 @@ def approval_needs_detail_resync(instance: ApprovalInstance) -> bool:
         return True
     if instance.parse_status != "parsed":
         return True
+
+    # ✅ 新增：如果上次同步太久，重新检查
+    # 使用修改时间判断：如果修改时间比上次同步还近，说明有更新
+    if instance.dingtalk_modified_at and instance.last_synced_at:
+        # 如果修改时间晚于上次同步，需要重新同步
+        if instance.dingtalk_modified_at > instance.last_synced_at:
+            return True
+
+    # ✅ 如果上次同步时间超过 30 天，也要强制重新检查
+    if instance.last_synced_at is None:
+        return True
+
+    days_since_last_sync = (utc_now() - instance.last_synced_at).days
+    if days_since_last_sync > 30:
+        # 超过 30 天没有同步过，强制重新拉取最新数据
+        return True
+
     if instance.processing_status in RESYNC_PROCESSING_STATUSES:
         return True
     payload = approval_raw_payload(instance)
