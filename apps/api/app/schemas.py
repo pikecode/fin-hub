@@ -907,6 +907,7 @@ class ApprovalInstanceRead(BaseModel):
     last_parsed_at: datetime | None = None
     submit_at: datetime | None
     approved_at: datetime | None
+    dingtalk_modified_at: datetime | None = None
     raw_payload: str | None
     synced_job_id: str | None
     expense_item_count: int = 0

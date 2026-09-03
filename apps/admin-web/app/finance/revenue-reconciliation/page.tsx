@@ -1,6 +1,6 @@
 "use client";
 
-import { Alert, Button, Card, Checkbox, Empty, Input, Popconfirm, Select, Space, Splitter, Statistic, Table, Tabs, Tag, Typography, message } from "antd";
+import { Alert, Button, Card, Checkbox, DatePicker, Empty, Input, Modal, Popconfirm, Select, Space, Splitter, Statistic, Table, Tabs, Tag, Typography, message } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import dayjs from "dayjs";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -41,6 +41,8 @@ function formatDateTime(value?: string | null) {
   return value ? dayjs(value).format("YYYY-MM-DD HH:mm") : "-";
 }
 
+const DEFAULT_REVENUE_CHANNEL_NAMES = ["美团团购", "美团点评买单", "抖音团购", "扫码收款", "商场代金券"];
+
 export default function RevenueReconciliationPage() {
   const searchParams = useClientSearchParams();
   const initialStoreId = searchParams.get("store_id") ?? undefined;
@@ -56,11 +58,15 @@ export default function RevenueReconciliationPage() {
   const [selectedTransaction, setSelectedTransaction] = useState<BankTransaction | null>(null);
   const [selectedRecordIds, setSelectedRecordIds] = useState<string[]>([]);
   const [channelFilter, setChannelFilter] = useState<string>();
+  const [revenueDateRange, setRevenueDateRange] = useState<[dayjs.Dayjs | null, dayjs.Dayjs | null]>([null, null]);
+  const [isDateRangeModalOpen, setIsDateRangeModalOpen] = useState(false);
+  const [dateRangeDraft, setDateRangeDraft] = useState<[dayjs.Dayjs | null, dayjs.Dayjs | null]>([null, null]);
   const [keyword, setKeyword] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isMatchDataReady, setIsMatchDataReady] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [submitStatus, setSubmitStatus] = useState<string | null>(null);
   const loadRequestIdRef = useRef(0);
 
   const storesById = useMemo(() => new Map(stores.map((store) => [store.id, store])), [stores]);
@@ -73,10 +79,19 @@ export default function RevenueReconciliationPage() {
   const currentLedger = selectedStoreId && initialLedgerPeriod
     ? ledgers.find((ledger) => ledger.store_id === selectedStoreId && ledger.period === initialLedgerPeriod)
     : undefined;
-  const channelOptions = Array.from(new Set([...channels.map((channel) => channel.name), ...records.map((record) => record.channel)]))
-    .filter(Boolean)
-    .sort()
-    .map((channel) => ({ label: channel, value: channel }));
+  const revenueChannelCards = DEFAULT_REVENUE_CHANNEL_NAMES
+    .map((channelName) => {
+      const channelRecords = records.filter((record) => record.channel === channelName);
+      const unmatchedChannelRecords = channelRecords.filter((record) => !isRevenueRecordCovered(record, matches.filter(isActiveMatch)));
+      return {
+        name: channelName,
+        totalCount: channelRecords.length,
+        unmatchedCount: unmatchedChannelRecords.length,
+        totalAmount: channelRecords.reduce((sum, record) => sum + moneyValue(record.net_amount), 0),
+        unmatchedAmount: unmatchedChannelRecords.reduce((sum, record) => sum + moneyValue(record.net_amount), 0),
+        };
+    })
+    .filter((channel) => channel.totalCount > 0 || channel.unmatchedCount > 0);
   const selectedRecords = records
     .filter((record) => selectedRecordIds.includes(record.id))
     .sort((left, right) => left.revenue_date.localeCompare(right.revenue_date));
@@ -86,6 +101,15 @@ export default function RevenueReconciliationPage() {
   const unmatchedRecords = records.filter((record) => !isRevenueRecordCovered(record, activeMatches));
   const filteredRecords = unmatchedRecords
     .filter((record) => !channelFilter || record.channel === channelFilter)
+    .filter((record) => {
+      const [startDate, endDate] = revenueDateRange;
+      if (!startDate || !endDate) return true;
+      const value = dayjs(record.revenue_date);
+      return (
+        (value.isAfter(startDate, "day") || value.isSame(startDate, "day")) &&
+        (value.isBefore(endDate, "day") || value.isSame(endDate, "day"))
+      );
+    })
     .filter((record) => {
       const text = keyword.trim().toLowerCase();
       if (!text) return true;
@@ -121,16 +145,15 @@ export default function RevenueReconciliationPage() {
   }
 
   async function loadStoreWorkspace(storeId: string, keepTransactionId?: string) {
-    const requestId = ++loadRequestIdRef.current;
-    setIsLoading(true);
-    setErrorMessage(null);
-    setIsMatchDataReady(false);
+      const requestId = ++loadRequestIdRef.current;
+      setIsLoading(true);
+      setErrorMessage(null);
+      setIsMatchDataReady(false);
     try {
       const bankParams = new URLSearchParams({ store_id: storeId, direction: "income", page_size: "500" });
       const revenueParams = new URLSearchParams({ store_id: storeId, page_size: "500" });
       const matchParams = new URLSearchParams({ store_id: storeId, page_size: "500" });
       if (initialLedgerPeriod) {
-        bankParams.set("ledger_period", initialLedgerPeriod);
         revenueParams.set("ledger_period", initialLedgerPeriod);
         matchParams.set("ledger_period", initialLedgerPeriod);
       }
@@ -145,7 +168,9 @@ export default function RevenueReconciliationPage() {
       const [bankResult, revenueResult, matchResult] = results;
       const loadErrors: string[] = [];
       const nextTransactions = bankResult.status === "fulfilled"
-        ? [...bankResult.value.items].sort((left, right) => right.occurred_at.localeCompare(left.occurred_at))
+        ? [...bankResult.value.items]
+            .filter((transaction) => remainingAmount(transaction) > 0)
+            .sort((left, right) => right.occurred_at.localeCompare(left.occurred_at))
         : [];
       const nextRecords = revenueResult.status === "fulfilled" ? revenueResult.value.items : [];
       const nextMatches = matchResult.status === "fulfilled" ? matchResult.value.items : [];
@@ -193,14 +218,45 @@ export default function RevenueReconciliationPage() {
   }, [selectedStoreId, initialLedgerPeriod]);
 
   function toggleRecord(record: RevenueRecord) {
-    if (!isMatchDataReady) {
-      message.warning("收入匹配记录尚未加载完成，请刷新后再操作");
-      return;
-    }
     if (isRevenueRecordCovered(record, activeMatches)) return;
     setSelectedRecordIds((current) =>
       current.includes(record.id) ? current.filter((id) => id !== record.id) : [...current, record.id],
     );
+  }
+
+  function openDateRangeModal() {
+    setDateRangeDraft(revenueDateRange);
+    setIsDateRangeModalOpen(true);
+  }
+
+  function confirmDateRangeSelection() {
+    const [startDate, endDate] = dateRangeDraft;
+    if (!startDate || !endDate) {
+      message.warning("请先选择日期范围");
+      return;
+    }
+    setRevenueDateRange([startDate, endDate]);
+    const selected = unmatchedRecords
+      .filter((record) => !channelFilter || record.channel === channelFilter)
+      .filter((record) => {
+        const value = dayjs(record.revenue_date);
+        return (
+          (value.isAfter(startDate, "day") || value.isSame(startDate, "day")) &&
+          (value.isBefore(endDate, "day") || value.isSame(endDate, "day"))
+        );
+      })
+      .map((record) => record.id);
+    if (!selected.length) {
+      message.warning("该日期范围内没有可匹配的营业收入");
+      return;
+    }
+    setSelectedRecordIds(selected);
+    message.success(`已选中 ${selected.length} 条营业收入`);
+    setIsDateRangeModalOpen(false);
+  }
+
+  function clearSelectedRecords() {
+    setSelectedRecordIds([]);
   }
 
   function validateSelection() {
@@ -231,10 +287,20 @@ export default function RevenueReconciliationPage() {
   }
 
   async function confirmMatch() {
-    if (!selectedStoreId || !selectedTransaction) return;
+    const storeId = selectedStoreId ?? initialStoreId;
+    if (!storeId) {
+      message.warning("请先选择门店");
+      return;
+    }
+    if (!selectedTransaction) {
+      message.warning("请先选择收入银行流水");
+      return;
+    }
     const selection = validateSelection();
     if (!selection) return;
     setIsSaving(true);
+    setSubmitStatus("正在提交收入匹配");
+    message.loading({ content: "正在提交收入匹配", key: "revenue-match-submit", duration: 0 });
     try {
       await apiClient.matches.createRevenueBatch({
         bank_transaction_id: selectedTransaction.id,
@@ -243,9 +309,14 @@ export default function RevenueReconciliationPage() {
         confidence: "100.00",
         reason: "营业收入记录手动关联银行流水",
       });
-      message.success(`收入对账已确认，已关联 ${selection.revenueRecordIds.length} 条营业收入`);
-      await loadStoreWorkspace(selectedStoreId, selectedTransaction.id);
+      setSubmitStatus(`已选中 ${selection.revenueRecordIds.length} 条营业收入，正在刷新`);
+      await loadStoreWorkspace(storeId, selectedTransaction.id);
+      setSubmitStatus(`收入对账已确认，已关联 ${selection.revenueRecordIds.length} 条营业收入`);
+      message.success({ content: `已确认匹配 ${selection.revenueRecordIds.length} 条营业收入`, key: "revenue-match-submit" });
     } catch (error) {
+      setSubmitStatus(null);
+      message.destroy("revenue-match-submit");
+      message.error(error instanceof Error ? error.message : "确认收入对账失败");
       setErrorMessage(error instanceof Error ? error.message : "确认收入对账失败");
     } finally {
       setIsSaving(false);
@@ -376,9 +447,9 @@ export default function RevenueReconciliationPage() {
               <Splitter className="reconciliation-workbench">
                 <Splitter.Panel defaultSize="34%" min="300px">
                   <Card
-                    title="收入银行流水"
+                    title="未匹配收入银行流水"
                     className="data-table-card bank-transaction-panel"
-                    extra={<Typography.Text type="secondary">共 {transactions.length} 条</Typography.Text>}
+                    extra={<Typography.Text type="secondary">共 {transactions.length} 条可对账</Typography.Text>}
                   >
                     {transactions.length ? (
                       <div className="bank-transaction-list">
@@ -420,7 +491,7 @@ export default function RevenueReconciliationPage() {
                         })}
                       </div>
                     ) : (
-                      <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={selectedStoreId ? "当前门店当前账期暂无收入方向银行流水" : "请先选择门店"} />
+                      <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={selectedStoreId ? "当前门店暂无未匹配收入银行流水" : "请先选择门店"} />
                     )}
                   </Card>
                 </Splitter.Panel>
@@ -432,9 +503,13 @@ export default function RevenueReconciliationPage() {
                     className="data-table-card approval-candidate-panel"
                     extra={
                       <Space>
-                        <Select allowClear placeholder="渠道" style={{ width: 150 }} options={channelOptions} value={channelFilter} onChange={setChannelFilter} />
+                        <DatePicker.RangePicker
+                          allowClear
+                          value={revenueDateRange}
+                          onChange={(dates) => setRevenueDateRange((dates as [dayjs.Dayjs | null, dayjs.Dayjs | null]) ?? [null, null])}
+                        />
                         <Input allowClear placeholder="日期 / 渠道 / 备注" style={{ width: 180 }} value={keyword} onChange={(event) => setKeyword(event.target.value)} />
-                        <Button type="primary" loading={isSaving} disabled={!selectedTransaction || !selectedRecordIds.length || !isMatchDataReady} onClick={confirmMatch}>
+                        <Button type="primary" loading={isSaving} disabled={!selectedTransaction || !selectedRecordIds.length} onClick={confirmMatch}>
                           确认匹配
                         </Button>
                       </Space>
@@ -445,6 +520,43 @@ export default function RevenueReconciliationPage() {
                       <Statistic title="已选实收" value={formatMoney(selectedAmount.toFixed(2))} />
                       <Statistic title="差额" value={formatMoney((bankRemaining - selectedAmount).toFixed(2))} />
                       <Statistic title="已对账金额" value={formatMoney(matchedAmount.toFixed(2))} />
+                    </div>
+                    {submitStatus ? <Alert className="dashboard-alert" type="info" showIcon message={submitStatus} /> : null}
+                    <div className="revenue-channel-toolbar">
+                      <div className="revenue-channel-grid">
+                        {revenueChannelCards.map((channel) => {
+                          const isSelected = channel.name === channelFilter;
+                          return (
+                            <button
+                              key={channel.name}
+                              type="button"
+                              className={`revenue-channel-card${isSelected ? " is-selected" : ""}`}
+                              onClick={() => setChannelFilter(isSelected ? undefined : channel.name)}
+                            >
+                              <span className="revenue-channel-card__main">
+                                <Typography.Text strong>{channel.name}</Typography.Text>
+                                <Typography.Text type="secondary">
+                                  {channel.unmatchedCount} 条未匹配 / {formatMoney(channel.unmatchedAmount.toFixed(2))}
+                                </Typography.Text>
+                              </span>
+                              <span className="revenue-channel-card__aside">
+                                <Tag color={isSelected ? "blue" : "default"}>{isSelected ? "已选" : `${channel.totalCount} 条`}</Tag>
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <Space>
+                        <Button onClick={openDateRangeModal} disabled={!isMatchDataReady}>
+                          按日期范围选中
+                        </Button>
+                        <Button onClick={clearSelectedRecords} disabled={!selectedRecordIds.length}>
+                          清空选择
+                        </Button>
+                        <Button onClick={() => setChannelFilter(undefined)} disabled={!channelFilter}>
+                          清除渠道
+                        </Button>
+                      </Space>
                     </div>
                     {!transactions.length && unmatchedRecords.length ? (
                       <Alert
@@ -529,6 +641,23 @@ export default function RevenueReconciliationPage() {
           },
         ]}
       />
+
+      <Modal
+        title="按日期范围选中营业收入"
+        open={isDateRangeModalOpen}
+        onCancel={() => setIsDateRangeModalOpen(false)}
+        onOk={confirmDateRangeSelection}
+        okText="确认选中"
+      >
+        <Space direction="vertical" style={{ width: "100%" }} size={12}>
+          <Typography.Text type="secondary">先选起止日期，再确认选中该范围内的未匹配收入。</Typography.Text>
+          <DatePicker.RangePicker
+            style={{ width: "100%" }}
+            value={dateRangeDraft}
+            onChange={(dates) => setDateRangeDraft((dates as [dayjs.Dayjs | null, dayjs.Dayjs | null]) ?? [null, null])}
+          />
+        </Space>
+      </Modal>
     </AppShell>
   );
 }

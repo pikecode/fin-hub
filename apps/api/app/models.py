@@ -606,6 +606,7 @@ class ApprovalInstance(Base):
     last_parsed_at: Mapped[datetime | None] = mapped_column(DateTime)
     submit_at: Mapped[datetime | None] = mapped_column(DateTime)
     approved_at: Mapped[datetime | None] = mapped_column(DateTime)
+    dingtalk_modified_at: Mapped[datetime | None] = mapped_column(DateTime)
     raw_payload: Mapped[str | None] = mapped_column(Text)
     synced_job_id: Mapped[str | None] = mapped_column(ForeignKey("sync_jobs.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)

@@ -983,7 +983,7 @@ def looks_like_store_department(name: str, path: str, child_names: list[str], de
     # 这是最强的门店标识
     SHOP_STRUCTURE_KEYWORDS = ("前厅", "后厨", "收银", "员工")
     has_shop_structure = any(
-        keyword in child_name
+        keyword in child
         for child in child_names
         for keyword in SHOP_STRUCTURE_KEYWORDS
     )
@@ -1016,13 +1016,14 @@ def build_department_tree(
     seen: set[str] = set()
 
     def walk(dept_id: str, parent_path: str, depth: int) -> None:
-        if dept_id in seen or depth > max_depth:
+        if dept_id in seen or depth >= max_depth:
             return
         seen.add(dept_id)
         children = client.list_child_departments(dept_id)
         # 添加延迟避免触发钉钉 QPS 限流（90002 错误）
         sleep(0.15)
         for child in children:
+            child_depth = depth + 1
             child_id = department_id(child)
             name = str(child.get("name") or child.get("dept_name") or child.get("deptName") or "")
             if not child_id or not name:
@@ -1042,12 +1043,12 @@ def build_department_tree(
                     name=name,
                     parent_id=department_parent_id(child),
                     path=path,
-                    depth=depth,
-                    is_store_candidate=looks_like_store_department(name, path, child_names),
+                    depth=child_depth,
+                    is_store_candidate=looks_like_store_department(name, path, child_names, child_depth),
                 )
             )
-            if child_id and depth < max_depth:
-                walk(child_id, path, depth + 1)
+            if child_id and child_depth < max_depth:
+                walk(child_id, path, child_depth)
 
     walk(root_dept_id, "", 0)
     return rows
@@ -2477,10 +2478,8 @@ def sync_real_instance(
     instance.approval_status = parse_text(raw_instance.get("result") or raw_instance.get("status")) or "unknown"
     instance.submit_at = DingTalkClient.parse_time(raw_instance.get("create_time") or raw_instance.get("createTime"))
     instance.approved_at = DingTalkClient.parse_time(raw_instance.get("finish_time") or raw_instance.get("finishTime"))
-    # instance.dingtalk_modified_at = DingTalkClient.parse_time(raw_instance.get("modify_time") or raw_instance.get("modifyTime"))  # TODO: 等待数据库迁移
     instance.raw_payload = json.dumps(raw_instance, ensure_ascii=False)
     instance.synced_job_id = job.id
-    # ✅ 保存钉钉修改时间，用于检测审批的后续修改
     instance.dingtalk_modified_at = DingTalkClient.parse_time(
         raw_instance.get("modify_time") or raw_instance.get("modifyTime")
     )
@@ -2600,8 +2599,6 @@ def sync_real_instance(
     instance.parse_status = "parsed"
     instance.parse_error = None
     instance.last_parsed_at = utc_now()
-    # ✅ 记录本次同步时间，用于下次检测是否有修改
-    instance.last_synced_at = utc_now()
     instance.raw_payload = json.dumps(
         {
             **raw_instance,
@@ -2772,15 +2769,11 @@ def should_skip_stable_approval(instance: ApprovalInstance, sync_window_days: in
     if instance.parse_status != "parsed" or instance.store_id is None:
         return False
 
-    # ✅ 改进：使用最新的修改时间或完成时间
-    # 优先级：dingtalk_modified_at > approved_at > submit_at
     ref_time = instance.dingtalk_modified_at or instance.approved_at or instance.submit_at
 
-    # 参考时间为空 → 不跳过
     if ref_time is None:
-        return False
+        return True
 
-    # 参考时间超过 N 天 → 可以跳过（认为审批已稳定，不会再改）
     days_since_change = (utc_now() - ref_time).days
     return days_since_change > sync_window_days
 
@@ -2801,22 +2794,6 @@ def approval_needs_detail_resync(instance: ApprovalInstance) -> bool:
     if instance.store_id is None:
         return True
     if instance.parse_status != "parsed":
-        return True
-
-    # ✅ 新增：如果上次同步太久，重新检查
-    # 使用修改时间判断：如果修改时间比上次同步还近，说明有更新
-    if instance.dingtalk_modified_at and instance.last_synced_at:
-        # 如果修改时间晚于上次同步，需要重新同步
-        if instance.dingtalk_modified_at > instance.last_synced_at:
-            return True
-
-    # ✅ 如果上次同步时间超过 30 天，也要强制重新检查
-    if instance.last_synced_at is None:
-        return True
-
-    days_since_last_sync = (utc_now() - instance.last_synced_at).days
-    if days_since_last_sync > 30:
-        # 超过 30 天没有同步过，强制重新拉取最新数据
         return True
 
     if instance.processing_status in RESYNC_PROCESSING_STATUSES:

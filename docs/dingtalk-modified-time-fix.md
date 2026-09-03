@@ -1,8 +1,11 @@
 # 钉钉审批修改时间追踪修复
 
-日期: 2026-09-03  
-优先级: 🔴 P0 (严重)  
+日期: 2026-09-03
+优先级: 🔴 P0 (严重)
 状态: ✅ 已修复
+
+> 2026-09-03 校正：最终实现只新增并使用 `approval_instances.dingtalk_modified_at`。
+> 不新增审批实例级 `last_synced_at` 字段；是否需要重拉详情仍由审批状态、解析状态、处理状态、解析结果和 `dingtalk_modified_at/approved_at/submit_at` 稳定窗口共同决定。
 
 ---
 
@@ -38,14 +41,17 @@
 
 ### 修复 1️⃣: 添加 `dingtalk_modified_at` 字段
 
-**数据库迁移** (新文件):
+**数据库迁移**:
 ```python
-# alembic/versions/20260903_0011_add_approval_modified_at.py
+# alembic/versions/20260903_0009_add_dingtalk_modified_at.py
 
 # 添加列
-op.add_column('approval_instance', sa.Column('dingtalk_modified_at', sa.DateTime(), nullable=True))
+op.add_column('approval_instances', sa.Column('dingtalk_modified_at', sa.DateTime(), nullable=True))
+```
 
-# 添加索引 (3 个)
+**索引迁移**:
+```python
+# alembic/versions/20260903_0011_add_approval_modified_at.py
 op.create_index('idx_approval_instance_modified_at', ...)
 op.create_index('idx_approval_instance_template_modified', ...)
 op.create_index('idx_approval_instance_modified_status', ...)
@@ -102,44 +108,32 @@ return days_since_change > sync_window_days
 
 ---
 
-### 修复 4️⃣: 改进重新同步判断
+### 修复 4️⃣: 保持既有重新同步判断
 
 **`approval_needs_detail_resync()` (line 2810-2844)**:
 
-**新增检查**:
+最终实现不新增 `last_synced_at` 判断，避免引入不存在的数据字段。该函数继续处理未完成、未关联门店、未解析、需要重同步的处理状态，以及解析跳过的审批。
+
 ```python
-# ✅ 检查 1: 修改时间晚于上次同步
-if instance.dingtalk_modified_at and instance.last_synced_at:
-    if instance.dingtalk_modified_at > instance.last_synced_at:
-        return True  # 有新修改，需要重新同步
-
-# ✅ 检查 2: 超过 30 天没有同步
-if instance.last_synced_at is None:
+if instance.approval_status.lower() not in COMPLETED_APPROVAL_STATUSES:
     return True
-
-days_since_last_sync = (utc_now() - instance.last_synced_at).days
-if days_since_last_sync > 30:
-    return True  # 长期未同步，强制检查
+if instance.store_id is None:
+    return True
+if instance.parse_status != "parsed":
+    return True
+if instance.processing_status in RESYNC_PROCESSING_STATUSES:
+    return True
 ```
 
 **作用**:
-- ✅ 精确检测是否有修改
-- ✅ 防止漏掉后期修改的审批
+- ✅ 不破坏既有审批单、明细、对账处理逻辑
+- ✅ 更新时间逻辑只参与稳定审批是否跳过
 
 ---
 
-### 修复 5️⃣: 记录同步时间
+### 修复 5️⃣: 不新增审批实例同步时间字段
 
-**router.py line 2608-2609**:
-```python
-instance.parse_status = "parsed"
-instance.last_parsed_at = utc_now()
-# ✅ 记录本次同步时间
-instance.last_synced_at = utc_now()
-```
-
-**作用**:
-- ✅ 为下次检测 "是否有修改" 提供参考点
+审批实例已经有 `last_parsed_at`、`updated_at` 和 `dingtalk_modified_at`。本次修复不额外添加 `last_synced_at`，避免和部门同步表 `dingtalk_departments.last_synced_at` 混淆。
 
 ---
 
@@ -207,9 +201,6 @@ instance.last_synced_at = utc_now()
 │  ├─ dingtalk_modified_at = 2026-08-03 (重新提交时间)
 │  ├─ days_since_change = 12 天 < 30 天
 │  └─ 返回 False (不跳过) ✅
-├─ approval_needs_detail_resync()
-│  ├─ dingtalk_modified_at (2026-08-03) > last_synced_at (2026-08-02)
-│  └─ 返回 True (需要重新同步) ✅
 └─ 金额、发票等最新内容被同步 ✅
 
 结果: 修复后能准确处理驳回重审 ✨
@@ -223,7 +214,7 @@ instance.last_synced_at = utc_now()
 
 **新增列**:
 ```sql
-ALTER TABLE approval_instance ADD COLUMN dingtalk_modified_at DATETIME NULL;
+ALTER TABLE approval_instances ADD COLUMN dingtalk_modified_at DATETIME NULL;
 ```
 
 **新增索引** (3 个):
@@ -244,7 +235,6 @@ ALTER TABLE approval_instance ADD COLUMN dingtalk_modified_at DATETIME NULL;
     ↓
 sync_real_instance()
     ├─ 保存: instance.dingtalk_modified_at ✅ (新)
-    ├─ 保存: instance.last_synced_at ✅ (新)
     └─ 其他处理...
         ↓
 下次同步时
@@ -252,8 +242,7 @@ sync_real_instance()
     │  └─ 检查: dingtalk_modified_at vs 30 天 ✅ (改进)
     │
     └─ approval_needs_detail_resync()
-       ├─ 检查 1: dingtalk_modified_at > last_synced_at ✅ (新)
-       └─ 检查 2: last_synced_at < 30 天前 ✅ (新)
+       └─ 沿用既有解析状态、处理状态和解析结果判断
 ```
 
 ---
@@ -269,19 +258,18 @@ def test_modified_time_tracking(self, db_session):
     """✅ 审批修改时间应该被正确追踪"""
     # 创建审批
     instance = ApprovalInstance(...)
-    
+
     # 第一次同步
     sync_real_instance(session, template, job, raw_instance_v1)
     assert instance.dingtalk_modified_at == parse_time("2026-08-01")
-    assert instance.last_synced_at == now
-    
+
     # 修改审批时间
     raw_instance_v2["modify_time"] = "2026-08-10"
-    
+
     # 第二次同步
     sync_real_instance(session, template, job, raw_instance_v2)
     assert instance.dingtalk_modified_at == parse_time("2026-08-10")
-    
+
     # 验证检测逻辑
     assert should_skip_stable_approval(instance, 30) == False  # 10 天内的修改不跳过
     assert approval_needs_detail_resync(instance) == True       # 检测到修改
@@ -384,4 +372,3 @@ def test_rejected_and_resubmitted(self, db_session):
 - ✅ 驳回重审场景被完整支持
 - ✅ 财务数据更加准确一致
 - ✅ 查询性能提升 5-10 倍
-

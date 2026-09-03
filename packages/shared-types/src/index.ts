@@ -821,6 +821,7 @@ export interface ApprovalInstance {
   last_parsed_at?: string | null;
   submit_at?: string | null;
   approved_at?: string | null;
+  dingtalk_modified_at?: string | null;
   raw_payload?: string | null;
   synced_job_id?: string | null;
   expense_item_count: number;
