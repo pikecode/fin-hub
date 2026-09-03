@@ -1078,7 +1078,7 @@ export default function DingTalkPage() {
       const nextJob = await apiClient.dingtalk.resumeApprovalSync(job.id, {
         started_by: "admin",
         page_size: 10,
-        max_pages: 20,
+        max_pages: 100,
         skip_existing: true,
         run_async: true,
       });
@@ -1633,65 +1633,6 @@ export default function DingTalkPage() {
       render: (value) => formatBeijingDateTime(value),
     },
   ];
-  const jobColumns: EnterpriseTableColumn<SyncJob>[] = [
-    { key: "job_type", title: "任务类型", dataIndex: "job_type", width: 140, render: (value) => syncJobTypeLabel(value) },
-    {
-      key: "status",
-      title: "状态",
-      dataIndex: "status",
-      width: 90,
-      render: (value: SyncJob["status"], record) => {
-	        if (record.next_cursor) return <Tag color="blue">可续跑</Tag>;
-	        if (value === "succeeded") return <Tag color="green">成功</Tag>;
-	        if (value === "failed") return <Tag color="red">失败</Tag>;
-	        if (value === "canceled") return <Tag color="default">已取消</Tag>;
-	        if (value === "running") return <Tag color="blue">运行中</Tag>;
-        return <Tag>等待中</Tag>;
-      },
-    },
-    { key: "summary", title: "阶段摘要", width: 320, render: (_, record) => renderSyncJobSummary(record) },
-    { key: "processed_count", title: "处理", dataIndex: "processed_count", width: 70 },
-    { key: "success_count", title: "成功", dataIndex: "success_count", width: 70 },
-    { key: "failed_count", title: "失败", dataIndex: "failed_count", width: 70 },
-    { key: "request_start_at", title: "开始窗口", dataIndex: "request_start_at", width: 140, render: (value) => value?.replace("T", " ").slice(0, 16) || "-" },
-    { key: "request_end_at", title: "结束窗口", dataIndex: "request_end_at", width: 140, render: (value) => value?.replace("T", " ").slice(0, 16) || "-" },
-    { key: "next_cursor", title: "游标", dataIndex: "next_cursor", width: 120, ellipsis: true, render: (value) => value || "-" },
-    {
-      key: "error_message",
-      title: "错误",
-      dataIndex: "error_message",
-      width: 220,
-      render: (value) => (value ? <Typography.Text type="danger" ellipsis={{ tooltip: value }}>{value}</Typography.Text> : "-"),
-    },
-    { key: "started_by", title: "发起人", dataIndex: "started_by", width: 110, render: (value) => value || "-" },
-    { key: "finished_at", title: "完成时间", dataIndex: "finished_at", width: 140, render: (value) => value?.replace("T", " ").slice(0, 16) || "-" },
-    ...(hasSyncJobActions
-      ? [
-          {
-            key: "actions",
-            title: "操作",
-            fixed: "right" as const,
-            width: 110,
-            className: "table-action-column",
-            render: (_: unknown, record: SyncJob) => {
-              if (record.status === "running") {
-                return (
-                  <Button type="link" danger onClick={() => cancelSyncJob(record)}>
-                    取消
-                  </Button>
-                );
-              }
-              return record.next_cursor ? (
-                <Button type="link" onClick={() => resumeApprovalSync(record)}>
-                  续跑
-                </Button>
-              ) : null;
-            },
-          },
-        ]
-      : []),
-  ];
-
   const instanceColumns: EnterpriseTableColumn<ApprovalInstance>[] = [
     {
       key: "approval_no",
@@ -1859,14 +1800,51 @@ export default function DingTalkPage() {
                   <Alert type="info" showIcon message={syncReadiness.warnings.join("；")} />
                 ) : null}
                 <Card
-                  title="自动同步任务"
+                  title="首次初始化"
+                  extra={<Tag color={syncReadiness?.approval_sync_ready ? "green" : "gold"}>{syncReadiness?.approval_sync_ready ? "基础条件已满足" : "先完成基础配置"}</Tag>}
+                >
+                  <Space direction="vertical" size={16} className="full-width">
+                    <Alert
+                      type="info"
+                      showIcon
+                      message="首次同步建议按“部门快照 -> 门店落库 -> 审批模板 -> 审批单”的顺序执行。"
+                      description="各步骤都可以单独执行，审批单同步前请先完成门店映射和模板解析配置。"
+                    />
+                    <Space wrap>
+                      <Button onClick={pullDepartments} loading={isLoading}>
+                        同步部门快照
+                      </Button>
+                      <Button onClick={syncDepartments} loading={isLoading}>
+                        落库门店
+                      </Button>
+                      <Button onClick={syncTemplates} loading={isLoading}>
+                        同步审批模板
+                      </Button>
+                      <Button type="primary" onClick={openManualSyncModal} loading={isLoading}>
+                        同步审批单
+                      </Button>
+                    </Space>
+                    {!syncReadiness?.approval_sync_ready ? (
+                      <Alert
+                        className="dashboard-alert"
+                        type="warning"
+                        showIcon
+                        message="审批单同步尚未就绪"
+                        description={`${approvalSyncBlockerText}。审批单可以晚些再同步。`}
+                      />
+                    ) : null}
+                  </Space>
+                </Card>
+
+                <Card
+                  title="自动同步"
                   extra={
                     <Space>
                       <Tag color={autoSyncSetting?.enabled ? "green" : "default"}>
                         {autoSyncSetting?.enabled ? "已启用" : "未启用"}
                       </Tag>
                       <Button onClick={runAutoSync} loading={isLoading}>
-                        立即执行自动任务
+                        执行自动同步
                       </Button>
                       <Button type="primary" onClick={() => autoSyncForm.submit()} loading={isLoading}>
                         保存设置
@@ -1891,31 +1869,9 @@ export default function DingTalkPage() {
                     <Alert
                       type="info"
                       showIcon
-                      message="首次接入建议先完成部门同步和模板配置，再开启审批自动同步；审批同步只处理已启用且已配置解析规则的模板。"
+                      message="自动同步会按顺序处理部门、门店、模板和审批单。"
+                      description="建议首次接入先手动跑一遍初始化，再开启计划任务。"
                     />
-
-                    <Card size="small" title="手动同步">
-                      <Space wrap>
-                        <Button onClick={pullDepartments} loading={isLoading}>
-                          更新部门
-                        </Button>
-                        <Button onClick={syncTemplates} loading={isLoading}>
-                          更新审批模板
-                        </Button>
-                        <Button type="primary" onClick={openManualSyncModal} loading={isLoading}>
-                          更新审批列表
-                        </Button>
-                      </Space>
-                      {!syncReadiness?.approval_sync_ready ? (
-                        <Alert
-                          className="dashboard-alert"
-                          type="warning"
-                          showIcon
-                          message="审批列表同步建议在模板解析配置后执行"
-                          description={`${approvalSyncBlockerText}。当前仍可先同步审批原始数据，后续配置完成后重新解析。`}
-                        />
-                      ) : null}
-                    </Card>
 
                     <Form
                       form={autoSyncForm}
@@ -2094,7 +2050,7 @@ export default function DingTalkPage() {
                         }))}
                       />
                       <Button type="primary" onClick={openSyncModal} loading={isLoading}>
-                        增量同步审批
+                        按时间范围同步审批单
                       </Button>
                     </Space>
                   }
@@ -2133,18 +2089,6 @@ export default function DingTalkPage() {
                     showDensityToggle
                     showColumnSettings
                     fixedColumns={{ left: ["approval_no"], right: ["actions"] }}
-                  />
-                </Card>
-                <Card title="同步任务">
-                  <EnterpriseTable<SyncJob>
-                    rowKey="id"
-                    loading={isLoading}
-                    columns={jobColumns}
-                    dataSource={syncJobs}
-                    pagination={{ defaultPageSize: 5, showSizeChanger: true }}
-                    showDensityToggle
-                    showColumnSettings
-                    fixedColumns={hasSyncJobActions ? { right: ["actions"] } : undefined}
                   />
                 </Card>
               </Space>
@@ -2469,7 +2413,7 @@ export default function DingTalkPage() {
         )}
       </Modal>
       <Modal
-        title="手动同步审批实例"
+        title="按时间范围同步审批单"
         open={isSyncModalOpen}
         onCancel={() => setIsSyncModalOpen(false)}
         onOk={() => syncForm.submit()}
