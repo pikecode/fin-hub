@@ -250,7 +250,10 @@ export default function StoreLedgersPage() {
           setIsLoading(false);
         }
         try {
-          const analytics = await apiClient.reports.analytics();
+          const lastMonth = new Date();
+          lastMonth.setMonth(lastMonth.getMonth() - 1);
+          const period = lastMonth.toISOString().slice(0, 7);
+          const analytics = await apiClient.reports.analytics(`?period_start=${period}&period_end=${period}`);
           if (!ignore) {
             setAnalyticsStores(analytics.stores);
           }
