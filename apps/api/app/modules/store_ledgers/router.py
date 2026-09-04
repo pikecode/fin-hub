@@ -151,7 +151,7 @@ def read_store_ledger_workspace(
     pending_approval_count = sum(
         1
         for item in approval_instances
-        if approval_stats_by_id.get(item.id, {}).get("pending_expense_item_count", 0) > 0
+        if approval_stats_by_id.get(item.id, {}).get("processing_status") != "matched"
     )
     revenue_match_count = session.scalar(
         select(func.count()).select_from(RevenueBankMatch).join(

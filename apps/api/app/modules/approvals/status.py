@@ -48,12 +48,10 @@ def approval_expense_stats(
         processing_status = "sync_conflict"
     elif classified_count < len(expense_items):
         processing_status = "pending_classification"
-    elif pending_item_count == len(expense_items):
-        processing_status = "pending_match"
-    elif pending_item_count:
-        processing_status = "partial_matched"
-    else:
+    elif confirmed_match_amount > 0:
         processing_status = "matched"
+    else:
+        processing_status = "pending_match"
     return {
         "expense_item_count": len(expense_items),
         "classified_expense_item_count": classified_count,

@@ -1,9 +1,18 @@
 import type { ColumnType } from "antd/es/table";
+import { Tag } from "antd";
 import type { BankTransaction } from "@fin-hub/shared-types";
 import { MoneyDisplay } from "./MoneyDisplay";
 import { StatusBadge } from "./StatusBadge";
 
 export type BankTransactionViewColumn = ColumnType<BankTransaction> & { key: string };
+
+function bankMatchStatus(transaction: BankTransaction) {
+  const amount = Number(transaction.amount || 0);
+  const matchedAmount = Number(transaction.matched_amount || 0);
+  if (matchedAmount <= 0) return { label: "未匹配", color: "default" as const };
+  if (matchedAmount >= amount) return { label: "已匹配", color: "success" as const };
+  return { label: "部分匹配", color: "orange" as const };
+}
 
 export function getBankTransactionViewColumns(): BankTransactionViewColumn[] {
   return [
@@ -47,6 +56,15 @@ export function getBankTransactionViewColumns(): BankTransactionViewColumn[] {
       align: "right",
       render: (value, record) => <MoneyDisplay value={value} colorize={record.direction === "income"} />,
       sorter: (left, right) => Number(left.amount) - Number(right.amount),
+    },
+    {
+      key: "match_status",
+      title: "匹配状态",
+      width: 96,
+      render: (_, record) => {
+        const status = bankMatchStatus(record);
+        return <Tag color={status.color}>{status.label}</Tag>;
+      },
     },
     {
       key: "summary",

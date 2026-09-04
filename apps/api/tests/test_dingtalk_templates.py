@@ -404,6 +404,19 @@ def test_auto_sync_setting_and_manual_run(client: TestClient, session) -> None:
     assert setting["enabled"] is True
     assert setting["scheduled_time"] == "23:00"
     assert setting["sync_departments"] is False
+    assert setting["paused"] is False
+
+    pause_response = client.put("/api/dingtalk/auto-sync/settings", json={"paused": True})
+    assert pause_response.status_code == 200
+    assert pause_response.json()["data"]["paused"] is True
+
+    paused_run_response = client.post("/api/dingtalk/auto-sync/run")
+    assert paused_run_response.status_code == 409
+    assert "已暂停" in paused_run_response.json()["detail"]
+
+    resume_response = client.put("/api/dingtalk/auto-sync/settings", json={"paused": False})
+    assert resume_response.status_code == 200
+    assert resume_response.json()["data"]["paused"] is False
 
     run_response = client.post("/api/dingtalk/auto-sync/run")
     assert run_response.status_code == 201
@@ -598,7 +611,7 @@ def test_list_approval_instances_returns_expense_aggregation(client: TestClient,
     assert item["total_expense_amount"] == "200.00"
     assert item["confirmed_match_amount"] == "120.00"
     assert item["candidate_match_count"] == 1
-    assert item["processing_status"] == "partial_matched"
+    assert item["processing_status"] == "matched"
 
 
 def test_reorder_template_mappings(client: TestClient) -> None:
@@ -1192,6 +1205,7 @@ def test_real_approval_sync_skips_existing_instances(client: TestClient, session
                 "status": "COMPLETED",
                 "result": "agree",
                 "create_time": "2026-08-29 23:28:54",
+                "finish_time": "2026-08-30 10:00:00",
             }
 
     monkeypatch.setattr("app.modules.dingtalk.router.dingtalk_client", lambda config: FakeDingTalkClient())
@@ -1208,6 +1222,10 @@ def test_real_approval_sync_skips_existing_instances(client: TestClient, session
     assert response.status_code == 201
     assert get_calls == ["new-instance"]
     assert '"skipped_existing_count": 1' in response.json()["data"]["raw_summary"]
+    new_instance = session.scalar(
+        select(ApprovalInstance).where(ApprovalInstance.dingtalk_instance_id == "new-instance")
+    )
+    assert new_instance.dingtalk_modified_at == datetime(2026, 8, 30, 10, 0, 0)
 
 
 def test_real_approval_sync_resyncs_existing_unparsed_instance(
@@ -1255,6 +1273,7 @@ def test_real_approval_sync_resyncs_existing_unparsed_instance(
                 "status": "COMPLETED",
                 "result": "agree",
                 "create_time": "2026-08-29 10:00:00",
+                "modify_time": "2026-08-30 12:34:56",
                 "form_component_values": [
                     {"name": "报销日期", "value": "2026-08-29"},
                     {"name": "支出门店", "value": "蘑说补解析店"},
@@ -1285,6 +1304,7 @@ def test_real_approval_sync_resyncs_existing_unparsed_instance(
     )
     assert instance.store_id == store_id
     assert instance.approval_status == "agree"
+    assert instance.dingtalk_modified_at == datetime(2026, 8, 30, 12, 34, 56)
     assert instance.parse_status == "parsed"
     assert instance.processing_status == "pending_match"
     assert instance.parse_error is None
@@ -1398,7 +1418,7 @@ def test_auto_sync_advances_approval_watermark_to_completed_window_with_overlap(
     first_watermark = setting.approval_watermark_at
     second_response = client.post("/api/dingtalk/auto-sync/run")
     assert second_response.status_code == 201
-    assert windows[1][0] == int((first_watermark - timedelta(minutes=10)).timestamp() * 1000)
+    assert windows[1][0] == int((first_watermark - timedelta(days=setting.approval_overlap_days)).timestamp() * 1000)
 
 
 def test_auto_sync_failure_keeps_approval_watermark_and_window_for_retry(
@@ -1434,6 +1454,85 @@ def test_auto_sync_failure_keeps_approval_watermark_and_window_for_retry(
     session.refresh(setting)
     assert setting.approval_watermark_at == original_watermark
     assert setting.approval_resume_state is not None
+
+
+def test_resync_approvals_by_modified_time_refreshes_existing_instances(
+    client: TestClient,
+    session,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(settings, "dingtalk_sync_mode", "real")
+    client.put(
+        "/api/dingtalk/config",
+        json={"app_key": "ding-app-key", "app_secret": "super-secret"},
+    )
+    store_id = client.post(
+        "/api/stores",
+        json={"name": "修改重刷门店", "dingtalk_dept_id": "dept-modified-resync"},
+    ).json()["data"]["id"]
+    template_id = client.post(
+        "/api/dingtalk/templates",
+        json={"process_code": "PROC-MODIFIED-RESYNC", "name": "修改重刷审批", "is_enabled": True},
+    ).json()["data"]["id"]
+    session.add(
+        ApprovalInstance(
+            template_id=template_id,
+            dingtalk_instance_id="modified-instance",
+            approval_no="MOD-001",
+            store_id=store_id,
+            approval_status="agree",
+            parse_status="parsed",
+            processing_status="pending_match",
+            dingtalk_modified_at=datetime(2026, 9, 1, 10, 0, 0),
+        )
+    )
+    session.commit()
+
+    get_calls: list[str] = []
+
+    class FakeDingTalkClient:
+        def get_process_instance(self, instance_id):
+            get_calls.append(instance_id)
+            return {
+                "process_instance_id": instance_id,
+                "business_id": "MOD-001",
+                "originator_dept_id": "dept-modified-resync",
+                "originator_dept_name": "门店运营部-修改重刷门店",
+                "status": "COMPLETED",
+                "result": "agree",
+                "create_time": "2026-09-01 09:00:00",
+                "finish_time": "2026-09-01 10:00:00",
+                "modify_time": "2026-09-03 12:00:00",
+                "form_component_values": [
+                    {"name": "报销日期", "value": "2026-09-01"},
+                    {"name": "支出门店", "value": "修改重刷门店"},
+                    {"name": "汇总金额（元）", "value": "188.00"},
+                    {"name": "支出详情", "value": "修改后重刷"},
+                    {"name": "支出类型", "value": "门店费用"},
+                ],
+            }
+
+    monkeypatch.setattr("app.modules.dingtalk.router.dingtalk_client", lambda config: FakeDingTalkClient())
+    response = client.post(
+        "/api/dingtalk/approval-resync-by-modified",
+        json={
+            "start_at": "2026-09-01T00:00:00",
+            "end_at": "2026-09-02T00:00:00",
+            "store_id": store_id,
+            "started_by": "tester",
+        },
+    )
+
+    assert response.status_code == 201
+    assert get_calls == ["modified-instance"]
+    data = response.json()["data"]
+    assert data["processed_count"] == 1
+    assert data["updated_count"] == 1
+    instance = session.scalar(
+        select(ApprovalInstance).where(ApprovalInstance.dingtalk_instance_id == "modified-instance")
+    )
+    assert instance is not None
+    assert instance.dingtalk_modified_at == datetime(2026, 9, 3, 12, 0, 0)
 
 
 def test_auto_sync_refreshes_pending_approval_not_returned_by_new_window(

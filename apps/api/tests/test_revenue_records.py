@@ -526,6 +526,63 @@ def test_one_income_bank_transaction_matches_revenue_records_across_channels(
     assert close_check["unmatched_revenue_amount"] == "0.00"
 
 
+def test_income_bank_transaction_can_match_revenue_records_in_accounting_period(
+    client: TestClient,
+) -> None:
+    store_id = client.post("/api/stores", json={"name": "蘑说收入跨月入账店"}).json()["data"]["id"]
+    client.post("/api/ledgers", json={"store_id": store_id, "period": "2026-08"})
+    client.post("/api/ledgers", json={"store_id": store_id, "period": "2026-09"})
+    client.post("/api/revenue-channels", json={"name": "跨月渠道", "sort_order": 10, "requires_bank_match": True})
+
+    record_id = client.post(
+        "/api/revenue-records",
+        json={
+            "store_id": store_id,
+            "ledger_period": "2026-09",
+            "revenue_date": "2026-09-01",
+            "channel": "跨月渠道",
+            "gross_amount": "100.00",
+            "net_amount": "100.00",
+        },
+    ).json()["data"]["id"]
+    bank_id = client.post(
+        "/api/bank-transactions",
+        json={
+            "store_id": store_id,
+            "ledger_period": "2026-08",
+            "occurred_at": "2026-08-31T23:30:00",
+            "direction": "income",
+            "amount": "100.00",
+        },
+    ).json()["data"]["id"]
+
+    match_response = client.post(
+        "/api/matches/revenue/batch?operator=tester",
+        json={
+            "bank_transaction_id": bank_id,
+            "revenue_record_ids": [record_id],
+            "amount": "100.00",
+            "accounting_period": "2026-09",
+        },
+    )
+
+    assert match_response.status_code == 201
+    match = match_response.json()["data"][0]
+    assert match["accounting_period"] == "2026-09"
+    assert match["status"] == "confirmed"
+
+    september_matches = client.get(
+        f"/api/matches/revenue?store_id={store_id}&ledger_period=2026-09&page_size=20"
+    ).json()["data"]["items"]
+    assert len(september_matches) == 1
+    assert september_matches[0]["id"] == match["id"]
+
+    august_matches = client.get(
+        f"/api/matches/revenue?store_id={store_id}&ledger_period=2026-08&page_size=20"
+    ).json()["data"]["items"]
+    assert august_matches == []
+
+
 def test_list_revenue_matches_filters_by_store_and_period(client: TestClient) -> None:
     store_a = client.post("/api/stores", json={"name": "蘑说收入匹配筛选店 A"}).json()["data"]["id"]
     store_b = client.post("/api/stores", json={"name": "蘑说收入匹配筛选店 B"}).json()["data"]["id"]

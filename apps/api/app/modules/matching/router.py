@@ -477,7 +477,13 @@ def list_revenue_matches(
     else:
         query = query.where(scoped_store_condition(session, current_user, BankTransaction.store_id))
     if ledger_period:
-        query = query.where(BankTransaction.ledger_period == ledger_period)
+        query = query.where(
+            or_(
+                RevenueBankMatch.accounting_period == ledger_period,
+                RevenueBankMatch.accounting_period.is_(None)
+                & (BankTransaction.ledger_period == ledger_period),
+            )
+        )
     items, total = paginate(session, query, page, page_size)
     record_ids_by_match = revenue_match_record_ids_map(session, [item.id for item in items])
     return ApiEnvelope(
@@ -535,6 +541,7 @@ def revenue_records_for_match(
 ) -> list[RevenueRecord]:
     if not bank_transaction.store_id or not bank_transaction.ledger_period:
         raise HTTPException(status_code=409, detail="Bank transaction has no store assignment")
+    accounting_period = payload.accounting_period or bank_transaction.ledger_period
     if payload.revenue_start_date > payload.revenue_end_date:
         raise HTTPException(status_code=422, detail="Revenue start date cannot be after end date")
     if not payload.revenue_record_ids:
@@ -542,7 +549,7 @@ def revenue_records_for_match(
             session.scalars(
                 select(RevenueRecord).where(
                     RevenueRecord.store_id == bank_transaction.store_id,
-                    RevenueRecord.ledger_period == bank_transaction.ledger_period,
+                    RevenueRecord.ledger_period == accounting_period,
                     RevenueRecord.channel == payload.channel,
                     RevenueRecord.revenue_date >= payload.revenue_start_date,
                     RevenueRecord.revenue_date <= payload.revenue_end_date,
@@ -564,7 +571,7 @@ def revenue_records_for_match(
             record
             for record in records
             if record.store_id != bank_transaction.store_id
-            or record.ledger_period != bank_transaction.ledger_period
+            or record.ledger_period != accounting_period
             or record.channel != payload.channel
         ),
         None,
@@ -579,9 +586,14 @@ def overlapping_revenue_match(
     bank_transaction: BankTransaction,
     payload: RevenueMatchCreate,
 ) -> RevenueBankMatch | None:
+    accounting_period = payload.accounting_period or bank_transaction.ledger_period
     common_filters = (
         BankTransaction.store_id == bank_transaction.store_id,
-        BankTransaction.ledger_period == bank_transaction.ledger_period,
+        or_(
+            RevenueBankMatch.accounting_period == accounting_period,
+            RevenueBankMatch.accounting_period.is_(None)
+            & (BankTransaction.ledger_period == accounting_period),
+        ),
         RevenueBankMatch.channel == payload.channel,
         RevenueBankMatch.status != MatchStatus.REJECTED.value,
     )
@@ -743,7 +755,7 @@ def create_revenue_match_batch(
             record
             for record in records
             if record.store_id != bank_transaction.store_id
-            or record.ledger_period != bank_transaction.ledger_period
+            or record.ledger_period != (payload.accounting_period or bank_transaction.ledger_period)
         ),
         None,
     )
@@ -809,6 +821,7 @@ def create_revenue_match_batch(
             revenue_start_date=start_date,
             revenue_end_date=end_date,
             amount=channel_amount,
+            accounting_period=payload.accounting_period or bank_transaction.ledger_period,
             revenue_record_ids=[record.id for record in channel_records],
             confidence=payload.confidence,
             reason=payload.reason,
@@ -825,6 +838,7 @@ def create_revenue_match_batch(
             revenue_start_date=start_date,
             revenue_end_date=end_date,
             amount=channel_amount,
+            accounting_period=payload.accounting_period or bank_transaction.ledger_period,
             status=MatchStatus.CONFIRMED.value,
             confidence=payload.confidence,
             reason=payload.reason,
@@ -1339,7 +1353,7 @@ def list_reconciliation_candidates(
     matched_approval_ids, matched_document_ids = matched_approval_keys(
         session,
         store_id=store_id,
-        ledger_period=ledger_period,
+        ledger_period=None,
         exclude_match_id=exclude_match_id,
     )
     for expense, approval, template in rows:

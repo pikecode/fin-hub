@@ -11,6 +11,7 @@ import {
   Form,
   Image,
   Input,
+  InputNumber,
   Modal,
   Row,
   Select,
@@ -27,6 +28,7 @@ import type { ColumnsType } from "antd/es/table";
 import dayjs from "dayjs";
 import { useEffect, useMemo, useState } from "react";
 import type {
+  Store,
   ApprovalTemplate,
   ApprovalTemplateCreate,
   ApprovalTemplateNode,
@@ -62,6 +64,14 @@ interface ApprovalSyncFormValues {
   end_at?: dayjs.Dayjs;
   sync_to_now?: boolean;
   skip_existing?: boolean;
+}
+
+interface ApprovalModifiedResyncFormValues {
+  start_at?: dayjs.Dayjs;
+  end_at?: dayjs.Dayjs;
+  template_id?: string;
+  store_id?: string;
+  limit?: number;
 }
 
 interface AutoSyncFormValues extends DingTalkAutoSyncSettingUpdate {}
@@ -575,6 +585,7 @@ export default function DingTalkPage() {
   const [fieldCandidates, setFieldCandidates] = useState<TemplateFieldCandidate[]>([]);
   const [syncJobs, setSyncJobs] = useState<SyncJob[]>([]);
   const [approvalInstances, setApprovalInstances] = useState<ApprovalInstance[]>([]);
+  const [stores, setStores] = useState<Store[]>([]);
   const [departmentPreview, setDepartmentPreview] = useState<DingTalkDepartmentSyncPreview | null>(null);
   const [syncReadiness, setSyncReadiness] = useState<DingTalkSyncReadiness | null>(null);
   const [activeTabKey, setActiveTabKey] = useState<DingTalkTabKey>("auto-sync");
@@ -588,11 +599,13 @@ export default function DingTalkPage() {
   const [isTemplateModalOpen, setIsTemplateModalOpen] = useState(false);
   const [isMappingDrawerOpen, setIsMappingDrawerOpen] = useState(false);
   const [isSyncModalOpen, setIsSyncModalOpen] = useState(false);
+  const [isModifiedResyncModalOpen, setIsModifiedResyncModalOpen] = useState(false);
   const [isConfigModalOpen, setIsConfigModalOpen] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [form] = Form.useForm<DingTalkFormValues>();
   const [templateForm] = Form.useForm<ApprovalTemplateCreate>();
   const [syncForm] = Form.useForm<ApprovalSyncFormValues>();
+  const [modifiedResyncForm] = Form.useForm<ApprovalModifiedResyncFormValues>();
   const [autoSyncForm] = Form.useForm<AutoSyncFormValues>();
   const [nodeForm] = Form.useForm<TemplateNodeFormValues>();
   const departmentTree = useMemo(
@@ -718,6 +731,7 @@ export default function DingTalkPage() {
       sync_departments: data.sync_departments,
       sync_templates: data.sync_templates,
       sync_approvals: data.sync_approvals,
+      paused: data.paused,
     });
   }
 
@@ -733,8 +747,9 @@ export default function DingTalkPage() {
       apiClient.dingtalk.readAutoSyncSetting(),
       apiClient.dingtalk.listSyncJobs("?page_size=50"),
       apiClient.dingtalk.readSyncReadiness(),
+      apiClient.stores.list("?page_size=500"),
     ]);
-    const [configResult, autoSyncResult, jobResult, readinessResult] = results;
+    const [configResult, autoSyncResult, jobResult, readinessResult, storeResult] = results;
     const errors: string[] = [];
 
     if (configResult.status === "fulfilled") {
@@ -759,6 +774,12 @@ export default function DingTalkPage() {
       setSyncReadiness(readinessResult.value);
     } else {
       errors.push(dingtalkPageErrorMessage(readinessResult.reason, "无法读取同步前置检查"));
+    }
+
+    if (storeResult.status === "fulfilled") {
+      setStores(storeResult.value.items);
+    } else {
+      errors.push(dingtalkPageErrorMessage(storeResult.reason, "无法读取门店列表"));
     }
 
     if (errors.length) {
@@ -929,10 +950,33 @@ export default function DingTalkPage() {
         sync_departments: setting.sync_departments,
         sync_templates: setting.sync_templates,
         sync_approvals: setting.sync_approvals,
+        paused: setting.paused,
       });
       message.success("自动同步设置已保存");
     } catch (error) {
       setErrorMessage(dingtalkPageErrorMessage(error, "无法保存自动同步设置"));
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  async function toggleAutoSyncPaused(paused: boolean) {
+    setIsLoading(true);
+    setErrorMessage(null);
+    try {
+      const setting = await apiClient.dingtalk.updateAutoSyncSetting({ paused });
+      setAutoSyncSetting(setting);
+      autoSyncForm.setFieldsValue({
+        enabled: setting.enabled,
+        scheduled_time: setting.scheduled_time,
+        sync_departments: setting.sync_departments,
+        sync_templates: setting.sync_templates,
+        sync_approvals: setting.sync_approvals,
+        paused: setting.paused,
+      });
+      message.success(paused ? "自动同步已暂停" : "自动同步已恢复");
+    } catch (error) {
+      setErrorMessage(dingtalkPageErrorMessage(error, paused ? "无法暂停自动同步" : "无法恢复自动同步"));
     } finally {
       setIsLoading(false);
     }
@@ -1040,6 +1084,15 @@ export default function DingTalkPage() {
     setIsSyncModalOpen(true);
   }
 
+  function openModifiedResyncModal() {
+    modifiedResyncForm.setFieldsValue({
+      start_at: dayjs().subtract(7, "day"),
+      end_at: dayjs(),
+      limit: 200,
+    });
+    setIsModifiedResyncModalOpen(true);
+  }
+
   async function changeInstanceTemplateFilter(templateId?: string) {
     setInstanceTemplateFilterId(templateId ?? null);
     setErrorMessage(null);
@@ -1066,6 +1119,35 @@ export default function DingTalkPage() {
       message.success(`审批同步任务已开始，可在任务列表取消：${job.id.slice(0, 8)}`);
     } catch (error) {
       setErrorMessage(dingtalkPageErrorMessage(error, "无法同步审批实例"));
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  async function startModifiedResync(values: ApprovalModifiedResyncFormValues) {
+    if (!values.start_at || !values.end_at) {
+      message.error("请选择修改时间范围");
+      return;
+    }
+    if (values.end_at.diff(values.start_at, "day", true) > 120) {
+      message.error("单次重刷时间范围不能超过 120 天");
+      return;
+    }
+    setIsLoading(true);
+    try {
+      const result = await apiClient.dingtalk.resyncApprovalsByModifiedTime({
+        start_at: values.start_at.toISOString(),
+        end_at: values.end_at.toISOString(),
+        template_id: values.template_id,
+        store_id: values.store_id,
+        limit: values.limit ?? 200,
+        started_by: "admin",
+      });
+      setIsModifiedResyncModalOpen(false);
+      await loadInstancesTab(true);
+      message.success(`修改重刷已开始：处理 ${result.processed_count} 条，更新 ${result.updated_count} 条`);
+    } catch (error) {
+      setErrorMessage(dingtalkPageErrorMessage(error, "无法按修改时间重刷审批"));
     } finally {
       setIsLoading(false);
     }
@@ -1823,6 +1905,9 @@ export default function DingTalkPage() {
                       <Button type="primary" onClick={openManualSyncModal} loading={isLoading}>
                         同步审批单
                       </Button>
+                      <Button onClick={openModifiedResyncModal} loading={isLoading}>
+                        按修改时间重刷
+                      </Button>
                     </Space>
                     {!syncReadiness?.approval_sync_ready ? (
                       <Alert
@@ -1843,7 +1928,16 @@ export default function DingTalkPage() {
                       <Tag color={autoSyncSetting?.enabled ? "green" : "default"}>
                         {autoSyncSetting?.enabled ? "已启用" : "未启用"}
                       </Tag>
-                      <Button onClick={runAutoSync} loading={isLoading}>
+                      <Tag color={autoSyncSetting?.paused ? "gold" : "green"}>
+                        {autoSyncSetting?.paused ? "已暂停" : "运行中"}
+                      </Tag>
+                      <Button onClick={() => toggleAutoSyncPaused(true)} loading={isLoading} disabled={!autoSyncSetting?.enabled || autoSyncSetting?.paused}>
+                        暂停自动同步
+                      </Button>
+                      <Button onClick={() => toggleAutoSyncPaused(false)} loading={isLoading} disabled={!autoSyncSetting?.enabled || !autoSyncSetting?.paused}>
+                        恢复自动同步
+                      </Button>
+                      <Button onClick={runAutoSync} loading={isLoading} disabled={Boolean(autoSyncSetting?.paused)}>
                         执行自动同步
                       </Button>
                       <Button type="primary" onClick={() => autoSyncForm.submit()} loading={isLoading}>
@@ -1883,8 +1977,12 @@ export default function DingTalkPage() {
                         sync_departments: true,
                         sync_templates: true,
                         sync_approvals: true,
+                        paused: false,
                       }}
                     >
+                      <Form.Item name="paused" hidden>
+                        <Input />
+                      </Form.Item>
                       <Row gutter={[16, 0]}>
                         <Col xs={24} md={8}>
                           <Form.Item name="enabled" label="启用计划任务" valuePropName="checked">
@@ -2491,6 +2589,48 @@ export default function DingTalkPage() {
           </Typography.Text>
           <Form.Item name="skip_existing" label="跳过本地已有审批" initialValue={true}>
             <Switch />
+          </Form.Item>
+        </Form>
+      </Modal>
+      <Modal
+        title="按修改时间重刷审批"
+        open={isModifiedResyncModalOpen}
+        onCancel={() => setIsModifiedResyncModalOpen(false)}
+        onOk={() => modifiedResyncForm.submit()}
+        confirmLoading={isLoading}
+      >
+        <Form
+          form={modifiedResyncForm}
+          layout="vertical"
+          onFinish={startModifiedResync}
+          initialValues={{ limit: 200 }}
+        >
+          <Row gutter={16}>
+            <Col span={12}>
+              <Form.Item name="start_at" label="开始时间" rules={[{ required: true, message: "请选择开始时间" }]}>
+                <DatePicker showTime className="full-width" />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item name="end_at" label="结束时间" rules={[{ required: true, message: "请选择结束时间" }]}>
+                <DatePicker showTime className="full-width" />
+              </Form.Item>
+            </Col>
+          </Row>
+          <Form.Item name="template_id" label="审批模板">
+            <Select allowClear placeholder="全部模板" options={templates.map((template) => ({ label: template.name, value: template.id }))} />
+          </Form.Item>
+          <Form.Item name="store_id" label="门店">
+            <Select
+              allowClear
+              showSearch
+              optionFilterProp="label"
+              placeholder="全部门店"
+              options={stores.map((store) => ({ label: store.name, value: store.id }))}
+            />
+          </Form.Item>
+          <Form.Item name="limit" label="最多重刷条数">
+            <InputNumber className="full-width" min={1} max={1000} />
           </Form.Item>
         </Form>
       </Modal>

@@ -1,10 +1,10 @@
 "use client";
 
-import { Alert, Button, Card, DatePicker, Descriptions, Drawer, Empty, Image, Input, Modal, Space, Table, Tag, Typography, message } from "antd";
+import { Alert, Button, Card, DatePicker, Descriptions, Drawer, Empty, Image, Input, InputNumber, Modal, Space, Table, Tag, Typography, message, Select, Row, Col, Form } from "antd";
 import dayjs from "dayjs";
 import { useParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
-import type { ApprovalInstance, ApprovalTemplate, Attachment, Ledger, Store, StoreApprovalSyncResult } from "@fin-hub/shared-types";
+import type { ApprovalInstance, ApprovalTemplate, Attachment, Ledger, Store, StoreApprovalSyncResult, ApprovalModifiedResyncRequest } from "@fin-hub/shared-types";
 import { AppShell } from "../../../components/AppShell";
 import { EnterpriseTable } from "../../../components/EnterpriseTable";
 import type { EnterpriseTableColumn } from "../../../components/EnterpriseTable";
@@ -13,11 +13,14 @@ import { apiClient } from "../../../lib/api";
 import { getApprovalTemplates, getStoreLedgers, getStores } from "../../../lib/referenceData";
 import { useClientSearchParams } from "../../../lib/searchParams";
 
-function periodOfDate(value?: string | null) {
-  return value ? value.slice(0, 7) : "";
-}
-
 type SyncDateRange = [dayjs.Dayjs, dayjs.Dayjs];
+
+type ModifiedResyncFormValues = {
+  start_at?: dayjs.Dayjs;
+  end_at?: dayjs.Dayjs;
+  template_id?: string;
+  limit?: number;
+};
 
 function syncRangeForPeriod(period: string): SyncDateRange | null {
   const periodStart = dayjs(`${period}-01`);
@@ -110,6 +113,19 @@ function approvalStatusMeta(status: string) {
     REFUSED: { label: "已拒绝", color: "red" },
     RUNNING: { label: "审批中", color: "blue" },
     NEW: { label: "审批中", color: "blue" },
+  };
+  return statusMap[normalized] ?? { label: status || "-", color: "default" };
+}
+
+function approvalMatchStatusMeta(status?: string | null) {
+  const normalized = (status || "").toLowerCase();
+  const statusMap: Record<string, { label: string; color: string }> = {
+    matched: { label: "已对账", color: "green" },
+    partial_matched: { label: "已对账", color: "green" },
+    pending_match: { label: "待对账", color: "blue" },
+    pending_classification: { label: "待分类", color: "orange" },
+    sync_conflict: { label: "同步冲突", color: "red" },
+    unparsed: { label: "未解析", color: "default" },
   };
   return statusMap[normalized] ?? { label: status || "-", color: "default" };
 }
@@ -278,6 +294,8 @@ export default function StoreLedgerApprovalsPage() {
   const [storeSyncResult, setStoreSyncResult] = useState<StoreApprovalSyncResult | null>(null);
   const [storeSyncError, setStoreSyncError] = useState<string | null>(null);
   const [storeSyncDateRange, setStoreSyncDateRange] = useState<SyncDateRange | null>(null);
+  const [isModifiedResyncModalOpen, setIsModifiedResyncModalOpen] = useState(false);
+  const [modifiedResyncForm] = Form.useForm<ModifiedResyncFormValues>();
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   useEffect(() => {
@@ -318,7 +336,9 @@ export default function StoreLedgerApprovalsPage() {
       setErrorMessage(null);
       try {
         const params = new URLSearchParams({ store_id: storeId, page_size: "500" });
-        if (selectedPeriod) params.set("ledger_period", selectedPeriod);
+        if (keyword.trim().length > 0) {
+          params.set("include_matched", "true");
+        }
         const approvalPage = await apiClient.dingtalk.listApprovalInstances(`?${params.toString()}`);
         if (!ignore) {
           setApprovals(approvalPage.items);
@@ -333,7 +353,7 @@ export default function StoreLedgerApprovalsPage() {
     return () => {
       ignore = true;
     };
-  }, [selectedPeriod, storeId]);
+  }, [keyword, storeId]);
 
   const periodOptions = useMemo(
     () => ledgers.map((ledger) => ({ label: ledger.period, value: ledger.period })),
@@ -359,22 +379,23 @@ export default function StoreLedgerApprovalsPage() {
     () => uniqueSelectOptions(approvals.map((approval) => approvalStatusMeta(approval.approval_status).label)),
     [approvals],
   );
-  const filteredApprovals = approvals
-    .filter((approval) => !selectedPeriod || periodOfDate(approval.submit_at) === selectedPeriod)
-    .filter((approval) => {
-      const value = keyword.trim().toLowerCase();
-      if (!value) return true;
-      return [
-        approval.approval_no,
-        approval.dingtalk_instance_id,
-        approval.applicant_name,
-        approval.applicant_user_id,
-        approval.department_name,
-        approval.approval_status,
-        approvalStatusMeta(approval.approval_status).label,
-        templateNameById.get(approval.template_id),
-      ].filter(Boolean).some((text) => String(text).toLowerCase().includes(value));
-    });
+  const filteredApprovals = approvals.filter((approval) => {
+    const value = keyword.trim().toLowerCase();
+    if (!value) return true;
+    return [
+      approval.approval_no,
+      approval.dingtalk_instance_id,
+      approval.applicant_name,
+      approval.applicant_user_id,
+      approval.department_name,
+      approval.approval_status,
+      approvalStatusMeta(approval.approval_status).label,
+      templateNameById.get(approval.template_id),
+    ]
+      .filter(Boolean)
+      .some((text) => String(text).toLowerCase().includes(value));
+  });
+
   async function syncStoreApprovals() {
     if (!selectedPeriod || !storeSyncDateRange) {
       message.warning("请先选择账期");
@@ -394,7 +415,6 @@ export default function StoreLedgerApprovalsPage() {
       });
       const params = new URLSearchParams({
         store_id: storeId,
-        ledger_period: selectedPeriod,
         page_size: "500",
       });
       const approvalPage = await apiClient.dingtalk.listApprovalInstances(`?${params.toString()}`);
@@ -409,6 +429,55 @@ export default function StoreLedgerApprovalsPage() {
       }
     } catch (error) {
       const nextError = error instanceof Error ? error.message : "无法同步本门店审批";
+      setStoreSyncError(nextError);
+      setErrorMessage(nextError);
+    } finally {
+      setIsStoreSyncing(false);
+    }
+  }
+
+  function openModifiedResyncModal() {
+    const range = selectedPeriod ? syncRangeForPeriod(selectedPeriod) : null;
+    modifiedResyncForm.setFieldsValue({
+      start_at: range?.[0] ?? dayjs().startOf("month"),
+      end_at: range?.[1] ?? dayjs(),
+      limit: 200,
+    });
+    setIsModifiedResyncModalOpen(true);
+  }
+
+  async function startModifiedResync(values: ModifiedResyncFormValues) {
+    if (!values.start_at || !values.end_at) {
+      message.warning("请选择修改时间范围");
+      return;
+    }
+    if (values.end_at.diff(values.start_at, "day", true) > 120) {
+      message.error("单次重刷时间范围不能超过 120 天");
+      return;
+    }
+    setIsStoreSyncing(true);
+    setErrorMessage(null);
+    setStoreSyncError(null);
+    try {
+      const payload: ApprovalModifiedResyncRequest = {
+        store_id: storeId,
+        start_at: values.start_at.toISOString(),
+        end_at: values.end_at.toISOString(),
+        template_id: values.template_id,
+        limit: values.limit ?? 200,
+        started_by: "store-ledger",
+      };
+      const result = await apiClient.dingtalk.resyncApprovalsByModifiedTime(payload);
+      setIsModifiedResyncModalOpen(false);
+      const params = new URLSearchParams({
+        store_id: storeId,
+        page_size: "500",
+      });
+      const approvalPage = await apiClient.dingtalk.listApprovalInstances(`?${params.toString()}`);
+      setApprovals(approvalPage.items);
+      message.success(`修改重刷已提交：处理 ${result.processed_count} 条，更新 ${result.updated_count} 条`);
+    } catch (error) {
+      const nextError = error instanceof Error ? error.message : "无法按修改时间重刷审批";
       setStoreSyncError(nextError);
       setErrorMessage(nextError);
     } finally {
@@ -537,6 +606,16 @@ export default function StoreLedgerApprovalsPage() {
         return <Tag color={meta.color}>{meta.label}</Tag>;
       },
     },
+    {
+      key: "processing_status",
+      title: "匹配状态",
+      dataIndex: "processing_status",
+      width: 110,
+      render: (value: string | null | undefined) => {
+        const meta = approvalMatchStatusMeta(value);
+        return <Tag color={meta.color}>{meta.label}</Tag>;
+      },
+    },
     { key: "submit_at", title: "提交时间", dataIndex: "submit_at", render: (value) => value?.replace("T", " ").slice(0, 16) || "-" },
     { key: "approved_at", title: "通过时间", dataIndex: "approved_at", render: (value) => value?.replace("T", " ").slice(0, 16) || "-" },
     {
@@ -555,7 +634,7 @@ export default function StoreLedgerApprovalsPage() {
   return (
     <AppShell
       title={`${store?.name ?? "门店"}审批单管理`}
-      kicker={selectedPeriod ? `账期：${selectedPeriod}，仅用于搜索和查看审批单` : "按门店搜索和查看审批单"}
+      kicker={selectedPeriod ? `当前账期：${selectedPeriod}，列表按门店展示全部审批单` : "按门店展示全部审批单"}
     >
       <StoreLedgerWorkspaceNav
         storeId={storeId}
@@ -581,6 +660,9 @@ export default function StoreLedgerApprovalsPage() {
             />
             <Button type="primary" loading={isStoreSyncing} disabled={!selectedPeriod} onClick={openStoreSyncModal}>
               同步本账期审批
+            </Button>
+            <Button loading={isStoreSyncing} disabled={!selectedPeriod} onClick={openModifiedResyncModal}>
+              按修改时间重刷
             </Button>
           </Space>
         }
@@ -668,6 +750,41 @@ export default function StoreLedgerApprovalsPage() {
             </Descriptions>
           ) : null}
         </Space>
+      </Modal>
+      <Modal
+        title="按修改时间重刷审批"
+        open={isModifiedResyncModalOpen}
+        onCancel={() => setIsModifiedResyncModalOpen(false)}
+        onOk={() => modifiedResyncForm.submit()}
+        okText="开始重刷"
+        cancelText="关闭"
+        confirmLoading={isStoreSyncing}
+        destroyOnHidden
+      >
+        <Form form={modifiedResyncForm} layout="vertical" onFinish={startModifiedResync} initialValues={{ limit: 200 }}>
+          <Row gutter={16}>
+            <Col span={12}>
+              <Form.Item name="start_at" label="开始时间" rules={[{ required: true, message: "请选择开始时间" }]}>
+                <DatePicker showTime className="full-width" />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item name="end_at" label="结束时间" rules={[{ required: true, message: "请选择结束时间" }]}>
+                <DatePicker showTime className="full-width" />
+              </Form.Item>
+            </Col>
+          </Row>
+          <Form.Item name="template_id" label="审批模板">
+            <Select
+              allowClear
+              placeholder="全部模板"
+              options={templates.map((template) => ({ label: template.name, value: template.id }))}
+            />
+          </Form.Item>
+          <Form.Item name="limit" label="最多重刷条数">
+            <InputNumber className="full-width" min={1} max={1000} />
+          </Form.Item>
+        </Form>
       </Modal>
       <Drawer
         title={selectedApproval ? approvalTitle(selectedApproval) || selectedApproval.approval_no || "审批实例详情" : "审批实例详情"}
@@ -837,7 +954,7 @@ export default function StoreLedgerApprovalsPage() {
         {imagePreview ? <Image src={imagePreview.url} alt={imagePreview.title} width="100%" /> : null}
       </Modal>
       <Typography.Paragraph type="secondary" className="store-ledger-page-note">
-        审批单按提交时间归入账期；本页仅用于搜索、筛选和查看审批单详情。
+        审批单列表不按账期筛选展示；账期仅用于同步本账期审批。
       </Typography.Paragraph>
     </AppShell>
   );

@@ -1,7 +1,7 @@
 """Add approval sync window configuration
 
-Revision ID: 20260903_0012
-Revises: 20260903_0011
+Revision ID: 20260903_0014
+Revises: 20260903_0013
 Create Date: 2026-09-03
 
 Problem: Sync window was hardcoded to 7 days, causing data to be missed
@@ -14,6 +14,12 @@ Changes:
 """
 from alembic import op
 import sqlalchemy as sa
+
+
+revision = "20260903_0014"
+down_revision = "20260903_0013"
+branch_labels = None
+depends_on = None
 
 
 def upgrade() -> None:

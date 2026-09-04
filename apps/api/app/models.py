@@ -400,7 +400,7 @@ class Attachment(Base):
     file_path: Mapped[str | None] = mapped_column(String(500))
     file_hash: Mapped[str | None] = mapped_column(String(128))
     source: Mapped[str] = mapped_column(String(24), default="manual", nullable=False)
-    external_file_id: Mapped[str | None] = mapped_column(String(240))
+    external_file_id: Mapped[str | None] = mapped_column(Text)
     download_status: Mapped[str] = mapped_column(
         String(24), default=AttachmentStatus.STORED.value, nullable=False
     )
@@ -476,6 +476,7 @@ class RevenueBankMatch(Base):
     revenue_start_date: Mapped[datetime] = mapped_column(Date, nullable=False)
     revenue_end_date: Mapped[datetime] = mapped_column(Date, nullable=False)
     amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    accounting_period: Mapped[str | None] = mapped_column(String(7))
     status: Mapped[str] = mapped_column(String(24), default=MatchStatus.CANDIDATE.value, nullable=False)
     confidence: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
     reason: Mapped[str | None] = mapped_column(String(240))
@@ -544,6 +545,7 @@ class DingTalkAutoSyncSetting(Base):
     sync_departments: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     sync_templates: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     sync_approvals: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    paused: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     next_run_at: Mapped[datetime | None] = mapped_column(DateTime)
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime)
     approval_watermark_at: Mapped[datetime | None] = mapped_column(DateTime)

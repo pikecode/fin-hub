@@ -28,7 +28,6 @@ Options:
   --save            Save images to a tar archive for scp/docker load deployment.
 
 Environment:
-  NEXT_PUBLIC_API_BASE_URL is read from .env.production when present.
   IMAGE_TAG, IMAGE_REGISTRY, DOCKER_PLATFORM, PYTHON_BASE_IMAGE,
   NODE_BASE_IMAGE, PUSH, SAVE_TAR and OUTPUT_DIR can also be set.
 USAGE
@@ -95,8 +94,6 @@ fi
 
 API_IMAGE="${API_IMAGE:-${prefix}fin-hub-api:$TAG}"
 ADMIN_WEB_IMAGE="${ADMIN_WEB_IMAGE:-${prefix}fin-hub-admin-web:$TAG}"
-NEXT_PUBLIC_API_BASE_URL="${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8000}"
-
 cd "$ROOT_DIR"
 
 echo "Building API image: $API_IMAGE"
@@ -111,7 +108,6 @@ docker build \
   --platform "$PLATFORM" \
   -f apps/admin-web/Dockerfile \
   --build-arg "NODE_BASE_IMAGE=$NODE_BASE_IMAGE" \
-  --build-arg "NEXT_PUBLIC_API_BASE_URL=$NEXT_PUBLIC_API_BASE_URL" \
   -t "$ADMIN_WEB_IMAGE" .
 
 if [ "$PUSH" = "true" ]; then

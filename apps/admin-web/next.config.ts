@@ -4,6 +4,20 @@ import path from "node:path";
 const nextConfig: NextConfig = {
   outputFileTracingRoot: path.join(__dirname, "../.."),
   devIndicators: false,
+  async rewrites() {
+    const apiProxyTarget =
+      process.env.ADMIN_WEB_API_PROXY_TARGET ||
+      (process.env.NODE_ENV !== "production" ? "http://localhost:8000" : "");
+    if (!apiProxyTarget) {
+      return [];
+    }
+    return [
+      {
+        source: "/api/:path*",
+        destination: `${apiProxyTarget.replace(/\/$/, "")}/api/:path*`,
+      },
+    ];
+  },
   webpack: (config, { dev }) => {
     if (dev) {
       config.watchOptions = {

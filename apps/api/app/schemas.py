@@ -507,6 +507,7 @@ class RevenueMatchCreate(BaseModel):
     revenue_start_date: date
     revenue_end_date: date
     amount: Decimal = Field(gt=0)
+    accounting_period: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}$")
     revenue_record_ids: list[str] = Field(default_factory=list)
     confidence: Decimal | None = None
     reason: str | None = None
@@ -516,6 +517,7 @@ class RevenueMatchBatchCreate(BaseModel):
     bank_transaction_id: str
     revenue_record_ids: list[str] = Field(min_length=1)
     amount: Decimal = Field(gt=0)
+    accounting_period: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}$")
     confidence: Decimal | None = None
     reason: str | None = None
 
@@ -570,6 +572,7 @@ class DingTalkAutoSyncSettingRead(BaseModel):
     sync_departments: bool
     sync_templates: bool
     sync_approvals: bool
+    paused: bool
     next_run_at: datetime | None
     last_run_at: datetime | None
     approval_watermark_at: datetime | None
@@ -586,6 +589,7 @@ class DingTalkAutoSyncSettingUpdate(BaseModel):
     sync_departments: bool | None = None
     sync_templates: bool | None = None
     sync_approvals: bool | None = None
+    paused: bool | None = None
     skip_existing: bool | None = None
 
 
@@ -1046,6 +1050,31 @@ class ApprovalReparseResult(BaseModel):
     reparsed_count: int
     skipped_count: int
     created_expense_count: int
+    job: SyncJobRead
+
+
+class ApprovalModifiedResyncRequest(BaseModel):
+    start_at: datetime | None = None
+    end_at: datetime | None = None
+    template_id: str | None = None
+    store_id: str | None = None
+    limit: int = Field(default=200, ge=1, le=1000)
+    started_by: str = "system"
+
+    @model_validator(mode="after")
+    def validate_time_range(self) -> "ApprovalModifiedResyncRequest":
+        if (self.start_at is None) != (self.end_at is None):
+            raise ValueError("开始时间和结束时间必须同时提供")
+        if self.start_at and self.end_at and self.end_at < self.start_at:
+            raise ValueError("结束时间不能早于开始时间")
+        return self
+
+
+class ApprovalModifiedResyncResult(BaseModel):
+    processed_count: int
+    updated_count: int
+    skipped_count: int
+    failed_count: int
     job: SyncJobRead
 
 

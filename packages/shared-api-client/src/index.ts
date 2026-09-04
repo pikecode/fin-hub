@@ -4,6 +4,8 @@ import type {
   ApprovalParsePreview,
   ApprovalReparseRequest,
   ApprovalReparseResult,
+  ApprovalModifiedResyncRequest,
+  ApprovalModifiedResyncResult,
   AttachmentAccessUrl,
   ApprovalTemplate,
   ApprovalTemplateCreate,
@@ -562,6 +564,11 @@ export function createApiClient(options: ApiClientOptions) {
         request<ApprovalParsePreview>(`/api/dingtalk/templates/${templateId}/parse-preview${params}`),
       reparseTemplate: (templateId: string, payload: ApprovalReparseRequest) =>
         request<ApprovalReparseResult>(`/api/dingtalk/templates/${templateId}/reparse`, {
+          method: "POST",
+          body: JSON.stringify(payload),
+        }),
+      resyncApprovalsByModifiedTime: (payload: ApprovalModifiedResyncRequest) =>
+        request<ApprovalModifiedResyncResult>("/api/dingtalk/approval-resync-by-modified", {
           method: "POST",
           body: JSON.stringify(payload),
         }),

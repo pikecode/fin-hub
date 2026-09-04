@@ -63,6 +63,6 @@ ssh fin-hub-server 'cd /opt/fin-hub && scripts/deploy-prod-images.sh'
 
 - `scripts/deploy-prod-images.sh` 不会 build 镜像。
 - API 容器启动时仍会执行 `alembic upgrade head`。
-- `NEXT_PUBLIC_API_BASE_URL` 是前端构建时变量，构建镜像前要确保 `.env.production` 中配置正确。
+- 后台管理端统一请求同域 `/api`，由本地开发代理或线上 Nginx 转发，不再依赖 `NEXT_PUBLIC_API_BASE_URL` 构建时变量。
 - 生产镜像建议使用 git SHA 或版本号作为 tag，避免只用 `latest` 导致无法回滚。
 - 旧脚本 `scripts/deploy-prod.sh` 会在服务器 build，仅作为兼容方案保留。

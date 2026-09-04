@@ -12,6 +12,7 @@ import {
   Image,
   Input,
   Modal,
+  Pagination,
   Popconfirm,
   Radio,
   Select,
@@ -223,6 +224,11 @@ export default function FinanceReconciliationPage() {
   const [candidates, setCandidates] = useState<ReconciliationExpenseCandidate[]>([]);
   const [records, setRecords] = useState<ReconciliationRecord[]>([]);
   const [selectedStoreId, setSelectedStoreId] = useState<string>();
+  const [activeTabKey, setActiveTabKey] = useState("workbench");
+  const [transactionPage, setTransactionPage] = useState(1);
+  const [transactionPageSize, setTransactionPageSize] = useState(30);
+  const [candidatePage, setCandidatePage] = useState(1);
+  const [candidatePageSize, setCandidatePageSize] = useState(20);
   const [selectedTransaction, setSelectedTransaction] = useState<BankTransaction | null>(null);
   const [selectedCandidateId, setSelectedCandidateId] = useState<string>();
   const [isApprovalSearchActive, setIsApprovalSearchActive] = useState(Boolean(initialApprovalNo?.trim()));
@@ -245,7 +251,7 @@ export default function FinanceReconciliationPage() {
 
   const storesById = useMemo(() => new Map(stores.map((store) => [store.id, store])), [stores]);
   const currentStore = selectedStoreId ? storesById.get(selectedStoreId) : undefined;
-  const activeCategories = categories.filter((category) => category.status === "active");
+  const activeCategories = useMemo(() => categories.filter((category) => category.status === "active"), [categories]);
   const categoriesById = useMemo(() => new Map(activeCategories.map((category) => [category.id, category])), [activeCategories]);
   const categoryOptions = useMemo(
     () =>
@@ -262,7 +268,18 @@ export default function FinanceReconciliationPage() {
         })),
     [activeCategories],
   );
-  const selectedCandidate = candidates.find((candidate) => candidate.expense_item.id === selectedCandidateId);
+  const selectedCandidate = useMemo(
+    () => candidates.find((candidate) => candidate.expense_item.id === selectedCandidateId),
+    [candidates, selectedCandidateId],
+  );
+  const visibleTransactions = useMemo(
+    () => transactions.slice((transactionPage - 1) * transactionPageSize, transactionPage * transactionPageSize),
+    [transactions, transactionPage, transactionPageSize],
+  );
+  const visibleCandidates = useMemo(
+    () => candidates.slice((candidatePage - 1) * candidatePageSize, candidatePage * candidatePageSize),
+    [candidates, candidatePage, candidatePageSize],
+  );
   const bankRemaining = selectedTransaction ? remainingAmount(selectedTransaction) : 0;
   const defaultMatchAmount = selectedCandidate ? Math.min(bankRemaining, Number(selectedCandidate.remaining_amount || 0)) : bankRemaining;
   const selectedLedgerPeriod = initialLedgerPeriod;
@@ -366,7 +383,6 @@ export default function FinanceReconciliationPage() {
       const bankParams = new URLSearchParams({ store_id: storeId, direction: "expense", page_size: "200" });
       const recordParams = new URLSearchParams({ store_id: storeId, page_size: "100" });
       if (selectedLedgerPeriod) {
-        bankParams.set("ledger_period", selectedLedgerPeriod);
         recordParams.set("accounting_period", selectedLedgerPeriod);
       }
       const [bankPage, recordPage] = await Promise.all([
@@ -376,9 +392,11 @@ export default function FinanceReconciliationPage() {
       setTransactions(bankPage.items);
       setRecords(recordPage.items);
       setApprovalExpenseItemsById({});
+      setTransactionPage(1);
       const nextTransaction = transaction && remainingAmount(transaction) > 0 ? transaction : null;
       setSelectedTransaction(nextTransaction);
       setCandidates([]);
+      setCandidatePage(1);
       setSelectedCandidateId(undefined);
       await loadCandidates(nextTransaction, storeId, filterForm.getFieldsValue());
     } catch (error) {
@@ -399,13 +417,13 @@ export default function FinanceReconciliationPage() {
     const approvalSearch = filters && Object.prototype.hasOwnProperty.call(filters, "approval_no")
       ? filters.approval_no?.trim()
       : initialApprovalNo?.trim();
-    if (selectedLedgerPeriod) params.set("ledger_period", selectedLedgerPeriod);
     if (transaction) params.set("bank_transaction_id", transaction.id);
     if (filters?.template_id) params.set("template_id", filters.template_id);
     if (approvalSearch) params.set("approval_no", approvalSearch);
     try {
       const result = await apiClient.matches.reconciliationCandidates(`?${params.toString()}`);
       setCandidates(result.candidates);
+      setCandidatePage(1);
       setSelectedCandidateId(undefined);
       setIsApprovalSearchActive(Boolean(approvalSearch));
     } catch (error) {
@@ -460,6 +478,7 @@ export default function FinanceReconciliationPage() {
   async function selectTransaction(transaction: BankTransaction) {
     if (!selectedStoreId) return;
     setSelectedTransaction(transaction);
+    setCandidatePage(1);
     await loadCandidates(transaction, selectedStoreId, filterForm.getFieldsValue());
   }
 
@@ -809,25 +828,26 @@ export default function FinanceReconciliationPage() {
 
       <Tabs
         className="reconciliation-tabs"
-        defaultActiveKey="workbench"
+        activeKey={activeTabKey}
+        onChange={setActiveTabKey}
         items={[
           {
             key: "workbench",
             label: `银行流水 (${transactions.length})`,
-            children: (
+            children: activeTabKey === "workbench" ? (
               <Splitter className="reconciliation-workbench">
                 <Splitter.Panel defaultSize="34%" min="300px">
                   <Card
                     title="银行流水"
                     className="data-table-card bank-transaction-panel"
                     extra={<Typography.Text type="secondary">共 {transactions.length} 条</Typography.Text>}
-                  >
-                    {transactions.length ? (
-                      <div className="bank-transaction-list">
-                        {transactions.map((transaction) => {
-                          const isSelected = transaction.id === selectedTransaction?.id;
-                          const remaining = remainingAmount(transaction);
-                          const isFullyMatched = remaining <= 0;
+	                  >
+	                    {transactions.length ? (
+	                      <div className="bank-transaction-list">
+	                        {visibleTransactions.map((transaction) => {
+	                          const isSelected = transaction.id === selectedTransaction?.id;
+	                          const remaining = remainingAmount(transaction);
+	                          const isFullyMatched = remaining <= 0;
                           return (
                             <button
                               key={transaction.id}
@@ -839,15 +859,15 @@ export default function FinanceReconciliationPage() {
                               }}
                             >
                               <span className="bank-transaction-card__main">
-                                <span className="bank-transaction-card__meta">
-                                  <Typography.Text strong>{dayjs(transaction.occurred_at).format("YYYY-MM-DD")}</Typography.Text>
-                                  <Tag color="orange">支出</Tag>
-                                  {transaction.ledger_period ? <Tag>{transaction.ledger_period}</Tag> : null}
-                                  {isFullyMatched ? <Tag color="green">已匹配</Tag> : <Tag>待匹配</Tag>}
-                                </span>
-                                  <Typography.Text className="bank-transaction-card__summary" ellipsis>
-                                    {transaction.summary || transaction.counterparty_name || "无摘要"}
-                                  </Typography.Text>
+	                                <span className="bank-transaction-card__meta">
+	                                  <Typography.Text strong>{dayjs(transaction.occurred_at).format("YYYY-MM-DD")}</Typography.Text>
+	                                  <Tag color="orange">支出</Tag>
+	                                  {transaction.ledger_period ? <Tag>{transaction.ledger_period}</Tag> : null}
+	                                  {isFullyMatched ? <Tag color="green">已匹配</Tag> : <Tag>待匹配</Tag>}
+	                                </span>
+	                                <Typography.Text className="bank-transaction-card__summary" ellipsis>
+	                                  {transaction.summary || transaction.counterparty_name || "无摘要"}
+	                                </Typography.Text>
                                 {transaction.bank_serial_no ? (
                                   <span className="bank-transaction-card__serial">流水号 {transaction.bank_serial_no}</span>
                                 ) : null}
@@ -856,10 +876,26 @@ export default function FinanceReconciliationPage() {
                                 <Typography.Text className="bank-transaction-card__amount">{formatMoney(transaction.amount)}</Typography.Text>
                                 <Typography.Text type="secondary">剩余 {formatMoney(Math.max(remaining, 0).toFixed(2))}</Typography.Text>
                               </span>
-                            </button>
-                          );
-                        })}
-                      </div>
+	                            </button>
+	                          );
+	                        })}
+	                        {transactions.length > transactionPageSize ? (
+	                          <Pagination
+	                            className="reconciliation-list-pagination"
+	                            size="small"
+	                            current={transactionPage}
+	                            pageSize={transactionPageSize}
+	                            total={transactions.length}
+	                            showSizeChanger
+	                            pageSizeOptions={[20, 30, 50, 100]}
+	                            showTotal={(total, range) => `${range[0]}-${range[1]} / ${total} 条`}
+	                            onChange={(page, pageSize) => {
+	                              setTransactionPage(page);
+	                              setTransactionPageSize(pageSize);
+	                            }}
+	                          />
+	                        ) : null}
+	                      </div>
                     ) : (
                       <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={selectedStoreId ? "当前门店暂无银行流水" : "请先选择门店"} />
                     )}
@@ -900,13 +936,13 @@ export default function FinanceReconciliationPage() {
                         description="已匹配明细仅供查看，剩余金额大于 0 的明细仍可继续匹配。"
                       />
                     ) : null}
-                    <Spin spinning={isCandidateLoading}>
-                      {candidates.length ? (
-                        <div className="approval-candidate-list">
-                          {candidates.map((candidate) => {
-                            const isSelected = candidate.expense_item.id === selectedCandidateId;
-                            const isFullyMatched = Number(candidate.remaining_amount || 0) <= 0;
-                            const storeName = storesById.get(candidate.expense_item.store_id)?.name || candidate.approval_instance?.department_name || "-";
+	                    <Spin spinning={isCandidateLoading}>
+	                      {candidates.length ? (
+	                        <div className="approval-candidate-list">
+	                          {visibleCandidates.map((candidate) => {
+	                            const isSelected = candidate.expense_item.id === selectedCandidateId;
+	                            const isFullyMatched = Number(candidate.remaining_amount || 0) <= 0;
+	                            const storeName = storesById.get(candidate.expense_item.store_id)?.name || candidate.approval_instance?.department_name || "-";
                             return (
                               <div
                                 key={candidate.expense_item.id}
@@ -963,10 +999,26 @@ export default function FinanceReconciliationPage() {
                                     查看明细
                                   </Button>
                                 </div>
-                              </div>
-                            );
-                          })}
-                        </div>
+	                              </div>
+	                            );
+	                          })}
+	                          {candidates.length > candidatePageSize ? (
+	                            <Pagination
+	                              className="reconciliation-list-pagination"
+	                              size="small"
+	                              current={candidatePage}
+	                              pageSize={candidatePageSize}
+	                              total={candidates.length}
+	                              showSizeChanger
+	                              pageSizeOptions={[10, 20, 50, 100]}
+	                              showTotal={(total, range) => `${range[0]}-${range[1]} / ${total} 条`}
+	                              onChange={(page, pageSize) => {
+	                                setCandidatePage(page);
+	                                setCandidatePageSize(pageSize);
+	                              }}
+	                            />
+	                          ) : null}
+	                        </div>
                       ) : (
                         <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={selectedStoreId ? "当前门店暂无候选审批单" : "请先选择门店"} />
                       )}
@@ -974,12 +1026,12 @@ export default function FinanceReconciliationPage() {
                   </Card>
                 </Splitter.Panel>
               </Splitter>
-            ),
+            ) : null,
           },
           {
             key: "records",
             label: `已对账记录 (${records.length})`,
-            children: (
+            children: activeTabKey === "records" ? (
               <Card title="已对账记录" className="data-table-card reconciliation-record-card">
                 <Table
                   rowKey={(record) => record.match.id}
@@ -1000,7 +1052,7 @@ export default function FinanceReconciliationPage() {
                   sticky
                 />
               </Card>
-            ),
+            ) : null,
           },
         ]}
       />

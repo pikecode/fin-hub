@@ -7,8 +7,6 @@ import type { DatabaseBackupStatus, DingTalkConfig, SystemReadinessCheck, System
 import { AppShell } from "../components/AppShell";
 import { apiClient } from "../lib/api";
 
-const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
-
 export default function SettingsPage() {
   const [config, setConfig] = useState<DingTalkConfig | null>(null);
   const [backupStatus, setBackupStatus] = useState<DatabaseBackupStatus | null>(null);
@@ -115,7 +113,7 @@ export default function SettingsPage() {
       ) : null}
       <Card title="运行配置">
         <Descriptions column={1} bordered size="small">
-          <Descriptions.Item label="后台 API 地址">{apiBaseUrl}</Descriptions.Item>
+          <Descriptions.Item label="后台 API 方式">同域 `/api` 代理</Descriptions.Item>
           <Descriptions.Item label="登录方式">后台 Cookie 会话</Descriptions.Item>
           <Descriptions.Item label="股东访问方式">授权码登录，小程序 Bearer Token</Descriptions.Item>
           <Descriptions.Item label="当前环境">

@@ -552,6 +552,7 @@ export interface RevenueBankMatch {
   revenue_start_date: string;
   revenue_end_date: string;
   amount: string;
+  accounting_period?: string | null;
   revenue_record_ids: string[];
   status: MatchStatus;
   confidence?: string | null;
@@ -568,6 +569,7 @@ export interface RevenueMatchCreate {
   revenue_start_date: string;
   revenue_end_date: string;
   amount: string;
+  accounting_period?: string | null;
   revenue_record_ids?: string[];
   confidence?: string | null;
   reason?: string | null;
@@ -577,6 +579,7 @@ export interface RevenueMatchBatchCreate {
   bank_transaction_id: string;
   revenue_record_ids: string[];
   amount: string;
+  accounting_period?: string | null;
   confidence?: string | null;
   reason?: string | null;
 }
@@ -607,6 +610,7 @@ export interface DingTalkAutoSyncSetting {
   sync_departments: boolean;
   sync_templates: boolean;
   sync_approvals: boolean;
+  paused: boolean;
   next_run_at?: string | null;
   last_run_at?: string | null;
   approval_watermark_at?: string | null;
@@ -623,6 +627,7 @@ export interface DingTalkAutoSyncSettingUpdate {
   sync_departments?: boolean;
   sync_templates?: boolean;
   sync_approvals?: boolean;
+  paused?: boolean;
   skip_existing?: boolean;
 }
 
@@ -781,6 +786,23 @@ export interface ApprovalReparseResult {
   reparsed_count: number;
   skipped_count: number;
   created_expense_count: number;
+  job: SyncJob;
+}
+
+export interface ApprovalModifiedResyncRequest {
+  start_at?: string | null;
+  end_at?: string | null;
+  template_id?: string | null;
+  store_id?: string | null;
+  limit?: number;
+  started_by?: string;
+}
+
+export interface ApprovalModifiedResyncResult {
+  processed_count: number;
+  updated_count: number;
+  skipped_count: number;
+  failed_count: number;
   job: SyncJob;
 }
 

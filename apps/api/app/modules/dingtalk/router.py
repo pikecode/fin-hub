@@ -46,6 +46,8 @@ from app.schemas import (
     ApiEnvelope,
     ApprovalInstanceRead,
     ApprovalParsePreview,
+    ApprovalModifiedResyncRequest,
+    ApprovalModifiedResyncResult,
     ApprovalReparseRequest,
     ApprovalReparseResult,
     ApprovalTemplateCreate,
@@ -94,7 +96,7 @@ APPROVAL_SYNC_MAX_WINDOW_DAYS = 120
 APPROVAL_SYNC_MAX_LOOKBACK_DAYS = 365
 APPROVAL_SYNC_OVERLAP = timedelta(minutes=10)
 COMPLETED_APPROVAL_STATUSES = {"agree", "approved", "completed", "finish", "success"}
-RESYNC_PROCESSING_STATUSES = {"unparsed", "sync_conflict", "pending_classification"}
+RESYNC_PROCESSING_STATUSES = {"unparsed", "sync_conflict", "pending_classification", "pending_match"}
 
 
 class ApprovalSyncCanceled(Exception):
@@ -1182,6 +1184,9 @@ def save_sample_approval_instance(
     instance.approval_status = parse_text(raw_instance.get("result") or raw_instance.get("status")) or "unknown"
     instance.submit_at = DingTalkClient.parse_time(raw_instance.get("create_time") or raw_instance.get("createTime"))
     instance.approved_at = DingTalkClient.parse_time(raw_instance.get("finish_time") or raw_instance.get("finishTime"))
+    instance.dingtalk_modified_at = DingTalkClient.parse_time(
+        raw_instance.get("modify_time") or raw_instance.get("modifyTime")
+    ) or instance.approved_at or instance.submit_at
     instance.raw_payload = json.dumps(raw_instance, ensure_ascii=False)
     session.flush()
     return instance
@@ -2025,6 +2030,111 @@ def reparse_template_instances(
             reparsed_count=reparsed_count,
             skipped_count=skipped_count,
             created_expense_count=created_expense_count,
+            job=job,
+        )
+    )
+
+
+@router.post(
+    "/approval-resync-by-modified",
+    response_model=ApiEnvelope[ApprovalModifiedResyncResult],
+    status_code=201,
+)
+def resync_approvals_by_modified_time(
+    payload: ApprovalModifiedResyncRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_permission("dingtalk.manage")),
+) -> ApiEnvelope[ApprovalModifiedResyncResult]:
+    query = select(ApprovalInstance).where(ApprovalInstance.dingtalk_modified_at.is_not(None))
+    if payload.start_at:
+        query = query.where(ApprovalInstance.dingtalk_modified_at >= payload.start_at)
+    if payload.end_at:
+        query = query.where(ApprovalInstance.dingtalk_modified_at < payload.end_at)
+    if payload.template_id:
+        query = query.where(ApprovalInstance.template_id == payload.template_id)
+    if payload.store_id:
+        query = query.where(ApprovalInstance.store_id == payload.store_id)
+    instances = list(
+        session.scalars(
+            query.order_by(
+                ApprovalInstance.dingtalk_modified_at.desc().nullslast(),
+                ApprovalInstance.updated_at.desc(),
+            ).limit(payload.limit)
+        )
+    )
+    if not instances:
+        raise HTTPException(status_code=404, detail="No approvals found in modified-time window")
+
+    job = SyncJob(
+        job_type="dingtalk_approval_modified_resync",
+        status=SyncJobStatus.RUNNING.value,
+        started_by=audit_actor(current_user, payload.started_by),
+        started_at=utc_now(),
+        request_start_at=payload.start_at,
+        request_end_at=payload.end_at,
+    )
+    session.add(job)
+    session.flush()
+
+    processed_count = 0
+    updated_count = 0
+    skipped_count = 0
+    failed_count = 0
+    config = get_or_create_config(session)
+    client = dingtalk_client(config)
+    for instance in instances:
+        processed_count += 1
+        template = session.get(ApprovalTemplate, instance.template_id)
+        if template is None:
+            skipped_count += 1
+            continue
+        try:
+            raw_instance = client.get_process_instance(instance.dingtalk_instance_id)
+            raw_instance.setdefault("process_instance_id", instance.dingtalk_instance_id)
+            if sync_real_instance(session, template, job, raw_instance):
+                updated_count += 1
+            else:
+                skipped_count += 1
+        except DingTalkClientError as exc:
+            failed_count += 1
+            job.error_message = str(exc)
+        except Exception as exc:
+            failed_count += 1
+            job.error_message = str(exc)
+
+    job.status = SyncJobStatus.SUCCEEDED.value if failed_count == 0 else SyncJobStatus.FAILED.value
+    job.finished_at = utc_now()
+    job.processed_count = processed_count
+    job.success_count = updated_count
+    job.failed_count = failed_count
+    job.raw_summary = json.dumps(
+        {
+            "template_id": payload.template_id,
+            "store_id": payload.store_id,
+            "processed_count": processed_count,
+            "updated_count": updated_count,
+            "skipped_count": skipped_count,
+            "failed_count": failed_count,
+        },
+        ensure_ascii=False,
+    )
+    write_audit_log(
+        session,
+        actor=audit_actor(current_user, payload.started_by),
+        action="dingtalk.approval_modified_resync",
+        resource_type="sync_job",
+        resource_id=job.id,
+        summary=f"按修改时间重刷审批：{updated_count} 条",
+        metadata={"template_id": payload.template_id, "store_id": payload.store_id},
+    )
+    session.commit()
+    session.refresh(job)
+    return ApiEnvelope(
+        data=ApprovalModifiedResyncResult(
+            processed_count=processed_count,
+            updated_count=updated_count,
+            skipped_count=skipped_count,
+            failed_count=failed_count,
             job=job,
         )
     )
@@ -2888,11 +2998,11 @@ def sync_real_instance(
     instance.approval_status = parse_text(raw_instance.get("result") or raw_instance.get("status")) or "unknown"
     instance.submit_at = DingTalkClient.parse_time(raw_instance.get("create_time") or raw_instance.get("createTime"))
     instance.approved_at = DingTalkClient.parse_time(raw_instance.get("finish_time") or raw_instance.get("finishTime"))
-    instance.raw_payload = json.dumps(raw_instance, ensure_ascii=False)
-    instance.synced_job_id = job.id
     instance.dingtalk_modified_at = DingTalkClient.parse_time(
         raw_instance.get("modify_time") or raw_instance.get("modifyTime")
-    )
+    ) or instance.approved_at or instance.submit_at
+    instance.raw_payload = json.dumps(raw_instance, ensure_ascii=False)
+    instance.synced_job_id = job.id
     session.flush()
     create_dingtalk_attachment_placeholders(session, "approval_instance", instance.id, voucher_items)
 
@@ -3661,6 +3771,7 @@ def run_due_auto_sync_jobs(session: Session) -> list[DingTalkAutoSyncRunResult]:
         session.scalars(
             select(DingTalkAutoSyncSetting).where(
                 DingTalkAutoSyncSetting.enabled.is_(True),
+                DingTalkAutoSyncSetting.paused.is_(False),
                 (DingTalkAutoSyncSetting.next_run_at.is_(None))
                 | (DingTalkAutoSyncSetting.next_run_at <= now),
             )
@@ -3686,6 +3797,8 @@ def run_auto_sync_now(
     current_user: User = Depends(require_permission("dingtalk.manage")),
 ) -> ApiEnvelope[DingTalkAutoSyncRunResult]:
     setting = get_or_create_auto_sync_setting(session)
+    if setting.paused:
+        raise HTTPException(status_code=409, detail="自动同步已暂停，请先恢复后再执行自动同步")
     return ApiEnvelope(data=execute_auto_sync(session, setting, started_by=audit_actor(current_user)))
 
 
@@ -4155,6 +4268,8 @@ def list_approval_instances(
     template_id: str | None = None,
     store_id: str | None = None,
     ledger_period: str | None = None,
+    processing_status: str | None = None,
+    include_matched: bool = False,
     page: int = 1,
     page_size: int = 50,
     session: Session = Depends(get_session),
@@ -4179,6 +4294,10 @@ def list_approval_instances(
             ApprovalInstance.submit_at >= period_start,
             ApprovalInstance.submit_at < next_month,
         )
+    if processing_status:
+        query = query.where(ApprovalInstance.processing_status == processing_status)
+    elif not include_matched:
+        query = query.where(ApprovalInstance.processing_status != "matched")
     items, total = paginate(session, query, page, page_size)
     stats_by_approval_id = approval_expense_stats_map(session, [item.id for item in items])
     return ApiEnvelope(

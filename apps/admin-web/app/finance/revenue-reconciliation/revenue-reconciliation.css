@@ -1,0 +1,328 @@
+/* 收入对账页面 UI/UX 优化 */
+
+/* ========== 统计数据卡片优化 ========== */
+.revenue-match-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
+  padding: 16px;
+  background: linear-gradient(135deg, #f5f7fa 0%, #f0f2f5 100%);
+  border-radius: 8px;
+  border: 1px solid #e8eaed;
+}
+
+.revenue-match-summary .ant-statistic {
+  padding: 12px;
+  background: white;
+  border-radius: 6px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+  transition: all 0.3s ease;
+}
+
+.revenue-match-summary .ant-statistic:hover {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  transform: translateY(-2px);
+}
+
+.revenue-match-summary .ant-statistic-title {
+  color: #666;
+  font-size: 12px;
+  font-weight: 500;
+  margin-bottom: 8px;
+}
+
+/* ========== 银行交易卡片优化 ========== */
+.bank-transaction-card {
+  position: relative;
+  padding: 16px;
+  border: 2px solid #d9d9d9;
+  border-radius: 8px;
+  background: white;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  display: block;
+  width: 100%;
+  text-align: left;
+  margin-bottom: 12px;
+}
+
+.bank-transaction-card:hover:not(.is-disabled) {
+  border-color: #1890ff;
+  box-shadow: 0 2px 8px rgba(24, 144, 255, 0.15);
+  background: #fafbfc;
+}
+
+.bank-transaction-card.is-selected {
+  border-color: #52c41a;
+  border-width: 2px;
+  background: #f6ffed;
+  box-shadow: 0 2px 8px rgba(82, 196, 26, 0.2);
+}
+
+.bank-transaction-card.is-disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  background: #f5f5f5;
+  border-color: #e8e8e8;
+}
+
+.bank-transaction-card__meta {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin: 8px 0;
+}
+
+.bank-transaction-card__amount {
+  font-size: 18px;
+  font-weight: 600;
+  color: #1890ff;
+  margin: 8px 0;
+}
+
+/* ========== 收入记录卡片优化 ========== */
+.revenue-candidate-card {
+  position: relative;
+  padding: 14px;
+  border: 2px solid #d9d9d9;
+  border-radius: 6px;
+  background: white;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  display: block;
+  width: 100%;
+  text-align: left;
+  margin-bottom: 8px;
+}
+
+.revenue-candidate-card:hover:not(.is-disabled) {
+  border-color: #1890ff;
+  box-shadow: 0 2px 8px rgba(24, 144, 255, 0.12);
+  background: #fafbfc;
+}
+
+.revenue-candidate-card.is-selected {
+  border-color: #52c41a;
+  border-width: 2px;
+  background: #f6ffed;
+  box-shadow: 0 2px 6px rgba(82, 196, 26, 0.15);
+}
+
+.revenue-candidate-card.is-disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  background: #fafafa;
+}
+
+.revenue-candidate-card__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.revenue-candidate-card__amount {
+  font-size: 16px;
+  font-weight: 600;
+  color: #1890ff;
+}
+
+/* ========== 操作指引优化 ========== */
+.revenue-reconciliation-guide {
+  background: #e6f7ff;
+  border-left: 4px solid #1890ff;
+  padding: 12px 16px;
+  border-radius: 4px;
+  margin-bottom: 16px;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.revenue-reconciliation-guide__icon {
+  font-size: 20px;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.revenue-reconciliation-guide__content {
+  flex: 1;
+  font-size: 13px;
+  color: #0050b3;
+}
+
+.revenue-reconciliation-guide__steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.revenue-reconciliation-guide__step {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  background: rgba(24, 144, 255, 0.1);
+  border-radius: 3px;
+  font-size: 12px;
+  color: #0050b3;
+}
+
+/* ========== 进度展示优化 ========== */
+.revenue-progress-indicator {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: white;
+  border-radius: 4px;
+  margin-bottom: 12px;
+}
+
+.revenue-progress-indicator__item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+}
+
+.revenue-progress-indicator__badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: #f0f0f0;
+  font-weight: 600;
+  font-size: 11px;
+}
+
+.revenue-progress-indicator__badge.success {
+  background: #f6ffed;
+  color: #52c41a;
+}
+
+.revenue-progress-indicator__badge.warning {
+  background: #fff7e6;
+  color: #faad14;
+}
+
+.revenue-progress-indicator__badge.error {
+  background: #fff1f0;
+  color: #ff4d4f;
+}
+
+/* ========== 响应式布局优化 ========== */
+@media (max-width: 1024px) {
+  .revenue-match-summary {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 768px) {
+  .revenue-match-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .bank-transaction-card,
+  .revenue-candidate-card {
+    padding: 12px;
+    margin-bottom: 8px;
+  }
+
+  .bank-transaction-card__meta,
+  .revenue-candidate-card__header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .revenue-reconciliation-guide {
+    flex-direction: column;
+    padding: 12px;
+  }
+
+  .revenue-reconciliation-guide__steps {
+    flex-direction: column;
+  }
+}
+
+/* ========== 按钮组优化 ========== */
+.revenue-reconciliation-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
+.revenue-reconciliation-actions .ant-btn {
+  flex: 1;
+  min-width: 100px;
+}
+
+@media (max-width: 640px) {
+  .revenue-reconciliation-actions {
+    flex-direction: column;
+  }
+
+  .revenue-reconciliation-actions .ant-btn {
+    width: 100%;
+  }
+}
+
+/* ========== 动画效果 ========== */
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.bank-transaction-card,
+.revenue-candidate-card {
+  animation: slideIn 0.2s ease-out;
+}
+
+/* ========== 焦点态优化 ========== */
+.bank-transaction-card:focus,
+.revenue-candidate-card:focus {
+  outline: 2px solid #1890ff;
+  outline-offset: 2px;
+}
+
+/* ========== 深色模式支持 ========== */
+@media (prefers-color-scheme: dark) {
+  .revenue-match-summary {
+    background: linear-gradient(135deg, #1f1f1f 0%, #262626 100%);
+    border-color: #434343;
+  }
+
+  .revenue-match-summary .ant-statistic {
+    background: #262626;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
+  }
+
+  .bank-transaction-card,
+  .revenue-candidate-card {
+    background: #262626;
+    border-color: #434343;
+  }
+
+  .bank-transaction-card:hover:not(.is-disabled),
+  .revenue-candidate-card:hover:not(.is-disabled) {
+    background: #2f2f2f;
+  }
+
+  .revenue-reconciliation-guide {
+    background: rgba(24, 144, 255, 0.1);
+  }
+}

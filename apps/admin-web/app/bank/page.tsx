@@ -209,9 +209,8 @@ export default function BankPage() {
   const initialFilters = useMemo<BankFilterValues>(
     () => ({
       store_id: queryStoreId,
-      ledger_period: queryLedgerPeriod,
     }),
-    [queryStoreId, queryLedgerPeriod],
+    [queryStoreId],
   );
 
   const [stores, setStores] = useState<Store[]>([]);
@@ -251,7 +250,6 @@ export default function BankPage() {
   function buildFilterParams(values?: BankFilterValues) {
     const params = new URLSearchParams({ page_size: "500" });
     if (values?.store_id) params.set("store_id", values.store_id);
-    if (values?.ledger_period) params.set("ledger_period", values.ledger_period);
     if (values?.direction) params.set("direction", values.direction);
     if (values?.unmatched_only) params.set("unmatched_only", "true");
     return `?${params.toString()}`;
@@ -847,6 +845,12 @@ export default function BankPage() {
             dataSource={transactions}
             loading={isLoading}
             exportFileName="银行流水"
+            pagination={{
+              defaultPageSize: 20,
+              showSizeChanger: true,
+              pageSizeOptions: [10, 20, 50, 100],
+              showTotal: (total, range) => `${range[0]}-${range[1]} / 共 ${total} 条`,
+            }}
             batchActions={[
               {
                 key: "delete",

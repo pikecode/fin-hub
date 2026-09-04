@@ -17,8 +17,6 @@ ENV COREPACK_NPM_REGISTRY=https://registry.npmmirror.com \
     npm_config_registry=https://registry.npmmirror.com
 RUN corepack enable
 RUN pnpm config set registry https://registry.npmmirror.com
-ARG NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
-ENV NEXT_PUBLIC_API_BASE_URL=$NEXT_PUBLIC_API_BASE_URL
 ENV NEXT_TELEMETRY_DISABLED=1
 COPY --from=deps /repo/node_modules ./node_modules
 COPY --from=deps /repo/packages ./packages
