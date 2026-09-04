@@ -788,7 +788,7 @@ export default function FinanceReconciliationPage() {
   }
 
   return (
-    <AppShell title="财务对账">
+    <AppShell title={currentStore?.name ? `${currentStore.name} · 审批单对账` : "审批单对账"} kicker={initialLedgerPeriod ? `账期：${initialLedgerPeriod}` : undefined}>
       {initialStoreId ? (
         <StoreLedgerWorkspaceNav
           storeId={selectedStoreId ?? initialStoreId}

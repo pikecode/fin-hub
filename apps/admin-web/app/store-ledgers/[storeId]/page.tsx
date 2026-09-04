@@ -158,7 +158,7 @@ export default function StoreLedgerWorkspacePage() {
 
   return (
     <AppShell
-      title={storeName}
+      title={`${storeName} · 总览`}
       kicker={`账期: ${period}`}
     >
       <Space direction="vertical" size={16} style={{ width: "100%", display: "flex" }}>

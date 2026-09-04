@@ -94,6 +94,24 @@ function normalizeEntryDirection(value: string) {
   return "";
 }
 
+function bankDirectionCell(direction: "income" | "expense", target: "income" | "expense") {
+  if (direction !== target) return <span className="bank-direction-placeholder">-</span>;
+  return <StatusBadge status={direction === "income" ? "income" : "expense"} text={direction === "income" ? "收入" : "支出"} size="small" />;
+}
+
+function bankDirectionToggle(
+  value: "收入" | "支出",
+  target: "收入" | "支出",
+  onClick: () => void,
+) {
+  const active = value === target;
+  return (
+    <button type="button" className={`bank-direction-toggle${active ? " is-active" : ""}`} onClick={onClick}>
+      {active ? <StatusBadge status={target === "收入" ? "income" : "expense"} text={target} size="small" /> : <span className="bank-direction-placeholder">-</span>}
+    </button>
+  );
+}
+
 function normalizeEntryOccurredAt(value: string) {
   const text = value.trim();
   if (!text) return "";
@@ -665,24 +683,32 @@ export default function BankPage() {
     },
     {
       title: "类型",
-      dataIndex: "direction",
-      width: 100,
-      render: (value, _, index) => (
-        <Select
-          value={value}
-          size="small"
-          style={{ width: "100%" }}
-          options={[
-            { label: "收入", value: "收入" },
-            { label: "支出", value: "支出" },
-          ]}
-          onChange={(val) => {
-            const updated = [...entryRows];
-            updated[index].direction = val;
-            setEntryRows(updated);
-          }}
-        />
-      ),
+      children: [
+        {
+          title: "收入",
+          dataIndex: "direction",
+          width: 80,
+          align: "center",
+          render: (value, _, index) =>
+            bankDirectionToggle(value, "收入", () => {
+              const updated = [...entryRows];
+              updated[index].direction = "收入";
+              setEntryRows(updated);
+            }),
+        },
+        {
+          title: "支出",
+          dataIndex: "direction",
+          width: 80,
+          align: "center",
+          render: (value, _, index) =>
+            bankDirectionToggle(value, "支出", () => {
+              const updated = [...entryRows];
+              updated[index].direction = "支出";
+              setEntryRows(updated);
+            }),
+        },
+      ],
     },
     {
       title: "对方户名",
@@ -792,9 +818,22 @@ export default function BankPage() {
     { title: "发生日期", dataIndex: "occurred_at", width: 120, render: (v) => v?.slice(0, 10) || "-" },
     {
       title: "类型",
-      dataIndex: "direction",
-      width: 80,
-      render: (v) => (v === "income" ? <StatusBadge status="income" text="收入" /> : <StatusBadge status="expense" text="支出" />),
+      children: [
+        {
+          title: "收入",
+          dataIndex: "direction",
+          width: 80,
+          align: "center",
+          render: (v) => (v === "income" ? <StatusBadge status="income" text="收入" size="small" /> : <span className="bank-direction-placeholder">-</span>),
+        },
+        {
+          title: "支出",
+          dataIndex: "direction",
+          width: 80,
+          align: "center",
+          render: (v) => (v === "expense" ? <StatusBadge status="expense" text="支出" size="small" /> : <span className="bank-direction-placeholder">-</span>),
+        },
+      ],
     },
     { title: "金额", dataIndex: "amount", width: 120, align: "right", render: (v) => <MoneyDisplay value={v || 0} /> },
     { title: "备注", dataIndex: "summary", ellipsis: true },
@@ -808,7 +847,7 @@ export default function BankPage() {
   ];
 
   return (
-    <AppShell title="银行流水">
+    <AppShell title={currentStore?.name ? `${currentStore.name} · 银行流水` : "银行流水"} kicker={queryLedgerPeriod ? `账期：${queryLedgerPeriod}` : undefined}>
       <Space direction="vertical" size={16} style={{ width: "100%", display: "flex" }} className="maintenance-page">
         {queryStoreId && queryLedgerPeriod && (
           <StoreLedgerWorkspaceNav
@@ -945,7 +984,7 @@ export default function BankPage() {
               pagination={false}
               dataSource={entryRows}
               columns={entryColumns}
-              scroll={{ x: 1120, y: 400 }}
+              scroll={{ x: 1120 }}
             />
             <Typography.Text type="secondary">可以从 Excel 复制整块数据后粘贴。格式：日期 | 类型 | 对方户名 | 对方账号 | 金额 | 备注</Typography.Text>
           </Space>

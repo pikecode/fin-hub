@@ -502,7 +502,7 @@ export default function RevenuePage() {
   }
 
   return (
-    <AppShell title="营业收入">
+    <AppShell title={currentStore?.name ? `${currentStore.name} · 营业收入` : "营业收入"} kicker={queryLedgerPeriod ? `账期：${queryLedgerPeriod}` : undefined}>
       <Space direction="vertical" size={16} style={{ width: "100%", display: "flex" }} className="maintenance-page">
         {queryStoreId && queryLedgerPeriod && (
           <StoreLedgerWorkspaceNav

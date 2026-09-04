@@ -7,6 +7,8 @@ type StatusType =
   | "partial_paid"
   | "matched"
   | "unmatched"
+  | "income"
+  | "expense"
   | "open"
   | "closed"
   | "pending"
@@ -46,6 +48,18 @@ const statusConfig: Record<
     color: "#0f766e",
     backgroundColor: "#ccfbf1",
     borderColor: "#5eead4",
+  },
+  income: {
+    label: "收入",
+    color: "#065f46",
+    backgroundColor: "#d1fae5",
+    borderColor: "#6ee7b7",
+  },
+  expense: {
+    label: "支出",
+    color: "#9a3412",
+    backgroundColor: "#ffedd5",
+    borderColor: "#fdba74",
   },
   unmatched: {
     label: "未匹配",

@@ -633,8 +633,8 @@ export default function StoreLedgerApprovalsPage() {
   ];
   return (
     <AppShell
-      title={`${store?.name ?? "门店"}审批单管理`}
-      kicker={selectedPeriod ? `当前账期：${selectedPeriod}，列表按门店展示全部审批单` : "按门店展示全部审批单"}
+      title={store?.name ? `${store.name} · 审批单管理` : "审批单管理"}
+      kicker={selectedPeriod ? `账期：${selectedPeriod}` : "按门店展示全部审批单"}
     >
       <StoreLedgerWorkspaceNav
         storeId={storeId}

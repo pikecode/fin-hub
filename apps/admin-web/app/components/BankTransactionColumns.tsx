@@ -1,10 +1,10 @@
-import type { ColumnType } from "antd/es/table";
+import type { ColumnsType } from "antd/es/table";
 import { Tag } from "antd";
 import type { BankTransaction } from "@fin-hub/shared-types";
 import { MoneyDisplay } from "./MoneyDisplay";
 import { StatusBadge } from "./StatusBadge";
 
-export type BankTransactionViewColumn = ColumnType<BankTransaction> & { key: string };
+export type BankTransactionViewColumn = ColumnsType<BankTransaction>[number] & { key: string };
 
 function bankMatchStatus(transaction: BankTransaction) {
   const amount = Number(transaction.amount || 0);
@@ -12,6 +12,11 @@ function bankMatchStatus(transaction: BankTransaction) {
   if (matchedAmount <= 0) return { label: "未匹配", color: "default" as const };
   if (matchedAmount >= amount) return { label: "已匹配", color: "success" as const };
   return { label: "部分匹配", color: "orange" as const };
+}
+
+function bankDirectionCell(direction: "income" | "expense", target: "income" | "expense") {
+  if (direction !== target) return "-";
+  return <StatusBadge status={direction === "income" ? "income" : "expense"} text={direction === "income" ? "收入" : "支出"} size="small" />;
 }
 
 export function getBankTransactionViewColumns(): BankTransactionViewColumn[] {
@@ -26,11 +31,24 @@ export function getBankTransactionViewColumns(): BankTransactionViewColumn[] {
     {
       key: "direction",
       title: "类型",
-      dataIndex: "direction",
-      width: 80,
-      render: (value: "income" | "expense") => (
-        <StatusBadge status={value === "income" ? "income" : "expense"} text={value === "income" ? "收入" : "支出"} />
-      ),
+      children: [
+        {
+          key: "direction_income",
+          title: "收入",
+          dataIndex: "direction",
+          width: 88,
+          align: "center",
+          render: (value: "income" | "expense") => bankDirectionCell(value, "income"),
+        },
+        {
+          key: "direction_expense",
+          title: "支出",
+          dataIndex: "direction",
+          width: 88,
+          align: "center",
+          render: (value: "income" | "expense") => bankDirectionCell(value, "expense"),
+        },
+      ],
     },
     {
       key: "counterparty_name",

@@ -1479,6 +1479,33 @@ select,
   color: #0f766e;
 }
 
+.bank-direction-placeholder {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 34px;
+  color: #94a3b8;
+}
+
+.bank-direction-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 34px;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+.bank-direction-toggle:hover {
+  transform: translateY(-1px);
+}
+
+.bank-direction-toggle.is-active {
+  cursor: default;
+}
+
 .app-header-user {
   display: flex;
   align-items: center;

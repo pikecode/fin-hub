@@ -415,7 +415,7 @@ export default function RevenueReconciliationPage() {
   ];
 
   return (
-    <AppShell title="收入对账">
+    <AppShell title={currentStore?.name ? `${currentStore.name} · 收入对账` : "收入对账"} kicker={initialLedgerPeriod ? `账期：${initialLedgerPeriod}` : undefined}>
       {initialStoreId ? (
         <StoreLedgerWorkspaceNav
           storeId={selectedStoreId ?? initialStoreId}
