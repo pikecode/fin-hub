@@ -78,6 +78,10 @@ function formatDateTime(value?: string | null) {
   return value ? dayjs(value).format("YYYY-MM-DD HH:mm") : "-";
 }
 
+function defaultLedgerPeriod() {
+  return dayjs().subtract(1, "month").format("YYYY-MM");
+}
+
 function approvalNoText(record: ApprovalLike) {
   return record.approval_instance?.approval_no || record.approval_instance?.dingtalk_instance_id || "-";
 }
@@ -248,6 +252,9 @@ export default function FinanceReconciliationPage() {
   const [filterForm] = Form.useForm<CandidateFilters>();
   const [confirmForm] = Form.useForm<ConfirmValues>();
   const [editForm] = Form.useForm<EditValues>();
+  // 预加载缓存：transactionId -> candidates
+  const [candidatesCache, setCandidatesCache] = useState<Map<string, ReconciliationExpenseCandidate[]>>(new Map());
+  const [preloadingTransactionIds, setPreloadingTransactionIds] = useState<Set<string>>(new Set());
 
   const storesById = useMemo(() => new Map(stores.map((store) => [store.id, store])), [stores]);
   const currentStore = selectedStoreId ? storesById.get(selectedStoreId) : undefined;
@@ -282,7 +289,8 @@ export default function FinanceReconciliationPage() {
   );
   const bankRemaining = selectedTransaction ? remainingAmount(selectedTransaction) : 0;
   const defaultMatchAmount = selectedCandidate ? Math.min(bankRemaining, Number(selectedCandidate.remaining_amount || 0)) : bankRemaining;
-  const selectedLedgerPeriod = initialLedgerPeriod;
+  const fallbackLedgerPeriod = useMemo(() => defaultLedgerPeriod(), []);
+  const selectedLedgerPeriod = initialLedgerPeriod ?? fallbackLedgerPeriod;
   const detailPayload = useMemo(() => parseApprovalPayload(detailRecord?.approval_instance), [detailRecord]);
   const detailFields = useMemo<DingTalkField[]>(() => {
     const fields = detailPayload?.form_component_values ?? detailPayload?.formComponentValues;
@@ -379,6 +387,9 @@ export default function FinanceReconciliationPage() {
   async function loadStoreWorkspace(storeId: string, transaction?: BankTransaction | null) {
     setIsLoading(true);
     setErrorMessage(null);
+    // 清空预加载缓存
+    setCandidatesCache(new Map());
+    setPreloadingTransactionIds(new Set());
     try {
       const bankParams = new URLSearchParams({ store_id: storeId, direction: "expense", page_size: "200" });
       const recordParams = new URLSearchParams({ store_id: storeId, page_size: "100" });
@@ -407,6 +418,19 @@ export default function FinanceReconciliationPage() {
   }
 
   async function loadCandidates(transaction: BankTransaction | null, storeId: string, filters?: CandidateFilters) {
+    // 如果有缓存，直接使用
+    if (transaction && candidatesCache.has(transaction.id)) {
+      const cached = candidatesCache.get(transaction.id);
+      if (cached) {
+        setCandidates(cached);
+        setCandidatePage(1);
+        setSelectedCandidateId(undefined);
+        setIsApprovalSearchActive(Boolean(filters?.approval_no?.trim() || initialApprovalNo?.trim()));
+        setIsCandidateLoading(false);
+        return;
+      }
+    }
+
     setIsCandidateLoading(true);
     setErrorMessage(null);
     const params = new URLSearchParams({
@@ -426,6 +450,11 @@ export default function FinanceReconciliationPage() {
       setCandidatePage(1);
       setSelectedCandidateId(undefined);
       setIsApprovalSearchActive(Boolean(approvalSearch));
+
+      // 缓存结果
+      if (transaction && !approvalSearch && !filters?.template_id) {
+        setCandidatesCache(prev => new Map(prev).set(transaction.id, result.candidates));
+      }
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "无法加载审批单候选");
     } finally {
@@ -480,6 +509,59 @@ export default function FinanceReconciliationPage() {
     setSelectedTransaction(transaction);
     setCandidatePage(1);
     await loadCandidates(transaction, selectedStoreId, filterForm.getFieldsValue());
+
+    // 🚀 预加载下两笔流水的候选匹配
+    preloadNextTransactions(transaction);
+  }
+
+  // 预加载函数：加载指定流水之后的两笔待匹配流水
+  function preloadNextTransactions(currentTransaction: BankTransaction) {
+    if (!selectedStoreId) return;
+
+    // 找到当前流水的索引
+    const currentIndex = transactions.findIndex(t => t.id === currentTransaction.id);
+    if (currentIndex === -1) return;
+
+    // 获取后续的两笔待匹配流水（剩余金额 > 0）
+    const nextTransactions = transactions
+      .slice(currentIndex + 1)
+      .filter(t => remainingAmount(t) > 0)
+      .slice(0, 2);
+
+    // 异步预加载
+    nextTransactions.forEach(async (transaction) => {
+      // 跳过已缓存或正在加载的
+      if (candidatesCache.has(transaction.id) || preloadingTransactionIds.has(transaction.id)) {
+        return;
+      }
+
+      // 标记为正在预加载
+      setPreloadingTransactionIds(prev => new Set(prev).add(transaction.id));
+
+      try {
+        const params = new URLSearchParams({
+          store_id: selectedStoreId,
+          approval_only: "true",
+          page_size: "100",
+          bank_transaction_id: transaction.id,
+        });
+
+        const result = await apiClient.matches.reconciliationCandidates(`?${params.toString()}`);
+
+        // 缓存结果
+        setCandidatesCache(prev => new Map(prev).set(transaction.id, result.candidates));
+      } catch (error) {
+        // 静默失败，不影响用户操作
+        console.warn(`预加载流水 ${transaction.id} 的候选匹配失败:`, error);
+      } finally {
+        // 移除预加载标记
+        setPreloadingTransactionIds(prev => {
+          const next = new Set(prev);
+          next.delete(transaction.id);
+          return next;
+        });
+      }
+    });
   }
 
   async function fetchApprovalExpenseItems(approvalId: string) {
@@ -554,7 +636,7 @@ export default function FinanceReconciliationPage() {
     }
     confirmForm.setFieldsValue({
       amount: defaultMatchAmount.toFixed(2),
-      accounting_month: dayjs(selectedTransaction.ledger_period || selectedTransaction.occurred_at.slice(0, 7)),
+      accounting_month: undefined, // 去掉默认值，用户必须手动选择
       bank_occurred: true,
       category_path: categoryPathForName(selectedCandidate.expense_item.category_l2),
     });
@@ -788,12 +870,12 @@ export default function FinanceReconciliationPage() {
   }
 
   return (
-    <AppShell title={currentStore?.name ? `${currentStore.name} · 审批单对账` : "审批单对账"} kicker={initialLedgerPeriod ? `账期：${initialLedgerPeriod}` : undefined}>
+    <AppShell title={currentStore?.name ? `${currentStore.name} · 审批单对账` : "审批单对账"} kicker={`账期：${selectedLedgerPeriod}`}>
       {initialStoreId ? (
         <StoreLedgerWorkspaceNav
           storeId={selectedStoreId ?? initialStoreId}
           storeName={currentStore?.name}
-          period={initialLedgerPeriod}
+          period={selectedLedgerPeriod}
           statusLabel={currentStore?.status === "active" ? "启用门店" : currentStore ? "停用门店" : undefined}
           activeKey="matching"
         />
@@ -865,8 +947,13 @@ export default function FinanceReconciliationPage() {
 	                                  {transaction.ledger_period ? <Tag>{transaction.ledger_period}</Tag> : null}
 	                                  {isFullyMatched ? <Tag color="green">已匹配</Tag> : <Tag>待匹配</Tag>}
 	                                </span>
-	                                <Typography.Text className="bank-transaction-card__summary" ellipsis>
-	                                  {transaction.summary || transaction.counterparty_name || "无摘要"}
+                                {transaction.counterparty_name && (
+                                  <Typography.Text className="bank-transaction-card__counterparty" style={{ fontSize: 13, color: '#1890ff', marginTop: 4 }}>
+                                    对方户名：{transaction.counterparty_name}
+                                  </Typography.Text>
+                                )}
+	                                <Typography.Text className="bank-transaction-card__summary" ellipsis title={transaction.summary || "无摘要"}>
+	                                  {transaction.summary ? `摘要：${transaction.summary}` : "无摘要"}
 	                                </Typography.Text>
                                 {transaction.bank_serial_no ? (
                                   <span className="bank-transaction-card__serial">流水号 {transaction.bank_serial_no}</span>
@@ -1137,11 +1224,11 @@ export default function FinanceReconciliationPage() {
               />
             </Spin>
           </Card>
-          <Form.Item name="accounting_month" label="入账月份" rules={[{ required: true }]}>
-            <DatePicker picker="month" style={{ width: "100%" }} />
+          <Form.Item name="accounting_month" label="入账月份" rules={[{ required: true, message: "请选择入账月份" }]}>
+            <DatePicker picker="month" placeholder="请选择入账月份" style={{ width: "100%" }} />
           </Form.Item>
           <Form.Item name="amount" label="匹配金额" rules={[{ required: true, message: "请输入匹配金额" }]}>
-            <Input />
+            <Input disabled />
           </Form.Item>
           <Form.Item name="category_path" label="审批明细费用分类" rules={[{ required: true, message: "请选择费用分类" }]}>
             <Cascader

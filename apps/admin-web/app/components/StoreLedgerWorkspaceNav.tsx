@@ -83,6 +83,7 @@ export function StoreLedgerWorkspaceNav({
     () => stores.map((store) => ({ label: store.name, value: store.id })),
     [stores],
   );
+  const canChangePeriod = activeKey !== "bank" && activeKey !== "matching" && activeKey !== "revenueMatching";
 
   useEffect(() => {
     let ignore = false;
@@ -128,7 +129,7 @@ export function StoreLedgerWorkspaceNav({
           </Space>
         </div>
         <Space wrap>
-          {period || periodOptions.length ? (
+          {canChangePeriod && (period || periodOptions.length) ? (
             <Select
               value={period}
               placeholder="选择账期"

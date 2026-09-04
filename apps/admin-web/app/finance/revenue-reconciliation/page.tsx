@@ -1,6 +1,6 @@
 "use client";
 
-import { Alert, Button, Card, Checkbox, DatePicker, Empty, Input, Modal, Popconfirm, Select, Space, Splitter, Statistic, Table, Tabs, Tag, Typography, message } from "antd";
+import { Alert, Button, Card, DatePicker, Empty, Modal, Popconfirm, Select, Space, Statistic, Table, Tabs, Tag, Typography, message } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import dayjs from "dayjs";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -41,7 +41,21 @@ function formatDateTime(value?: string | null) {
   return value ? dayjs(value).format("YYYY-MM-DD HH:mm") : "-";
 }
 
-const DEFAULT_REVENUE_CHANNEL_NAMES = ["美团团购", "美团点评买单", "抖音团购", "扫码收款", "商场代金券"];
+const DEFAULT_REVENUE_CHANNEL_NAMES = ["美团团购", "美团点评买单", "抖音团购", "扫码收款", "商场代金券", "现金收款", "淘宝团购"];
+
+function defaultLedgerPeriod() {
+  return dayjs().subtract(1, "month").format("YYYY-MM");
+}
+
+function normalizeDateRange(
+  dates: [dayjs.Dayjs | null, dayjs.Dayjs | null] | null,
+): [dayjs.Dayjs | null, dayjs.Dayjs | null] {
+  return dates ?? [null, null];
+}
+
+function isCompleteDateRange(dates: [dayjs.Dayjs | null, dayjs.Dayjs | null] | null) {
+  return Boolean(dates?.[0] && dates?.[1]);
+}
 
 export default function RevenueReconciliationPage() {
   const searchParams = useClientSearchParams();
@@ -60,6 +74,10 @@ export default function RevenueReconciliationPage() {
   const [selectedRecordIds, setSelectedRecordIds] = useState<string[]>([]);
   const [channelFilter, setChannelFilter] = useState<string>();
   const [revenueDateRange, setRevenueDateRange] = useState<[dayjs.Dayjs | null, dayjs.Dayjs | null]>([null, null]);
+  const [isMatchModalOpen, setIsMatchModalOpen] = useState(false);
+  const [matchChannelNames, setMatchChannelNames] = useState<string[]>([]);
+  const [matchDateRange, setMatchDateRange] = useState<[dayjs.Dayjs | null, dayjs.Dayjs | null]>([null, null]);
+  const [matchModalSelectedRecordIds, setMatchModalSelectedRecordIds] = useState<string[]>([]);
   const [isDateRangeModalOpen, setIsDateRangeModalOpen] = useState(false);
   const [dateRangeDraft, setDateRangeDraft] = useState<[dayjs.Dayjs | null, dayjs.Dayjs | null]>([null, null]);
   const [keyword, setKeyword] = useState("");
@@ -74,12 +92,18 @@ export default function RevenueReconciliationPage() {
   const storesById = useMemo(() => new Map(stores.map((store) => [store.id, store])), [stores]);
   const transactionsById = useMemo(() => new Map(transactions.map((transaction) => [transaction.id, transaction])), [transactions]);
   const currentStore = selectedStoreId ? storesById.get(selectedStoreId) : undefined;
-  const ledgerPeriodOptions = Array.from(new Set(ledgers.map((ledger) => ledger.period)))
-    .sort()
-    .reverse()
-    .map((period) => ({ label: period, value: period }));
-  const currentLedger = selectedStoreId && initialLedgerPeriod
-    ? ledgers.find((ledger) => ledger.store_id === selectedStoreId && ledger.period === initialLedgerPeriod)
+  const fallbackLedgerPeriod = useMemo(() => defaultLedgerPeriod(), []);
+  const selectedLedgerPeriod = initialLedgerPeriod ?? fallbackLedgerPeriod;
+  const ledgerPeriodOptions = useMemo(() => {
+    const periods = new Set(ledgers.map((ledger) => ledger.period));
+    if (selectedLedgerPeriod) periods.add(selectedLedgerPeriod);
+    return Array.from(periods)
+      .sort()
+      .reverse()
+      .map((period) => ({ label: period, value: period }));
+  }, [ledgers, selectedLedgerPeriod]);
+  const currentLedger = selectedStoreId && selectedLedgerPeriod
+    ? ledgers.find((ledger) => ledger.store_id === selectedStoreId && ledger.period === selectedLedgerPeriod)
     : undefined;
   const revenueChannelCards = DEFAULT_REVENUE_CHANNEL_NAMES
     .map((channelName) => {
@@ -101,6 +125,26 @@ export default function RevenueReconciliationPage() {
   const bankRemaining = selectedTransaction ? remainingAmount(selectedTransaction) : 0;
   const activeMatches = matches.filter(isActiveMatch);
   const unmatchedRecords = records.filter((record) => !isRevenueRecordCovered(record, activeMatches));
+  const matchModalVisibleRecords = unmatchedRecords
+    .filter((record) => {
+      if (matchChannelNames.length && !matchChannelNames.includes(record.channel)) return false;
+      const [startDate, endDate] = matchDateRange;
+      if (!startDate || !endDate) return false;
+      const value = dayjs(record.revenue_date);
+      return (
+        (value.isAfter(startDate, "day") || value.isSame(startDate, "day")) &&
+        (value.isBefore(endDate, "day") || value.isSame(endDate, "day"))
+      );
+    })
+    .sort((left, right) => left.revenue_date.localeCompare(right.revenue_date));
+  const matchModalSelectedIdSet = new Set(matchModalSelectedRecordIds);
+  const matchModalSelectedRecords = matchModalVisibleRecords.filter((record) => matchModalSelectedIdSet.has(record.id));
+  const matchModalGrossAmount = matchModalSelectedRecords.reduce((sum, record) => sum + moneyValue(record.gross_amount), 0);
+  const matchModalNetAmount = matchModalSelectedRecords.reduce((sum, record) => sum + moneyValue(record.net_amount), 0);
+  const matchModalFeeAmount = matchModalSelectedRecords.reduce((sum, record) => sum + moneyValue(record.fee_amount), 0);
+  const matchModalDifference = bankRemaining - matchModalNetAmount;
+  const matchModalVisibleRecordIds = matchModalVisibleRecords.map((record) => record.id).join("|");
+  const isMatchDateRangeComplete = Boolean(matchDateRange[0] && matchDateRange[1]);
   const filteredRecords = unmatchedRecords
     .filter((record) => !channelFilter || record.channel === channelFilter)
     .filter((record) => {
@@ -126,7 +170,13 @@ export default function RevenueReconciliationPage() {
     : !selectedRecordIds.length
       ? "再选择右侧营业收入"
       : `将确认 ${selectedRecordIds.length} 条，实收合计 ${formatMoney(selectedAmount.toFixed(2))}`;
-
+  const activeChannelOptions = channels
+    .filter((channel) => channel.status === "active")
+    .map((channel) => ({ label: channel.name, value: channel.name }));
+  const unmatchedChannelNames = useMemo(
+    () => Array.from(new Set(unmatchedRecords.map((record) => record.channel))).sort(),
+    [unmatchedRecords],
+  );
   async function loadBaseData() {
     setIsLoading(true);
     setErrorMessage(null);
@@ -161,10 +211,6 @@ export default function RevenueReconciliationPage() {
       const bankParams = new URLSearchParams({ store_id: storeId, direction: "income", page_size: "500" });
       const revenueParams = new URLSearchParams({ store_id: storeId, page_size: "500" });
       const matchParams = new URLSearchParams({ store_id: storeId, page_size: "500" });
-      if (initialLedgerPeriod) {
-        revenueParams.set("ledger_period", initialLedgerPeriod);
-        matchParams.set("ledger_period", initialLedgerPeriod);
-      }
       const results = await Promise.allSettled([
         apiClient.bankTransactions.list(`?${bankParams.toString()}`),
         apiClient.revenueRecords.list(`?${revenueParams.toString()}`),
@@ -198,6 +244,10 @@ export default function RevenueReconciliationPage() {
         : nextTransactions.find((transaction) => remainingAmount(transaction) > 0) ?? null;
       setSelectedTransaction(nextSelected);
       setSelectedRecordIds([]);
+      setIsMatchModalOpen(false);
+      setMatchChannelNames([]);
+      setMatchDateRange([null, null]);
+      setMatchModalSelectedRecordIds([]);
       if (loadErrors.length) {
         setErrorMessage(`收入对账部分数据加载失败：${loadErrors.join("、")}。请刷新后重试。`);
       }
@@ -224,7 +274,62 @@ export default function RevenueReconciliationPage() {
 
   useEffect(() => {
     if (selectedStoreId) void loadStoreWorkspace(selectedStoreId, selectedTransaction?.id);
-  }, [selectedStoreId, initialLedgerPeriod]);
+  }, [selectedStoreId, selectedLedgerPeriod]);
+
+  function openMatchModal(transaction: BankTransaction) {
+    const remaining = remainingAmount(transaction);
+    if (remaining <= 0) return;
+    setSelectedTransaction(transaction);
+    setSelectedRecordIds([]);
+    setMatchValidationMessage(null);
+    const defaultChannels = channelFilter
+      ? [channelFilter]
+      : initialChannel
+        ? [initialChannel]
+        : [unmatchedChannelNames[0] ?? channels.find((channel) => channel.status === "active")?.name ?? channels[0]?.name].filter(Boolean) as string[];
+    setMatchChannelNames(defaultChannels);
+    setMatchDateRange([null, null]);
+    setMatchModalSelectedRecordIds([]);
+    setIsMatchModalOpen(true);
+  }
+
+  function applyMatchModalSelection() {
+    if (!selectedTransaction) {
+      setMatchValidationMessage("请先选择收入银行流水。");
+      return null;
+    }
+    const [startDate, endDate] = matchDateRange;
+    if (!startDate || !endDate) {
+      setMatchValidationMessage("请选择收入日期范围。");
+      return null;
+    }
+    if (!matchChannelNames.length) {
+      setMatchValidationMessage("请选择收入渠道。");
+      return null;
+    }
+    const selectedIds = matchModalSelectedRecordIds.filter((recordId) =>
+      matchModalVisibleRecords.some((record) => record.id === recordId),
+    );
+    if (!selectedIds.length) {
+      setMatchValidationMessage("请选择要匹配的营业收入。");
+      return null;
+    }
+    const selectedRecordsInModal = matchModalVisibleRecords.filter((record) => selectedIds.includes(record.id));
+    if (!selectedRecordsInModal.length) {
+      setMatchValidationMessage("该渠道和日期范围内没有可匹配营业收入。");
+      return null;
+    }
+    setChannelFilter(matchChannelNames.length === 1 ? matchChannelNames[0] : undefined);
+    setRevenueDateRange(matchDateRange);
+    setSelectedRecordIds(selectedIds);
+    setMatchValidationMessage(null);
+    return {
+      amount: selectedRecordsInModal.reduce((sum, record) => sum + moneyValue(record.net_amount), 0),
+      selectedNetAmount: selectedRecordsInModal.reduce((sum, record) => sum + moneyValue(record.net_amount), 0),
+      revenueRecordIds: selectedIds,
+      recordCount: selectedIds.length,
+    };
+  }
 
   function toggleRecord(record: RevenueRecord) {
     if (!isMatchDataReady) {
@@ -250,8 +355,7 @@ export default function RevenueReconciliationPage() {
       return;
     }
     setRevenueDateRange([startDate, endDate]);
-    const selected = unmatchedRecords
-      .filter((record) => !channelFilter || record.channel === channelFilter)
+    const selected = matchModalVisibleRecords
       .filter((record) => {
         const value = dayjs(record.revenue_date);
         return (
@@ -274,6 +378,14 @@ export default function RevenueReconciliationPage() {
     setSelectedRecordIds([]);
   }
 
+  useEffect(() => {
+    if (!isMatchModalOpen || !isMatchDateRangeComplete) {
+      setMatchModalSelectedRecordIds([]);
+      return;
+    }
+    setMatchModalSelectedRecordIds(matchModalVisibleRecords.map((record) => record.id));
+  }, [isMatchModalOpen, isMatchDateRangeComplete, matchModalVisibleRecordIds]);
+
   function validateSelection() {
     if (!selectedTransaction) {
       setMatchValidationMessage("请先选择左侧收入银行流水。");
@@ -289,12 +401,6 @@ export default function RevenueReconciliationPage() {
       setMatchValidationMessage("选中收入实收合计必须大于 0。");
       return null;
     }
-    if (selectedAmount > bankRemaining + 0.005) {
-      setMatchValidationMessage(
-        `选中收入合计 ${formatMoney(selectedAmount.toFixed(2))} 不能超过银行流水剩余金额 ${formatMoney(bankRemaining.toFixed(2))}。`,
-      );
-      return null;
-    }
     setMatchValidationMessage(null);
     return {
       startDate,
@@ -304,18 +410,16 @@ export default function RevenueReconciliationPage() {
     };
   }
 
-  async function confirmMatch() {
+  async function saveMatch(selection: { amount: number; revenueRecordIds: string[]; recordCount: number }) {
     const storeId = selectedStoreId ?? initialStoreId;
     if (!storeId) {
       setMatchValidationMessage("请先选择门店。");
-      return;
+      return false;
     }
     if (!selectedTransaction) {
       setMatchValidationMessage("请先选择左侧收入银行流水。");
-      return;
+      return false;
     }
-    const selection = validateSelection();
-    if (!selection) return;
     setIsSaving(true);
     setSubmitStatus("正在提交收入匹配");
     message.loading({ content: "正在提交收入匹配", key: "revenue-match-submit", duration: 0 });
@@ -323,23 +427,49 @@ export default function RevenueReconciliationPage() {
       await apiClient.matches.createRevenueBatch({
         bank_transaction_id: selectedTransaction.id,
         amount: selection.amount.toFixed(2),
-        accounting_period: initialLedgerPeriod || selectedTransaction.ledger_period,
+        accounting_period: initialLedgerPeriod ?? selectedTransaction.ledger_period ?? selectedLedgerPeriod,
         revenue_record_ids: selection.revenueRecordIds,
         confidence: "100.00",
         reason: "营业收入记录手动关联银行流水",
       });
       setSubmitStatus(`已选中 ${selection.revenueRecordIds.length} 条营业收入，正在刷新`);
       await loadStoreWorkspace(storeId, selectedTransaction.id);
-      setSubmitStatus(`收入对账已确认，已关联 ${selection.revenueRecordIds.length} 条营业收入`);
-      message.success({ content: `已确认匹配 ${selection.revenueRecordIds.length} 条营业收入`, key: "revenue-match-submit" });
+      setSubmitStatus(`收入对账已确认，已关联 ${selection.recordCount} 条营业收入`);
+      message.success({ content: `已确认匹配 ${selection.recordCount} 条营业收入`, key: "revenue-match-submit" });
+      setIsMatchModalOpen(false);
+      return true;
     } catch (error) {
       setSubmitStatus(null);
       message.destroy("revenue-match-submit");
       message.error(error instanceof Error ? error.message : "确认收入对账失败");
       setErrorMessage(error instanceof Error ? error.message : "确认收入对账失败");
+      return false;
     } finally {
       setIsSaving(false);
     }
+  }
+
+  async function confirmMatch() {
+    const selection = validateSelection();
+    if (!selection) return;
+    await saveMatch({ ...selection, recordCount: selection.revenueRecordIds.length });
+  }
+
+  async function confirmMatchModal() {
+    const selection = applyMatchModalSelection();
+    if (!selection) return;
+    const difference = selection.amount - selection.selectedNetAmount;
+    if (Math.abs(difference) > 0.005) {
+      Modal.confirm({
+        title: "实收金额与银行流水不一致",
+        content: `银行流水剩余 ${formatMoney(selection.amount.toFixed(2))}，选择收入实收 ${formatMoney(selection.selectedNetAmount.toFixed(2))}，差额 ${formatMoney(difference.toFixed(2))}。是否仍然保存匹配？`,
+        okText: "仍然保存",
+        cancelText: "返回检查",
+        onOk: () => saveMatch(selection),
+      });
+      return;
+    }
+    await saveMatch(selection);
   }
 
   async function unmatchRevenue(match: RevenueBankMatch) {
@@ -415,12 +545,12 @@ export default function RevenueReconciliationPage() {
   ];
 
   return (
-    <AppShell title={currentStore?.name ? `${currentStore.name} · 收入对账` : "收入对账"} kicker={initialLedgerPeriod ? `账期：${initialLedgerPeriod}` : undefined}>
+    <AppShell title={currentStore?.name ? `${currentStore.name} · 收入对账` : "收入对账"} kicker={`账期：${selectedLedgerPeriod}`}>
       {initialStoreId ? (
         <StoreLedgerWorkspaceNav
           storeId={selectedStoreId ?? initialStoreId}
           storeName={currentStore?.name}
-          period={initialLedgerPeriod}
+          period={selectedLedgerPeriod}
           periodOptions={ledgerPeriodOptions}
           statusLabel={currentStore?.status === "active" ? "启用门店" : currentStore ? "停用门店" : undefined}
           ledgerStatusLabel={currentLedger?.status === "closed" ? "已封账" : currentLedger ? "进行中" : undefined}
@@ -463,215 +593,64 @@ export default function RevenueReconciliationPage() {
             key: "workbench",
             label: `匹配工作台 (${transactions.length})`,
             children: (
-              <Splitter className="reconciliation-workbench">
-	                <Splitter.Panel defaultSize="34%" min="300px">
-	                  <Card
-	                    title="可匹配收入银行流水"
-	                    className="data-table-card bank-transaction-panel"
-	                    extra={
-	                      <Space size={8} wrap>
-	                        <Typography.Text type="secondary">可对账 {transactions.length} 条</Typography.Text>
-	                        <Typography.Text type="secondary">收入流水总数 {incomeBankTotal} 条</Typography.Text>
-	                        {hiddenMatchedTransactionCount ? (
-	                          <Typography.Text type="secondary">已全额匹配隐藏 {hiddenMatchedTransactionCount} 条</Typography.Text>
-	                        ) : null}
-	                      </Space>
-	                    }
-	                  >
-                    {transactions.length ? (
-                      <div className="bank-transaction-list">
-                        {transactions.map((transaction) => {
-                          const remaining = remainingAmount(transaction);
-                          const isSelected = transaction.id === selectedTransaction?.id;
-                          const isFullyMatched = remaining <= 0;
-                          return (
-                            <button
-                              key={transaction.id}
-                              type="button"
-                              className={`bank-transaction-card${isSelected ? " is-selected" : ""}${isFullyMatched ? " is-disabled" : ""}`}
-	                              disabled={isFullyMatched}
-	                              onClick={() => {
-	                                setSelectedTransaction(transaction);
-	                                setSelectedRecordIds([]);
-	                                setMatchValidationMessage(null);
-	                              }}
-                            >
-                              <span className="bank-transaction-card__main">
-                                <span className="bank-transaction-card__meta">
-                                  <Typography.Text strong>{dayjs(transaction.occurred_at).format("YYYY-MM-DD")}</Typography.Text>
-                                  <Tag color="default" style={{ color: '#333', backgroundColor: '#f0f0f0' }}>💰 收入</Tag>
-                                  {transaction.ledger_period ? <Tag color="default" style={{ color: '#666', backgroundColor: '#f5f5f5' }}>{transaction.ledger_period}</Tag> : null}
-                                  {isFullyMatched ? <Tag color="success">✓ 已匹配</Tag> : <Tag color="warning">⧗ 待匹配</Tag>}
-                                </span>
-                                <Typography.Text className="bank-transaction-card__summary" ellipsis>
-                                  {transaction.summary || transaction.counterparty_name || "无摘要"}
-                                </Typography.Text>
-                                {transaction.bank_serial_no ? (
-                                  <span className="bank-transaction-card__serial">流水号 {transaction.bank_serial_no}</span>
-                                ) : null}
-                              </span>
-                              <span className="bank-transaction-card__amounts">
-                                <Typography.Text className="bank-transaction-card__amount income-amount">{formatMoney(transaction.amount)}</Typography.Text>
-                                <Typography.Text type="secondary">剩余 {formatMoney(Math.max(remaining, 0).toFixed(2))}</Typography.Text>
-                              </span>
-                            </button>
-                          );
-                        })}
-                      </div>
-                    ) : (
-	                      <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={selectedStoreId ? "当前门店暂无可匹配收入银行流水" : "请先选择门店"} />
-	                    )}
-                  </Card>
-                </Splitter.Panel>
-                <Splitter.Panel min="520px">
-                  <Card
-                    title={selectedTransaction
-                      ? `营业收入候选 (${filteredRecords.length})：流水剩余 ${formatMoney(bankRemaining.toFixed(2))}${selectedRecordIds.length ? `，已选 ${selectedRecordIds.length} 条` : ""}`
-                      : `营业收入候选 (${filteredRecords.length})`}
-                    className="data-table-card approval-candidate-panel"
-                    extra={
-                      <Space>
-                        <DatePicker.RangePicker
-                          allowClear
-                          value={revenueDateRange}
-                          onChange={(dates) => setRevenueDateRange((dates as [dayjs.Dayjs | null, dayjs.Dayjs | null]) ?? [null, null])}
-                        />
-                        <Input allowClear placeholder="日期 / 渠道 / 备注" style={{ width: 180 }} value={keyword} onChange={(event) => setKeyword(event.target.value)} />
-                      </Space>
-                    }
-                  >
-                    <div className="revenue-match-summary">
-                      <Statistic title={`待匹配收入 (${unmatchedRecords.length} 条)`} value={formatMoney(unmatchedAmount.toFixed(2))} valueStyle={{ color: '#faad14' }} />
-                      <Statistic title="已选实收" value={formatMoney(selectedAmount.toFixed(2))} valueStyle={{ color: '#1890ff' }} />
-                      <Statistic title="差额" value={formatMoney((bankRemaining - selectedAmount).toFixed(2))} valueStyle={{ color: (bankRemaining - selectedAmount) === 0 ? '#52c41a' : '#ff4d4f' }} />
-                      <Statistic title="已对账金额" value={formatMoney(matchedAmount.toFixed(2))} valueStyle={{ color: '#52c41a' }} />
-                    </div>
-	                    {submitStatus ? <Alert className="dashboard-alert" type="info" showIcon message={submitStatus} /> : null}
-                    {matchValidationMessage ? <Alert className="dashboard-alert" type="warning" showIcon message={matchValidationMessage} /> : null}
-                    <div className="revenue-channel-toolbar">
-                      <div className="revenue-channel-grid">
-                        {revenueChannelCards.map((channel) => {
-                          const isSelected = channel.name === channelFilter;
-                          return (
-                            <button
-                              key={channel.name}
-                              type="button"
-                              className={`revenue-channel-card${isSelected ? " is-selected" : ""}`}
-                              onClick={() => setChannelFilter(isSelected ? undefined : channel.name)}
-                            >
-                              <span className="revenue-channel-card__main">
-                                <Typography.Text strong>{channel.name}</Typography.Text>
-                                <Typography.Text type="secondary">
-                                  {channel.unmatchedCount} 条未匹配 / {formatMoney(channel.unmatchedAmount.toFixed(2))}
-                                </Typography.Text>
-                              </span>
-                              <span className="revenue-channel-card__aside">
-                                <Tag color={isSelected ? "blue" : "default"}>{isSelected ? "已选" : `${channel.totalCount} 条`}</Tag>
-                              </span>
-                            </button>
-                          );
-                        })}
-                      </div>
-                      <Space>
-                        <Typography.Text strong style={{ fontSize: '14px', color: '#262626' }}>
-                          📋 操作指引：
-                        </Typography.Text>
-                        <Typography.Text
-                          type={selectedTransaction ? (selectedRecordIds.length > 0 ? "success" : "warning") : "secondary"}
-                          style={{ fontSize: '13px' }}
+              <Card
+                title="可匹配收入银行流水"
+                className="data-table-card bank-transaction-panel"
+                extra={
+                  <Space size={8} wrap>
+                    <Typography.Text type="secondary">可对账 {transactions.length} 条</Typography.Text>
+                    <Typography.Text type="secondary">收入流水总数 {incomeBankTotal} 条</Typography.Text>
+                    {hiddenMatchedTransactionCount ? (
+                      <Typography.Text type="secondary">已全额匹配隐藏 {hiddenMatchedTransactionCount} 条</Typography.Text>
+                    ) : null}
+                  </Space>
+                }
+              >
+                {transactions.length ? (
+                  <div className="bank-transaction-list">
+                    {transactions.map((transaction) => {
+                      const remaining = remainingAmount(transaction);
+                      const isSelected = transaction.id === selectedTransaction?.id;
+                      const isFullyMatched = remaining <= 0;
+                      return (
+                        <button
+                          key={transaction.id}
+                          type="button"
+                          className={`bank-transaction-card${isSelected ? " is-selected" : ""}${isFullyMatched ? " is-disabled" : ""}`}
+                          disabled={isFullyMatched}
+                          onClick={() => openMatchModal(transaction)}
                         >
-                          {matchActionHint}
-                        </Typography.Text>
-                      </Space>
-                      <div style={{ marginTop: '12px', display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                        <Button type="primary" loading={isSaving} disabled={isSaving || !selectedTransaction || !selectedRecordIds.length} onClick={() => void confirmMatch()}>
-                          ✓ 确认匹配
-                        </Button>
-                        <Button onClick={openDateRangeModal} disabled={!isMatchDataReady || !selectedTransaction}>
-                          📅 按日期范围选中
-                        </Button>
-                        <Button onClick={clearSelectedRecords} disabled={!selectedRecordIds.length}>
-                          🗑️ 清空选择
-                        </Button>
-                        <Button onClick={() => setChannelFilter(undefined)} disabled={!channelFilter}>
-                          🔄 清除渠道筛选
-                        </Button>
-                      </div>
-                    </div>
-	                    {!transactions.length && unmatchedRecords.length ? (
-	                      <Alert
-	                        className="dashboard-alert"
-	                        type="info"
-	                        showIcon
-	                        message={`当前没有可匹配收入银行流水，已加载 ${unmatchedRecords.length} 条待匹配营业收入`}
-	                        description={
-	                          hiddenMatchedTransactionCount
-	                            ? `已加载 ${incomeBankTotal} 条收入银行流水，其中 ${hiddenMatchedTransactionCount} 条已全额匹配并隐藏。左侧只显示仍有剩余金额的收入流水。`
-	                            : "请先到“银行流水”页面录入或导入类型为收入、且仍有未匹配余额的流水，之后返回这里进行匹配。"
-	                        }
-	                      />
-	                    ) : null}
-                    {filteredRecords.length ? (
-                      <div className="approval-candidate-list revenue-candidate-list">
-                        {filteredRecords.map((record) => {
-                          const isSelected = selectedRecordIds.includes(record.id);
-                          const canSelect = !isRevenueRecordCovered(record, activeMatches);
-                          return (
-                            <div
-                              key={record.id}
-                              role="button"
-                              tabIndex={0}
-                              className={`approval-candidate-card revenue-candidate-card${isSelected ? " is-selected" : ""}${!canSelect ? " is-disabled" : ""}`}
-                              onClick={() => toggleRecord(record)}
-                              onKeyDown={(event) => {
-                                if (event.key === "Enter" || event.key === " ") toggleRecord(record);
-                              }}
-                              style={{
-                                transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
-                                backgroundColor: isSelected ? '#f6ffed' : !canSelect ? '#fafafa' : '#ffffff',
-                                borderLeft: isSelected ? '4px solid #52c41a' : '4px solid #d9d9d9',
-                                borderRadius: '4px',
-                                opacity: !canSelect ? 0.6 : 1,
-                                boxShadow: isSelected ? '0 2px 8px rgba(82, 196, 26, 0.15)' : 'none',
-                                cursor: canSelect ? 'pointer' : 'not-allowed',
-                              }}
-                            >
-                              <div className="revenue-candidate-card__check">
-                                <Checkbox
-                                  checked={isSelected}
-                                  disabled={!canSelect || !isMatchDataReady}
-                                  onClick={(event) => event.stopPropagation()}
-                                  onChange={() => toggleRecord(record)}
-                                />
-                              </div>
-                              <div className="approval-candidate-card__main">
-                                <Space size={6} wrap>
-                                  <Typography.Text strong>{record.revenue_date}</Typography.Text>
-                                  <Tag color="blue">{record.channel}</Tag>
-                                  <Tag color="default" style={{ color: '#666', backgroundColor: '#f5f5f5' }}>{record.ledger_period}</Tag>
-                                </Space>
-                                <Typography.Text className="approval-candidate-card__title" ellipsis>
-                                  {record.remark || "无备注"}
-                                </Typography.Text>
-                                <Space size={[12, 4]} wrap className="approval-candidate-card__meta">
-                                  <span>经营收入 {formatMoney(record.gross_amount)}</span>
-                                  <span>手续费 {formatMoney(record.fee_amount)}</span>
-                                </Space>
-                              </div>
-                              <div className="approval-candidate-card__aside">
-                                <Typography.Text className="approval-candidate-card__amount income-amount">{formatMoney(record.net_amount)}</Typography.Text>
-                                <Typography.Text type="secondary">实收金额</Typography.Text>
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    ) : (
-                      <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={selectedStoreId ? "当前门店暂无可匹配营业收入" : "请先选择门店"} />
-                    )}
-                  </Card>
-                </Splitter.Panel>
-              </Splitter>
+                          <span className="bank-transaction-card__main">
+                            <span className="bank-transaction-card__meta">
+                              <Typography.Text strong>{dayjs(transaction.occurred_at).format("YYYY-MM-DD")}</Typography.Text>
+                              <Tag color="default" style={{ color: "#333", backgroundColor: "#f0f0f0" }}>💰 收入</Tag>
+                              {transaction.ledger_period ? <Tag color="default" style={{ color: "#666", backgroundColor: "#f5f5f5" }}>{transaction.ledger_period}</Tag> : null}
+                              {isFullyMatched ? <Tag color="success">✓ 已匹配</Tag> : <Tag color="warning">⧗ 待匹配</Tag>}
+                            </span>
+                            {transaction.counterparty_name && (
+                              <Typography.Text className="bank-transaction-card__counterparty" style={{ fontSize: 13, color: "#1890ff", marginTop: 4 }}>
+                                对方户名：{transaction.counterparty_name}
+                              </Typography.Text>
+                            )}
+                            <Typography.Text className="bank-transaction-card__summary" ellipsis title={transaction.summary || "无摘要"}>
+                              {transaction.summary ? `摘要：${transaction.summary}` : "无摘要"}
+                            </Typography.Text>
+                            {transaction.bank_serial_no ? (
+                              <span className="bank-transaction-card__serial">流水号 {transaction.bank_serial_no}</span>
+                            ) : null}
+                          </span>
+                          <span className="bank-transaction-card__amounts">
+                            <Typography.Text className="bank-transaction-card__amount income-amount">{formatMoney(transaction.amount)}</Typography.Text>
+                            <Typography.Text type="secondary">剩余 {formatMoney(Math.max(remaining, 0).toFixed(2))}</Typography.Text>
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={selectedStoreId ? "当前门店暂无可匹配收入银行流水" : "请先选择门店"} />
+                )}
+              </Card>
             ),
           },
           {
@@ -710,6 +689,134 @@ export default function RevenueReconciliationPage() {
             onChange={(dates) => setDateRangeDraft((dates as [dayjs.Dayjs | null, dayjs.Dayjs | null]) ?? [null, null])}
           />
         </Space>
+      </Modal>
+
+      <Modal
+        title="收入流水匹配"
+        open={isMatchModalOpen}
+        onCancel={() => setIsMatchModalOpen(false)}
+        onOk={() => void confirmMatchModal()}
+        okText="确认匹配"
+        confirmLoading={isSaving}
+        width={820}
+        destroyOnClose
+      >
+        <div className="revenue-match-modal">
+          {selectedTransaction ? (
+            <div className="revenue-match-modal__bank">
+              <div>
+                <Typography.Text type="secondary">银行流水</Typography.Text>
+                <div className="revenue-match-modal__bank-title">
+                  <Typography.Text strong>{dayjs(selectedTransaction.occurred_at).format("YYYY-MM-DD")}</Typography.Text>
+                  <Typography.Text ellipsis>{selectedTransaction.summary || selectedTransaction.counterparty_name || "无摘要"}</Typography.Text>
+                </div>
+              </div>
+              <div className="revenue-match-modal__bank-amount">
+                <Typography.Text className="income-amount">{formatMoney(selectedTransaction.amount)}</Typography.Text>
+                <Typography.Text type="secondary">剩余 {formatMoney(bankRemaining.toFixed(2))}</Typography.Text>
+              </div>
+            </div>
+          ) : null}
+
+          <div className="revenue-match-modal__controls">
+            <div className="revenue-match-modal__field">
+              <Typography.Text type="secondary">收入渠道</Typography.Text>
+              <Select
+                mode="multiple"
+                showSearch
+                optionFilterProp="label"
+                placeholder="选择渠道"
+                value={matchChannelNames}
+                options={activeChannelOptions}
+                onChange={(value) => {
+                  setMatchChannelNames(value);
+                  setMatchValidationMessage(null);
+                }}
+                style={{ width: "100%" }}
+              />
+            </div>
+            <div className="revenue-match-modal__field">
+              <Typography.Text type="secondary">收入日期范围</Typography.Text>
+              <DatePicker.RangePicker
+                value={matchDateRange}
+                onChange={(dates) => {
+                  setMatchDateRange(normalizeDateRange(dates as [dayjs.Dayjs | null, dayjs.Dayjs | null] | null));
+                  setMatchValidationMessage(null);
+                }}
+                onCalendarChange={(dates) => {
+                  const nextRange = normalizeDateRange(dates as [dayjs.Dayjs | null, dayjs.Dayjs | null] | null);
+                  if (!isCompleteDateRange(nextRange)) return;
+                  setMatchDateRange(nextRange);
+                  setMatchValidationMessage(null);
+                }}
+                style={{ width: "100%" }}
+              />
+            </div>
+          </div>
+
+          <Alert
+            className="revenue-match-modal__hint"
+            type={isMatchDateRangeComplete && matchChannelNames.length ? "info" : "warning"}
+            showIcon
+            message={
+              isMatchDateRangeComplete && matchChannelNames.length
+                ? `${matchChannelNames.join("、")} / ${matchDateRange[0]?.format("YYYY-MM-DD")} 至 ${matchDateRange[1]?.format("YYYY-MM-DD")} 的收入汇总`
+                : "请选择收入渠道和完整日期范围，金额会自动汇总"
+            }
+          />
+
+          {isMatchDateRangeComplete ? (
+            <div className="revenue-match-modal__range-bar">
+              <Typography.Text type="secondary">已选范围</Typography.Text>
+              <Typography.Text strong>
+                {matchDateRange[0]?.format("YYYY-MM-DD")} 至 {matchDateRange[1]?.format("YYYY-MM-DD")}
+              </Typography.Text>
+              <Typography.Text type="secondary">共 {matchModalVisibleRecords.length} 条收入记录</Typography.Text>
+            </div>
+          ) : null}
+
+          <div className="revenue-match-summary revenue-match-summary--modal">
+            <Statistic title="收入条数" value={matchModalSelectedRecords.length} />
+            <Statistic title="经营收入" value={formatMoney(matchModalGrossAmount.toFixed(2))} />
+            <Statistic title="实收金额" value={formatMoney(matchModalNetAmount.toFixed(2))} valueStyle={{ color: "#1890ff" }} />
+            <Statistic title="手续费" value={formatMoney(matchModalFeeAmount.toFixed(2))} />
+            <Statistic
+              title="差额"
+              value={formatMoney(matchModalDifference.toFixed(2))}
+              valueStyle={{ color: Math.abs(matchModalDifference) <= 0.005 ? "#52c41a" : "#ff4d4f" }}
+            />
+          </div>
+
+          {Math.abs(matchModalDifference) > 0.005 && matchModalSelectedRecords.length ? (
+            <Alert
+              type="warning"
+              showIcon
+              message="实收金额与银行流水不一致"
+              description="保存时会再次提醒，确认后仍允许保存匹配。"
+            />
+          ) : null}
+          {matchValidationMessage ? <Alert type="warning" showIcon message={matchValidationMessage} /> : null}
+
+          <Table
+            className="revenue-match-modal__table"
+            rowKey="id"
+            size="small"
+            columns={[
+              { title: "日期", dataIndex: "revenue_date", width: 110 },
+              { title: "渠道", dataIndex: "channel", width: 130 },
+              { title: "经营收入", dataIndex: "gross_amount", width: 120, align: "right", render: (value: string) => formatMoney(value) },
+              { title: "实收金额", dataIndex: "net_amount", width: 120, align: "right", render: (value: string) => formatMoney(value) },
+              { title: "手续费", dataIndex: "fee_amount", width: 110, align: "right", render: (value: string) => formatMoney(value) },
+              { title: "备注", dataIndex: "remark", ellipsis: true, render: (value?: string | null) => value || "-" },
+            ]}
+            dataSource={matchModalVisibleRecords}
+            rowSelection={{
+              selectedRowKeys: matchModalSelectedRecordIds,
+              onChange: (selectedRowKeys) => setMatchModalSelectedRecordIds(selectedRowKeys as string[]),
+            }}
+            pagination={{ pageSize: 6, size: "small" }}
+          />
+        </div>
       </Modal>
     </AppShell>
   );

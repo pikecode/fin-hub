@@ -201,6 +201,12 @@ interface OpenPageTab {
 }
 
 const OPEN_PAGE_TABS_STORAGE_KEY = "fin-hub.open-page-tabs";
+const STORE_CONTEXT_PATHS = new Set([
+  "/bank",
+  "/revenue",
+  "/finance/reconciliation",
+  "/finance/revenue-reconciliation",
+]);
 
 function menuItemsForTree(items: NavItem[]): MenuProps["items"] {
   return items.map((item) => menuItemForNavItem(item));
@@ -259,6 +265,42 @@ function readStoredOpenTabs(): OpenPageTab[] {
   } catch {
     return [];
   }
+}
+
+/**
+ * Validates tabs against current user permissions.
+ * Removes tabs that point to routes the user no longer has access to.
+ */
+function validateTabsAgainstPermissions(tabs: OpenPageTab[], navItems: NavItem[]): OpenPageTab[] {
+  const validPaths = new Set<string>();
+
+  function collectPaths(items: NavItem[]) {
+    items.forEach((item) => {
+      if (item.key && !item.children?.length) {
+        validPaths.add(item.key);
+      }
+      if (item.children) {
+        collectPaths(item.children);
+      }
+    });
+  }
+
+  collectPaths(navItems);
+
+  return tabs.filter((tab) => {
+    const tabPath = tab.href.split("?")[0];
+    const tabParams = new URLSearchParams(tab.href.split("?")[1] ?? "");
+
+    if (tabPath === "/") return true;
+    if (STORE_CONTEXT_PATHS.has(tabPath) && tabParams.has("store_id") && validPaths.has("/store-ledgers")) return true;
+
+    for (const path of validPaths) {
+      if (path === "/" && tabPath === "/") return true;
+      if (path !== "/" && tabPath.startsWith(path)) return true;
+    }
+
+    return false;
+  });
 }
 
 function normalizePageHref(pathname: string, searchParams: URLSearchParams) {
@@ -346,6 +388,20 @@ export function ProLayout({ title, kicker, action, children }: ProLayoutProps) {
   }, [router]);
 
   useEffect(() => {
+    if (!currentUser) return;
+    const validatedTabs = validateTabsAgainstPermissions(openedTabs, visibleTree);
+    if (validatedTabs.length !== openedTabs.length) {
+      setOpenedTabs(validatedTabs);
+      const isCurrentTabInvalid = !validatedTabs.some((tab) => tab.key === activeTabKey);
+      if (isCurrentTabInvalid && validatedTabs.length > 0) {
+        router.push(validatedTabs[0].href);
+      } else if (isCurrentTabInvalid && validatedTabs.length === 0) {
+        router.push("/");
+      }
+    }
+  }, [currentUser, visibleTree]);
+
+  useEffect(() => {
     setOpenedTabs((currentTabs) => {
       const nextTab: OpenPageTab = {
         key: activeTabKey,
@@ -376,6 +432,7 @@ export function ProLayout({ title, kicker, action, children }: ProLayoutProps) {
     cachedCurrentUser = null;
     pendingCurrentUser = null;
     localStorage.removeItem("user_name");
+    localStorage.removeItem(OPEN_PAGE_TABS_STORAGE_KEY);
     router.push("/login");
   }
 
@@ -389,7 +446,12 @@ export function ProLayout({ title, kicker, action, children }: ProLayoutProps) {
 
   function openTab(tab: OpenPageTab) {
     if (tab.href !== activeTabHref) {
-      router.push(tab.href);
+      try {
+        router.push(tab.href);
+      } catch (error) {
+        console.error("Failed to navigate to tab:", error);
+        closeTab(tab.key);
+      }
     }
   }
 
@@ -404,6 +466,22 @@ export function ProLayout({ title, kicker, action, children }: ProLayoutProps) {
       }
       return nextTabs;
     });
+  }
+
+  function closeOtherTabs(keepTabKey: string) {
+    setOpenedTabs((currentTabs) => {
+      const keepTab = currentTabs.find((tab) => tab.key === keepTabKey);
+      if (!keepTab) return currentTabs;
+      if (keepTabKey !== activeTabKey) {
+        router.push(keepTab.href);
+      }
+      return [keepTab];
+    });
+  }
+
+  function closeAllTabs() {
+    setOpenedTabs([]);
+    router.push("/");
   }
 
   const userMenu: MenuProps = {
@@ -508,7 +586,30 @@ export function ProLayout({ title, kicker, action, children }: ProLayoutProps) {
               }}
               items={openedTabs.map((tab) => ({
                 key: tab.key,
-                label: <span className="app-open-page-tab-label" title={tabLabel(tab.title, tab.kicker)}>{tabLabel(tab.title, tab.kicker)}</span>,
+                label: (
+                  <Dropdown
+                    menu={{
+                      items: [
+                        {
+                          key: "close-others",
+                          label: "关闭其他",
+                          disabled: openedTabs.length <= 1,
+                          onClick: () => closeOtherTabs(tab.key),
+                        },
+                        {
+                          key: "close-all",
+                          label: "关闭所有",
+                          onClick: () => closeAllTabs(),
+                        },
+                      ],
+                    }}
+                    trigger={["contextMenu"]}
+                  >
+                    <span className="app-open-page-tab-label" title={tabLabel(tab.title, tab.kicker)}>
+                      {tabLabel(tab.title, tab.kicker)}
+                    </span>
+                  </Dropdown>
+                ),
                 closable: true,
               }))}
             />
