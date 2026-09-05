@@ -2,6 +2,86 @@ from fastapi.testclient import TestClient
 from openpyxl import Workbook
 
 
+def test_batch_delete_bank_transactions(client: TestClient) -> None:
+    store_id = client.post("/api/stores", json={"name": "批量删除流水店"}).json()["data"]["id"]
+    payload = {
+        "store_id": store_id,
+        "ledger_period": "2026-08",
+        "occurred_at": "2026-08-20T10:00:00",
+        "direction": "expense",
+        "amount": "100.00",
+        "counterparty_name": "测试收款方",
+    }
+    first_id = client.post("/api/bank-transactions", json=payload).json()["data"]["id"]
+    second_id = client.post(
+        "/api/bank-transactions",
+        json={**payload, "occurred_at": "2026-08-21T10:00:00", "amount": "200.00"},
+    ).json()["data"]["id"]
+
+    response = client.request(
+        "DELETE",
+        "/api/bank-transactions/batch",
+        json={"ids": [first_id, second_id]},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["deleted_count"] == 2
+    list_response = client.get(f"/api/bank-transactions?store_id={store_id}")
+    assert list_response.json()["data"]["total"] == 0
+
+
+def test_list_bank_transactions_filters_by_match_status_and_counterparty(client: TestClient) -> None:
+    store_id = client.post("/api/stores", json={"name": "流水筛选店"}).json()["data"]["id"]
+    client.post("/api/ledgers", json={"store_id": store_id, "period": "2026-08"})
+    expense_id = client.post(
+        "/api/expense-items",
+        json={
+            "store_id": store_id,
+            "ledger_period": "2026-08",
+            "description": "供应商货款",
+            "amount": "100.00",
+        },
+    ).json()["data"]["id"]
+    matched_id = client.post(
+        "/api/bank-transactions",
+        json={
+            "store_id": store_id,
+            "ledger_period": "2026-08",
+            "occurred_at": "2026-08-20T10:00:00",
+            "direction": "expense",
+            "amount": "100.00",
+            "counterparty_name": "测试供应商",
+            "counterparty_account": "62220001",
+        },
+    ).json()["data"]["id"]
+    client.post(
+        "/api/bank-transactions",
+        json={
+            "store_id": store_id,
+            "ledger_period": "2026-08",
+            "occurred_at": "2026-08-21T10:00:00",
+            "direction": "expense",
+            "amount": "200.00",
+            "counterparty_name": "另一收款方",
+            "counterparty_account": "62220002",
+        },
+    )
+    match_id = client.post(
+        "/api/matches",
+        json={"expense_item_id": expense_id, "bank_transaction_id": matched_id, "amount": "100.00"},
+    ).json()["data"]["id"]
+    client.post(f"/api/matches/{match_id}/confirm?operator=tester")
+
+    matched_response = client.get(f"/api/bank-transactions?store_id={store_id}&match_status=matched&counterparty_name=供应商")
+    assert matched_response.status_code == 200
+    assert matched_response.json()["data"]["total"] == 1
+    assert matched_response.json()["data"]["items"][0]["id"] == matched_id
+
+    unmatched_response = client.get(f"/api/bank-transactions?store_id={store_id}&match_status=unmatched&counterparty_account=0002")
+    assert unmatched_response.status_code == 200
+    assert unmatched_response.json()["data"]["total"] == 1
+
+
 def test_download_bank_import_template(client: TestClient) -> None:
     response = client.get("/api/bank-transactions/import/template.csv")
 

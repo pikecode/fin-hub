@@ -450,6 +450,14 @@ class BankTransactionCreate(BaseModel):
     bank_serial_no: str | None = None
 
 
+class BankTransactionBatchCreateRequest(BaseModel):
+    items: list[BankTransactionCreate] = Field(min_length=1)
+
+
+class BankTransactionBatchCreateResult(BaseModel):
+    created_count: int
+
+
 class BankTransactionUpdate(BaseModel):
     store_id: str | None = None
     ledger_period: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}$")
@@ -470,6 +478,14 @@ class BankTransactionRead(BankTransactionCreate):
     import_job_id: str | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class BankTransactionBatchDeleteRequest(BaseModel):
+    ids: list[str] = Field(min_length=1)
+
+
+class BankTransactionBatchDeleteResult(BaseModel):
+    deleted_count: int
 
 
 class MatchCreate(BaseModel):

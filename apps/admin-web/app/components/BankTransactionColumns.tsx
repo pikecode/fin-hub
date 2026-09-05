@@ -7,11 +7,9 @@ import { StatusBadge } from "./StatusBadge";
 export type BankTransactionViewColumn = ColumnsType<BankTransaction>[number] & { key: string };
 
 function bankMatchStatus(transaction: BankTransaction) {
-  const amount = Number(transaction.amount || 0);
   const matchedAmount = Number(transaction.matched_amount || 0);
   if (matchedAmount <= 0) return { label: "未匹配", color: "default" as const };
-  if (matchedAmount >= amount) return { label: "已匹配", color: "success" as const };
-  return { label: "部分匹配", color: "orange" as const };
+  return { label: "已匹配", color: "success" as const };
 }
 
 function bankDirectionCell(direction: "income" | "expense", target: "income" | "expense") {

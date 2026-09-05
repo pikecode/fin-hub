@@ -27,7 +27,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         self.requests_per_minute = requests_per_minute
         self.window_size = 60  # 1 分钟窗口
         self.exclude_paths = exclude_paths or ["/api/health", "/openapi.json", "/docs"]
-        # 存储格式: {ip: [(timestamp1, ...), ...]}
+        # 按客户端、请求方法和接口路径分别限流，避免页面查询占满写入接口额度。
         self.requests: dict[str, list[float]] = defaultdict(list)
 
     def _get_client_ip(self, request: Request) -> str:
@@ -52,10 +52,10 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         cutoff_time = current_time - self.window_size
         self.requests[ip] = [ts for ts in self.requests[ip] if ts > cutoff_time]
 
-    def _is_rate_limited(self, ip: str) -> bool:
+    def _is_rate_limited(self, key: str) -> bool:
         """检查是否超过限流"""
-        self._clean_old_requests(ip)
-        return len(self.requests[ip]) >= self.requests_per_minute
+        self._clean_old_requests(key)
+        return len(self.requests[key]) >= self.requests_per_minute
 
     async def dispatch(
         self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
@@ -68,9 +68,10 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         client_ip = self._get_client_ip(request)
+        rate_limit_key = f"{client_ip}:{request.method}:{request.url.path}"
 
         # 检查是否超限
-        if self._is_rate_limited(client_ip):
+        if self._is_rate_limited(rate_limit_key):
             return JSONResponse(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 content={
@@ -80,7 +81,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             )
 
         # 记录本次请求
-        self.requests[client_ip].append(time.time())
+        self.requests[rate_limit_key].append(time.time())
 
         # 继续处理请求
         response = await call_next(request)

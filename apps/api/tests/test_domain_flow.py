@@ -1376,7 +1376,7 @@ def test_update_bank_transaction_rejects_duplicate_serial_no(client: TestClient)
     assert response.status_code == 409
 
 
-def test_update_bank_transaction_rejects_amount_below_matched_amount(client: TestClient) -> None:
+def test_update_bank_transaction_rejects_matched_transaction(client: TestClient) -> None:
     store_id = client.post("/api/stores", json={"name": "蘑说流水匹配店"}).json()["data"]["id"]
     client.post("/api/ledgers", json={"store_id": store_id, "period": "2026-08"})
     expense_id = client.post(
@@ -1404,8 +1404,9 @@ def test_update_bank_transaction_rejects_amount_below_matched_amount(client: Tes
     ).json()["data"]["id"]
     client.post(f"/api/matches/{match_id}/confirm?operator=tester")
 
-    response = client.patch(f"/api/bank-transactions/{bank_id}", json={"amount": "99.00"})
+    response = client.patch(f"/api/bank-transactions/{bank_id}", json={"summary": "不应允许修改"})
     assert response.status_code == 409
+    assert response.json()["detail"] == "Bank transaction already matched and cannot be edited"
 
 
 def test_match_requires_same_store_and_period(client: TestClient) -> None:

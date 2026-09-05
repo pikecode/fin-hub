@@ -13,7 +13,7 @@ set -euo pipefail
 # ============================================================================
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DOCKER_HUB_USER="${1:-ompeak}"
+DOCKER_HUB_USER="${1:-peakcary}"
 TAG="${2:-$(git -C "$ROOT_DIR" rev-parse --short=12 HEAD)}"
 SERVER="${3:-fin-hub-server}"
 REGISTRY="docker.io/${DOCKER_HUB_USER}/fin-hub"

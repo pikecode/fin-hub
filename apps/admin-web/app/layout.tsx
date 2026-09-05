@@ -1,8 +1,13 @@
 import type { Metadata } from "next";
 import { AntdRegistry } from "@ant-design/nextjs-registry";
 import { ConfigProvider } from "antd";
+import zhCN from "antd/locale/zh_CN";
+import dayjs from "dayjs";
+import "dayjs/locale/zh-cn";
 import "antd/dist/reset.css";
 import "./styles.css";
+
+dayjs.locale("zh-cn");
 
 export const metadata: Metadata = {
   title: "fin-hub 后台管理",
@@ -19,6 +24,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
       <body>
         <AntdRegistry>
           <ConfigProvider
+            locale={zhCN}
             theme={{
               token: {
                 // 企业级主色 - 青绿色（更高端专业）

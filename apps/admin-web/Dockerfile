@@ -44,7 +44,6 @@ COPY --from=build /repo/node_modules ./node_modules
 COPY --from=build /repo/packages ./packages
 COPY --from=build /repo/apps/admin-web/node_modules ./apps/admin-web/node_modules
 COPY --from=build /repo/apps/admin-web/.next ./apps/admin-web/.next
-COPY --from=build /repo/apps/admin-web/public ./apps/admin-web/public
 COPY --from=build /repo/apps/admin-web/package.json ./apps/admin-web/package.json
 
 EXPOSE 3000

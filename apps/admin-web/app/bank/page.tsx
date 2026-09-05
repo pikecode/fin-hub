@@ -13,6 +13,7 @@ import {
   UploadOutlined,
   DownloadOutlined,
   DeleteOutlined,
+  SearchOutlined,
 } from "@ant-design/icons";
 import type {
   BankImportPreviewRow,
@@ -46,6 +47,9 @@ interface BankFilterValues {
   ledger_period?: string;
   direction?: "income" | "expense";
   unmatched_only?: boolean;
+  match_status?: "unmatched" | "matched";
+  counterparty_name?: string;
+  counterparty_account?: string;
 }
 
 type BankEntryField = "occurred_at" | "direction" | "counterparty_name" | "counterparty_account" | "amount" | "summary";
@@ -81,6 +85,11 @@ function createBankEntryRows(count: number): BankEntryRow[] {
     amount: "",
     summary: "",
   }));
+}
+
+function ensureBankEntryRows(rows: BankEntryRow[], requiredCount: number) {
+  if (rows.length >= requiredCount) return rows.map((row) => ({ ...row }));
+  return [...rows.map((row) => ({ ...row })), ...createBankEntryRows(requiredCount - rows.length)];
 }
 
 function isBankEntryRowEmpty(row: BankEntryRow) {
@@ -248,15 +257,18 @@ function applyPastedEntryRows(
 ) {
   const parsedRows = parsePastedEntryRows(text);
   if (!parsedRows.length) return null;
-  const updatedRows = [...rows];
+  const updatedRows = ensureBankEntryRows(rows, startRowIndex + parsedRows.length);
   const startFieldIndex = bankEntryFields.indexOf(startField);
   parsedRows.forEach((cells, rowOffset) => {
     const rowIndex = startRowIndex + rowOffset;
-    if (rowIndex >= updatedRows.length) return;
     cells.forEach((cell, cellOffset) => {
       const field = bankEntryFields[startFieldIndex + cellOffset];
       if (!field) return;
       const value = normalizePastedCell(cell);
+      if (field === "amount") {
+        updatedRows[rowIndex].amount = normalizePastedAmount(value);
+        return;
+      }
       if (!value) return;
       if (field === "occurred_at") {
         updatedRows[rowIndex].occurred_at = normalizeEntryOccurredAt(value);
@@ -267,8 +279,6 @@ function applyPastedEntryRows(
         updatedRows[rowIndex].counterparty_name = value;
       } else if (field === "counterparty_account") {
         updatedRows[rowIndex].counterparty_account = value;
-      } else if (field === "amount") {
-        updatedRows[rowIndex].amount = normalizePastedAmount(value);
       } else if (field === "summary") {
         updatedRows[rowIndex].summary = value;
       }
@@ -327,6 +337,9 @@ export default function BankPage() {
     if (values?.store_id) params.set("store_id", values.store_id);
     if (values?.direction) params.set("direction", values.direction);
     if (values?.unmatched_only) params.set("unmatched_only", "true");
+    if (values?.match_status) params.set("match_status", values.match_status);
+    if (values?.counterparty_name?.trim()) params.set("counterparty_name", values.counterparty_name.trim());
+    if (values?.counterparty_account?.trim()) params.set("counterparty_account", values.counterparty_account.trim());
     return `?${params.toString()}`;
   }
 
@@ -354,6 +367,11 @@ export default function BankPage() {
         setIsLoading(false);
       }
     }
+  }
+
+  function resetFilters() {
+    filterForm.setFieldsValue(initialFilters);
+    void loadData(initialFilters);
   }
 
   useEffect(() => {
@@ -492,10 +510,8 @@ export default function BankPage() {
           summary: normalizePastedCell(row.summary) || null,
         });
       }
-      for (const transaction of batch) {
-        await apiClient.bankTransactions.create(transaction);
-      }
-      message.success(`成功录入 ${batch.length} 条流水`);
+      const result = await apiClient.bankTransactions.createBatch({ items: batch });
+      message.success(`成功录入 ${result.created_count} 条流水`);
       setIsEntryModalOpen(false);
       await loadData(initialFilters);
     } catch (error) {
@@ -522,26 +538,10 @@ export default function BankPage() {
         message.warning("剪贴板中没有有效数据");
         return;
       }
-      const updatedRows = [...entryRows];
-      parsedRows.forEach((cells, index) => {
-        if (index >= updatedRows.length) return;
-        const [timeValue, dirValue, counterpartyNameValue, counterpartyAccountValue, amountValue] = cells;
-        const summaryValue = cells.length >= 6 ? cells[5] : cells[4] ?? cells[3];
-        const normalizedTime = normalizePastedCell(timeValue) ? normalizeEntryOccurredAt(timeValue) : "";
-        if (normalizedTime) updatedRows[index].occurred_at = normalizedTime;
-        const normalized = normalizeEntryDirection(dirValue);
-        if (normalized) updatedRows[index].direction = normalized as "收入" | "支出";
-        const counterpartyName = normalizePastedCell(counterpartyNameValue);
-        const counterpartyAccount = normalizePastedCell(counterpartyAccountValue);
-        const amount = normalizePastedAmount(amountValue);
-        const summary = normalizePastedCell(summaryValue);
-        if (counterpartyName) updatedRows[index].counterparty_name = counterpartyName;
-        if (counterpartyAccount) updatedRows[index].counterparty_account = counterpartyAccount;
-        if (amount) updatedRows[index].amount = amount;
-        if (summary) updatedRows[index].summary = summary;
-      });
+      const updatedRows = applyPastedEntryRows(text, entryRows, 0, "occurred_at");
+      if (!updatedRows) return;
       setEntryRows(updatedRows);
-      message.success(`已粘贴 ${Math.min(parsedRows.length, updatedRows.length)} 行数据`);
+      message.success(`已粘贴 ${parsedRows.length} 行数据`);
     } catch {
       message.error("无法读取剪贴板");
     }
@@ -665,22 +665,22 @@ export default function BankPage() {
     }
   }
 
-  async function handleBatchDelete(selectedKeys: Key[]) {
+  async function handleBatchDelete(selectedKeys: Key[], selectedRows: BankTransaction[]) {
     const ids = selectedKeys.map(String);
-    const recordsToDelete = transactions.filter(t => ids.includes(t.id));
-    const matchedRecords = recordsToDelete.filter(t => Number(t.matched_amount || 0) > 0);
-
-    if (matchedRecords.length > 0) {
-      message.warning(`选中的 ${matchedRecords.length} 条流水已匹配，无法删除`);
+    if (!ids.length) {
+      message.warning("请先选择要删除的银行流水");
+      return;
+    }
+    const matchedCount = selectedRows.filter((record) => Number(record.matched_amount || 0) > 0).length;
+    if (matchedCount > 0) {
+      message.warning(`已匹配的 ${matchedCount} 条银行流水不能删除，请取消选择后重试`);
       return;
     }
 
     setIsLoading(true);
     try {
-      for (const id of ids) {
-        await apiClient.bankTransactions.delete(id);
-      }
-      message.success(`成功删除 ${ids.length} 条流水`);
+      const result = await apiClient.bankTransactions.deleteBatch(ids);
+      message.success(`成功删除 ${result.deleted_count} 条流水`);
       await loadData(initialFilters);
     } catch (error) {
       message.error(error instanceof Error ? error.message : "批量删除失败");
@@ -699,9 +699,10 @@ export default function BankPage() {
       render: (_, record) => {
         const ledger = ledgersByKey.get(`${record.store_id}|${record.ledger_period}`);
         const isClosed = ledger?.status === "closed";
+        const isMatched = Number(record.matched_amount || 0) > 0;
         return (
           <Space size="small">
-            <Button type="link" size="small" disabled={isClosed} onClick={() => openEditModal(record)}>
+            <Button type="link" size="small" disabled={isClosed || isMatched} onClick={() => openEditModal(record)}>
               编辑
             </Button>
             <Popconfirm
@@ -712,7 +713,7 @@ export default function BankPage() {
               okButtonProps={{ danger: true }}
               onConfirm={() => deleteTransaction(record)}
             >
-              <Button type="link" size="small" danger disabled={isClosed}>
+              <Button type="link" size="small" danger disabled={isClosed || isMatched}>
                 删除
               </Button>
             </Popconfirm>
@@ -969,11 +970,50 @@ export default function BankPage() {
             </Space>
           }
         >
+          <Form
+            form={filterForm}
+            layout="inline"
+            onFinish={(values) => void loadData(values)}
+            style={{ marginBottom: 16 }}
+          >
+            <Form.Item name="match_status">
+              <Select
+                allowClear
+                placeholder="匹配状态"
+                style={{ width: 128 }}
+                options={[
+                  { label: "未匹配", value: "unmatched" },
+                  { label: "已匹配", value: "matched" },
+                ]}
+              />
+            </Form.Item>
+            <Form.Item name="counterparty_name">
+              <Input allowClear placeholder="对方户名" style={{ width: 180 }} />
+            </Form.Item>
+            <Form.Item name="counterparty_account">
+              <Input allowClear placeholder="对方账号" style={{ width: 180 }} />
+            </Form.Item>
+            <Form.Item>
+              <Space size={8}>
+                <Button type="primary" htmlType="submit" icon={<SearchOutlined />}>
+                  查询
+                </Button>
+                <Button onClick={resetFilters}>重置</Button>
+              </Space>
+            </Form.Item>
+          </Form>
+
           <EnterpriseTable
             rowKey="id"
             columns={columns}
             dataSource={transactions}
             loading={isLoading}
+            rowSelection={{
+              getCheckboxProps: (record) => ({
+                disabled: Number(record.matched_amount || 0) > 0,
+                name: Number(record.matched_amount || 0) > 0 ? "已匹配，不能删除" : undefined,
+              }),
+            }}
             exportFileName="银行流水"
             pagination={{
               defaultPageSize: 20,
@@ -1081,7 +1121,7 @@ export default function BankPage() {
               pagination={false}
               dataSource={entryRows}
               columns={entryColumns}
-              scroll={{ x: 1120 }}
+              scroll={{ x: 1120, y: 480 }}
             />
             <Typography.Text type="secondary">可以从 Excel 复制整块数据后粘贴。格式：日期 | 类型 | 对方户名 | 对方账号 | 金额 | 备注</Typography.Text>
           </Space>

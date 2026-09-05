@@ -3,6 +3,7 @@ import io
 from collections.abc import Iterable
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
+from typing import Literal
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
@@ -37,6 +38,10 @@ from app.schemas import (
     BankImportResult,
     BankImportRollbackResult,
     BankImportRowError,
+    BankTransactionBatchCreateRequest,
+    BankTransactionBatchCreateResult,
+    BankTransactionBatchDeleteRequest,
+    BankTransactionBatchDeleteResult,
     BankTransactionCreate,
     BankTransactionRead,
     BankTransactionUpdate,
@@ -87,6 +92,9 @@ def list_bank_transactions(
     store_id: str | None = None,
     ledger_period: str | None = None,
     direction: str | None = None,
+    match_status: Literal["unmatched", "matched"] | None = None,
+    counterparty_name: str | None = None,
+    counterparty_account: str | None = None,
     page: int = 1,
     page_size: int = 50,
     session: Session = Depends(get_session),
@@ -103,6 +111,14 @@ def list_bank_transactions(
         query = query.where(BankTransaction.ledger_period == ledger_period)
     if direction:
         query = query.where(BankTransaction.direction == direction)
+    if match_status == "unmatched":
+        query = query.where(BankTransaction.matched_amount <= Decimal("0"))
+    elif match_status == "matched":
+        query = query.where(BankTransaction.matched_amount > Decimal("0"))
+    if counterparty_name and counterparty_name.strip():
+        query = query.where(BankTransaction.counterparty_name.ilike(f"%{counterparty_name.strip()}%"))
+    if counterparty_account and counterparty_account.strip():
+        query = query.where(BankTransaction.counterparty_account.ilike(f"%{counterparty_account.strip()}%"))
     items, total = paginate(session, query, page, page_size)
     return ApiEnvelope(data=Page(items=items, total=total, page=page, page_size=page_size))
 
@@ -138,6 +154,45 @@ def create_bank_transaction(
     return ApiEnvelope(data=transaction)
 
 
+@router.post("/batch", response_model=ApiEnvelope[BankTransactionBatchCreateResult], status_code=201)
+def create_bank_transactions_batch(
+    payload: BankTransactionBatchCreateRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> ApiEnvelope[BankTransactionBatchCreateResult]:
+    ensure_permission(session, current_user, "reconciliation.manage")
+    if not payload.items:
+        raise HTTPException(status_code=422, detail="At least one bank transaction is required")
+
+    transactions: list[BankTransaction] = []
+    for item in payload.items:
+        if not item.store_id:
+            raise HTTPException(status_code=422, detail="Store is required")
+        ensure_store_access(session, current_user, item.store_id)
+        transaction = BankTransaction(**normalize_bank_assignment(session, item))
+        session.add(transaction)
+        transactions.append(transaction)
+
+    session.flush()
+    for transaction in transactions:
+        write_audit_log(
+            session,
+            actor=audit_actor(current_user),
+            action="bank_transaction.create",
+            resource_type="bank_transaction",
+            resource_id=transaction.id,
+            summary=f"新增银行流水：{transaction.amount}",
+            metadata={
+                "store_id": transaction.store_id,
+                "ledger_period": transaction.ledger_period,
+                "direction": transaction.direction,
+                "batch": True,
+            },
+        )
+    session.commit()
+    return ApiEnvelope(data=BankTransactionBatchCreateResult(created_count=len(transactions)))
+
+
 @router.get("/import/template.csv")
 def download_bank_import_template(
     session: Session = Depends(get_session),
@@ -169,6 +224,14 @@ def update_bank_transaction(
     if transaction is None:
         raise HTTPException(status_code=404, detail="Bank transaction not found")
     ensure_store_access(session, current_user, transaction.store_id)
+    has_expense_match = session.scalar(
+        select(ExpenseBankMatch).where(ExpenseBankMatch.bank_transaction_id == transaction_id).limit(1)
+    )
+    has_revenue_match = session.scalar(
+        select(RevenueBankMatch).where(RevenueBankMatch.bank_transaction_id == transaction_id).limit(1)
+    )
+    if Decimal(transaction.matched_amount or 0) > 0 or has_expense_match or has_revenue_match:
+        raise HTTPException(status_code=409, detail="Bank transaction already matched and cannot be edited")
 
     updates = payload.model_dump(exclude_unset=True)
     target_store_id = updates.get("store_id", transaction.store_id)
@@ -182,10 +245,6 @@ def update_bank_transaction(
         ensure_open_or_create_ledger(session, target_store_id, target_ledger_period)
     elif target_ledger_period:
         raise HTTPException(status_code=422, detail="Store is required when ledger period is provided")
-    new_amount = updates.get("amount")
-    if new_amount is not None and Decimal(new_amount) < Decimal(transaction.matched_amount or 0):
-        raise HTTPException(status_code=409, detail="Amount cannot be lower than matched amount")
-
     new_serial_no = updates.get("bank_serial_no")
     if new_serial_no:
         exists = session.scalar(
@@ -216,6 +275,53 @@ def update_bank_transaction(
     session.commit()
     session.refresh(transaction)
     return ApiEnvelope(data=transaction)
+
+
+@router.delete("/batch", response_model=ApiEnvelope[BankTransactionBatchDeleteResult])
+def delete_bank_transactions_batch(
+    payload: BankTransactionBatchDeleteRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> ApiEnvelope[BankTransactionBatchDeleteResult]:
+    ensure_permission(session, current_user, "reconciliation.manage")
+    transaction_ids = list(dict.fromkeys(payload.ids))
+    transactions = list(session.scalars(select(BankTransaction).where(BankTransaction.id.in_(transaction_ids))))
+    found_ids = {transaction.id for transaction in transactions}
+    missing_ids = [transaction_id for transaction_id in transaction_ids if transaction_id not in found_ids]
+    if missing_ids:
+        raise HTTPException(status_code=404, detail=f"银行流水不存在：{', '.join(missing_ids)}")
+
+    for transaction in transactions:
+        ensure_store_access(session, current_user, transaction.store_id)
+        if Decimal(transaction.matched_amount or 0) > 0:
+            raise HTTPException(status_code=409, detail="选中的银行流水中包含已匹配流水，不能批量删除")
+        has_expense_match = session.scalar(
+            select(ExpenseBankMatch).where(ExpenseBankMatch.bank_transaction_id == transaction.id).limit(1)
+        )
+        has_revenue_match = session.scalar(
+            select(RevenueBankMatch).where(RevenueBankMatch.bank_transaction_id == transaction.id).limit(1)
+        )
+        if has_expense_match or has_revenue_match:
+            raise HTTPException(status_code=409, detail="选中的银行流水中包含已有匹配记录的流水，不能批量删除")
+
+    for transaction in transactions:
+        write_audit_log(
+            session,
+            actor=audit_actor(current_user),
+            action="bank_transaction.delete",
+            resource_type="bank_transaction",
+            resource_id=transaction.id,
+            summary=f"删除银行流水：{transaction.amount}",
+            metadata={
+                "store_id": transaction.store_id,
+                "ledger_period": transaction.ledger_period,
+                "direction": transaction.direction,
+                "batch": True,
+            },
+        )
+        session.delete(transaction)
+    session.commit()
+    return ApiEnvelope(data=BankTransactionBatchDeleteResult(deleted_count=len(transactions)))
 
 
 @router.delete("/{transaction_id}", response_model=ApiEnvelope[BankTransactionRead])

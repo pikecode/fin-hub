@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 API_DIR="$ROOT_DIR/apps/api"
 DATABASE_URL_VALUE="${DATABASE_URL:-postgresql+psycopg://finhub:finhub@localhost:5432/finhub}"
+DINGTALK_SYNC_MODE_VALUE="${DINGTALK_SYNC_MODE:-real}"
 START_DOCKER_INFRA="${START_DOCKER_INFRA:-true}"
 
 if [ "$START_DOCKER_INFRA" = "true" ] && command -v docker >/dev/null 2>&1; then
@@ -19,4 +20,4 @@ fi
 uv pip install --python .venv/bin/python -e ".[dev]"
 DATABASE_URL="$DATABASE_URL_VALUE" .venv/bin/alembic upgrade head
 DATABASE_URL="$DATABASE_URL_VALUE" .venv/bin/python -m app.dev_seed
-DATABASE_URL="$DATABASE_URL_VALUE" .venv/bin/uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+DINGTALK_SYNC_MODE="$DINGTALK_SYNC_MODE_VALUE" DATABASE_URL="$DATABASE_URL_VALUE" .venv/bin/uvicorn app.main:app --reload --host 0.0.0.0 --port 8000

@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.sql import text
 
 from app import models  # noqa: F401
+from app.core.config import settings
 from app.core.database import Base, get_session
 from app.core.security import hash_password
 from app.main import app
@@ -20,6 +21,12 @@ TEST_DATABASE_URL = os.environ.get(
     "postgresql+psycopg://finhub:finhub@localhost:5432/finhub",
 )
 TEST_DATABASE_SCHEMA = os.environ.get("TEST_DATABASE_SCHEMA", "finhub_test")
+
+
+@pytest.fixture(autouse=True)
+def test_dingtalk_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep legacy mock scenarios isolated from the real local/runtime default."""
+    monkeypatch.setattr(settings, "dingtalk_sync_mode", "mock")
 
 
 def test_engine():

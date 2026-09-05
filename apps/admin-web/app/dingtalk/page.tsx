@@ -596,6 +596,7 @@ export default function DingTalkPage() {
   const [selectedInstanceAttachments, setSelectedInstanceAttachments] = useState<Attachment[]>([]);
   const [imagePreview, setImagePreview] = useState<ImagePreviewState | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [isStartingApprovalSync, setIsStartingApprovalSync] = useState(false);
   const [isTemplateModalOpen, setIsTemplateModalOpen] = useState(false);
   const [isMappingDrawerOpen, setIsMappingDrawerOpen] = useState(false);
   const [isSyncModalOpen, setIsSyncModalOpen] = useState(false);
@@ -659,6 +660,13 @@ export default function DingTalkPage() {
   );
   const businessMappings = useMemo(() => mappings.filter(isBusinessMapping), [mappings]);
   const hasRunningSyncJob = syncJobs.some((job) => job.status === "running");
+  const activeSyncJob = useMemo(
+    () =>
+      syncJobs
+        .filter((job) => job.status === "running")
+        .sort((left, right) => (right.started_at ?? right.created_at).localeCompare(left.started_at ?? left.created_at))[0] ?? null,
+    [syncJobs],
+  );
   const selectedTemplateSampleInstance = selectedTemplate
     ? approvalInstances.find((instance) => instance.template_id === selectedTemplate.id)
     : undefined;
@@ -789,6 +797,17 @@ export default function DingTalkPage() {
     setIsLoading(false);
   }
 
+  async function refreshSyncJobs() {
+    try {
+      const result = await apiClient.dingtalk.listSyncJobs("?page_size=50");
+      setSyncJobs(result.items);
+      return result.items;
+    } catch {
+      // Keep the current progress visible when a background refresh briefly fails.
+      return null;
+    }
+  }
+
   async function refreshSyncReadiness() {
     try {
       setSyncReadiness(await apiClient.dingtalk.readSyncReadiness());
@@ -889,12 +908,12 @@ export default function DingTalkPage() {
   }
 
   useEffect(() => {
-    if (!hasRunningSyncJob || activeTabKey !== "instances") return;
+    if (!hasRunningSyncJob) return;
     const timer = window.setInterval(() => {
-      void loadInstancesTab(true);
+      void refreshSyncJobs();
     }, 3000);
     return () => window.clearInterval(timer);
-  }, [activeTabKey, hasRunningSyncJob]);
+  }, [hasRunningSyncJob]);
 
   async function submitConfig(values: DingTalkFormValues) {
     setIsLoading(true);
@@ -1105,6 +1124,8 @@ export default function DingTalkPage() {
       return;
     }
     setIsLoading(true);
+    setIsStartingApprovalSync(true);
+    setErrorMessage(null);
     try {
       const job = await apiClient.dingtalk.startApprovalSync({
         template_id: values.template_id,
@@ -1118,8 +1139,10 @@ export default function DingTalkPage() {
       await loadInstancesTab(true);
       message.success(`审批同步任务已开始，可在任务列表取消：${job.id.slice(0, 8)}`);
     } catch (error) {
+      await refreshSyncJobs();
       setErrorMessage(dingtalkPageErrorMessage(error, "无法同步审批实例"));
     } finally {
+      setIsStartingApprovalSync(false);
       setIsLoading(false);
     }
   }
@@ -1813,6 +1836,29 @@ export default function DingTalkPage() {
     >
       {errorMessage ? (
         <Alert className="dashboard-alert" message={errorMessage} type="warning" showIcon />
+      ) : null}
+      {activeSyncJob ? (
+        <Alert
+          className="dashboard-alert"
+          type="info"
+          showIcon
+          message="审批同步正在执行"
+          description={`已处理 ${activeSyncJob.processed_count} 条，成功 ${activeSyncJob.success_count} 条，失败 ${activeSyncJob.failed_count} 条。页面每 3 秒自动刷新进度。`}
+          action={
+            <Button type="link" onClick={() => setActiveTabKey("auto-sync")}>
+              查看执行日志
+            </Button>
+          }
+        />
+      ) : null}
+      {isStartingApprovalSync && !activeSyncJob ? (
+        <Alert
+          className="dashboard-alert"
+          type="info"
+          showIcon
+          message="正在提交审批同步任务"
+          description="正在连接钉钉并创建同步任务，请保持当前页面打开。任务创建后会自动显示处理进度。"
+        />
       ) : null}
 
       <Tabs
@@ -2516,7 +2562,18 @@ export default function DingTalkPage() {
         onCancel={() => setIsSyncModalOpen(false)}
         onOk={() => syncForm.submit()}
         confirmLoading={isLoading}
+        maskClosable={!isStartingApprovalSync}
+        closable={!isStartingApprovalSync}
       >
+        {isStartingApprovalSync ? (
+          <Alert
+            className="dashboard-alert"
+            type="info"
+            showIcon
+            message="正在创建同步任务"
+            description="请稍候，创建成功后会自动关闭窗口并显示同步进度。"
+          />
+        ) : null}
         {approvalSyncDisabled ? (
           <Alert
             className="dashboard-alert"

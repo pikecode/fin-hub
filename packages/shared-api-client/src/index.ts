@@ -20,7 +20,10 @@ import type {
   BankImportResult,
   BankImportRollbackResult,
   BankTransaction,
+  BankTransactionBatchCreateRequest,
+  BankTransactionBatchCreateResult,
   BankTransactionCreate,
+  BankTransactionBatchDeleteResult,
   BankTransactionUpdate,
   CurrentUser,
   DatabaseBackupStatus,
@@ -377,6 +380,11 @@ export function createApiClient(options: ApiClientOptions) {
           method: "POST",
           body: JSON.stringify(payload),
         }),
+      createBatch: (payload: BankTransactionBatchCreateRequest) =>
+        request<BankTransactionBatchCreateResult>("/api/bank-transactions/batch", {
+          method: "POST",
+          body: JSON.stringify(payload),
+        }),
       update: (id: string, payload: BankTransactionUpdate) =>
         request<BankTransaction>(`/api/bank-transactions/${id}`, {
           method: "PATCH",
@@ -385,6 +393,11 @@ export function createApiClient(options: ApiClientOptions) {
       delete: (id: string) =>
         request<BankTransaction>(`/api/bank-transactions/${id}`, {
           method: "DELETE",
+        }),
+      deleteBatch: (ids: string[]) =>
+        request<BankTransactionBatchDeleteResult>("/api/bank-transactions/batch", {
+          method: "DELETE",
+          body: JSON.stringify({ ids }),
         }),
       importFile: (payload: FormData) =>
         request<BankImportResult>("/api/bank-transactions/import", {

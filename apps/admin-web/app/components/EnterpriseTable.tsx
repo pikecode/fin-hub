@@ -1,8 +1,8 @@
 import { Table, Checkbox, Space, Button, Dropdown, Tag, Segmented } from "antd";
 import type { MenuProps } from "antd";
 import type { TableProps, ColumnsType, ColumnType } from "antd/es/table";
-import { DownloadOutlined, MoreOutlined, SettingOutlined } from "@ant-design/icons";
-import { useState, useMemo } from "react";
+import { DownloadOutlined, SettingOutlined } from "@ant-design/icons";
+import { useEffect, useState, useMemo } from "react";
 import type { Key } from "react";
 
 export type TableDensity = "compact" | "default" | "comfortable";
@@ -75,6 +75,16 @@ export function EnterpriseTable<T extends Record<string, any>>({
     new Set(columns.map((col) => col.key))
   );
   const activeDensity = density ?? internalDensity;
+  const selectableRows = tableDataSource.filter((record) => !rowSelection?.getCheckboxProps?.(record).disabled);
+
+  useEffect(() => {
+    const validKeys = new Set(tableDataSource.map((record) => record.key ?? record.id));
+    const nextKeys = selectedRowKeys.filter((key) => validKeys.has(key));
+    if (nextKeys.length === selectedRowKeys.length) return;
+
+    setSelectedRowKeys(nextKeys);
+    setSelectedRows((rows) => rows.filter((record) => validKeys.has(record.key ?? record.id)));
+  }, [selectedRowKeys, tableDataSource]);
 
   // 处理固定列
   const processedColumns = useMemo(() => {
@@ -104,13 +114,13 @@ export function EnterpriseTable<T extends Record<string, any>>({
     }
 
     return {
+      ...rowSelection,
       selectedRowKeys,
-      onChange: (keys: Key[], rows: T[]) => {
+      onChange: (keys: Key[], rows: T[], info: any) => {
         setSelectedRowKeys(keys);
         setSelectedRows(rows);
-        rowSelection?.onChange?.(keys, rows, {} as any);
+        rowSelection?.onChange?.(keys, rows, info);
       },
-      ...rowSelection,
     };
   }, [batchActions, selectedRowKeys, rowSelection]);
 
@@ -163,19 +173,6 @@ export function EnterpriseTable<T extends Record<string, any>>({
     })),
   };
 
-  // 批量操作菜单
-  const batchMenu: MenuProps = {
-    items: batchActions?.map((action) => ({
-      key: action.key,
-      label: action.label,
-      icon: action.icon,
-      danger: action.danger,
-      onClick: () => {
-        (action.onExecute ?? action.onClick)?.(selectedRowKeys, selectedRows);
-      },
-    })),
-  };
-
   return (
     <div className="enterprise-table-wrapper">
       {/* 工具栏 */}
@@ -185,11 +182,11 @@ export function EnterpriseTable<T extends Record<string, any>>({
             <div className="batch-info">
               <Checkbox
                 indeterminate={selectedRowKeys.length > 0 && selectedRowKeys.length < tableDataSource.length}
-                checked={selectedRowKeys.length === tableDataSource.length && tableDataSource.length > 0}
+                checked={selectedRowKeys.length === selectableRows.length && selectableRows.length > 0}
                 onChange={(e) => {
                   if (e.target.checked) {
-                    setSelectedRowKeys(tableDataSource.map((item) => item.key || item.id));
-                    setSelectedRows(tableDataSource);
+                    setSelectedRowKeys(selectableRows.map((item) => item.key || item.id));
+                    setSelectedRows(selectableRows);
                   } else {
                     setSelectedRowKeys([]);
                     setSelectedRows([]);
@@ -209,11 +206,20 @@ export function EnterpriseTable<T extends Record<string, any>>({
 
         <div className="toolbar-right">
           <Space size={8}>
-            {/* 批量操作 */}
+            {/* 选中数据后直接显示动作，避免下拉菜单吞掉回调。 */}
             {selectedRowKeys.length > 0 && batchActions && batchActions.length > 0 && (
-              <Dropdown menu={batchMenu} placement="bottomRight">
-                <Button icon={<MoreOutlined />}>批量操作</Button>
-              </Dropdown>
+              <Space size={8}>
+                {batchActions.map((action) => (
+                  <Button
+                    key={action.key}
+                    icon={action.icon}
+                    danger={action.danger}
+                    onClick={() => (action.onExecute ?? action.onClick)?.(selectedRowKeys, selectedRows)}
+                  >
+                    {action.label}
+                  </Button>
+                ))}
+              </Space>
             )}
 
             {/* 密度切换 */}
@@ -262,12 +268,12 @@ export function EnterpriseTable<T extends Record<string, any>>({
         <div className="batch-action-bar">
           <div className="batch-action-left">
             <Checkbox
-              indeterminate={selectedRowKeys.length > 0 && selectedRowKeys.length < tableDataSource.length}
-              checked={selectedRowKeys.length === tableDataSource.length}
+              indeterminate={selectedRowKeys.length > 0 && selectedRowKeys.length < selectableRows.length}
+              checked={selectedRowKeys.length === selectableRows.length && selectableRows.length > 0}
               onChange={(e) => {
                 if (e.target.checked) {
-                  setSelectedRowKeys(tableDataSource.map((item) => item.key || item.id));
-                  setSelectedRows(tableDataSource);
+                  setSelectedRowKeys(selectableRows.map((item) => item.key || item.id));
+                  setSelectedRows(selectableRows);
                 } else {
                   setSelectedRowKeys([]);
                   setSelectedRows([]);

@@ -464,6 +464,14 @@ export interface BankTransactionCreate {
   bank_serial_no?: string | null;
 }
 
+export interface BankTransactionBatchCreateRequest {
+  items: BankTransactionCreate[];
+}
+
+export interface BankTransactionBatchCreateResult {
+  created_count: number;
+}
+
 export interface BankTransactionUpdate {
   store_id?: string | null;
   ledger_period?: string | null;
@@ -474,6 +482,10 @@ export interface BankTransactionUpdate {
   counterparty_account?: string | null;
   summary?: string | null;
   bank_serial_no?: string | null;
+}
+
+export interface BankTransactionBatchDeleteResult {
+  deleted_count: number;
 }
 
 export interface ExpenseBankMatch {

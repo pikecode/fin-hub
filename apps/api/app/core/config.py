@@ -23,7 +23,7 @@ class Settings(BaseSettings):
         default="https://oapi.dingtalk.com",
         validation_alias="DINGTALK_OAPI_BASE_URL",
     )
-    dingtalk_sync_mode: str = Field(default="mock", validation_alias="DINGTALK_SYNC_MODE")
+    dingtalk_sync_mode: str = Field(default="real", validation_alias="DINGTALK_SYNC_MODE")
     dingtalk_app_key: str | None = Field(default=None, validation_alias="DINGTALK_APP_KEY")
     dingtalk_app_secret: str | None = Field(default=None, validation_alias="DINGTALK_APP_SECRET")
     dingtalk_drive_union_id: str | None = Field(default=None, validation_alias="DINGTALK_DRIVE_UNION_ID")

@@ -89,3 +89,16 @@ def test_rate_limit_per_ip(rate_limited_app):
         # IP2 仍可正常请求
         response = client.get("/test", headers={"X-Forwarded-For": "192.168.1.2"})
         assert response.status_code == 200
+
+
+def test_rate_limit_isolated_by_method_and_path(rate_limited_app):
+    """不同接口和请求方法不应共享同一个限流额度"""
+    with TestClient(rate_limited_app, client=("198.51.100.6", 50000)) as client:
+        for _ in range(5):
+            assert client.get("/test").status_code == 200
+
+        # GET /test 已达到上限，但另一个路径仍可访问。
+        assert client.get("/other").status_code == 404
+
+        # POST 方法也使用独立的限流桶。
+        assert client.post("/test").status_code == 405
