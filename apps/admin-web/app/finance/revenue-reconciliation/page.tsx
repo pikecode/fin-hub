@@ -76,6 +76,7 @@ export default function RevenueReconciliationPage() {
   const [stores, setStores] = useState<Store[]>([]);
   const [ledgers, setLedgers] = useState<Ledger[]>([]);
   const [channels, setChannels] = useState<RevenueChannel[]>([]);
+  const [allIncomeTransactions, setAllIncomeTransactions] = useState<BankTransaction[]>([]);
   const [transactions, setTransactions] = useState<BankTransaction[]>([]);
   const [incomeBankTotal, setIncomeBankTotal] = useState(0);
   const [records, setRecords] = useState<RevenueRecord[]>([]);
@@ -101,7 +102,7 @@ export default function RevenueReconciliationPage() {
   const loadRequestIdRef = useRef(0);
 
   const storesById = useMemo(() => new Map(stores.map((store) => [store.id, store])), [stores]);
-  const transactionsById = useMemo(() => new Map(transactions.map((transaction) => [transaction.id, transaction])), [transactions]);
+  const transactionsById = useMemo(() => new Map(allIncomeTransactions.map((transaction) => [transaction.id, transaction])), [allIncomeTransactions]);
   const currentStore = selectedStoreId ? storesById.get(selectedStoreId) : undefined;
   const fallbackLedgerPeriod = useMemo(() => defaultLedgerPeriod(), []);
   const selectedLedgerPeriod = initialLedgerPeriod ?? fallbackLedgerPeriod;
@@ -232,6 +233,7 @@ export default function RevenueReconciliationPage() {
           .filter(isActiveMatch)
           .map((match) => match.bank_transaction_id),
       );
+      const allTransactions = bankResult.status === "fulfilled" ? [...bankResult.value.items] : [];
       const nextTransactions = bankResult.status === "fulfilled"
         ? [...bankResult.value.items]
             .filter((transaction) => remainingAmount(transaction) > 0 && !matchedBankTransactionIds.has(transaction.id))
@@ -243,6 +245,7 @@ export default function RevenueReconciliationPage() {
       if (revenueResult.status === "rejected") loadErrors.push("营业收入");
       if (matchResult.status === "rejected") loadErrors.push("收入匹配记录");
 
+      setAllIncomeTransactions(allTransactions);
       setTransactions(nextTransactions);
       setIncomeBankTotal(bankResult.status === "fulfilled" ? bankResult.value.total : 0);
       setRecords(nextRecords);
@@ -497,38 +500,58 @@ export default function RevenueReconciliationPage() {
 
   const matchColumns: ColumnsType<RevenueBankMatch> = [
     {
-      title: "收入范围",
-      width: 220,
+      title: "银行信息",
+      width: 260,
       render: (_, match) => (
+        (() => {
+          const transaction = transactionsById.get(match.bank_transaction_id);
+          return (
         <Space direction="vertical" size={2}>
-          <Typography.Text strong>{match.channel}</Typography.Text>
-          <Typography.Text type="secondary">
-            {match.revenue_start_date} 至 {match.revenue_end_date}
-            {match.revenue_record_ids?.length ? ` / ${match.revenue_record_ids.length} 条收入` : ""}
+          <Typography.Text strong>
+            {transaction ? dayjs(transaction.occurred_at).format("YYYY-MM-DD") : match.bank_transaction_id}
           </Typography.Text>
+          <Typography.Text type="secondary">
+            {transaction
+              ? transaction.bank_serial_no || transaction.counterparty_name || "未填写流水号"
+              : "流水信息缺失"}
+          </Typography.Text>
+          {transaction?.summary ? (
+            <Typography.Text type="secondary" ellipsis title={transaction.summary}>
+              摘要：{transaction.summary}
+            </Typography.Text>
+          ) : null}
         </Space>
+          );
+        })()
       ),
     },
-    { title: "匹配金额", dataIndex: "amount", width: 120, align: "right", render: (value: string) => formatMoney(value) },
     {
-      title: "银行流水",
-      width: 320,
+      title: "银行流水金额",
+      width: 128,
+      align: "right",
       render: (_, match) => {
         const transaction = transactionsById.get(match.bank_transaction_id);
-        return transaction ? (
+        return transaction ? formatMoney(transaction.amount) : "-";
+      },
+    },
+    {
+      title: "匹配收入",
+      width: 320,
+      render: (_, match) => {
+        return (
           <Space direction="vertical" size={2} style={{ width: "100%" }}>
             <Space size={6} wrap>
-              <Typography.Text strong>{dayjs(transaction.occurred_at).format("YYYY-MM-DD")}</Typography.Text>
-              <Typography.Text className="income-amount">{formatMoney(transaction.amount)}</Typography.Text>
-              {transaction.bank_serial_no ? <Tag>{transaction.bank_serial_no}</Tag> : null}
+              <Typography.Text strong>{match.channel}</Typography.Text>
+              <Tag color="blue">{match.revenue_record_ids?.length ? `${match.revenue_record_ids.length} 条收入` : "单条收入"}</Tag>
             </Space>
-            <Typography.Text ellipsis>{transaction.summary || transaction.counterparty_name || "无摘要"}</Typography.Text>
+            <Typography.Text type="secondary">
+              {match.revenue_start_date} 至 {match.revenue_end_date}
+            </Typography.Text>
           </Space>
-        ) : (
-          <Typography.Text type="secondary">{match.bank_transaction_id}</Typography.Text>
         );
       },
     },
+    { title: "匹配金额", dataIndex: "amount", width: 120, align: "right", render: (value: string) => formatMoney(value) },
     { title: "状态", dataIndex: "status", width: 100, render: (value: string) => <Tag color={value === "confirmed" ? "green" : "gold"}>{value === "confirmed" ? "已确认" : "候选"}</Tag> },
     { title: "确认人", dataIndex: "confirmed_by", width: 110, render: (value?: string | null) => value || "-" },
     { title: "确认时间", dataIndex: "confirmed_at", width: 150, render: formatDateTime },
@@ -650,7 +673,6 @@ export default function RevenueReconciliationPage() {
                           </span>
                           <span className="bank-transaction-card__amounts">
                             <Typography.Text className="bank-transaction-card__amount income-amount">{formatMoney(transaction.amount)}</Typography.Text>
-                            <Typography.Text type="secondary">剩余 {formatMoney(Math.max(remaining, 0).toFixed(2))}</Typography.Text>
                           </span>
                         </button>
                       );
