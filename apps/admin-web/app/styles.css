@@ -3014,12 +3014,12 @@ select,
 .revenue-channel-section {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
 }
 
 .revenue-channel-section__header {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   justify-content: space-between;
   gap: 16px;
 }
@@ -3030,36 +3030,53 @@ select,
 
 .revenue-channel-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(196px, 1fr));
+  gap: 12px;
 }
 
-.revenue-channel-card {
+.revenue-channel-card.ant-card {
+  display: block;
+  width: auto;
+  min-height: 92px;
+  padding: 0;
+  text-align: initial;
   position: relative;
   overflow: hidden;
-  min-height: 100px;
-  border: 1px solid #e5e7eb;
+  border: 1px solid #dfe5ea;
   border-radius: 8px;
   background: #ffffff;
-  box-shadow: var(--shadow-sm);
-  transition: border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease, background 0.18s ease;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  transition: border-color 0.16s ease, box-shadow 0.16s ease, background-color 0.16s ease;
 }
 
-.revenue-channel-card:hover {
-  border-color: #cbd5e1;
-  box-shadow: var(--shadow-md);
-  transform: translateY(-1px);
+.revenue-channel-card.ant-card:hover {
+  border-color: #b7c5d1;
+  background-color: #fbfcfd;
+  box-shadow: 0 5px 14px rgba(15, 23, 42, 0.08);
 }
 
-.revenue-channel-card--selected {
+.revenue-channel-card--selected.ant-card {
   border-color: var(--primary-500);
-  background: linear-gradient(180deg, #ffffff 0%, #f0fdfa 100%);
-  box-shadow: inset 0 0 0 1px rgba(20, 184, 166, 0.2), 0 8px 18px rgba(15, 118, 110, 0.1);
+  background-color: #eaf8f4 !important;
+  box-shadow: inset 0 0 0 1px rgba(20, 184, 166, 0.16), 0 5px 14px rgba(15, 118, 110, 0.09);
 }
 
-.revenue-channel-card--selected:hover {
+.revenue-channel-card--selected.ant-card:hover {
   border-color: var(--primary-600);
-  box-shadow: 0 0 0 1px rgba(13, 148, 136, 0.28), 0 12px 28px rgba(15, 118, 110, 0.14);
+  background-color: #e3f6f0 !important;
+  box-shadow: inset 0 0 0 1px rgba(13, 148, 136, 0.2), 0 7px 16px rgba(15, 118, 110, 0.12);
+}
+
+.revenue-channel-card--selected::before {
+  position: absolute;
+  z-index: 1;
+  top: 14px;
+  bottom: 14px;
+  left: 0;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--primary-600);
+  content: "";
 }
 
 .revenue-channel-card .ant-card-body {
@@ -3067,8 +3084,12 @@ select,
   height: 100%;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 10px 12px 10px 14px;
+  gap: 8px;
+  padding: 13px 14px 12px 16px;
+}
+
+.revenue-channel-card--selected .ant-card-body {
+  background: transparent;
 }
 
 .revenue-channel-card--inactive {
@@ -3094,7 +3115,7 @@ select,
 .revenue-channel-card__title {
   color: #0f172a;
   font-size: 14px;
-  font-weight: 700;
+  font-weight: 650;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -3107,33 +3128,42 @@ select,
 }
 
 .revenue-channel-card__amount {
-  color: #0f172a;
-  font-size: 20px;
-  font-weight: 800;
-  line-height: 1.2;
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+  line-height: 1;
 }
 
 .revenue-channel-card__entry-button.ant-btn {
   flex: 0 0 auto;
-  border-color: rgba(13, 148, 136, 0.32);
-  background: linear-gradient(180deg, #ffffff 0%, #f0fdfa 100%);
-  color: var(--primary-700);
-  font-weight: 700;
-  box-shadow: 0 1px 2px rgba(13, 148, 136, 0.12);
+  min-width: 52px;
+  height: 28px;
+  padding: 0 10px;
+  border-color: #d5dee7;
+  background: #ffffff;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .revenue-channel-card__entry-button.ant-btn:hover,
 .revenue-channel-card__entry-button.ant-btn:focus {
-  border-color: var(--primary-500);
-  background: var(--primary-50);
+  border-color: var(--primary-400);
+  background: #e6f6f2;
   color: var(--primary-700);
-  box-shadow: 0 4px 12px rgba(13, 148, 136, 0.16);
 }
 
-.revenue-channel-card__entry-button.ant-btn-primary {
+.revenue-channel-card__entry-button--active.ant-btn {
   border-color: var(--primary-600);
   background: var(--primary-600);
   color: #ffffff;
+}
+
+.revenue-channel-card__amount .money-cell {
+  color: #172033;
+  letter-spacing: 0;
+  line-height: 1.15;
 }
 
 .revenue-detail-edit-button.ant-btn-primary {
@@ -3151,7 +3181,7 @@ select,
 }
 
 .revenue-channel-card--selected .revenue-channel-card__title,
-.revenue-channel-card--selected .revenue-channel-card__amount {
+.revenue-channel-card--selected .revenue-channel-card__amount .money-cell {
   color: #0f766e;
 }
 

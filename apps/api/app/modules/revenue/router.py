@@ -46,7 +46,6 @@ DEFAULT_REVENUE_CHANNELS: tuple[tuple[str, int, bool], ...] = (
     ("现金收款", 60, False),
     ("淘宝团购", 70, True),
 )
-DEFAULT_REVENUE_CHANNEL_NAMES = {name for name, _, _ in DEFAULT_REVENUE_CHANNELS}
 
 
 def period_from_revenue_date(revenue_date) -> str:
@@ -119,11 +118,7 @@ def list_revenue_channels(
     seeded = ensure_default_revenue_channels(session)
     if seeded:
         session.commit()
-    query = (
-        select(RevenueChannel)
-        .where(RevenueChannel.name.in_(DEFAULT_REVENUE_CHANNEL_NAMES))
-        .order_by(RevenueChannel.sort_order.asc(), RevenueChannel.created_at.asc())
-    )
+    query = select(RevenueChannel).order_by(RevenueChannel.sort_order.asc(), RevenueChannel.created_at.asc())
     items, total = paginate(session, query, page, page_size)
     return ApiEnvelope(data=Page(items=items, total=total, page=page, page_size=page_size))
 

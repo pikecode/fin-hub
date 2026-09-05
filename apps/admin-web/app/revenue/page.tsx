@@ -1,12 +1,12 @@
 "use client";
 
-import { Button, Card, Form, Input, Select, Space, Table, Tag, Typography, message } from "antd";
+import { Button, Card, Form, Input, Modal, Select, Space, Table, Tag, Typography, message } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import customParseFormat from "dayjs/plugin/customParseFormat";
 import dayjs from "dayjs";
 import { EditOutlined, PlusOutlined } from "@ant-design/icons";
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { Ledger, RevenueBankMatch, RevenueChannel, RevenueRecord, Store } from "@fin-hub/shared-types";
+import type { Ledger, RevenueBankMatch, RevenueChannel, RevenueChannelCreate, RevenueRecord, Store } from "@fin-hub/shared-types";
 import { AppShell } from "../components/AppShell";
 import { MoneyDisplay } from "../components/MoneyDisplay";
 import { StoreLedgerWorkspaceNav } from "../components/StoreLedgerWorkspaceNav";
@@ -184,10 +184,12 @@ export default function RevenuePage() {
   const [isLoading, setIsLoading] = useState(false);
   const [selectedChannel, setSelectedChannel] = useState<string | undefined>(queryChannel);
   const [isEditing, setIsEditing] = useState(false);
+  const [isChannelModalOpen, setIsChannelModalOpen] = useState(false);
   const [batchEditRows, setBatchEditRows] = useState<RevenueEntryRow[]>([]);
   const [focusedEntryCell, setFocusedEntryCell] = useState<{ rowIndex: number; field: RevenueEntryField }>({ rowIndex: 0, field: "gross_amount" });
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [filterForm] = Form.useForm<RevenueFilterValues>();
+  const [channelForm] = Form.useForm<RevenueChannelCreate>();
   const watchedLedgerPeriod = Form.useWatch("ledger_period", filterForm);
   const loadRequestIdRef = useRef(0);
   const entryChannelRef = useRef<string | null>(null);
@@ -200,13 +202,6 @@ export default function RevenuePage() {
   const fallbackLedgerPeriod = useMemo(() => defaultLedgerPeriod(), []);
   const activeLedgerPeriod = queryLedgerPeriod ?? watchedLedgerPeriod ?? fallbackLedgerPeriod;
   const activeLedger = queryStoreId ? ledgersByKey.get(`${queryStoreId}|${activeLedgerPeriod}`) : undefined;
-  const revenueChannelsHref = useMemo(() => {
-    const returnParams = new URLSearchParams();
-    if (queryStoreId) returnParams.set("store_id", queryStoreId);
-    if (activeLedgerPeriod) returnParams.set("ledger_period", activeLedgerPeriod);
-    const returnTo = `/revenue${returnParams.toString() ? `?${returnParams.toString()}` : ""}`;
-    return `/revenue-channels?return_to=${encodeURIComponent(returnTo)}`;
-  }, [activeLedgerPeriod, queryStoreId]);
   const ledgerPeriodOptions = useMemo(() => {
     const periods = new Set(ledgers.map((ledger) => ledger.period));
     if (activeLedgerPeriod) periods.add(activeLedgerPeriod);
@@ -294,14 +289,12 @@ export default function RevenuePage() {
     return `${((fee / gross) * 100).toFixed(2)}%`;
   }
 
-  function buildFilterParams(values?: RevenueFilterValues, channel?: string) {
+  function buildFilterParams(values?: RevenueFilterValues) {
     const params = new URLSearchParams({ page_size: "500" });
     const storeId = values?.store_id ?? queryStoreId;
     const ledgerPeriod = values?.ledger_period ?? queryLedgerPeriod ?? fallbackLedgerPeriod;
-    const revenueChannel = channel ?? values?.channel ?? selectedChannel;
     if (storeId) params.set("store_id", storeId);
     if (ledgerPeriod) params.set("ledger_period", ledgerPeriod);
-    if (revenueChannel) params.set("channel", revenueChannel);
     return `?${params.toString()}`;
   }
 
@@ -395,14 +388,12 @@ export default function RevenuePage() {
     });
     try {
       const [recordsRes, revenueMatchesRes] = await Promise.all([
-        apiClient.revenueRecords.list(buildFilterParams(filters, channel)),
+        apiClient.revenueRecords.list(buildFilterParams(filters)),
         apiClient.matches.listRevenue(
           (() => {
             const params = new URLSearchParams({ page_size: "500" });
             const storeId = filters.store_id ?? queryStoreId;
-            const revenueChannel = channel ?? filters.channel ?? selectedChannel;
             if (storeId) params.set("store_id", storeId);
-            if (revenueChannel) params.set("channel", revenueChannel);
             return `?${params.toString()}`;
           })(),
         ),
@@ -411,7 +402,8 @@ export default function RevenuePage() {
         setRecords(recordsRes.items);
         setRevenueMatches(revenueMatchesRes.items);
         if (channel) {
-          setBatchEditRows(buildRowsFromRecords(createRevenueEntryRows(period, false), recordsRes.items, revenueMatchesRes.items));
+          const channelRecords = recordsRes.items.filter((record) => record.channel === channel);
+          setBatchEditRows(buildRowsFromRecords(createRevenueEntryRows(period, false), channelRecords, revenueMatchesRes.items));
           setIsEditing(entryChannelRef.current === channel);
           if (entryChannelRef.current === channel) entryChannelRef.current = null;
         } else {
@@ -445,7 +437,8 @@ export default function RevenuePage() {
       let createdCount = 0;
       let deletedCount = 0;
       const failedRows: string[] = [];
-      const existingRecordsByDate = new Map(records.map((record) => [record.revenue_date, record]));
+      const channelRecords = records.filter((record) => record.channel === channel);
+      const existingRecordsByDate = new Map(channelRecords.map((record) => [record.revenue_date, record]));
 
       for (const row of nonEmptyRows) {
         const existingRecord = existingRecordsByDate.get(row.revenue_date);
@@ -474,7 +467,7 @@ export default function RevenuePage() {
           failedRows.push(`${row.revenue_date}：${error instanceof Error ? error.message : "保存失败"}`);
         }
       }
-      for (const record of records) {
+      for (const record of channelRecords) {
         const row = batchEditRows.find((item) => item.revenue_date === record.revenue_date);
         if (!row || !isRevenueEntryRowEmpty(row)) continue;
         try {
@@ -500,9 +493,43 @@ export default function RevenuePage() {
     }
   }
 
+  function openChannelModal() {
+    channelForm.resetFields();
+    setIsChannelModalOpen(true);
+  }
+
+  async function submitChannel(values: RevenueChannelCreate) {
+    const name = values.name.trim();
+    if (!name) return;
+
+    setIsLoading(true);
+    try {
+      const sortOrder = Math.max(0, ...channels.map((channel) => channel.sort_order)) + 10;
+      const created = await apiClient.revenueChannels.create({
+        name,
+        sort_order: sortOrder,
+        requires_bank_match: true,
+      });
+      setChannels((currentChannels) =>
+        [...currentChannels, created].sort(
+          (left, right) => left.sort_order - right.sort_order || left.name.localeCompare(right.name),
+        ),
+      );
+      setSelectedChannel(created.name);
+      setIsChannelModalOpen(false);
+      channelForm.resetFields();
+      message.success("渠道已添加");
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "添加渠道失败");
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
   function resetBatchEditRows() {
     const period = queryLedgerPeriod ?? filterForm.getFieldValue("ledger_period") ?? fallbackLedgerPeriod;
-    setBatchEditRows(buildRowsFromRecords(createRevenueEntryRows(period, false), records, revenueMatches));
+    const channelRecords = records.filter((record) => record.channel === selectedChannel);
+    setBatchEditRows(buildRowsFromRecords(createRevenueEntryRows(period, false), channelRecords, revenueMatches));
   }
 
   function clearBatchEditRows() {
@@ -662,7 +689,7 @@ export default function RevenuePage() {
             <Typography.Title level={5} style={{ margin: 0 }}>
               收入渠道
             </Typography.Title>
-            <Button icon={<PlusOutlined />} href={revenueChannelsHref}>
+            <Button icon={<PlusOutlined />} onClick={openChannelModal}>
               添加渠道
             </Button>
           </div>
@@ -678,18 +705,25 @@ export default function RevenuePage() {
                   className={`revenue-channel-card${isInactive ? " revenue-channel-card--inactive" : ""}${isSelected ? " revenue-channel-card--selected" : ""}`}
                   hoverable
                   onClick={() => setSelectedChannel(summary.name)}
+                  role="button"
+                  tabIndex={0}
+                  aria-pressed={isSelected}
+                  aria-label={`查看${summary.name}收入明细`}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      setSelectedChannel(summary.name);
+                    }
+                  }}
                   style={{ cursor: "pointer" }}
                 >
                   <div className="revenue-channel-card__header">
                     <div className="revenue-channel-card__title-wrap">
                       <Typography.Text className="revenue-channel-card__title">{summary.name}</Typography.Text>
-                      {isSelected && <Tag color="success">当前查看</Tag>}
                     </div>
                     <Button
                       size="small"
-                      type={isSelected && isEditing ? "primary" : "default"}
-                      icon={<PlusOutlined />}
-                      className="revenue-channel-card__entry-button"
+                      className={`revenue-channel-card__entry-button${isSelected && isEditing ? " revenue-channel-card__entry-button--active" : ""}`}
                       disabled={isInactive}
                       onClick={(event) => {
                         event.stopPropagation();
@@ -770,6 +804,30 @@ export default function RevenuePage() {
         </Card>
       </Space>
 
+      <Modal
+        title="添加收入渠道"
+        open={isChannelModalOpen}
+        onCancel={() => {
+          setIsChannelModalOpen(false);
+          channelForm.resetFields();
+        }}
+        onOk={() => channelForm.submit()}
+        confirmLoading={isLoading}
+        destroyOnHidden
+      >
+        <Form form={channelForm} layout="vertical" onFinish={submitChannel}>
+          <Form.Item
+            name="name"
+            label="渠道名称"
+            rules={[
+              { required: true, whitespace: true, message: "请输入渠道名称" },
+              { max: 80, message: "渠道名称不能超过 80 个字符" },
+            ]}
+          >
+            <Input autoFocus maxLength={80} placeholder="例如：外卖平台、直营网店" />
+          </Form.Item>
+        </Form>
+      </Modal>
     </AppShell>
   );
 }

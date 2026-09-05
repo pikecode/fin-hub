@@ -14,8 +14,8 @@ def test_revenue_channel_list_bootstraps_default_channels(client: TestClient) ->
         "商场代金券",
         "现金收款",
         "淘宝团购",
+        "美团",
     ]
-    assert all(channel["name"] != "美团" for channel in channels)
 
 
 def test_create_update_revenue_record_and_report(client: TestClient) -> None:
