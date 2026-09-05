@@ -976,6 +976,17 @@ export default function BankPage() {
             onFinish={(values) => void loadData(values)}
             style={{ marginBottom: 16 }}
           >
+            <Form.Item name="direction">
+              <Select
+                allowClear
+                placeholder="类型"
+                style={{ width: 112 }}
+                options={[
+                  { label: "收入", value: "income" },
+                  { label: "支出", value: "expense" },
+                ]}
+              />
+            </Form.Item>
             <Form.Item name="match_status">
               <Select
                 allowClear
