@@ -28,9 +28,11 @@ import {
   Typography,
   message,
 } from "antd";
+import zhCN from "antd/locale/zh_CN";
 import type { ColumnsType } from "antd/es/table";
 import { FileSearchOutlined } from "@ant-design/icons";
 import dayjs from "dayjs";
+import "dayjs/locale/zh-cn";
 import { useEffect, useMemo, useState } from "react";
 import type {
   ApprovalInstance,
@@ -48,6 +50,8 @@ import { StoreLedgerWorkspaceNav } from "../../components/StoreLedgerWorkspaceNa
 import { apiClient } from "../../lib/api";
 import { getApprovalTemplates, getExpenseCategories, getStores } from "../../lib/referenceData";
 import { useClientSearchParams } from "../../lib/searchParams";
+
+dayjs.locale("zh-cn");
 
 type ApprovalLike = ReconciliationExpenseCandidate | ReconciliationRecord;
 type DingTalkField = Record<string, unknown>;
@@ -411,7 +415,12 @@ export default function FinanceReconciliationPage() {
       setCandidates([]);
       setCandidatePage(1);
       setSelectedCandidateId(undefined);
-      await loadCandidates(nextTransaction, storeId, filterForm.getFieldsValue());
+      if (nextTransaction) {
+        await loadCandidates(nextTransaction, storeId, filterForm.getFieldsValue());
+      } else {
+        setCandidates([]);
+        setIsApprovalSearchActive(Boolean(filterForm.getFieldValue("approval_no")?.trim() || initialApprovalNo?.trim()));
+      }
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "无法加载门店对账数据");
     } finally {
@@ -1073,9 +1082,7 @@ export default function FinanceReconciliationPage() {
                                 </div>
                                 <div className="approval-candidate-card__aside">
                                   <Typography.Text className="approval-candidate-card__amount">{formatMoney(candidate.expense_item.amount)}</Typography.Text>
-                                  <Typography.Text type="secondary">
-                                    审批单总额 {formatMoney(candidate.approval_instance?.total_expense_amount ?? candidate.expense_item.amount)}
-                                  </Typography.Text>
+                                  <Typography.Text type="secondary">明细金额</Typography.Text>
                                   <Button
                                     size="small"
                                     type="primary"
@@ -1229,7 +1236,7 @@ export default function FinanceReconciliationPage() {
             </Spin>
           </Card>
           <Form.Item name="accounting_month" label="入账月份" rules={[{ required: true, message: "请选择入账月份" }]}>
-            <DatePicker picker="month" placeholder="请选择入账月份" style={{ width: "100%" }} />
+            <DatePicker picker="month" locale={zhCN.DatePicker} placeholder="请选择入账月份" style={{ width: "100%" }} />
           </Form.Item>
           <Form.Item name="amount" label="匹配金额" rules={[{ required: true, message: "请输入匹配金额" }]}>
             <Input disabled />
@@ -1346,7 +1353,7 @@ export default function FinanceReconciliationPage() {
             <Input />
           </Form.Item>
           <Form.Item name="accounting_month" label="入账月份" rules={[{ required: true }]}>
-            <DatePicker picker="month" style={{ width: "100%" }} />
+            <DatePicker picker="month" locale={zhCN.DatePicker} style={{ width: "100%" }} />
           </Form.Item>
           <Form.Item name="category_path" label="费用分类" rules={[{ required: true, message: "请选择费用分类" }]}>
             <Cascader
