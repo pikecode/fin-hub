@@ -3,14 +3,19 @@
 import { Alert, Button, Form, Input, InputNumber, Modal, Space, Switch, message } from "antd";
 import { useEffect, useState } from "react";
 import { PlusOutlined, MoneyCollectOutlined } from "@ant-design/icons";
+import { useRouter } from "next/navigation";
 import type { RevenueChannel, RevenueChannelCreate } from "@fin-hub/shared-types";
 import { AppShell } from "../components/AppShell";
 import { StatusBadge } from "../components/StatusBadge";
 import { EnterpriseTable } from "../components/EnterpriseTable";
 import type { EnterpriseTableColumn } from "../components/EnterpriseTable";
 import { apiClient } from "../lib/api";
+import { useClientSearchParams } from "../lib/searchParams";
 
 export default function RevenueChannelsPage() {
+  const router = useRouter();
+  const searchParams = useClientSearchParams();
+  const returnTo = searchParams.get("return_to");
   const [channels, setChannels] = useState<RevenueChannel[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -47,8 +52,14 @@ export default function RevenueChannelsPage() {
         await apiClient.revenueChannels.update(editingChannel.id, payload);
         message.success("更新成功");
       } else {
-        await apiClient.revenueChannels.create(payload);
+        const created = await apiClient.revenueChannels.create(payload);
         message.success("创建成功");
+        if (returnTo) {
+          const target = new URL(returnTo, window.location.origin);
+          target.searchParams.set("channel", created.name);
+          router.push(`${target.pathname}${target.search}`);
+          return;
+        }
       }
       setIsModalOpen(false);
       setEditingChannel(null);
@@ -163,6 +174,14 @@ export default function RevenueChannelsPage() {
       {errorMessage ? (
         <Alert className="dashboard-alert" message={errorMessage} type="warning" showIcon />
       ) : null}
+
+      <div className="table-toolbar">
+        <Space>
+          <Button type="primary" icon={<PlusOutlined />} onClick={openCreateModal}>
+            新增渠道
+          </Button>
+        </Space>
+      </div>
 
       <EnterpriseTable
         rowKey="id"

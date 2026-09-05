@@ -1,12 +1,15 @@
 import io
 import json
 from datetime import datetime
+from decimal import Decimal
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 from openpyxl import load_workbook
 from sqlalchemy.orm import Session
 
 from app.models import ApprovalInstance, ApprovalTemplate, ExpenseItem, TemplateFieldMapping
+from app.modules.matching.router import candidate_score
 
 
 def test_store_ledger_and_close_flow(client: TestClient) -> None:
@@ -218,6 +221,71 @@ def test_confirm_match_keeps_bank_transaction_store_and_period(client: TestClien
     assert expense_items[0]["id"] == expense_id
 
 
+def test_reconciliation_records_include_cross_period_match(client: TestClient) -> None:
+    store_id = client.post("/api/stores", json={"name": "蘑说跨账期记录店"}).json()["data"]["id"]
+    client.post("/api/ledgers", json={"store_id": store_id, "period": "2026-08"})
+    client.post("/api/ledgers", json={"store_id": store_id, "period": "2026-09"})
+    expense_id = client.post(
+        "/api/expense-items",
+        json={
+            "store_id": store_id,
+            "ledger_period": "2026-08",
+            "expense_date": "2026-08-31",
+            "description": "跨账期支出",
+            "amount": "100.00",
+        },
+    ).json()["data"]["id"]
+    bank_id = client.post(
+        "/api/bank-transactions",
+        json={
+            "store_id": store_id,
+            "ledger_period": "2026-09",
+            "occurred_at": "2026-09-01T10:00:00",
+            "direction": "expense",
+            "amount": "100.00",
+        },
+    ).json()["data"]["id"]
+    match_id = client.post(
+        "/api/matches",
+        json={
+            "expense_item_id": expense_id,
+            "bank_transaction_id": bank_id,
+            "amount": "100.00",
+            "accounting_period": "2026-08",
+        },
+    ).json()["data"]["id"]
+    assert client.post(f"/api/matches/{match_id}/confirm").status_code == 200
+
+    records = client.get(
+        f"/api/matches/reconciliation/records?store_id={store_id}&accounting_period=2026-09"
+    ).json()["data"]
+    assert records["total"] == 1
+    assert records["items"][0]["match"]["accounting_period"] == "2026-08"
+
+
+def test_candidate_score_only_uses_bank_and_approval_amounts() -> None:
+    bank_transaction = SimpleNamespace(amount=Decimal("10000.00"), matched_amount=Decimal("0.00"))
+    expense = SimpleNamespace(amount=Decimal("10000.00"))
+
+    exact_score, exact_reason = candidate_score(
+        bank_transaction,
+        expense,
+        Decimal("10000.00"),
+        approval_total_amount=Decimal("10000.00"),
+    )
+    close_score, close_reason = candidate_score(
+        bank_transaction,
+        expense,
+        Decimal("9000.00"),
+        approval_total_amount=Decimal("9000.00"),
+    )
+
+    assert exact_score == Decimal("100.00")
+    assert close_score == Decimal("90.00")
+    assert "门店" not in exact_reason and "日期" not in exact_reason
+    assert "门店" not in close_reason and "日期" not in close_reason
+
+
 def test_create_match_candidate_is_idempotent_for_existing_candidate(client: TestClient) -> None:
     store_id = client.post("/api/stores", json={"name": "蘑说重复候选店"}).json()["data"]["id"]
     client.post("/api/ledgers", json={"store_id": store_id, "period": "2026-08"})
@@ -348,7 +416,7 @@ def test_create_match_candidate_reuses_rejected_existing_match(client: TestClien
     assert retry.json()["data"]["reason"] == "重新匹配"
 
 
-def test_bank_transaction_can_split_match_multiple_expense_items(client: TestClient) -> None:
+def test_bank_transaction_cannot_match_multiple_expense_items(client: TestClient) -> None:
     store_id = client.post("/api/stores", json={"name": "蘑说流水拆分匹配店"}).json()["data"]["id"]
     client.post("/api/ledgers", json={"store_id": store_id, "period": "2026-08"})
     first_expense_id = client.post(
@@ -403,15 +471,14 @@ def test_bank_transaction_can_split_match_multiple_expense_items(client: TestCli
     )
 
     assert first.status_code == 201
-    assert second.status_code == 201
+    assert second.status_code == 409
+    assert second.json()["detail"] == "This bank transaction is already matched to an approval"
 
     first_confirm = client.post(f"/api/matches/{first.json()['data']['id']}/confirm?operator=tester")
-    second_confirm = client.post(f"/api/matches/{second.json()['data']['id']}/confirm?operator=tester")
     assert first_confirm.status_code == 200
-    assert second_confirm.status_code == 200
 
     bank_transaction = client.get(f"/api/bank-transactions?store_id={store_id}&page_size=20").json()["data"]["items"][0]
-    assert bank_transaction["matched_amount"] == "1000.00"
+    assert bank_transaction["matched_amount"] == "400.00"
 
     third_expense_id = client.post(
         "/api/expense-items",
@@ -433,7 +500,7 @@ def test_bank_transaction_can_split_match_multiple_expense_items(client: TestCli
         },
     )
     assert over_match.status_code == 409
-    assert over_match.json()["detail"] == "Match amount exceeds remaining bank amount"
+    assert over_match.json()["detail"] == "This bank transaction is already matched to an approval"
 
 
 def test_reconciliation_candidate_search_returns_parsed_approval_lines_without_backfill(
@@ -1088,10 +1155,11 @@ def test_confirm_multiple_matches_updates_partial_and_paid_status(client: TestCl
             "reason": "超额付款",
         },
     )
-    assert over_match_response.status_code == 409
-    assert over_match_response.json()["detail"] == "Match amount exceeds remaining expense amount"
+    assert over_match_response.status_code == 201
+    over_match_id = over_match_response.json()["data"]["id"]
+    assert client.post(f"/api/matches/{over_match_id}/confirm?operator=tester").status_code == 200
 
-    second_match_id = client.post(
+    second_match_response = client.post(
         "/api/matches",
         json={
             "expense_item_id": expense_id,
@@ -1099,9 +1167,9 @@ def test_confirm_multiple_matches_updates_partial_and_paid_status(client: TestCl
             "amount": "600.00",
             "reason": "第二笔付款",
         },
-    ).json()["data"]["id"]
-    second_confirm_response = client.post(f"/api/matches/{second_match_id}/confirm?operator=tester")
-    assert second_confirm_response.status_code == 200
+    )
+    assert second_match_response.status_code == 409
+    assert second_match_response.json()["detail"] == "This bank transaction is already matched to the approval"
 
     paid_items = client.get("/api/expense-items?payment_status=paid").json()["data"]["items"]
     assert paid_items[0]["id"] == expense_id

@@ -2,8 +2,9 @@
 
 import { Button, Card, Form, Input, Select, Space, Table, Tag, Typography, message } from "antd";
 import type { ColumnsType } from "antd/es/table";
+import customParseFormat from "dayjs/plugin/customParseFormat";
 import dayjs from "dayjs";
-import { PlusOutlined } from "@ant-design/icons";
+import { EditOutlined, PlusOutlined } from "@ant-design/icons";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Ledger, RevenueBankMatch, RevenueChannel, RevenueRecord, Store } from "@fin-hub/shared-types";
 import { AppShell } from "../components/AppShell";
@@ -12,6 +13,8 @@ import { StoreLedgerWorkspaceNav } from "../components/StoreLedgerWorkspaceNav";
 import { apiClient } from "../lib/api";
 import { getLedgers, getStores } from "../lib/referenceData";
 import { useClientSearchParams } from "../lib/searchParams";
+
+dayjs.extend(customParseFormat);
 
 interface RevenueFilterValues {
   store_id?: string;
@@ -57,22 +60,83 @@ function isRevenueEntryRowEmpty(row: RevenueEntryRow) {
   return !row.gross_amount.trim() && !row.net_amount.trim();
 }
 
+function normalizeFullWidthText(value: string) {
+  return value.replace(/[！-～]/g, (char) => String.fromCharCode(char.charCodeAt(0) - 0xfee0)).replace(/\u3000/g, " ");
+}
+
+function normalizePastedCell(value?: string | null) {
+  if (!value) return "";
+  let text = normalizeFullWidthText(value).replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
+  if (text.length >= 3 && text.startsWith("=\"") && text.endsWith("\"")) {
+    text = text.slice(2, -1).replace(/""/g, "\"").trim();
+  }
+  if (text.length >= 2 && text.startsWith("\"") && text.endsWith("\"")) {
+    text = text.slice(1, -1).replace(/""/g, "\"").trim();
+  }
+  return text;
+}
+
+function normalizePastedAmount(value?: string | null) {
+  const text = normalizePastedCell(value)
+    .replace(/[￥¥,\s]/g, "")
+    .replace(/[()（）]/g, (char) => (char === "(" || char === "（" ? "-" : ""))
+    .replace(/[^\d.+-]/g, "");
+  const normalized = text.replace(/(?!^)-/g, "").replace(/(?!^)\+/g, "");
+  return normalized && normalized !== "-" && normalized !== "." ? normalized : "";
+}
+
 function parseRevenueEntryRows(text: string) {
-  const rows = text
-    .split(/\r?\n/)
-    .map((row) => row.trimEnd())
-    .filter((row) => row.trim());
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let cell = "";
+  let inQuotes = false;
+  const source = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  const delimiter = source.includes("\t") ? "\t" : ",";
+
+  for (let index = 0; index < source.length; index += 1) {
+    const char = source[index];
+    const nextChar = source[index + 1];
+    if (char === "\"") {
+      if (inQuotes && nextChar === "\"") {
+        cell += "\"";
+        index += 1;
+      } else {
+        inQuotes = !inQuotes;
+      }
+      continue;
+    }
+    if (!inQuotes && char === delimiter) {
+      row.push(normalizePastedCell(cell));
+      cell = "";
+      continue;
+    }
+    if (!inQuotes && char === "\n") {
+      row.push(normalizePastedCell(cell));
+      if (row.some((item) => item.trim())) rows.push(row);
+      row = [];
+      cell = "";
+      continue;
+    }
+    cell += char;
+  }
+
+  row.push(normalizePastedCell(cell));
+  if (row.some((item) => item.trim())) rows.push(row);
   if (!rows.length) return [];
-  const headerWords = Object.values(revenueEntryHeaders).concat(["收入日期", "收入", "金额"]);
-  const firstCells = rows[0].split("\t").map((cell) => cell.trim());
+  const headerWords = Object.values(revenueEntryHeaders).concat(["收入日期", "收入", "金额", "营业额", "流水", "手续费"]);
+  const firstCells = rows[0].map((cell) => normalizePastedCell(cell));
   const hasHeader = firstCells.some((cell) => headerWords.includes(cell));
-  return (hasHeader ? rows.slice(1) : rows).map((row) => row.split("\t"));
+  return hasHeader ? rows.slice(1) : rows;
 }
 
 function parseEntryDate(value: string) {
-  if (!value.trim()) return null;
-  const parsed = dayjs(value);
-  return parsed.isValid() ? parsed : null;
+  const text = normalizePastedCell(value);
+  if (!text) return null;
+  const formats = ["YYYY-MM-DD", "YYYY/MM/DD", "YYYY年MM月DD日", "YYYY-MM-DD HH:mm:ss", "YYYY/MM/DD HH:mm:ss"];
+  const parsed = dayjs(text, formats, true);
+  if (parsed.isValid()) return parsed;
+  const fallback = dayjs(text);
+  return fallback.isValid() ? fallback : null;
 }
 
 function revenueMatchStatusText(status: RevenueEntryRow["matchStatus"]) {
@@ -85,6 +149,26 @@ function revenueMatchStatusColor(status: RevenueEntryRow["matchStatus"]) {
   if (status === "matched") return "success";
   if (status === "pending") return "processing";
   return "default";
+}
+
+function isActiveRevenueMatch(match: RevenueBankMatch) {
+  return match.status !== "rejected";
+}
+
+function isRevenueRecordMatched(record: RevenueRecord, matches: RevenueBankMatch[]) {
+  return matches.some(
+    (match) =>
+      isActiveRevenueMatch(match) &&
+      (match.revenue_record_ids?.includes(record.id) ||
+        (!match.revenue_record_ids?.length &&
+          match.channel === record.channel &&
+          match.revenue_start_date <= record.revenue_date &&
+          match.revenue_end_date >= record.revenue_date)),
+  );
+}
+
+function defaultLedgerPeriod() {
+  return dayjs().subtract(1, "month").format("YYYY-MM");
 }
 
 export default function RevenuePage() {
@@ -104,17 +188,33 @@ export default function RevenuePage() {
   const [focusedEntryCell, setFocusedEntryCell] = useState<{ rowIndex: number; field: RevenueEntryField }>({ rowIndex: 0, field: "gross_amount" });
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [filterForm] = Form.useForm<RevenueFilterValues>();
+  const watchedLedgerPeriod = Form.useWatch("ledger_period", filterForm);
   const loadRequestIdRef = useRef(0);
+  const entryChannelRef = useRef<string | null>(null);
 
   const storesById = useMemo(() => new Map(stores.map((store) => [store.id, store])), [stores]);
   const ledgersByKey = useMemo(
     () => new Map(ledgers.map((ledger) => [`${ledger.store_id}|${ledger.period}`, ledger])),
     [ledgers],
   );
-  const ledgerPeriodOptions = Array.from(new Set(ledgers.map((ledger) => ledger.period)))
-    .sort()
-    .reverse()
-    .map((period) => ({ label: period, value: period }));
+  const fallbackLedgerPeriod = useMemo(() => defaultLedgerPeriod(), []);
+  const activeLedgerPeriod = queryLedgerPeriod ?? watchedLedgerPeriod ?? fallbackLedgerPeriod;
+  const activeLedger = queryStoreId ? ledgersByKey.get(`${queryStoreId}|${activeLedgerPeriod}`) : undefined;
+  const revenueChannelsHref = useMemo(() => {
+    const returnParams = new URLSearchParams();
+    if (queryStoreId) returnParams.set("store_id", queryStoreId);
+    if (activeLedgerPeriod) returnParams.set("ledger_period", activeLedgerPeriod);
+    const returnTo = `/revenue${returnParams.toString() ? `?${returnParams.toString()}` : ""}`;
+    return `/revenue-channels?return_to=${encodeURIComponent(returnTo)}`;
+  }, [activeLedgerPeriod, queryStoreId]);
+  const ledgerPeriodOptions = useMemo(() => {
+    const periods = new Set(ledgers.map((ledger) => ledger.period));
+    if (activeLedgerPeriod) periods.add(activeLedgerPeriod);
+    return Array.from(periods)
+      .sort()
+      .reverse()
+      .map((period) => ({ label: period, value: period }));
+  }, [activeLedgerPeriod, ledgers]);
   const currentStore = queryStoreId ? storesById.get(queryStoreId) : undefined;
   const channelSummaries = useMemo(() => {
     type Summary = {
@@ -197,7 +297,7 @@ export default function RevenuePage() {
   function buildFilterParams(values?: RevenueFilterValues, channel?: string) {
     const params = new URLSearchParams({ page_size: "500" });
     const storeId = values?.store_id ?? queryStoreId;
-    const ledgerPeriod = values?.ledger_period ?? queryLedgerPeriod;
+    const ledgerPeriod = values?.ledger_period ?? queryLedgerPeriod ?? fallbackLedgerPeriod;
     const revenueChannel = channel ?? values?.channel ?? selectedChannel;
     if (storeId) params.set("store_id", storeId);
     if (ledgerPeriod) params.set("ledger_period", ledgerPeriod);
@@ -209,7 +309,7 @@ export default function RevenuePage() {
     const formValues = filterForm.getFieldsValue();
     return {
       store_id: queryStoreId ?? formValues.store_id,
-      ledger_period: queryLedgerPeriod ?? formValues.ledger_period,
+      ledger_period: queryLedgerPeriod ?? formValues.ledger_period ?? fallbackLedgerPeriod,
     };
   }
 
@@ -220,18 +320,20 @@ export default function RevenuePage() {
   ) {
     const recordByDate = new Map(channelRecords.map((record) => [record.revenue_date, record]));
     const matchStatusByRecordId = new Map<string, RevenueEntryRow["matchStatus"]>();
-    channelMatches.forEach((match) => {
-      if (match.status === "rejected") return;
-      const status: RevenueEntryRow["matchStatus"] = match.status === "confirmed" ? "matched" : "pending";
-      match.revenue_record_ids.forEach((recordId) => {
-        const current = matchStatusByRecordId.get(recordId);
-        if (current === "matched" || current === status) return;
-        if (status === "matched") {
-          matchStatusByRecordId.set(recordId, "matched");
-        } else if (!current) {
-          matchStatusByRecordId.set(recordId, "pending");
-        }
-      });
+    channelRecords.forEach((record) => {
+      const recordMatches = channelMatches.filter((match) =>
+        isActiveRevenueMatch(match) &&
+        (match.revenue_record_ids?.includes(record.id) ||
+          (!match.revenue_record_ids?.length &&
+            match.channel === record.channel &&
+            match.revenue_start_date <= record.revenue_date &&
+            match.revenue_end_date >= record.revenue_date)),
+      );
+      if (recordMatches.some((match) => match.status === "confirmed")) {
+        matchStatusByRecordId.set(record.id, "matched");
+      } else if (recordMatches.length) {
+        matchStatusByRecordId.set(record.id, "pending");
+      }
     });
     return baseRows.map((row) => {
       const record = recordByDate.get(row.revenue_date);
@@ -243,7 +345,7 @@ export default function RevenuePage() {
             gross_amount: String(record.gross_amount),
             net_amount: String(record.net_amount),
             remark: record.remark ?? "",
-            matchStatus: matchStatusByRecordId.get(record.id) ?? "unmatched",
+            matchStatus: matchStatusByRecordId.get(record.id) ?? (isRevenueRecordMatched(record, channelMatches) ? "matched" : "unmatched"),
           } satisfies RevenueEntryRow
         : row;
     });
@@ -267,6 +369,7 @@ export default function RevenuePage() {
   }, [queryChannel]);
 
   useEffect(() => {
+    if (entryChannelRef.current === selectedChannel) return;
     setIsEditing(false);
   }, [selectedChannel]);
 
@@ -285,10 +388,10 @@ export default function RevenuePage() {
     const requestId = ++loadRequestIdRef.current;
     setIsLoading(true);
     setErrorMessage(null);
-    const period = filters.ledger_period ?? queryLedgerPeriod ?? dayjs().format("YYYY-MM");
+    const period = filters.ledger_period ?? queryLedgerPeriod ?? fallbackLedgerPeriod;
     filterForm.setFieldsValue({
       store_id: filters.store_id,
-      ledger_period: filters.ledger_period,
+      ledger_period: period,
     });
     try {
       const [recordsRes, revenueMatchesRes] = await Promise.all([
@@ -297,10 +400,8 @@ export default function RevenuePage() {
           (() => {
             const params = new URLSearchParams({ page_size: "500" });
             const storeId = filters.store_id ?? queryStoreId;
-            const ledgerPeriod = filters.ledger_period ?? queryLedgerPeriod;
             const revenueChannel = channel ?? filters.channel ?? selectedChannel;
             if (storeId) params.set("store_id", storeId);
-            if (ledgerPeriod) params.set("ledger_period", ledgerPeriod);
             if (revenueChannel) params.set("channel", revenueChannel);
             return `?${params.toString()}`;
           })(),
@@ -310,8 +411,9 @@ export default function RevenuePage() {
         setRecords(recordsRes.items);
         setRevenueMatches(revenueMatchesRes.items);
         if (channel) {
-          setBatchEditRows(buildRowsFromRecords(createRevenueEntryRows(period, true), recordsRes.items, revenueMatchesRes.items));
-          setIsEditing(false);
+          setBatchEditRows(buildRowsFromRecords(createRevenueEntryRows(period, false), recordsRes.items, revenueMatchesRes.items));
+          setIsEditing(entryChannelRef.current === channel);
+          if (entryChannelRef.current === channel) entryChannelRef.current = null;
         } else {
           setBatchEditRows([]);
         }
@@ -330,7 +432,7 @@ export default function RevenuePage() {
   async function submitBatchEdit() {
     const filterValues = filterForm.getFieldsValue();
     const storeId = queryStoreId ?? filterValues.store_id;
-    const period = queryLedgerPeriod ?? filterValues.ledger_period;
+    const period = queryLedgerPeriod ?? filterValues.ledger_period ?? fallbackLedgerPeriod;
     const channel = selectedChannel;
     if (!storeId || !period || !channel) {
       message.warning("请填写门店、账期和收入渠道");
@@ -347,15 +449,18 @@ export default function RevenuePage() {
 
       for (const row of nonEmptyRows) {
         const existingRecord = existingRecordsByDate.get(row.revenue_date);
+        const grossAmount = normalizePastedAmount(row.gross_amount);
+        const netAmount = normalizePastedAmount(row.net_amount) || grossAmount;
+        if (!grossAmount && !netAmount) continue;
         const payload = {
           store_id: storeId,
           ledger_period: period,
           revenue_date: row.revenue_date,
           channel,
-          gross_amount: row.gross_amount || "0",
-          net_amount: row.net_amount || row.gross_amount || "0",
-          fee_amount: calculateFee(row.gross_amount, row.net_amount || row.gross_amount),
-          remark: row.remark || null,
+          gross_amount: grossAmount || "0",
+          net_amount: netAmount || "0",
+          fee_amount: calculateFee(grossAmount, netAmount || grossAmount),
+          remark: normalizePastedCell(row.remark) || null,
         };
         try {
           if (existingRecord) {
@@ -396,14 +501,23 @@ export default function RevenuePage() {
   }
 
   function resetBatchEditRows() {
-    const period = queryLedgerPeriod ?? filterForm.getFieldValue("ledger_period") ?? dayjs().format("YYYY-MM");
-    setBatchEditRows(buildRowsFromRecords(createRevenueEntryRows(period, true), records, revenueMatches));
+    const period = queryLedgerPeriod ?? filterForm.getFieldValue("ledger_period") ?? fallbackLedgerPeriod;
+    setBatchEditRows(buildRowsFromRecords(createRevenueEntryRows(period, false), records, revenueMatches));
   }
 
   function clearBatchEditRows() {
-    const period = queryLedgerPeriod ?? filterForm.getFieldValue("ledger_period") ?? dayjs().format("YYYY-MM");
+    const period = queryLedgerPeriod ?? filterForm.getFieldValue("ledger_period") ?? fallbackLedgerPeriod;
     setBatchEditRows(createRevenueEntryRows(period, false));
     setIsEditing(true);
+  }
+
+  function startChannelEntry(channelName: string) {
+    entryChannelRef.current = channelName;
+    setSelectedChannel(channelName);
+    if (selectedChannel === channelName) {
+      entryChannelRef.current = null;
+      setIsEditing(true);
+    }
   }
 
   function buildEntryColumns(
@@ -428,6 +542,17 @@ export default function RevenuePage() {
             variant="borderless"
             onPaste={(event) => {
               const text = event.clipboardData.getData("text");
+              if (!text.includes("\t") && !text.includes("\n")) {
+                if (field !== "gross_amount" && field !== "net_amount") return;
+                const amount = normalizePastedAmount(text);
+                if (!amount || amount === text.trim()) return;
+                event.preventDefault();
+                const updated = [...rows];
+                updated[index][field] = amount;
+                setRows(updated);
+                message.success("已清理金额格式");
+                return;
+              }
               if (!text.includes("\t") && !text.includes("\n")) return;
               event.preventDefault();
               const parsedRows = parseRevenueEntryRows(text);
@@ -440,11 +565,18 @@ export default function RevenuePage() {
                 cells.forEach((cell, cellOffset) => {
                   const targetField = revenueEntryFields[startFieldIndex + cellOffset];
                   if (!targetField) return;
-                  const valueText = cell.trim();
+                  const valueText = normalizePastedCell(cell);
                   if (!valueText) return;
+                  const nextValue =
+                    targetField === "revenue_date"
+                      ? parseEntryDate(valueText)?.format("YYYY-MM-DD") ?? valueText
+                      : targetField === "gross_amount" || targetField === "net_amount"
+                        ? normalizePastedAmount(valueText)
+                        : valueText;
+                  if (!nextValue) return;
                   updatedRows[rowIndex] = {
                     ...updatedRows[rowIndex],
-                    [targetField]: targetField === "revenue_date" ? parseEntryDate(valueText)?.format("YYYY-MM-DD") ?? valueText : valueText,
+                    [targetField]: nextValue,
                   };
                 });
               });
@@ -453,7 +585,10 @@ export default function RevenuePage() {
             }}
             onChange={(event) => {
               const updated = [...rows];
-              updated[index][field] = event.target.value;
+              updated[index][field] =
+                field === "gross_amount" || field === "net_amount"
+                  ? normalizePastedAmount(event.target.value)
+                  : event.target.value;
               setRows(updated);
             }}
             onFocus={() => setFocusedEntryCell({ rowIndex: index, field })}
@@ -502,16 +637,16 @@ export default function RevenuePage() {
   }
 
   return (
-    <AppShell title={currentStore?.name ? `${currentStore.name} · 营业收入` : "营业收入"} kicker={queryLedgerPeriod ? `账期：${queryLedgerPeriod}` : undefined}>
+    <AppShell title={currentStore?.name ? `${currentStore.name} · 营业收入` : "营业收入"} kicker={`账期：${activeLedgerPeriod}`}>
       <Space direction="vertical" size={16} style={{ width: "100%", display: "flex" }} className="maintenance-page">
-        {queryStoreId && queryLedgerPeriod && (
+        {queryStoreId && (
           <StoreLedgerWorkspaceNav
             storeId={queryStoreId}
             storeName={currentStore?.name}
-            period={queryLedgerPeriod}
+            period={activeLedgerPeriod}
             periodOptions={ledgerPeriodOptions}
             statusLabel={currentStore?.status === "active" ? "启用门店" : currentStore ? "停用门店" : undefined}
-            ledgerStatusLabel={ledgersByKey.get(`${queryStoreId}|${queryLedgerPeriod}`)?.status === "closed" ? "已封账" : "进行中"}
+            ledgerStatusLabel={activeLedger?.status === "closed" ? "已封账" : activeLedger ? "进行中" : undefined}
             activeKey="revenue"
           />
         )}
@@ -527,7 +662,7 @@ export default function RevenuePage() {
             <Typography.Title level={5} style={{ margin: 0 }}>
               收入渠道
             </Typography.Title>
-            <Button icon={<PlusOutlined />} href="/revenue-channels">
+            <Button icon={<PlusOutlined />} href={revenueChannelsHref}>
               添加渠道
             </Button>
           </div>
@@ -550,6 +685,19 @@ export default function RevenuePage() {
                       <Typography.Text className="revenue-channel-card__title">{summary.name}</Typography.Text>
                       {isSelected && <Tag color="success">当前查看</Tag>}
                     </div>
+                    <Button
+                      size="small"
+                      type={isSelected && isEditing ? "primary" : "default"}
+                      icon={<PlusOutlined />}
+                      className="revenue-channel-card__entry-button"
+                      disabled={isInactive}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        startChannelEntry(summary.name);
+                      }}
+                    >
+                      录入
+                    </Button>
                   </div>
                   <div className="revenue-channel-card__amount">
                     <MoneyDisplay value={summary.grossAmount} size="large" />
@@ -568,6 +716,8 @@ export default function RevenuePage() {
               <Space>
                 <Button
                   type={isEditing ? "default" : "primary"}
+                  icon={isEditing ? undefined : <EditOutlined />}
+                  className={isEditing ? undefined : "revenue-detail-edit-button"}
                   onClick={() => {
                     if (isEditing) {
                       setIsEditing(false);

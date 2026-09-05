@@ -12,6 +12,8 @@ def test_revenue_channel_list_bootstraps_default_channels(client: TestClient) ->
         "抖音团购",
         "扫码收款",
         "商场代金券",
+        "现金收款",
+        "淘宝团购",
     ]
     assert all(channel["name"] != "美团" for channel in channels)
 
@@ -581,6 +583,53 @@ def test_income_bank_transaction_can_match_revenue_records_in_accounting_period(
         f"/api/matches/revenue?store_id={store_id}&ledger_period=2026-08&page_size=20"
     ).json()["data"]["items"]
     assert august_matches == []
+
+
+def test_single_channel_revenue_match_allows_bank_amount_difference(client: TestClient) -> None:
+    store_id = client.post("/api/stores", json={"name": "蘑说收入差额匹配店"}).json()["data"]["id"]
+    client.post("/api/ledgers", json={"store_id": store_id, "period": "2026-08"})
+    client.post(
+        "/api/revenue-channels",
+        json={"name": "差额渠道", "sort_order": 10, "requires_bank_match": True},
+    )
+    record_id = client.post(
+        "/api/revenue-records",
+        json={
+            "store_id": store_id,
+            "ledger_period": "2026-08",
+            "revenue_date": "2026-08-20",
+            "channel": "差额渠道",
+            "gross_amount": "120.00",
+            "net_amount": "120.00",
+        },
+    ).json()["data"]["id"]
+    bank_id = client.post(
+        "/api/bank-transactions",
+        json={
+            "store_id": store_id,
+            "ledger_period": "2026-08",
+            "occurred_at": "2026-08-21T10:30:00",
+            "direction": "income",
+            "amount": "100.00",
+        },
+    ).json()["data"]["id"]
+
+    match_response = client.post(
+        "/api/matches/revenue/batch?operator=tester",
+        json={
+            "bank_transaction_id": bank_id,
+            "revenue_record_ids": [record_id],
+            "amount": "120.00",
+            "accounting_period": "2026-08",
+        },
+    )
+
+    assert match_response.status_code == 201
+    match = match_response.json()["data"][0]
+    assert match["amount"] == "120.00"
+    assert match["revenue_record_ids"] == [record_id]
+    bank = client.get(f"/api/bank-transactions?store_id={store_id}&direction=income").json()["data"]["items"]
+    assert bank[0]["matched_amount"] == "120.00"
 
 
 def test_list_revenue_matches_filters_by_store_and_period(client: TestClient) -> None:

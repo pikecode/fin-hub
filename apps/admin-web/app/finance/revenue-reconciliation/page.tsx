@@ -25,7 +25,10 @@ function isActiveMatch(match: RevenueBankMatch) {
   return match.status !== "rejected";
 }
 
-function isRevenueRecordCovered(record: RevenueRecord, matches: RevenueBankMatch[]) {
+function isRevenueRecordCovered(
+  record: RevenueRecord,
+  matches: RevenueBankMatch[],
+) {
   return matches.some(
     (match) =>
       isActiveMatch(match) &&
@@ -57,6 +60,14 @@ function isCompleteDateRange(dates: [dayjs.Dayjs | null, dayjs.Dayjs | null] | n
   return Boolean(dates?.[0] && dates?.[1]);
 }
 
+function isDateInRange(value: string, dates: [dayjs.Dayjs | null, dayjs.Dayjs | null]) {
+  const [startDate, endDate] = dates;
+  if (!startDate || !endDate) return false;
+  const date = dayjs(value);
+  if (!date.isValid()) return false;
+  return !date.isBefore(startDate, "day") && !date.isAfter(endDate, "day");
+}
+
 export default function RevenueReconciliationPage() {
   const searchParams = useClientSearchParams();
   const initialStoreId = searchParams.get("store_id") ?? undefined;
@@ -75,7 +86,7 @@ export default function RevenueReconciliationPage() {
   const [channelFilter, setChannelFilter] = useState<string>();
   const [revenueDateRange, setRevenueDateRange] = useState<[dayjs.Dayjs | null, dayjs.Dayjs | null]>([null, null]);
   const [isMatchModalOpen, setIsMatchModalOpen] = useState(false);
-  const [matchChannelNames, setMatchChannelNames] = useState<string[]>([]);
+  const [matchChannelName, setMatchChannelName] = useState<string>();
   const [matchDateRange, setMatchDateRange] = useState<[dayjs.Dayjs | null, dayjs.Dayjs | null]>([null, null]);
   const [matchModalSelectedRecordIds, setMatchModalSelectedRecordIds] = useState<string[]>([]);
   const [isDateRangeModalOpen, setIsDateRangeModalOpen] = useState(false);
@@ -127,14 +138,8 @@ export default function RevenueReconciliationPage() {
   const unmatchedRecords = records.filter((record) => !isRevenueRecordCovered(record, activeMatches));
   const matchModalVisibleRecords = unmatchedRecords
     .filter((record) => {
-      if (matchChannelNames.length && !matchChannelNames.includes(record.channel)) return false;
-      const [startDate, endDate] = matchDateRange;
-      if (!startDate || !endDate) return false;
-      const value = dayjs(record.revenue_date);
-      return (
-        (value.isAfter(startDate, "day") || value.isSame(startDate, "day")) &&
-        (value.isBefore(endDate, "day") || value.isSame(endDate, "day"))
-      );
+      if (matchChannelName && record.channel !== matchChannelName) return false;
+      return isDateInRange(record.revenue_date, matchDateRange);
     })
     .sort((left, right) => left.revenue_date.localeCompare(right.revenue_date));
   const matchModalSelectedIdSet = new Set(matchModalSelectedRecordIds);
@@ -221,13 +226,18 @@ export default function RevenueReconciliationPage() {
 
       const [bankResult, revenueResult, matchResult] = results;
       const loadErrors: string[] = [];
+      const nextMatches = matchResult.status === "fulfilled" ? matchResult.value.items : [];
+      const matchedBankTransactionIds = new Set(
+        nextMatches
+          .filter(isActiveMatch)
+          .map((match) => match.bank_transaction_id),
+      );
       const nextTransactions = bankResult.status === "fulfilled"
         ? [...bankResult.value.items]
-            .filter((transaction) => remainingAmount(transaction) > 0)
+            .filter((transaction) => remainingAmount(transaction) > 0 && !matchedBankTransactionIds.has(transaction.id))
             .sort((left, right) => right.occurred_at.localeCompare(left.occurred_at))
         : [];
       const nextRecords = revenueResult.status === "fulfilled" ? revenueResult.value.items : [];
-      const nextMatches = matchResult.status === "fulfilled" ? matchResult.value.items : [];
 
       if (bankResult.status === "rejected") loadErrors.push("收入银行流水");
       if (revenueResult.status === "rejected") loadErrors.push("营业收入");
@@ -245,7 +255,7 @@ export default function RevenueReconciliationPage() {
       setSelectedTransaction(nextSelected);
       setSelectedRecordIds([]);
       setIsMatchModalOpen(false);
-      setMatchChannelNames([]);
+      setMatchChannelName(undefined);
       setMatchDateRange([null, null]);
       setMatchModalSelectedRecordIds([]);
       if (loadErrors.length) {
@@ -282,12 +292,12 @@ export default function RevenueReconciliationPage() {
     setSelectedTransaction(transaction);
     setSelectedRecordIds([]);
     setMatchValidationMessage(null);
-    const defaultChannels = channelFilter
-      ? [channelFilter]
+    const defaultChannel = channelFilter
+      ? channelFilter
       : initialChannel
-        ? [initialChannel]
-        : [unmatchedChannelNames[0] ?? channels.find((channel) => channel.status === "active")?.name ?? channels[0]?.name].filter(Boolean) as string[];
-    setMatchChannelNames(defaultChannels);
+        ? initialChannel
+        : unmatchedChannelNames[0] ?? channels.find((channel) => channel.status === "active")?.name ?? channels[0]?.name;
+    setMatchChannelName(defaultChannel);
     setMatchDateRange([null, null]);
     setMatchModalSelectedRecordIds([]);
     setIsMatchModalOpen(true);
@@ -303,7 +313,7 @@ export default function RevenueReconciliationPage() {
       setMatchValidationMessage("请选择收入日期范围。");
       return null;
     }
-    if (!matchChannelNames.length) {
+    if (!matchChannelName) {
       setMatchValidationMessage("请选择收入渠道。");
       return null;
     }
@@ -319,13 +329,18 @@ export default function RevenueReconciliationPage() {
       setMatchValidationMessage("该渠道和日期范围内没有可匹配营业收入。");
       return null;
     }
-    setChannelFilter(matchChannelNames.length === 1 ? matchChannelNames[0] : undefined);
+    const selectedNetAmount = selectedRecordsInModal.reduce((sum, record) => sum + moneyValue(record.net_amount), 0);
+    if (!Number.isFinite(selectedNetAmount) || selectedNetAmount <= 0) {
+      setMatchValidationMessage("选中营业收入的实收金额必须大于 0，不能提交 0 元匹配。");
+      return null;
+    }
+    setChannelFilter(matchChannelName);
     setRevenueDateRange(matchDateRange);
     setSelectedRecordIds(selectedIds);
     setMatchValidationMessage(null);
     return {
-      amount: selectedRecordsInModal.reduce((sum, record) => sum + moneyValue(record.net_amount), 0),
-      selectedNetAmount: selectedRecordsInModal.reduce((sum, record) => sum + moneyValue(record.net_amount), 0),
+      amount: selectedNetAmount,
+      selectedNetAmount,
       revenueRecordIds: selectedIds,
       recordCount: selectedIds.length,
     };
@@ -356,13 +371,7 @@ export default function RevenueReconciliationPage() {
     }
     setRevenueDateRange([startDate, endDate]);
     const selected = matchModalVisibleRecords
-      .filter((record) => {
-        const value = dayjs(record.revenue_date);
-        return (
-          (value.isAfter(startDate, "day") || value.isSame(startDate, "day")) &&
-          (value.isBefore(endDate, "day") || value.isSame(endDate, "day"))
-        );
-      })
+      .filter((record) => isDateInRange(record.revenue_date, [startDate, endDate]))
       .map((record) => record.id);
     if (!selected.length) {
       message.warning("该日期范围内没有可匹配的营业收入");
@@ -722,14 +731,13 @@ export default function RevenueReconciliationPage() {
             <div className="revenue-match-modal__field">
               <Typography.Text type="secondary">收入渠道</Typography.Text>
               <Select
-                mode="multiple"
                 showSearch
                 optionFilterProp="label"
                 placeholder="选择渠道"
-                value={matchChannelNames}
+                value={matchChannelName}
                 options={activeChannelOptions}
                 onChange={(value) => {
-                  setMatchChannelNames(value);
+                  setMatchChannelName(value);
                   setMatchValidationMessage(null);
                 }}
                 style={{ width: "100%" }}
@@ -756,36 +764,38 @@ export default function RevenueReconciliationPage() {
 
           <Alert
             className="revenue-match-modal__hint"
-            type={isMatchDateRangeComplete && matchChannelNames.length ? "info" : "warning"}
+            type={isMatchDateRangeComplete && matchChannelName ? "info" : "warning"}
             showIcon
             message={
-              isMatchDateRangeComplete && matchChannelNames.length
-                ? `${matchChannelNames.join("、")} / ${matchDateRange[0]?.format("YYYY-MM-DD")} 至 ${matchDateRange[1]?.format("YYYY-MM-DD")} 的收入汇总`
+              isMatchDateRangeComplete && matchChannelName
+                ? `${matchChannelName} / ${matchDateRange[0]?.format("YYYY-MM-DD")} 至 ${matchDateRange[1]?.format("YYYY-MM-DD")} 的收入汇总`
                 : "请选择收入渠道和完整日期范围，金额会自动汇总"
             }
           />
 
-          {isMatchDateRangeComplete ? (
-            <div className="revenue-match-modal__range-bar">
-              <Typography.Text type="secondary">已选范围</Typography.Text>
-              <Typography.Text strong>
-                {matchDateRange[0]?.format("YYYY-MM-DD")} 至 {matchDateRange[1]?.format("YYYY-MM-DD")}
-              </Typography.Text>
-              <Typography.Text type="secondary">共 {matchModalVisibleRecords.length} 条收入记录</Typography.Text>
-            </div>
-          ) : null}
+          {isMatchDateRangeComplete && matchChannelName ? (
+            <>
+              <div className="revenue-match-modal__range-bar">
+                <Typography.Text type="secondary">已选范围</Typography.Text>
+                <Typography.Text strong>
+                  {matchDateRange[0]?.format("YYYY-MM-DD")} 至 {matchDateRange[1]?.format("YYYY-MM-DD")}
+                </Typography.Text>
+                <Typography.Text type="secondary">共 {matchModalVisibleRecords.length} 条收入记录</Typography.Text>
+              </div>
 
-          <div className="revenue-match-summary revenue-match-summary--modal">
-            <Statistic title="收入条数" value={matchModalSelectedRecords.length} />
-            <Statistic title="经营收入" value={formatMoney(matchModalGrossAmount.toFixed(2))} />
-            <Statistic title="实收金额" value={formatMoney(matchModalNetAmount.toFixed(2))} valueStyle={{ color: "#1890ff" }} />
-            <Statistic title="手续费" value={formatMoney(matchModalFeeAmount.toFixed(2))} />
-            <Statistic
-              title="差额"
-              value={formatMoney(matchModalDifference.toFixed(2))}
-              valueStyle={{ color: Math.abs(matchModalDifference) <= 0.005 ? "#52c41a" : "#ff4d4f" }}
-            />
-          </div>
+              <div className="revenue-match-summary revenue-match-summary--modal">
+                <Statistic title="收入条数" value={matchModalSelectedRecords.length} />
+                <Statistic title="经营收入" value={formatMoney(matchModalGrossAmount.toFixed(2))} />
+                <Statistic title="实收金额" value={formatMoney(matchModalNetAmount.toFixed(2))} valueStyle={{ color: "#1890ff" }} />
+                <Statistic title="手续费" value={formatMoney(matchModalFeeAmount.toFixed(2))} />
+                <Statistic
+                  title="差额"
+                  value={formatMoney(matchModalDifference.toFixed(2))}
+                  valueStyle={{ color: Math.abs(matchModalDifference) <= 0.005 ? "#52c41a" : "#ff4d4f" }}
+                />
+              </div>
+            </>
+          ) : null}
 
           {Math.abs(matchModalDifference) > 0.005 && matchModalSelectedRecords.length ? (
             <Alert

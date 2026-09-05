@@ -95,6 +95,11 @@ AUTO_SYNC_INITIAL_APPROVAL_LOOKBACK_DAYS = 120
 APPROVAL_SYNC_MAX_WINDOW_DAYS = 120
 APPROVAL_SYNC_MAX_LOOKBACK_DAYS = 365
 APPROVAL_SYNC_OVERLAP = timedelta(minutes=10)
+DINGTALK_SYNC_JOB_TYPES = {
+    "dingtalk_approval_sync",
+    "dingtalk_store_approval_sync",
+    "dingtalk_auto_sync",
+}
 COMPLETED_APPROVAL_STATUSES = {"agree", "approved", "completed", "finish", "success"}
 RESYNC_PROCESSING_STATUSES = {"unparsed", "sync_conflict", "pending_classification", "pending_match"}
 
@@ -1116,17 +1121,52 @@ def unique_field_candidates(candidates: list[TemplateFieldCandidate]) -> list[Te
 
 
 def field_candidates_for_template(session: Session, template: ApprovalTemplate) -> list[TemplateFieldCandidate]:
-    instance = session.scalar(
-        select(ApprovalInstance)
-        .where(ApprovalInstance.template_id == template.id)
-        .order_by(ApprovalInstance.updated_at.desc(), ApprovalInstance.created_at.desc())
+    instances = list(
+        session.scalars(
+            select(ApprovalInstance)
+            .where(ApprovalInstance.template_id == template.id, ApprovalInstance.raw_payload.is_not(None))
+            .order_by(ApprovalInstance.updated_at.desc(), ApprovalInstance.created_at.desc())
+            .limit(10)
+        )
     )
-    if not instance or not instance.raw_payload:
+    candidates: list[TemplateFieldCandidate] = []
+    for instance in instances:
+        if not instance.raw_payload:
+            continue
+        try:
+            candidates.extend(collect_approval_form_field_candidates(json.loads(instance.raw_payload)))
+        except ValueError:
+            continue
+    return unique_field_candidates(candidates)
+
+
+def field_candidates_for_instance(instance: ApprovalInstance | None) -> list[TemplateFieldCandidate]:
+    if instance is None or not instance.raw_payload:
         return []
     try:
         return unique_field_candidates(collect_approval_form_field_candidates(json.loads(instance.raw_payload)))
     except ValueError:
         return []
+
+
+def running_dingtalk_sync_job(session: Session) -> SyncJob | None:
+    return session.scalar(
+        select(SyncJob)
+        .where(
+            SyncJob.status == SyncJobStatus.RUNNING.value,
+            SyncJob.job_type.in_(DINGTALK_SYNC_JOB_TYPES),
+        )
+        .order_by(SyncJob.started_at.desc().nullslast(), SyncJob.created_at.desc())
+    )
+
+
+def ensure_no_running_dingtalk_sync(session: Session) -> None:
+    running_job = running_dingtalk_sync_job(session)
+    if running_job is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"已有钉钉同步任务正在运行，请等待完成后再操作：{running_job.id}",
+        )
 
 
 def applicant_name_from_raw(raw_instance: dict[str, Any]) -> str | None:
@@ -1728,7 +1768,7 @@ def pull_template_sample_approval(
     return ApiEnvelope(
         data=TemplateSampleApprovalResult(
             instance=instance,
-            field_candidates=field_candidates_for_template(session, template),
+            field_candidates=field_candidates_for_instance(instance),
             pulled_count=1 if instance else 0,
         )
     )
@@ -1765,7 +1805,7 @@ def use_approval_instance_as_field_candidate_sample(
     return ApiEnvelope(
         data=TemplateSampleApprovalResult(
             instance=instance,
-            field_candidates=field_candidates_for_template(session, template),
+            field_candidates=field_candidates_for_instance(instance),
             pulled_count=1,
         )
     )
@@ -3779,13 +3819,7 @@ def run_due_auto_sync_jobs(session: Session) -> list[DingTalkAutoSyncRunResult]:
     )
     results: list[DingTalkAutoSyncRunResult] = []
     for setting in settings_rows:
-        running_job = session.scalar(
-            select(SyncJob).where(
-                SyncJob.job_type == "dingtalk_auto_sync",
-                SyncJob.status == SyncJobStatus.RUNNING.value,
-            )
-        )
-        if running_job is not None:
+        if running_dingtalk_sync_job(session) is not None:
             continue
         results.append(execute_auto_sync(session, setting, started_by="auto-sync"))
     return results
@@ -3799,6 +3833,7 @@ def run_auto_sync_now(
     setting = get_or_create_auto_sync_setting(session)
     if setting.paused:
         raise HTTPException(status_code=409, detail="自动同步已暂停，请先恢复后再执行自动同步")
+    ensure_no_running_dingtalk_sync(session)
     return ApiEnvelope(data=execute_auto_sync(session, setting, started_by=audit_actor(current_user)))
 
 
@@ -3886,6 +3921,7 @@ def start_approval_sync(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_permission("dingtalk.manage")),
 ) -> ApiEnvelope[SyncJobRead]:
+    ensure_no_running_dingtalk_sync(session)
     query = select(ApprovalTemplate).where(ApprovalTemplate.is_enabled.is_(True))
     if payload.template_id:
         query = query.where(ApprovalTemplate.id == payload.template_id)
@@ -3991,6 +4027,7 @@ def start_store_approval_sync(
 ) -> ApiEnvelope[StoreApprovalSyncResult]:
     ensure_permission(session, current_user, "reconciliation.manage")
     ensure_store_access(session, current_user, payload.store_id)
+    ensure_no_running_dingtalk_sync(session)
 
     store = session.get(Store, payload.store_id)
     if store is None:
@@ -4121,6 +4158,7 @@ def resume_approval_sync(
     resume_cursors = parse_sync_cursors(previous_job.next_cursor)
     if previous_job.job_type != "dingtalk_approval_sync" or not resume_cursors:
         raise HTTPException(status_code=409, detail="Sync job has no resumable cursor")
+    ensure_no_running_dingtalk_sync(session)
     templates = list(
         session.scalars(
             select(ApprovalTemplate).where(

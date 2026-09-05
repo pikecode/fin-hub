@@ -12,6 +12,7 @@ from sqlalchemy import (
     Numeric,
     String,
     Text,
+    text,
     UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -338,6 +339,14 @@ class ExpenseItem(Base):
         Index("ix_expense_items_approval_instance", "approval_instance_id"),
         Index("ix_expense_items_approval_line", "approval_instance_id", "approval_line_no"),
         Index("ix_expense_items_sync_conflict", "sync_conflict_status"),
+        Index(
+            "uq_expense_items_source_document",
+            "source",
+            "source_document_id",
+            unique=True,
+            sqlite_where=text("source_document_id IS NOT NULL"),
+            postgresql_where=text("source_document_id IS NOT NULL"),
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
@@ -656,7 +665,22 @@ class ApprovalTemplateNode(Base):
 
 class SyncJob(Base):
     __tablename__ = "sync_jobs"
-    __table_args__ = (Index("ix_sync_jobs_type_status", "job_type", "status"),)
+    __table_args__ = (
+        Index("ix_sync_jobs_type_status", "job_type", "status"),
+        Index(
+            "uq_sync_jobs_running_dingtalk",
+            "status",
+            unique=True,
+            sqlite_where=text(
+                "status = 'running' AND job_type IN "
+                "('dingtalk_approval_sync', 'dingtalk_store_approval_sync', 'dingtalk_auto_sync')"
+            ),
+            postgresql_where=text(
+                "status = 'running' AND job_type IN "
+                "('dingtalk_approval_sync', 'dingtalk_store_approval_sync', 'dingtalk_auto_sync')"
+            ),
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
     job_type: Mapped[str] = mapped_column(String(60), nullable=False)

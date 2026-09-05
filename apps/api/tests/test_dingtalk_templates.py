@@ -1732,6 +1732,52 @@ def test_select_approval_instance_as_field_candidate_sample(client: TestClient, 
     assert names == {"旧字段"}
 
 
+def test_template_field_candidates_merge_recent_instances(client: TestClient, session) -> None:
+    template_id = client.post(
+        "/api/dingtalk/templates",
+        json={"process_code": "PROC-MERGE-SOURCE", "name": "合并字段模板", "is_enabled": True},
+    ).json()["data"]["id"]
+    old_instance = ApprovalInstance(
+        template_id=template_id,
+        dingtalk_instance_id="merge-source-old",
+        approval_status="approved",
+        raw_payload='{"form_component_values":[{"id":"old-field","name":"旧字段","componentType":"TextField","value":"旧值"}]}',
+    )
+    new_instance = ApprovalInstance(
+        template_id=template_id,
+        dingtalk_instance_id="merge-source-new",
+        approval_status="approved",
+        raw_payload='{"form_component_values":[{"id":"new-field","name":"新字段","componentType":"TextField","value":"新值"}]}',
+    )
+    session.add_all([old_instance, new_instance])
+    session.commit()
+
+    response = client.get(f"/api/dingtalk/templates/{template_id}/field-candidates")
+
+    assert response.status_code == 200
+    names = {item["source_field_name"] for item in response.json()["data"]}
+    assert {"旧字段", "新字段"}.issubset(names)
+
+
+def test_dingtalk_sync_rejects_when_any_dingtalk_sync_job_is_running(client: TestClient, session) -> None:
+    running_job = SyncJob(
+        job_type="dingtalk_auto_sync",
+        status="running",
+        started_by="tester",
+        started_at=utc_now(),
+    )
+    session.add(running_job)
+    session.commit()
+
+    approval_response = client.post("/api/dingtalk/approval-sync", json={})
+    auto_response = client.post("/api/dingtalk/auto-sync/run")
+
+    assert approval_response.status_code == 409
+    assert auto_response.status_code == 409
+    assert running_job.id in approval_response.json()["detail"]
+    assert running_job.id in auto_response.json()["detail"]
+
+
 def test_real_approval_sync_persists_instance_when_expense_parse_is_incomplete(
     client: TestClient,
     monkeypatch,

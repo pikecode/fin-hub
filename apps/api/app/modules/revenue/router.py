@@ -43,6 +43,8 @@ DEFAULT_REVENUE_CHANNELS: tuple[tuple[str, int, bool], ...] = (
     ("抖音团购", 30, True),
     ("扫码收款", 40, True),
     ("商场代金券", 50, False),
+    ("现金收款", 60, False),
+    ("淘宝团购", 70, True),
 )
 DEFAULT_REVENUE_CHANNEL_NAMES = {name for name, _, _ in DEFAULT_REVENUE_CHANNELS}
 

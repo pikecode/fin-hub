@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.core.config import settings
 from app.models import (
@@ -44,7 +44,7 @@ class TestTimeWindowValidation:
         with pytest.raises(Exception) as exc_info:
             validate_approval_sync_window(start, end)
 
-        assert "开始时间必须晚于" in str(exc_info.value.detail)
+        assert "结束时间必须晚于开始时间" in str(exc_info.value.detail)
 
     def test_window_exceeds_120_days_should_fail(self):
         """✅ Test 2: Time window > 120 days should fail"""
@@ -64,7 +64,7 @@ class TestTimeWindowValidation:
         with pytest.raises(Exception) as exc_info:
             validate_approval_sync_window(start, end)
 
-        assert "不能早于当前时间 365 天" in str(exc_info.value.detail)
+        assert "不能超过 120 天" in str(exc_info.value.detail)
 
     def test_valid_120_day_window_should_pass(self):
         """✅ Test 4: Valid 120-day window should pass"""
@@ -88,12 +88,12 @@ class TestTimeWindowValidation:
 class TestDepartmentSyncDeduplication:
     """P0: Department sync duplicate handling"""
 
-    def test_same_dept_id_should_not_duplicate(self, client: TestClient, db_session):
+    def test_same_dept_id_should_not_duplicate(self, client: TestClient, session):
         """✅ Test 1: Same dept_id should link to same store"""
         # Create first store
         store1 = Store(name="北京中关村店", dingtalk_dept_id="dept-123")
-        db_session.add(store1)
-        db_session.commit()
+        session.add(store1)
+        session.commit()
 
         # Create department with same dept_id
         dept = DingTalkDepartment(
@@ -105,27 +105,27 @@ class TestDepartmentSyncDeduplication:
             is_store_candidate=True,
             is_active=True,
         )
-        db_session.add(dept)
-        db_session.commit()
+        session.add(dept)
+        session.commit()
 
         # Simulate sync
-        result = sync_departments_to_stores_core(db_session)
+        result = sync_departments_to_stores_core(session)
 
         # Should not create duplicate
         assert result.created_count == 0
         assert result.updated_count == 0 or result.updated_count == 1
 
         # Verify single store
-        stores = db_session.scalars(select(Store)).all()
+        stores = session.scalars(select(Store)).all()
         assert len(stores) == 1
         assert stores[0].dingtalk_dept_id == "dept-123"
 
-    def test_same_name_different_dept_id_should_generate_suffix(self, db_session):
+    def test_same_name_different_dept_id_should_generate_suffix(self, session):
         """✅ Test 2: Same name + different dept_id should add suffix"""
         # Create existing store with same name
         existing_store = Store(name="北京门店", dingtalk_dept_id="dept-001")
-        db_session.add(existing_store)
-        db_session.commit()
+        session.add(existing_store)
+        session.commit()
 
         # Create new department with same name but different dept_id
         dept = DingTalkDepartment(
@@ -137,32 +137,32 @@ class TestDepartmentSyncDeduplication:
             is_store_candidate=True,
             is_active=True,
         )
-        db_session.add(dept)
-        db_session.commit()
+        session.add(dept)
+        session.commit()
 
         # Simulate sync
-        result = sync_departments_to_stores_core(db_session)
+        result = sync_departments_to_stores_core(session)
 
         # Should create new store with suffix
         assert result.created_count == 1
 
         # Verify stores
-        stores = list(db_session.scalars(select(Store).order_by(Store.id)))
+        stores = list(session.scalars(select(Store)))
         assert len(stores) == 2
 
         # Original store unchanged
-        assert stores[0].name == "北京门店"
-        assert stores[0].dingtalk_dept_id == "dept-001"
+        original_store = next(store for store in stores if store.dingtalk_dept_id == "dept-001")
+        assert original_store.name == "北京门店"
 
         # New store has suffix
-        assert "钉钉-dept-002" in stores[1].name
-        assert stores[1].dingtalk_dept_id == "dept-002"
+        new_store = next(store for store in stores if store.dingtalk_dept_id == "dept-002")
+        assert "钉钉-dept-002" in new_store.name
 
 
 class TestConcurrentSyncSafety:
     """P0: Concurrent sync race conditions"""
 
-    def test_concurrent_approval_sync_should_use_locking(self, db_session):
+    def test_concurrent_approval_sync_should_use_locking(self, session):
         """✅ Test 1: Should acquire row locks during sync"""
         # Note: This is a logical test. Actual concurrency testing requires
         # multi-threaded setup which is complex in pytest.
@@ -177,8 +177,8 @@ class TestConcurrentSyncSafety:
             name="费用报销",
             is_enabled=True,
         )
-        db_session.add(template)
-        db_session.commit()
+        session.add(template)
+        session.commit()
 
         # Create sync job
         job = SyncJob(
@@ -186,8 +186,8 @@ class TestConcurrentSyncSafety:
             status=SyncJobStatus.RUNNING.value,
             started_by="test",
         )
-        db_session.add(job)
-        db_session.commit()
+        session.add(job)
+        session.commit()
 
         # Note: Actual test would require mocking DingTalkClient
         # and verifying with_for_update() is called
@@ -198,28 +198,34 @@ class TestConcurrentSyncSafety:
 class TestIdempotency:
     """P1: Duplicate source_document_id handling"""
 
-    def test_duplicate_source_document_id_should_not_duplicate(self, db_session):
+    def test_duplicate_source_document_id_should_not_duplicate(self, session):
         """✅ Test 1: Duplicate source_document_id should not create new item"""
         from app.modules.dingtalk.router import sync_expense_line
         from datetime import datetime
         from decimal import Decimal
         from zoneinfo import ZoneInfo
 
+        template = ApprovalTemplate(id="test-template", process_code="PROC-IDEMPOTENCY", name="幂等测试")
+        store = Store(id="store-1", name="测试门店")
+        session.add_all([template, store])
+        session.commit()
+
         # Create approval instance
         instance = ApprovalInstance(
             template_id="test-template",
             dingtalk_instance_id="instance-123",
             approval_no="A001",
+            approval_status="approved",
         )
-        db_session.add(instance)
-        db_session.commit()
+        session.add(instance)
+        session.commit()
 
         # Create first expense line
         snapshot1 = {"amount": "100", "description": "差旅费"}
         snapshot_json = json.dumps(snapshot1)
 
         item1, created1 = sync_expense_line(
-            db_session,
+            session,
             instance=instance,
             source_document_id="doc-001",
             snapshot=snapshot1,
@@ -242,7 +248,7 @@ class TestIdempotency:
 
         # Create second call with same source_document_id
         item2, created2 = sync_expense_line(
-            db_session,
+            session,
             instance=instance,
             source_document_id="doc-001",  # Same ID
             snapshot=snapshot1,
@@ -265,7 +271,7 @@ class TestIdempotency:
         assert item2.id == item1.id
 
         # Verify only one item in DB
-        items = db_session.scalars(select(ExpenseItem)).all()
+        items = session.scalars(select(ExpenseItem)).all()
         assert len(items) == 1
 
 
@@ -338,8 +344,13 @@ class TestDepartmentStoreDetection:
 class TestBatchProcessingOptimization:
     """Performance: Batch loading vs memory usage"""
 
-    def test_approval_sync_batch_processing(self, db_session):
+    def test_approval_sync_batch_processing(self, session):
         """✅ Test: Should process in batches, not load all at once"""
+        template = ApprovalTemplate(id="test-template", process_code="PROC-BATCH", name="批量测试")
+        store = Store(id="store-1", name="批量测试门店")
+        session.add_all([template, store])
+        session.commit()
+
         # Create many approval instances
         instances = []
         for i in range(1500):  # More than BATCH_SIZE
@@ -353,11 +364,11 @@ class TestBatchProcessingOptimization:
             )
             instances.append(instance)
 
-        db_session.add_all(instances)
-        db_session.commit()
+        session.add_all(instances)
+        session.commit()
 
         # Verify all created
-        count = db_session.scalar(select(len(select(ApprovalInstance))))
+        count = session.scalar(select(func.count()).select_from(ApprovalInstance))
         assert count >= 1500
 
 
@@ -366,7 +377,7 @@ class TestBatchProcessingOptimization:
 class TestDingTalkSyncIntegration:
     """Integration tests for full sync pipeline"""
 
-    def test_full_approval_sync_workflow(self, client: TestClient, db_session):
+    def test_full_approval_sync_workflow(self, client: TestClient, session):
         """✅ E2E: Full approval sync should work end-to-end"""
         # This would test the full workflow in a real API call
         # Requires more setup than unit tests

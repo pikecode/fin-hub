@@ -288,7 +288,7 @@ export default function FinanceReconciliationPage() {
     [candidates, candidatePage, candidatePageSize],
   );
   const bankRemaining = selectedTransaction ? remainingAmount(selectedTransaction) : 0;
-  const defaultMatchAmount = selectedCandidate ? Math.min(bankRemaining, Number(selectedCandidate.remaining_amount || 0)) : bankRemaining;
+  const defaultMatchAmount = bankRemaining;
   const fallbackLedgerPeriod = useMemo(() => defaultLedgerPeriod(), []);
   const selectedLedgerPeriod = initialLedgerPeriod ?? fallbackLedgerPeriod;
   const detailPayload = useMemo(() => parseApprovalPayload(detailRecord?.approval_instance), [detailRecord]);
@@ -400,7 +400,9 @@ export default function FinanceReconciliationPage() {
         apiClient.bankTransactions.list(`?${bankParams.toString()}`),
         apiClient.matches.reconciliationRecords(`?${recordParams.toString()}`),
       ]);
-      setTransactions(bankPage.items);
+      // A bank transaction can only be matched to one approval. Once matched,
+      // it belongs in the reconciliation records tab rather than this queue.
+      setTransactions(bankPage.items.filter((item) => Number(item.matched_amount || 0) <= 0));
       setRecords(recordPage.items);
       setApprovalExpenseItemsById({});
       setTransactionPage(1);
@@ -929,7 +931,7 @@ export default function FinanceReconciliationPage() {
 	                        {visibleTransactions.map((transaction) => {
 	                          const isSelected = transaction.id === selectedTransaction?.id;
 	                          const remaining = remainingAmount(transaction);
-	                          const isFullyMatched = remaining <= 0;
+                          const isFullyMatched = Number(transaction.matched_amount || 0) > 0;
                           return (
                             <button
                               key={transaction.id}
@@ -1028,19 +1030,19 @@ export default function FinanceReconciliationPage() {
 	                        <div className="approval-candidate-list">
 	                          {visibleCandidates.map((candidate) => {
 	                            const isSelected = candidate.expense_item.id === selectedCandidateId;
-	                            const isFullyMatched = Number(candidate.remaining_amount || 0) <= 0;
+                            const isReadOnlyMatched = !isApprovalSearchActive && Number(candidate.remaining_amount || 0) <= 0;
 	                            const storeName = storesById.get(candidate.expense_item.store_id)?.name || candidate.approval_instance?.department_name || "-";
                             return (
                               <div
                                 key={candidate.expense_item.id}
                                 role="button"
                                 tabIndex={0}
-                                className={`approval-candidate-card${isSelected ? " is-selected" : ""}${isFullyMatched ? " is-disabled" : ""}`}
+                                className={`approval-candidate-card${isSelected ? " is-selected" : ""}${isReadOnlyMatched ? " is-disabled" : ""}`}
                                 onClick={() => {
-                                  if (!isFullyMatched) setSelectedCandidateId(candidate.expense_item.id);
+                                  if (!isReadOnlyMatched) setSelectedCandidateId(candidate.expense_item.id);
                                 }}
                                 onKeyDown={(event) => {
-                                  if (!isFullyMatched && (event.key === "Enter" || event.key === " ")) setSelectedCandidateId(candidate.expense_item.id);
+                                  if (!isReadOnlyMatched && (event.key === "Enter" || event.key === " ")) setSelectedCandidateId(candidate.expense_item.id);
                                 }}
                               >
                                 <div className="approval-candidate-card__score">
@@ -1058,7 +1060,7 @@ export default function FinanceReconciliationPage() {
                                     ) : (
                                       <Tag color="orange">待分类</Tag>
                                     )}
-                                    {isFullyMatched ? <Tag color="green">已完成匹配，仅供查看</Tag> : null}
+                                    {isReadOnlyMatched ? <Tag color="green">已完成匹配，仅供查看</Tag> : null}
                                   </Space>
                                   <Typography.Text className="approval-candidate-card__title" ellipsis>
                                     {candidate.expense_item.description}
@@ -1071,7 +1073,9 @@ export default function FinanceReconciliationPage() {
                                 </div>
                                 <div className="approval-candidate-card__aside">
                                   <Typography.Text className="approval-candidate-card__amount">{formatMoney(candidate.expense_item.amount)}</Typography.Text>
-                                  <Typography.Text type="secondary">待匹配金额 {formatMoney(candidate.remaining_amount)}</Typography.Text>
+                                  <Typography.Text type="secondary">
+                                    审批单总额 {formatMoney(candidate.approval_instance?.total_expense_amount ?? candidate.expense_item.amount)}
+                                  </Typography.Text>
                                   <Button
                                     size="small"
                                     type="primary"
@@ -1159,8 +1163,8 @@ export default function FinanceReconciliationPage() {
             className="dashboard-alert"
             type="info"
             showIcon
-            message={`建议匹配金额 ${formatMoney(defaultMatchAmount)}`}
-            description={`确认后会把当前银行流水关联到所选审批明细，并把下面的费用分类写入该明细，供后续报表统计使用。流水待匹配 ${selectedTransaction ? formatMoney(bankRemaining) : "-"}，审批明细待匹配 ${selectedCandidate ? formatMoney(selectedCandidate.remaining_amount) : "-"}。`}
+            message={`参考匹配金额 ${formatMoney(defaultMatchAmount)}`}
+            description="匹配金额由你确认，系统不校验银行流水金额与审批单金额是否一致。"
           />
           <div className="reconciliation-confirm-summary">
             <div>

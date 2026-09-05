@@ -1,7 +1,8 @@
-"""default revenue channels
+"""add cash and taobao revenue channels
 
-Revision ID: 20260903_0008
-Revises: 20260903_0007
+Revision ID: 20260904_0020
+Revises: 20260904_0019
+Create Date: 2026-09-04
 """
 
 from collections.abc import Sequence
@@ -12,22 +13,23 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision: str = "20260903_0008"
-down_revision: str | Sequence[str] | None = "20260903_0007"
+revision: str = "20260904_0020"
+down_revision: str | Sequence[str] | None = "20260904_0019"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 
 def _revenue_channels_table() -> sa.Table:
-    return sa.table(
+    return sa.Table(
         "revenue_channels",
-        sa.column("id", sa.String(length=32)),
-        sa.column("name", sa.String(length=80)),
-        sa.column("sort_order", sa.Integer()),
-        sa.column("requires_bank_match", sa.Boolean()),
-        sa.column("status", sa.String(length=24)),
-        sa.column("created_at", sa.DateTime()),
-        sa.column("updated_at", sa.DateTime()),
+        sa.MetaData(),
+        sa.Column("id", sa.String(length=32)),
+        sa.Column("name", sa.String(length=80)),
+        sa.Column("sort_order", sa.Integer()),
+        sa.Column("requires_bank_match", sa.Boolean()),
+        sa.Column("status", sa.String(length=24)),
+        sa.Column("created_at", sa.DateTime()),
+        sa.Column("updated_at", sa.DateTime()),
     )
 
 
@@ -37,11 +39,6 @@ def upgrade() -> None:
     existing_names = {row[0] for row in bind.execute(sa.text("SELECT name FROM revenue_channels"))}
     now = datetime.now(UTC).replace(tzinfo=None)
     defaults = [
-        ("美团团购", 10, True),
-        ("美团点评买单", 20, True),
-        ("抖音团购", 30, True),
-        ("扫码收款", 40, True),
-        ("商场代金券", 50, False),
         ("现金收款", 60, False),
         ("淘宝团购", 70, True),
     ]
@@ -65,14 +62,6 @@ def upgrade() -> None:
 def downgrade() -> None:
     bind = op.get_bind()
     bind.execute(
-        sa.text("DELETE FROM revenue_channels WHERE name IN (:a, :b, :c, :d, :e, :f, :g)"),
-        {
-            "a": "美团团购",
-            "b": "美团点评买单",
-            "c": "抖音团购",
-            "d": "扫码收款",
-            "e": "商场代金券",
-            "f": "现金收款",
-            "g": "淘宝团购",
-        },
+        sa.text("DELETE FROM revenue_channels WHERE name IN (:cash, :taobao)"),
+        {"cash": "现金收款", "taobao": "淘宝团购"},
     )

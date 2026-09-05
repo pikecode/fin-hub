@@ -371,6 +371,8 @@ def run() -> None:
         seed_revenue_channel(session, "抖音团购", 30)
         seed_revenue_channel(session, "扫码收款", 40)
         seed_revenue_channel(session, "商场代金券", 50, requires_bank_match=False)
+        seed_revenue_channel(session, "现金收款", 60, requires_bank_match=False)
+        seed_revenue_channel(session, "淘宝团购", 70)
 
         seed_revenue_record(
             session, foshan.id, "2026-08", datetime(2026, 8, 12), "美团团购", "56820.00", "55210.00", "1610.00"

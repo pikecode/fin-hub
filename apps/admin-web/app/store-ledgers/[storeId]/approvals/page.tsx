@@ -32,6 +32,10 @@ function syncRangeForPeriod(period: string): SyncDateRange | null {
   return [start, end.isAfter(latestAllowed) ? latestAllowed : end];
 }
 
+function defaultLedgerPeriod() {
+  return dayjs().subtract(1, "month").format("YYYY-MM");
+}
+
 type DingTalkFormField = {
   id?: string;
   name?: string;
@@ -274,6 +278,10 @@ function uniqueSelectOptions(values: Array<string | null | undefined>) {
     .map((value) => ({ text: value, value }));
 }
 
+function tableFiltersToSelectOptions(filters: Array<{ text: string; value: string }>) {
+  return filters.map((filter) => ({ label: filter.text, value: filter.value }));
+}
+
 export default function StoreLedgerApprovalsPage() {
   const params = useParams<{ storeId: string }>();
   const searchParams = useClientSearchParams();
@@ -285,8 +293,12 @@ export default function StoreLedgerApprovalsPage() {
   const [selectedApproval, setSelectedApproval] = useState<ApprovalInstance | null>(null);
   const [detailAttachments, setDetailAttachments] = useState<Attachment[]>([]);
   const [imagePreview, setImagePreview] = useState<ImagePreviewState | null>(null);
-  const [selectedPeriod, setSelectedPeriod] = useState(searchParams.get("period") || "");
+  const fallbackPeriod = useMemo(() => defaultLedgerPeriod(), []);
+  const [selectedPeriod, setSelectedPeriod] = useState(searchParams.get("period") || fallbackPeriod);
   const [keyword, setKeyword] = useState("");
+  const [templateFilter, setTemplateFilter] = useState<string>();
+  const [approvalStatusFilter, setApprovalStatusFilter] = useState<string>();
+  const [matchStatusFilter, setMatchStatusFilter] = useState<string>();
   const [isLoading, setIsLoading] = useState(true);
   const [isApprovalLoading, setIsApprovalLoading] = useState(false);
   const [isStoreSyncing, setIsStoreSyncing] = useState(false);
@@ -314,7 +326,7 @@ export default function StoreLedgerApprovalsPage() {
           setStore(storePage.find((item) => item.id === storeId) ?? null);
           setLedgers(nextLedgers);
           setTemplates(templatePage);
-          setSelectedPeriod((current) => current || nextLedgers[0]?.period || "");
+          setSelectedPeriod((current) => current || fallbackPeriod);
         }
       } catch (error) {
         if (!ignore) setErrorMessage(error instanceof Error ? error.message : "无法加载审批单");
@@ -326,7 +338,7 @@ export default function StoreLedgerApprovalsPage() {
     return () => {
       ignore = true;
     };
-  }, [storeId]);
+  }, [fallbackPeriod, storeId]);
 
   useEffect(() => {
     let ignore = false;
@@ -355,10 +367,14 @@ export default function StoreLedgerApprovalsPage() {
     };
   }, [keyword, storeId]);
 
-  const periodOptions = useMemo(
-    () => ledgers.map((ledger) => ({ label: ledger.period, value: ledger.period })),
-    [ledgers],
-  );
+  const periodOptions = useMemo(() => {
+    const periods = new Set(ledgers.map((ledger) => ledger.period));
+    if (selectedPeriod) periods.add(selectedPeriod);
+    return Array.from(periods)
+      .sort()
+      .reverse()
+      .map((period) => ({ label: period, value: period }));
+  }, [ledgers, selectedPeriod]);
   const templateNameById = useMemo(
     () => new Map(templates.map((template) => [template.id, template.name])),
     [templates],
@@ -379,8 +395,21 @@ export default function StoreLedgerApprovalsPage() {
     () => uniqueSelectOptions(approvals.map((approval) => approvalStatusMeta(approval.approval_status).label)),
     [approvals],
   );
+  const approvalMatchStatusFilters = useMemo(
+    () => uniqueSelectOptions(approvals.map((approval) => approvalMatchStatusMeta(approval.processing_status).label)),
+    [approvals],
+  );
+  const templateSelectOptions = useMemo(() => tableFiltersToSelectOptions(templateNameFilters), [templateNameFilters]);
+  const approvalStatusSelectOptions = useMemo(() => tableFiltersToSelectOptions(approvalStatusFilters), [approvalStatusFilters]);
+  const approvalMatchStatusSelectOptions = useMemo(() => tableFiltersToSelectOptions(approvalMatchStatusFilters), [approvalMatchStatusFilters]);
   const filteredApprovals = approvals.filter((approval) => {
     const value = keyword.trim().toLowerCase();
+    const templateName = templateNameById.get(approval.template_id) || "-";
+    const approvalStatusLabel = approvalStatusMeta(approval.approval_status).label;
+    const matchStatusLabel = approvalMatchStatusMeta(approval.processing_status).label;
+    if (templateFilter && templateName !== templateFilter) return false;
+    if (approvalStatusFilter && approvalStatusLabel !== approvalStatusFilter) return false;
+    if (matchStatusFilter && matchStatusLabel !== matchStatusFilter) return false;
     if (!value) return true;
     return [
       approval.approval_no,
@@ -389,8 +418,9 @@ export default function StoreLedgerApprovalsPage() {
       approval.applicant_user_id,
       approval.department_name,
       approval.approval_status,
-      approvalStatusMeta(approval.approval_status).label,
-      templateNameById.get(approval.template_id),
+      approvalStatusLabel,
+      matchStatusLabel,
+      templateName,
     ]
       .filter(Boolean)
       .some((text) => String(text).toLowerCase().includes(value));
@@ -550,7 +580,7 @@ export default function StoreLedgerApprovalsPage() {
       key: "approval_no",
       title: "审批编号",
       dataIndex: "approval_no",
-      width: 170,
+      width: 150,
       ellipsis: true,
       render: (value) =>
         value ? (
@@ -564,16 +594,20 @@ export default function StoreLedgerApprovalsPage() {
     {
       key: "template_name",
       title: "模板名称",
-      width: 180,
+      width: 160,
+      ellipsis: true,
       filters: templateNameFilters,
       onFilter: (value, record) => templateNameById.get(record.template_id) === value,
-      render: (_, record) => templateNameById.get(record.template_id) || "-",
+      render: (_, record) => {
+        const templateName = templateNameById.get(record.template_id) || "-";
+        return <Typography.Text ellipsis={{ tooltip: templateName }}>{templateName}</Typography.Text>;
+      },
     },
     {
       key: "applicant_name",
       title: "申请人",
       dataIndex: "applicant_name",
-      width: 150,
+      width: 120,
       filters: applicantFilters,
       onFilter: (value, record) => applicantDisplayName(record) === value,
       render: (_, record) => (
@@ -590,15 +624,20 @@ export default function StoreLedgerApprovalsPage() {
     {
       key: "department_name",
       title: "部门",
-      width: 220,
+      width: 150,
+      ellipsis: true,
       filters: departmentFilters,
       onFilter: (value, record) => approvalDepartmentName(record) === value,
-      render: (_, record) => approvalDepartmentName(record),
+      render: (_, record) => {
+        const departmentName = approvalDepartmentName(record);
+        return <Typography.Text ellipsis={{ tooltip: departmentName }}>{departmentName}</Typography.Text>;
+      },
     },
     {
       key: "approval_status",
       title: "状态",
       dataIndex: "approval_status",
+      width: 90,
       filters: approvalStatusFilters,
       onFilter: (value, record) => approvalStatusMeta(record.approval_status).label === value,
       render: (value: string) => {
@@ -610,14 +649,16 @@ export default function StoreLedgerApprovalsPage() {
       key: "processing_status",
       title: "匹配状态",
       dataIndex: "processing_status",
-      width: 110,
+      width: 100,
+      filters: approvalMatchStatusFilters,
+      onFilter: (value, record) => approvalMatchStatusMeta(record.processing_status).label === value,
       render: (value: string | null | undefined) => {
         const meta = approvalMatchStatusMeta(value);
         return <Tag color={meta.color}>{meta.label}</Tag>;
       },
     },
-    { key: "submit_at", title: "提交时间", dataIndex: "submit_at", render: (value) => value?.replace("T", " ").slice(0, 16) || "-" },
-    { key: "approved_at", title: "通过时间", dataIndex: "approved_at", render: (value) => value?.replace("T", " ").slice(0, 16) || "-" },
+    { key: "submit_at", title: "提交时间", dataIndex: "submit_at", width: 135, render: (value) => value?.replace("T", " ").slice(0, 16) || "-" },
+    { key: "approved_at", title: "通过时间", dataIndex: "approved_at", width: 135, render: (value) => value?.replace("T", " ").slice(0, 16) || "-" },
     {
       key: "actions",
       title: "操作",
@@ -650,13 +691,39 @@ export default function StoreLedgerApprovalsPage() {
         title="审批单列表"
         loading={isLoading}
         extra={
-          <Space size={8}>
+          <Space size={8} wrap>
             <Input.Search
               allowClear
-              placeholder="搜索编号、模板、申请人、部门"
+              placeholder="搜索编号、申请人、部门"
               value={keyword}
               onChange={(event) => setKeyword(event.target.value)}
-              style={{ width: 280 }}
+              style={{ width: 220 }}
+            />
+            <Select
+              allowClear
+              showSearch
+              optionFilterProp="label"
+              placeholder="模板"
+              value={templateFilter}
+              options={templateSelectOptions}
+              onChange={setTemplateFilter}
+              style={{ width: 180 }}
+            />
+            <Select
+              allowClear
+              placeholder="状态"
+              value={approvalStatusFilter}
+              options={approvalStatusSelectOptions}
+              onChange={setApprovalStatusFilter}
+              style={{ width: 110 }}
+            />
+            <Select
+              allowClear
+              placeholder="匹配状态"
+              value={matchStatusFilter}
+              options={approvalMatchStatusSelectOptions}
+              onChange={setMatchStatusFilter}
+              style={{ width: 130 }}
             />
             <Button type="primary" loading={isStoreSyncing} disabled={!selectedPeriod} onClick={openStoreSyncModal}>
               同步本账期审批

@@ -8,9 +8,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-COPY apps/api/pyproject.toml ./pyproject.toml
+# 先复制依赖配置（变化少，缓存效果好）
+COPY apps/api/pyproject.toml ./
 RUN pip install --no-cache-dir -e .
 
+# 再复制应用代码（代码变化频繁）
 COPY apps/api/app ./app
 COPY apps/api/alembic.ini ./alembic.ini
 COPY apps/api/alembic ./alembic
