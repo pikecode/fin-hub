@@ -50,10 +50,10 @@ from app.schemas import (
 
 router = APIRouter(prefix="/bank-transactions", tags=["bank"])
 
-BANK_IMPORT_TEMPLATE_HEADERS = ["发生时间", "类型", "金额", "备注", "流水号"]
+BANK_IMPORT_TEMPLATE_HEADERS = ["发生时间", "收入", "支出", "对方户名", "对方账号", "备注"]
 BANK_IMPORT_TEMPLATE_ROWS = [
-    ["2026-08-20 10:00:00", "收入", "1200.00", "营业款", "BANK-EXAMPLE-001"],
-    ["2026-08-21 11:30:00", "支出", "300.00", "物料款", "BANK-EXAMPLE-002"],
+    ["2026-08-20", "1200.00", "", "营业款", "BANK-EXAMPLE-001", "营业款收入"],
+    ["2026-08-21", "", "300.00", "物料款", "BANK-EXAMPLE-002", "采购支出"],
 ]
 
 
@@ -410,17 +410,28 @@ def transaction_exists(session: Session, payload: dict) -> bool:
 
 
 def parse_import_payload(row: dict[str, str | None], store_id: str | None, ledger_period: str | None) -> dict:
-    amount_text = pick(row, "amount", "金额", "交易金额")
+    income_text = pick(row, "income_amount", "收入", "入账金额", "收入金额")
+    expense_text = pick(row, "expense_amount", "支出", "出账金额", "支出金额")
     occurred_at = parse_datetime(pick(row, "occurred_at", "发生时间", "交易时间", "日期"))
+    counterparty_name = pick(row, "counterparty_name", "对方户名", "交易对方") or None
+    counterparty_account = pick(row, "counterparty_account", "对方账号") or None
+    summary = pick(row, "summary", "摘要", "备注") or None
+    has_income = bool(income_text and income_text.strip())
+    has_expense = bool(expense_text and expense_text.strip())
+    if has_income and has_expense:
+        raise ValueError("Each row can only have income or expense amount")
+    if not has_income and not has_expense:
+        raise ValueError("Amount is required")
+    amount_text = income_text if has_income else expense_text
     return {
         "store_id": store_id,
         "ledger_period": ledger_period or (occurred_at.strftime("%Y-%m") if store_id else None),
         "occurred_at": occurred_at,
-        "direction": parse_direction(pick(row, "direction", "方向", "类型", "收支方向", "收入还是支出")),
+        "direction": "income" if has_income else "expense",
         "amount": Decimal(amount_text.replace(",", "")),
-        "counterparty_name": pick(row, "counterparty_name", "对方户名", "交易对方") or None,
-        "counterparty_account": pick(row, "counterparty_account", "对方账号") or None,
-        "summary": pick(row, "summary", "摘要", "备注") or None,
+        "counterparty_name": counterparty_name,
+        "counterparty_account": counterparty_account,
+        "summary": summary,
         "bank_serial_no": pick(row, "bank_serial_no", "流水号", "交易流水号") or None,
     }
 

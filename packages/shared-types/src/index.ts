@@ -390,6 +390,7 @@ export interface ExpenseItem {
   payee_account_type?: string | null;
   payee_account_verify_status?: string | null;
   payee_account_snapshot_json?: string | null;
+  voucher_count?: number;
   remark?: string | null;
   payment_status: ExpensePaymentStatus;
   source: string;
@@ -545,6 +546,7 @@ export interface ReconciliationExpenseCandidate {
   approval_instance?: ApprovalInstance | null;
   template_name?: string | null;
   display_fields: Record<string, unknown>;
+  voucher_count?: number;
   remaining_amount: string;
   score: string;
   reason: string;

@@ -2471,6 +2471,7 @@ def expense_rows_from_table(value: Any) -> list[dict[str, Any]]:
         category_l1 = parse_text(pick_row_value(row, "支出类型", "费用类型", "一级分类"))
         category_l2 = parse_text(pick_row_value(row, "二级分类", "小类"))
         supplier_name = parse_text(pick_row_value(row, "供应商", "收款方", "收款单位"))
+        voucher_items = voucher_items_from_row(row)
         if amount is None:
             continue
         rows.append(
@@ -2480,6 +2481,7 @@ def expense_rows_from_table(value: Any) -> list[dict[str, Any]]:
                 "category_l1": category_l1,
                 "category_l2": category_l2,
                 "supplier_name": supplier_name,
+                "voucher_items": voucher_items,
                 "line_source_type": "table_row",
                 "source_row": row,
                 "source_row_index": index,
@@ -2540,8 +2542,14 @@ def payee_snapshot_from_raw(raw_instance: dict[str, Any], payee_account: str | N
 def voucher_items_from_table(value: Any) -> list[dict[str, str | None]]:
     items: list[dict[str, str | None]] = []
     for row in decode_table_value(value):
-        for name in ("报销凭证", "报销凭证图片", "报销凭证文档", "凭证", "凭证图片", "附件"):
-            items.extend(parse_voucher_items(pick_row_value(row, name)))
+        items.extend(voucher_items_from_row(row))
+    return items
+
+
+def voucher_items_from_row(row: dict[str, Any]) -> list[dict[str, str | None]]:
+    items: list[dict[str, str | None]] = []
+    for name in ("报销凭证", "报销凭证图片", "报销凭证文档", "凭证", "凭证图片", "附件"):
+        items.extend(parse_voucher_items(pick_row_value(row, name)))
     return items
 
 
@@ -3164,13 +3172,13 @@ def sync_real_instance(
         )
         if created:
             created_expense_ids.append(expense_item.id)
+            row_voucher_items = row.get("voucher_items") if isinstance(row.get("voucher_items"), list) else []
+            expense_voucher_items = row_voucher_items if row_voucher_items else ([*voucher_items] if len(rows_to_create) == 1 else [])
             create_dingtalk_attachment_placeholders(
                 session,
                 "expense_item",
                 expense_item.id,
-                [
-                    *voucher_items,
-                ],
+                expense_voucher_items,
             )
     mark_removed_expense_lines(session, instance, active_source_document_ids)
     instance.parse_status = "parsed"

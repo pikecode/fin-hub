@@ -1161,7 +1161,7 @@ export default function BankPage() {
               columns={entryColumns}
               scroll={{ x: 1200, y: 480 }}
             />
-            <Typography.Text type="secondary">可以从 Excel 复制整块数据后粘贴。格式：发生日期 | 收入 | 支出 | 对方户名 | 对方账号 | 备注，空单元格会保留为空。</Typography.Text>
+            <Typography.Text type="secondary">可以从 Excel 复制整块数据后粘贴。格式：发生日期 | 收入 | 支出 | 对方户名 | 对方账号 | 备注，导入模板同样保持这个顺序。</Typography.Text>
           </Space>
         </Form>
       </Modal>
@@ -1201,8 +1201,8 @@ export default function BankPage() {
                         <Select options={openLedgerOptions} />
                       </Form.Item>
                     )}
-                    <Form.Item label="上传文件">
-                      <Space>
+                      <Form.Item label="上传文件">
+                        <Space>
                         <Upload
                           maxCount={1}
                           fileList={uploadFileList}
@@ -1234,6 +1234,7 @@ export default function BankPage() {
               type={importPreview.error_count > 0 ? "warning" : "success"}
               showIcon
               message={`有效 ${importPreview.valid_count} 条，重复 ${importPreview.duplicate_count} 条，错误 ${importPreview.error_count} 条`}
+              description="导入预览和批量录入使用同一套收入/支出字段。"
             />
             <Table
               rowKey="row_number"

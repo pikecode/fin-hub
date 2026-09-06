@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Reset synchronized test data.
+"""Rebuild DingTalk approval-derived data.
 
-Default scope clears DingTalk synchronized data and derived records while
-preserving configuration, users, roles, stores, revenue channels, categories,
-suppliers, and bank transactions.
+Default scope clears DingTalk approval-derived data while preserving source
+data such as departments, approval templates, stores, and configuration.
 """
 
 from __future__ import annotations
@@ -37,14 +36,15 @@ DINGTALK_SYNC_JOB_TYPE_SQL = ",".join(repr(item) for item in DINGTALK_SYNC_JOB_T
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Reset synchronized test data for fin-hub.",
+        description="Rebuild DingTalk approval-derived data for fin-hub.",
     )
     parser.add_argument(
         "--scope",
-        choices=("dingtalk-sync", "all-test-data"),
-        default="dingtalk-sync",
+        choices=("approval-rebuild", "dingtalk-sync", "all-test-data"),
+        default="approval-rebuild",
         help=(
-            "dingtalk-sync clears DingTalk sync data only. "
+            "approval-rebuild clears approval-derived data only. "
+            "dingtalk-sync keeps the legacy reset scope. "
             "all-test-data also clears bank/revenue/ledger business test data."
         ),
     )
@@ -57,6 +57,21 @@ def parse_args() -> argparse.Namespace:
         "--database-url",
         default=settings.database_url,
         help="Override DATABASE_URL. Defaults to the app DATABASE_URL setting.",
+    )
+    parser.add_argument(
+        "--store-id",
+        default=None,
+        help="Optional store id to scope DingTalk reset to a single store.",
+    )
+    parser.add_argument(
+        "--ledger-period",
+        default=None,
+        help="Optional ledger period to scope DingTalk reset to a single period.",
+    )
+    parser.add_argument(
+        "--approval-no",
+        default=None,
+        help="Optional approval number to scope DingTalk reset to a single approval.",
     )
     parser.add_argument(
         "--yes-i-know-this-deletes-data",
@@ -74,20 +89,40 @@ def count_tables(conn: Connection, tables: Iterable[str]) -> dict[str, int]:
     return {table: scalar_int(conn, f"SELECT count(*) FROM {table}") for table in tables}
 
 
-def create_dingtalk_temp_tables(conn: Connection) -> None:
+def create_dingtalk_temp_tables(
+    conn: Connection,
+    *,
+    store_id: str | None = None,
+    ledger_period: str | None = None,
+    approval_no: str | None = None,
+) -> None:
     conn.execute(text("DROP TABLE IF EXISTS _reset_dingtalk_expense_ids"))
     conn.execute(text("DROP TABLE IF EXISTS _reset_dingtalk_bank_ids"))
     conn.execute(text("DROP TABLE IF EXISTS _reset_dingtalk_attachment_ids"))
+    expense_conditions = ["source = 'dingtalk'", "approval_instance_id IS NOT NULL"]
+    params: dict[str, str] = {}
+    if store_id:
+        expense_conditions.append("store_id = :store_id")
+        params["store_id"] = store_id
+    if ledger_period:
+        expense_conditions.append("ledger_period = :ledger_period")
+        params["ledger_period"] = ledger_period
+    if approval_no:
+        expense_conditions.append(
+            "approval_instance_id IN (SELECT id FROM approval_instances WHERE approval_no = :approval_no)"
+        )
+        params["approval_no"] = approval_no
     conn.execute(
         text(
             """
             CREATE TEMP TABLE _reset_dingtalk_expense_ids ON COMMIT DROP AS
             SELECT id
             FROM expense_items
-            WHERE source = 'dingtalk'
-               OR approval_instance_id IS NOT NULL
+            WHERE {filters}
             """
-        )
+            .format(filters=" OR ".join(f"({clause})" for clause in expense_conditions))
+        ),
+        params,
     )
     conn.execute(
         text(
@@ -106,13 +141,13 @@ def create_dingtalk_temp_tables(conn: Connection) -> None:
             SELECT id
             FROM attachments
             WHERE source = 'dingtalk'
-               OR resource_type = 'approval_instance'
                OR (
                     resource_type = 'expense_item'
                     AND resource_id IN (SELECT id FROM _reset_dingtalk_expense_ids)
                )
             """
-        )
+        ),
+        {},
     )
 
 
@@ -147,8 +182,14 @@ def refresh_affected_bank_matched_amount(conn: Connection) -> None:
     )
 
 
-def reset_dingtalk_sync(conn: Connection) -> dict[str, int]:
-    create_dingtalk_temp_tables(conn)
+def reset_dingtalk_sync(
+    conn: Connection,
+    *,
+    store_id: str | None = None,
+    ledger_period: str | None = None,
+    approval_no: str | None = None,
+) -> dict[str, int]:
+    create_dingtalk_temp_tables(conn, store_id=store_id, ledger_period=ledger_period, approval_no=approval_no)
     counts = {
         "dingtalk_expense_items": scalar_int(conn, "SELECT count(*) FROM _reset_dingtalk_expense_ids"),
         "dingtalk_related_attachments": scalar_int(conn, "SELECT count(*) FROM _reset_dingtalk_attachment_ids"),
@@ -264,6 +305,72 @@ def reset_all_test_data(conn: Connection) -> dict[str, int]:
     return counts
 
 
+def reset_approval_rebuild(conn: Connection) -> dict[str, int]:
+    create_dingtalk_temp_tables(conn)
+    counts = {
+        "dingtalk_expense_items": scalar_int(conn, "SELECT count(*) FROM _reset_dingtalk_expense_ids"),
+        "dingtalk_related_attachments": scalar_int(conn, "SELECT count(*) FROM _reset_dingtalk_attachment_ids"),
+        "affected_bank_transactions": scalar_int(conn, "SELECT count(*) FROM _reset_dingtalk_bank_ids"),
+        "expense_bank_matches": scalar_int(
+            conn,
+            """
+            SELECT count(*)
+            FROM expense_bank_matches
+            WHERE expense_item_id IN (SELECT id FROM _reset_dingtalk_expense_ids)
+            """,
+        ),
+        "approval_instances": scalar_int(conn, "SELECT count(*) FROM approval_instances"),
+        "template_field_mappings": scalar_int(conn, "SELECT count(*) FROM template_field_mappings"),
+        "approval_templates": scalar_int(conn, "SELECT count(*) FROM approval_templates"),
+        "dingtalk_departments": scalar_int(conn, "SELECT count(*) FROM dingtalk_departments"),
+        "dingtalk_sync_jobs": scalar_int(
+            conn,
+            f"""
+            SELECT count(*)
+            FROM sync_jobs
+            WHERE job_type IN ({DINGTALK_SYNC_JOB_TYPE_SQL})
+            """,
+        ),
+    }
+    conn.execute(
+        text(
+            """
+            DELETE FROM expense_bank_matches
+            WHERE expense_item_id IN (SELECT id FROM _reset_dingtalk_expense_ids)
+            """
+        )
+    )
+    conn.execute(text("DELETE FROM attachments WHERE id IN (SELECT id FROM _reset_dingtalk_attachment_ids)"))
+    conn.execute(text("DELETE FROM expense_items WHERE id IN (SELECT id FROM _reset_dingtalk_expense_ids)"))
+    conn.execute(text("DELETE FROM approval_instances"))
+    conn.execute(text("DELETE FROM sync_jobs WHERE job_type IN ({})".format(DINGTALK_SYNC_JOB_TYPE_SQL)))
+    conn.execute(
+        text(
+            """
+            UPDATE dingtalk_auto_sync_settings
+            SET approval_watermark_at = NULL,
+                approval_resume_state = NULL,
+                last_job_id = NULL,
+                last_status = NULL,
+                last_error = NULL,
+                last_run_at = NULL,
+                updated_at = now()
+            """
+        )
+    )
+    conn.execute(
+        text(
+            """
+            UPDATE dingtalk_configs
+            SET last_instance_sync_at = NULL,
+                updated_at = now()
+            """
+        )
+    )
+    refresh_affected_bank_matched_amount(conn)
+    return counts
+
+
 def print_counts(counts: dict[str, int]) -> None:
     width = max((len(key) for key in counts), default=0)
     for key, count in counts.items():
@@ -285,14 +392,27 @@ def main() -> int:
     mode = "EXECUTE" if args.execute else "DRY-RUN"
     print(f"Mode: {mode}")
     print(f"Scope: {args.scope}")
+    if args.store_id:
+        print(f"Store ID: {args.store_id}")
+    if args.ledger_period:
+        print(f"Ledger period: {args.ledger_period}")
+    if args.approval_no:
+        print(f"Approval no: {args.approval_no}")
     print(f"Database: {url.render_as_string(hide_password=True)}")
     print("")
 
     with engine.connect() as conn:
         trans = conn.begin()
         try:
-            if args.scope == "dingtalk-sync":
-                counts = reset_dingtalk_sync(conn)
+            if args.scope == "approval-rebuild":
+                counts = reset_approval_rebuild(conn)
+            elif args.scope == "dingtalk-sync":
+                counts = reset_dingtalk_sync(
+                    conn,
+                    store_id=args.store_id,
+                    ledger_period=args.ledger_period,
+                    approval_no=args.approval_no,
+                )
             else:
                 counts = reset_all_test_data(conn)
 
