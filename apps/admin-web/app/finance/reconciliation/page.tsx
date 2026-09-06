@@ -90,6 +90,16 @@ function approvalNoText(record: ApprovalLike) {
   return record.approval_instance?.approval_no || record.approval_instance?.dingtalk_instance_id || "-";
 }
 
+function approvalTotalAmount(candidate: ReconciliationExpenseCandidate) {
+  return candidate.approval_instance?.total_expense_amount ?? candidate.expense_item.amount;
+}
+
+function formatRecommendationScore(score: string) {
+  const value = Number(score);
+  if (!Number.isFinite(value)) return "-";
+  return value === 100 ? "100%" : `${value.toFixed(1)}%`;
+}
+
 function isReconciliationRecord(record: ApprovalLike): record is ReconciliationRecord {
   return "bank_transaction" in record;
 }
@@ -939,7 +949,6 @@ export default function FinanceReconciliationPage() {
 	                      <div className="bank-transaction-list">
 	                        {visibleTransactions.map((transaction) => {
 	                          const isSelected = transaction.id === selectedTransaction?.id;
-	                          const remaining = remainingAmount(transaction);
                           const isFullyMatched = Number(transaction.matched_amount || 0) > 0;
                           return (
                             <button
@@ -972,7 +981,6 @@ export default function FinanceReconciliationPage() {
                               </span>
                               <span className="bank-transaction-card__amounts">
                                 <Typography.Text className="bank-transaction-card__amount">{formatMoney(transaction.amount)}</Typography.Text>
-                                <Typography.Text type="secondary">剩余 {formatMoney(Math.max(remaining, 0).toFixed(2))}</Typography.Text>
                               </span>
 	                            </button>
 	                          );
@@ -1001,7 +1009,7 @@ export default function FinanceReconciliationPage() {
                 </Splitter.Panel>
                 <Splitter.Panel min="460px">
                   <Card
-                    title={selectedTransaction ? `审批单候选：${formatMoney(bankRemaining)}` : "审批单候选"}
+                    title={selectedTransaction ? `审批单候选：${formatMoney(selectedTransaction.amount)}` : "审批单候选"}
                     extra={
                       <Space>
                         <Form form={filterForm} layout="inline" initialValues={{ approval_no: initialApprovalNo }} onFinish={(values) => selectedStoreId && loadCandidates(selectedTransaction, selectedStoreId, values)}>
@@ -1054,10 +1062,12 @@ export default function FinanceReconciliationPage() {
                                   if (!isReadOnlyMatched && (event.key === "Enter" || event.key === " ")) setSelectedCandidateId(candidate.expense_item.id);
                                 }}
                               >
-                                <div className="approval-candidate-card__score">
-                                  <span>{Number(candidate.score).toFixed(0)}%</span>
-                                  <Typography.Text type="secondary">推荐度</Typography.Text>
-                                </div>
+                                <Tooltip title={candidate.reason}>
+                                  <div className="approval-candidate-card__score">
+                                    <span>{formatRecommendationScore(candidate.score)}</span>
+                                    <Typography.Text type="secondary">推荐度</Typography.Text>
+                                  </div>
+                                </Tooltip>
                                 <div className="approval-candidate-card__main">
                                   <Space size={6} wrap>
                                     <Typography.Text strong copyable={{ text: approvalNoText(candidate) }}>
@@ -1081,8 +1091,8 @@ export default function FinanceReconciliationPage() {
                                   <div className="approval-candidate-card__fields">{displayFieldSummary(candidate.display_fields)}</div>
                                 </div>
                                 <div className="approval-candidate-card__aside">
-                                  <Typography.Text className="approval-candidate-card__amount">{formatMoney(candidate.expense_item.amount)}</Typography.Text>
-                                  <Typography.Text type="secondary">明细金额</Typography.Text>
+                                  <Typography.Text className="approval-candidate-card__amount">{formatMoney(approvalTotalAmount(candidate))}</Typography.Text>
+                                  <Typography.Text type="secondary">审批单总额</Typography.Text>
                                   <Button
                                     size="small"
                                     type="primary"
@@ -1180,9 +1190,9 @@ export default function FinanceReconciliationPage() {
               <Typography.Text>{selectedTransaction ? `${dayjs(selectedTransaction.occurred_at).format("YYYY-MM-DD")} · ${formatMoney(selectedTransaction.amount)}` : "-"}</Typography.Text>
             </div>
             <div>
-              <Typography.Text type="secondary">当前选中审批明细</Typography.Text>
-              <Typography.Text strong>{selectedCandidate?.expense_item.description || "-"}</Typography.Text>
-              <Typography.Text>{selectedCandidate ? `${approvalNoText(selectedCandidate)} · ${formatMoney(selectedCandidate.expense_item.amount)}` : "-"}</Typography.Text>
+              <Typography.Text type="secondary">当前审批单</Typography.Text>
+              <Typography.Text strong>{selectedCandidate ? approvalNoText(selectedCandidate) : "-"}</Typography.Text>
+              <Typography.Text>{selectedCandidate ? `审批单总额 · ${formatMoney(approvalTotalAmount(selectedCandidate))}` : "-"}</Typography.Text>
             </div>
           </div>
           <Card size="small" title="审批费用明细" style={{ marginBottom: 16 }}>

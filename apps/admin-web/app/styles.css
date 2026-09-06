@@ -1429,7 +1429,30 @@ select,
 }
 
 .app-header-tabs-row {
+  display: flex;
+  align-items: center;
   min-width: 0;
+  min-height: 38px;
+  padding: 4px 8px 0;
+  background: #f8fafc;
+  border: 1px solid #e6eaf0;
+  border-bottom: 0;
+  border-radius: 8px 8px 0 0;
+}
+
+.app-open-pages-label {
+  flex: 0 0 auto;
+  padding: 0 10px 4px 2px;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 28px;
+  white-space: nowrap;
+}
+
+.app-header-tabs-row .app-open-pages-tabs {
+  min-width: 0;
+  flex: 1 1 auto;
   overflow: hidden;
 }
 
@@ -1451,11 +1474,23 @@ select,
 
 .app-open-pages-tabs .ant-tabs-tab {
   padding: 6px 10px !important;
+  background: #ffffff;
+  border-color: #e2e8f0 !important;
   border-radius: 6px 6px 0 0 !important;
 }
 
 .app-open-pages-tabs .ant-tabs-tab + .ant-tabs-tab {
   margin: 0 !important;
+}
+
+.app-open-pages-tabs .ant-tabs-tab-active {
+  background: #f0fdfa !important;
+  border-color: #5eead4 !important;
+}
+
+.app-open-pages-tabs .ant-tabs-tab-active .ant-tabs-tab-btn {
+  color: #0f766e;
+  font-weight: 600;
 }
 
 .app-open-pages-tabs .ant-tabs-tab-btn {
@@ -1468,6 +1503,12 @@ select,
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  cursor: grab;
+  user-select: none;
+}
+
+.app-open-page-tab-label:active {
+  cursor: grabbing;
 }
 
 .app-open-pages-tabs .ant-tabs-nav .ant-tabs-tab .ant-tabs-tab-remove {

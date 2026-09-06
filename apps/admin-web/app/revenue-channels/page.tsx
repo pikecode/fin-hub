@@ -1,10 +1,10 @@
 "use client";
 
-import { Alert, Button, Form, Input, InputNumber, Modal, Space, Switch, message } from "antd";
+import { Alert, Button, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Switch, Tag, message } from "antd";
 import { useEffect, useState } from "react";
-import { PlusOutlined, MoneyCollectOutlined } from "@ant-design/icons";
+import { DeleteOutlined, PlusOutlined, MoneyCollectOutlined } from "@ant-design/icons";
 import { useRouter } from "next/navigation";
-import type { RevenueChannel, RevenueChannelCreate } from "@fin-hub/shared-types";
+import type { RevenueChannel, RevenueChannelCreate, Store } from "@fin-hub/shared-types";
 import { AppShell } from "../components/AppShell";
 import { StatusBadge } from "../components/StatusBadge";
 import { EnterpriseTable } from "../components/EnterpriseTable";
@@ -17,6 +17,7 @@ export default function RevenueChannelsPage() {
   const searchParams = useClientSearchParams();
   const returnTo = searchParams.get("return_to");
   const [channels, setChannels] = useState<RevenueChannel[]>([]);
+  const [stores, setStores] = useState<Store[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingChannel, setEditingChannel] = useState<RevenueChannel | null>(null);
@@ -27,8 +28,12 @@ export default function RevenueChannelsPage() {
     setIsLoading(true);
     setErrorMessage(null);
     try {
-      const page = await apiClient.revenueChannels.list("?page_size=500");
+      const [page, storePage] = await Promise.all([
+        apiClient.revenueChannels.list("?page_size=500"),
+        apiClient.stores.list("?page_size=500"),
+      ]);
       setChannels(page.items);
+      setStores(storePage.items);
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "无法加载收入渠道");
     } finally {
@@ -47,6 +52,13 @@ export default function RevenueChannelsPage() {
         ...values,
         sort_order: values.sort_order ?? 0,
         requires_bank_match: values.requires_bank_match ?? true,
+        scope_mode: values.scope_mode ?? "all_stores",
+        store_ids:
+          values.scope_mode === "selected_stores"
+            ? values.store_ids?.length
+              ? values.store_ids
+              : []
+            : [],
       };
       if (editingChannel) {
         await apiClient.revenueChannels.update(editingChannel.id, payload);
@@ -75,7 +87,7 @@ export default function RevenueChannelsPage() {
   function openCreateModal() {
     setEditingChannel(null);
     form.resetFields();
-    form.setFieldsValue({ sort_order: 0, requires_bank_match: true });
+    form.setFieldsValue({ sort_order: 0, requires_bank_match: true, scope_mode: "all_stores", store_ids: [] });
     setIsModalOpen(true);
   }
 
@@ -85,6 +97,8 @@ export default function RevenueChannelsPage() {
       name: channel.name,
       sort_order: channel.sort_order,
       requires_bank_match: channel.requires_bank_match,
+      scope_mode: channel.scope_mode,
+      store_ids: channel.store_ids ?? [],
     });
     setIsModalOpen(true);
   }
@@ -130,6 +144,17 @@ export default function RevenueChannelsPage() {
       ),
     },
     {
+      key: "scope_mode",
+      title: "适用范围",
+      width: 180,
+      render: (_, record) =>
+        record.scope_mode === "all_stores" ? (
+          <Tag>全部门店</Tag>
+        ) : (
+          <Tag color="blue">指定门店 {record.store_ids?.length ? `(${record.store_ids.length})` : ""}</Tag>
+        ),
+    },
+    {
       key: "status",
       title: "状态",
       dataIndex: "status",
@@ -144,7 +169,7 @@ export default function RevenueChannelsPage() {
     {
       key: "actions",
       title: "操作",
-      width: 150,
+      width: 220,
       render: (_, record) => (
         <Space>
           <Button type="link" size="small" onClick={() => openEditModal(record)}>
@@ -157,6 +182,26 @@ export default function RevenueChannelsPage() {
           >
             {record.status === "active" ? "停用" : "启用"}
           </Button>
+          <Popconfirm
+            title="确认删除该渠道？"
+            description="删除后不会影响历史记录。"
+            onConfirm={async () => {
+              setIsLoading(true);
+              try {
+                await apiClient.revenueChannels.delete(record.id);
+                message.success("删除成功");
+                await loadChannels();
+              } catch (error) {
+                message.error(error instanceof Error ? error.message : "删除失败");
+              } finally {
+                setIsLoading(false);
+              }
+            }}
+          >
+            <Button type="link" size="small" danger icon={<DeleteOutlined />}>
+              删除
+            </Button>
+          </Popconfirm>
         </Space>
       ),
     },
@@ -212,6 +257,28 @@ export default function RevenueChannelsPage() {
           </Form.Item>
           <Form.Item name="sort_order" label="排序" tooltip="数字越小越靠前">
             <InputNumber className="full-width" min={0} placeholder="0" />
+          </Form.Item>
+          <Form.Item name="scope_mode" label="适用范围" initialValue="all_stores">
+            <Select
+              options={[
+                { label: "全部门店", value: "all_stores" },
+                { label: "指定门店", value: "selected_stores" },
+              ]}
+              onChange={(value) => {
+                if (value === "all_stores") {
+                  form.setFieldValue("store_ids", []);
+                }
+              }}
+            />
+          </Form.Item>
+          <Form.Item noStyle shouldUpdate={(prev, next) => prev.scope_mode !== next.scope_mode}>
+            {({ getFieldValue }) =>
+              getFieldValue("scope_mode") === "selected_stores" ? (
+                <Form.Item name="store_ids" label="适用门店" rules={[{ required: true, message: "请选择适用门店" }]}>
+                  <Select mode="multiple" options={stores.map((store) => ({ label: store.name, value: store.id }))} />
+                </Form.Item>
+              ) : null
+            }
           </Form.Item>
           <Form.Item
             name="requires_bank_match"

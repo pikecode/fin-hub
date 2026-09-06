@@ -52,37 +52,44 @@ interface BankFilterValues {
   counterparty_account?: string;
 }
 
-type BankEntryField = "occurred_at" | "direction" | "counterparty_name" | "counterparty_account" | "amount" | "summary";
+type BankEntryField = "occurred_at" | "income_amount" | "expense_amount" | "counterparty_name" | "counterparty_account" | "summary";
 
 interface BankEntryRow {
   key: string;
   occurred_at: string;
-  direction: "收入" | "支出";
+  income_amount: string;
+  expense_amount: string;
   counterparty_name: string;
   counterparty_account: string;
-  amount: string;
   summary: string;
 }
 
 const bankEntryHeaders: Record<BankEntryField, string> = {
   occurred_at: "发生日期",
-  direction: "类型",
+  income_amount: "收入",
+  expense_amount: "支出",
   counterparty_name: "对方户名",
   counterparty_account: "对方账号",
-  amount: "金额",
   summary: "备注",
 };
 
-const bankEntryFields: BankEntryField[] = ["occurred_at", "direction", "counterparty_name", "counterparty_account", "amount", "summary"];
+const bankEntryFields: BankEntryField[] = [
+  "occurred_at",
+  "income_amount",
+  "expense_amount",
+  "counterparty_name",
+  "counterparty_account",
+  "summary",
+];
 
 function createBankEntryRows(count: number): BankEntryRow[] {
   return Array.from({ length: count }, (_, index) => ({
     key: `bank-entry-${Date.now()}-${index}`,
     occurred_at: "",
-    direction: "支出",
+    income_amount: "",
+    expense_amount: "",
     counterparty_name: "",
     counterparty_account: "",
-    amount: "",
     summary: "",
   }));
 }
@@ -93,32 +100,19 @@ function ensureBankEntryRows(rows: BankEntryRow[], requiredCount: number) {
 }
 
 function isBankEntryRowEmpty(row: BankEntryRow) {
-  return !row.occurred_at.trim() && !row.amount.trim() && !row.counterparty_name.trim() && !row.counterparty_account.trim() && !row.summary.trim();
-}
-
-function normalizeEntryDirection(value: string) {
-  const normalized = normalizePastedCell(value).toLowerCase();
-  if (["收入", "income", "in", "收"].includes(normalized)) return "收入";
-  if (["支出", "expense", "out", "付", "付款"].includes(normalized)) return "支出";
-  return "";
+  return (
+    !row.occurred_at.trim() &&
+    !row.income_amount.trim() &&
+    !row.expense_amount.trim() &&
+    !row.counterparty_name.trim() &&
+    !row.counterparty_account.trim() &&
+    !row.summary.trim()
+  );
 }
 
 function bankDirectionCell(direction: "income" | "expense", target: "income" | "expense") {
   if (direction !== target) return <span className="bank-direction-placeholder">-</span>;
   return <StatusBadge status={direction === "income" ? "income" : "expense"} text={direction === "income" ? "收入" : "支出"} size="small" />;
-}
-
-function bankDirectionToggle(
-  value: "收入" | "支出",
-  target: "收入" | "支出",
-  onClick: () => void,
-) {
-  const active = value === target;
-  return (
-    <button type="button" className={`bank-direction-toggle${active ? " is-active" : ""}`} onClick={onClick}>
-      {active ? <StatusBadge status={target === "收入" ? "income" : "expense"} text={target} size="small" /> : <span className="bank-direction-placeholder">-</span>}
-    </button>
-  );
 }
 
 function normalizeEntryOccurredAt(value: string) {
@@ -193,11 +187,12 @@ function normalizePastedAmount(value?: string | null) {
 }
 
 function parsePastedEntryRows(text: string) {
+  const source = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  if (!source.includes("\t") && !source.includes("\n") && !source.trim()) return [];
   const rows: string[][] = [];
   let row: string[] = [];
   let cell = "";
   let inQuotes = false;
-  const source = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
   const delimiter = source.includes("\t") ? "\t" : ",";
 
   for (let index = 0; index < source.length; index += 1) {
@@ -219,7 +214,7 @@ function parsePastedEntryRows(text: string) {
     }
     if (!inQuotes && char === "\n") {
       row.push(normalizePastedCell(cell));
-      if (row.some((item) => item.trim())) rows.push(row);
+      rows.push(row);
       row = [];
       cell = "";
       continue;
@@ -228,7 +223,7 @@ function parsePastedEntryRows(text: string) {
   }
 
   row.push(normalizePastedCell(cell));
-  if (row.some((item) => item.trim())) rows.push(row);
+  rows.push(row);
   if (!rows.length) return [];
   const headerWords = Object.values(bankEntryHeaders).concat([
     "发生时间",
@@ -265,16 +260,13 @@ function applyPastedEntryRows(
       const field = bankEntryFields[startFieldIndex + cellOffset];
       if (!field) return;
       const value = normalizePastedCell(cell);
-      if (field === "amount") {
-        updatedRows[rowIndex].amount = normalizePastedAmount(value);
+      if (field === "income_amount" || field === "expense_amount") {
+        updatedRows[rowIndex][field] = normalizePastedAmount(value);
         return;
       }
       if (!value) return;
       if (field === "occurred_at") {
         updatedRows[rowIndex].occurred_at = normalizeEntryOccurredAt(value);
-      } else if (field === "direction") {
-        const normalized = normalizeEntryDirection(value);
-        if (normalized) updatedRows[rowIndex].direction = normalized as "收入" | "支出";
       } else if (field === "counterparty_name") {
         updatedRows[rowIndex].counterparty_name = value;
       } else if (field === "counterparty_account") {
@@ -467,6 +459,13 @@ export default function BankPage() {
     setIsEntryModalOpen(true);
   }
 
+  function removeEntryRow(index: number) {
+    setEntryRows((rows) => {
+      const nextRows = rows.filter((_, rowIndex) => rowIndex !== index);
+      return nextRows.length ? nextRows : createBankEntryRows(1);
+    });
+  }
+
   async function submitEntryBatch(values: { ledger_key?: string }) {
     const [formStoreId, formPeriod] = (values.ledger_key ?? "").split("|");
     const storeId = formStoreId || queryStoreId;
@@ -482,32 +481,39 @@ export default function BankPage() {
     }
     setIsLoading(true);
     try {
-      const batch: BankTransactionCreate[] = [];
-      for (const row of nonEmptyRows) {
-        const occurredAt = parseEntryOccurredAt(row.occurred_at);
-        const amount = normalizePastedAmount(row.amount);
-        const counterpartyName = normalizePastedCell(row.counterparty_name);
-        if (!occurredAt) {
-          message.warning("批量录入中存在无效的发生时间");
-          return;
-        }
-        if (!counterpartyName) {
-          message.warning("批量录入中存在未填写对方户名的行");
-          return;
-        }
-        if (!amount) {
-          message.warning("批量录入中存在未填写或无效的金额");
-          return;
-        }
-        batch.push({
-          store_id: storeId,
-          ledger_period: period,
-          occurred_at: toBankOccurredAt(occurredAt),
-          direction: row.direction === "收入" ? "income" : "expense",
-          amount,
-          counterparty_name: counterpartyName,
-          counterparty_account: normalizePastedCell(row.counterparty_account) || null,
-          summary: normalizePastedCell(row.summary) || null,
+    const batch: BankTransactionCreate[] = [];
+    for (const row of nonEmptyRows) {
+      const occurredAt = parseEntryOccurredAt(row.occurred_at);
+      const counterpartyName = normalizePastedCell(row.counterparty_name);
+      const incomeAmount = normalizePastedAmount(row.income_amount);
+      const expenseAmount = normalizePastedAmount(row.expense_amount);
+      const hasIncome = Boolean(incomeAmount);
+      const hasExpense = Boolean(expenseAmount);
+      if (!occurredAt) {
+        message.warning("批量录入中存在无效的发生时间");
+        return;
+      }
+      if (!counterpartyName) {
+        message.warning("批量录入中存在未填写对方户名的行");
+        return;
+      }
+      if (hasIncome && hasExpense) {
+        message.warning("批量录入中存在同时填写收入和支出的行");
+        return;
+      }
+      if (!hasIncome && !hasExpense) {
+        message.warning("批量录入中存在未填写金额的行");
+        return;
+      }
+      batch.push({
+        store_id: storeId,
+        ledger_period: period,
+        occurred_at: toBankOccurredAt(occurredAt),
+        direction: hasIncome ? "income" : "expense",
+        amount: hasIncome ? incomeAmount : expenseAmount,
+        counterparty_name: counterpartyName,
+        counterparty_account: normalizePastedCell(row.counterparty_account) || null,
+        summary: normalizePastedCell(row.summary) || null,
         });
       }
       const result = await apiClient.bankTransactions.createBatch({ items: batch });
@@ -545,10 +551,6 @@ export default function BankPage() {
     } catch {
       message.error("无法读取剪贴板");
     }
-  }
-
-  function setAllEntryDirections(direction: "收入" | "支出") {
-    setEntryRows((rows) => rows.map((row) => ({ ...row, direction })));
   }
 
   function handleSingleAmountPaste(text: string, onAmount: (amount: string) => void) {
@@ -760,33 +762,76 @@ export default function BankPage() {
       ),
     },
     {
-      title: "类型",
-      children: [
-        {
-          title: "收入",
-          dataIndex: "direction",
-          width: 80,
-          align: "center",
-          render: (value, _, index) =>
-            bankDirectionToggle(value, "收入", () => {
+      title: "收入",
+      dataIndex: "income_amount",
+      width: 110,
+      align: "right",
+      render: (value, _, index) => (
+        <Input
+          value={value}
+          size="small"
+          onPaste={(event) => {
+            const text = event.clipboardData.getData("text");
+            if (handleSingleAmountPaste(text, (amount) => {
               const updated = [...entryRows];
-              updated[index].direction = "收入";
+              updated[index].income_amount = amount;
+              updated[index].expense_amount = "";
               setEntryRows(updated);
-            }),
-        },
-        {
-          title: "支出",
-          dataIndex: "direction",
-          width: 80,
-          align: "center",
-          render: (value, _, index) =>
-            bankDirectionToggle(value, "支出", () => {
+            })) {
+              event.preventDefault();
+              return;
+            }
+            if (!text.includes("\t") && !text.includes("\n")) return;
+            event.preventDefault();
+            const updated = applyPastedEntryRows(text, entryRows, index, "income_amount");
+            if (!updated) return;
+            setEntryRows(updated);
+            message.success("已粘贴流水数据");
+          }}
+          onChange={(e) => {
+            const updated = [...entryRows];
+            updated[index].income_amount = e.target.value;
+            if (e.target.value.trim()) updated[index].expense_amount = "";
+            setEntryRows(updated);
+          }}
+        />
+      ),
+    },
+    {
+      title: "支出",
+      dataIndex: "expense_amount",
+      width: 110,
+      align: "right",
+      render: (value, _, index) => (
+        <Input
+          value={value}
+          size="small"
+          onPaste={(event) => {
+            const text = event.clipboardData.getData("text");
+            if (handleSingleAmountPaste(text, (amount) => {
               const updated = [...entryRows];
-              updated[index].direction = "支出";
+              updated[index].expense_amount = amount;
+              updated[index].income_amount = "";
               setEntryRows(updated);
-            }),
-        },
-      ],
+            })) {
+              event.preventDefault();
+              return;
+            }
+            if (!text.includes("\t") && !text.includes("\n")) return;
+            event.preventDefault();
+            const updated = applyPastedEntryRows(text, entryRows, index, "expense_amount");
+            if (!updated) return;
+            setEntryRows(updated);
+            message.success("已粘贴流水数据");
+          }}
+          onChange={(e) => {
+            const updated = [...entryRows];
+            updated[index].expense_amount = e.target.value;
+            if (e.target.value.trim()) updated[index].income_amount = "";
+            setEntryRows(updated);
+          }}
+        />
+      ),
     },
     {
       title: "对方户名",
@@ -841,39 +886,6 @@ export default function BankPage() {
       ),
     },
     {
-      title: "金额",
-      dataIndex: "amount",
-      width: 120,
-      render: (value, _, index) => (
-        <Input
-          value={value}
-          size="small"
-          onPaste={(event) => {
-            const text = event.clipboardData.getData("text");
-            if (handleSingleAmountPaste(text, (amount) => {
-              const updated = [...entryRows];
-              updated[index].amount = amount;
-              setEntryRows(updated);
-            })) {
-              event.preventDefault();
-              return;
-            }
-            if (!text.includes("\t") && !text.includes("\n")) return;
-            event.preventDefault();
-            const updated = applyPastedEntryRows(text, entryRows, index, "amount");
-            if (!updated) return;
-            setEntryRows(updated);
-            message.success("已粘贴流水数据");
-          }}
-          onChange={(e) => {
-            const updated = [...entryRows];
-            updated[index].amount = e.target.value;
-            setEntryRows(updated);
-          }}
-        />
-      ),
-    },
-    {
       title: "备注",
       dataIndex: "summary",
       render: (value, _, index) => (
@@ -895,6 +907,23 @@ export default function BankPage() {
             setEntryRows(updated);
           }}
         />
+      ),
+    },
+    {
+      title: "操作",
+      dataIndex: "key",
+      width: 72,
+      align: "center",
+      render: (_, __, index) => (
+        <Button
+          type="link"
+          danger
+          size="small"
+          onClick={() => removeEntryRow(index)}
+          disabled={entryRows.length <= 1}
+        >
+          删除
+        </Button>
       ),
     },
   ];
@@ -1121,8 +1150,6 @@ export default function BankPage() {
           <Space direction="vertical" style={{ width: "100%" }} size={12}>
             <Space wrap>
               <Button onClick={pasteFromClipboard}>读取剪贴板</Button>
-              <Button onClick={() => setAllEntryDirections("收入")}>全部收入</Button>
-              <Button onClick={() => setAllEntryDirections("支出")}>全部支出</Button>
               <Button onClick={() => setEntryRows(createBankEntryRows(10))}>清空</Button>
               <Button onClick={() => setEntryRows([...entryRows, ...createBankEntryRows(5)])}>增加 5 行</Button>
             </Space>
@@ -1132,9 +1159,9 @@ export default function BankPage() {
               pagination={false}
               dataSource={entryRows}
               columns={entryColumns}
-              scroll={{ x: 1120, y: 480 }}
+              scroll={{ x: 1200, y: 480 }}
             />
-            <Typography.Text type="secondary">可以从 Excel 复制整块数据后粘贴。格式：日期 | 类型 | 对方户名 | 对方账号 | 金额 | 备注</Typography.Text>
+            <Typography.Text type="secondary">可以从 Excel 复制整块数据后粘贴。格式：发生日期 | 收入 | 支出 | 对方户名 | 对方账号 | 备注，空单元格会保留为空。</Typography.Text>
           </Space>
         </Form>
       </Modal>

@@ -71,17 +71,7 @@ docker compose -f infra/docker/docker-compose.yml up --build
 
 Compose 会启动 PostgreSQL、Redis、API 和后台管理端。API 容器启动时执行数据库迁移，并在 `SEED_DEV_DATA=true` 时写入开发样例数据。
 
-生产环境推荐使用预构建镜像部署，避免在小服务器上执行前端和后端镜像构建：
-
-```bash
-cp .env.production.example .env.production
-scripts/build-prod-images.sh --save
-scp reports/deploy/fin-hub-images-<tag>.tar fin-hub-server:/opt/fin-hub/
-scp reports/deploy/fin-hub-images-<tag>.env fin-hub-server:/opt/fin-hub/
-ssh fin-hub-server 'cd /opt/fin-hub && scripts/deploy-prod-images.sh --load fin-hub-images-<tag>.tar --image-env fin-hub-images-<tag>.env'
-```
-
-`scripts/deploy-prod.sh` 仍保留为兼容脚本，但会在服务器上 build 镜像，不适合资源较小的服务器。
+生产环境部署统一参考 [部署指南](docs/2026-09-06-deployment-guide.md)。
 
 API 启动时只允许 PostgreSQL。生产环境还会拒绝弱 `SECRET_KEY`、空 `CORS_ORIGINS` 或包含 localhost 的跨域配置。
 
@@ -205,3 +195,4 @@ scripts/preflight.sh
 - [小程序第一阶段实现说明](docs/miniapp-first-implementation-notes.md)
 - [系统设置与数据库备份实现说明](docs/system-settings-and-backup-implementation-notes.md)
 - [交付验收与发布检查](docs/preflight-and-release-checklist.md)
+- [生产部署指南](docs/2026-09-06-deployment-guide.md)

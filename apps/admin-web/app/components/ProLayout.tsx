@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { Layout, Menu, Avatar, Dropdown, Button, Breadcrumb, Tabs } from "antd";
 import type { MenuProps } from "antd";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
@@ -25,6 +25,7 @@ import type { CurrentUser, PermissionKey } from "@fin-hub/shared-types";
 import { apiClient } from "../lib/api";
 
 const { Sider, Content } = Layout;
+const MAX_OPEN_PAGE_TABS = 6;
 
 let cachedCurrentUser: CurrentUser | null = null;
 let pendingCurrentUser: Promise<CurrentUser> | null = null;
@@ -261,7 +262,8 @@ function readStoredOpenTabs(): OpenPageTab[] {
         title: String((item as OpenPageTab).title || ""),
         kicker: typeof (item as OpenPageTab).kicker === "string" ? (item as OpenPageTab).kicker : undefined,
       }))
-      .filter((item) => item.key && item.href && item.title);
+      .filter((item) => item.key && item.href && item.title)
+      .slice(-MAX_OPEN_PAGE_TABS);
   } catch {
     return [];
   }
@@ -353,6 +355,7 @@ export function ProLayout({ title, kicker, action, children }: ProLayoutProps) {
   const [displayName, setDisplayName] = useState<string | null>(null);
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
   const [openedTabs, setOpenedTabs] = useState<OpenPageTab[]>(() => readStoredOpenTabs());
+  const draggedTabKeyRef = useRef<string | null>(null);
   const visibleTree = useMemo(() => visibleNavigationTree(currentUser), [currentUser]);
   const activeNav = useMemo(() => navTrail(pathname, visibleTree, hasStoreContext), [pathname, visibleTree, hasStoreContext]);
   const menuItems = useMemo(() => menuItemsForTree(visibleTree), [visibleTree]);
@@ -419,6 +422,9 @@ export function ProLayout({ title, kicker, action, children }: ProLayoutProps) {
         updatedTabs[existingIndex] = nextTab;
         return updatedTabs;
       }
+      if (currentTabs.length >= MAX_OPEN_PAGE_TABS) {
+        return [...currentTabs.slice(-(MAX_OPEN_PAGE_TABS - 1)), nextTab];
+      }
       return [...currentTabs, nextTab];
     });
   }, [activeTabHref, activeTabKey, kicker, title]);
@@ -455,13 +461,26 @@ export function ProLayout({ title, kicker, action, children }: ProLayoutProps) {
     }
   }
 
+  function moveTab(sourceKey: string, targetKey: string) {
+    if (sourceKey === targetKey) return;
+    setOpenedTabs((currentTabs) => {
+      const sourceIndex = currentTabs.findIndex((tab) => tab.key === sourceKey);
+      const targetIndex = currentTabs.findIndex((tab) => tab.key === targetKey);
+      if (sourceIndex < 0 || targetIndex < 0) return currentTabs;
+      const nextTabs = [...currentTabs];
+      const [moved] = nextTabs.splice(sourceIndex, 1);
+      nextTabs.splice(sourceIndex < targetIndex ? targetIndex - 1 : targetIndex, 0, moved);
+      return nextTabs;
+    });
+  }
+
   function closeTab(tabKey: string) {
     setOpenedTabs((currentTabs) => {
       const index = currentTabs.findIndex((tab) => tab.key === tabKey);
       if (index < 0) return currentTabs;
       const nextTabs = currentTabs.filter((tab) => tab.key !== tabKey);
       if (tabKey === activeTabKey) {
-        const fallback = nextTabs[index - 1] ?? nextTabs[index] ?? nextTabs[nextTabs.length - 1];
+        const fallback = nextTabs[index - 1] ?? nextTabs[index] ?? nextTabs[0];
         router.push(fallback?.href ?? "/");
       }
       return nextTabs;
@@ -569,6 +588,7 @@ export function ProLayout({ title, kicker, action, children }: ProLayoutProps) {
             </div>
           </div>
           <div className="app-header-tabs-row">
+            <div className="app-open-pages-label">已打开页面 {openedTabs.length}/{MAX_OPEN_PAGE_TABS}</div>
             <Tabs
               className="app-open-pages-tabs"
               type="editable-card"
@@ -605,7 +625,29 @@ export function ProLayout({ title, kicker, action, children }: ProLayoutProps) {
                     }}
                     trigger={["contextMenu"]}
                   >
-                    <span className="app-open-page-tab-label" title={tabLabel(tab.title, tab.kicker)}>
+                    <span
+                      className="app-open-page-tab-label"
+                      title={tabLabel(tab.title, tab.kicker)}
+                      draggable
+                      onDragStart={(event) => {
+                        draggedTabKeyRef.current = tab.key;
+                        event.dataTransfer.effectAllowed = "move";
+                        event.dataTransfer.setData("text/plain", tab.key);
+                      }}
+                      onDragOver={(event) => {
+                        event.preventDefault();
+                        event.dataTransfer.dropEffect = "move";
+                      }}
+                      onDrop={(event) => {
+                        event.preventDefault();
+                        const sourceKey = draggedTabKeyRef.current || event.dataTransfer.getData("text/plain");
+                        draggedTabKeyRef.current = null;
+                        moveTab(sourceKey, tab.key);
+                      }}
+                      onDragEnd={() => {
+                        draggedTabKeyRef.current = null;
+                      }}
+                    >
                       {tabLabel(tab.title, tab.kicker)}
                     </span>
                   </Dropdown>

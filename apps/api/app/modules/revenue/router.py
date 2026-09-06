@@ -1,4 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
+from datetime import UTC, datetime
+
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -12,8 +14,10 @@ from app.models import (
     RevenueBankMatch,
     RevenueBankMatchRecord,
     RevenueChannel,
+    RevenueChannelStoreLink,
     RevenueRecord,
     User,
+    Store,
 )
 from app.modules.audit.service import write_audit_log
 from app.modules.auth.permissions import (
@@ -84,8 +88,65 @@ def ensure_active_channel(session: Session, channel_name: str) -> None:
     channel = session.scalar(select(RevenueChannel).where(RevenueChannel.name == channel_name))
     if channel is None:
         raise HTTPException(status_code=404, detail="Revenue channel not found")
-    if channel.status != MasterDataStatus.ACTIVE.value:
+    if channel.status != MasterDataStatus.ACTIVE.value or channel.deleted_at is not None:
         raise HTTPException(status_code=409, detail="Revenue channel is inactive")
+
+
+def ensure_channel_for_store(session: Session, channel_name: str, store_id: str) -> None:
+    ensure_active_channel(session, channel_name)
+    channel = session.scalar(select(RevenueChannel).where(RevenueChannel.name == channel_name))
+    if channel is None:
+        raise HTTPException(status_code=404, detail="Revenue channel not found")
+    if channel.scope_mode == "all_stores":
+        return
+    allowed_store_ids = set(
+        session.scalars(
+            select(RevenueChannelStoreLink.store_id).where(RevenueChannelStoreLink.channel_id == channel.id)
+        ).all()
+    )
+    if store_id not in allowed_store_ids:
+        raise HTTPException(status_code=409, detail="Revenue channel is not enabled for the store")
+
+
+def ensure_channel_store_scope(session: Session, channel: RevenueChannel, store_ids: list[str]) -> None:
+    if channel.scope_mode == "all_stores":
+        return
+    allowed_store_ids = set(
+        session.scalars(
+            select(RevenueChannelStoreLink.store_id).where(RevenueChannelStoreLink.channel_id == channel.id)
+        ).all()
+    )
+    if not allowed_store_ids:
+        raise HTTPException(status_code=409, detail="Revenue channel has no enabled stores")
+    requested_store_ids = set(store_ids)
+    if not requested_store_ids.issubset(allowed_store_ids):
+        raise HTTPException(status_code=409, detail="Revenue channel is not enabled for the selected store")
+
+
+def revenue_channel_store_ids(session: Session, channel_id: str) -> list[str]:
+    return list(
+        session.scalars(
+            select(RevenueChannelStoreLink.store_id)
+            .where(RevenueChannelStoreLink.channel_id == channel_id)
+            .order_by(RevenueChannelStoreLink.created_at.asc())
+        ).all()
+    )
+
+
+def revenue_channel_read(session: Session, channel: RevenueChannel) -> RevenueChannelRead:
+    return RevenueChannelRead(
+        id=channel.id,
+        name=channel.name,
+        sort_order=channel.sort_order,
+        requires_bank_match=channel.requires_bank_match,
+        scope_mode=channel.scope_mode,
+        status=channel.status,
+        deleted_at=channel.deleted_at,
+        deleted_by=channel.deleted_by,
+        created_at=channel.created_at,
+        updated_at=channel.updated_at,
+        store_ids=[] if channel.scope_mode == "all_stores" else revenue_channel_store_ids(session, channel.id),
+    )
 
 
 def ensure_default_revenue_channels(session: Session) -> bool:
@@ -99,6 +160,7 @@ def ensure_default_revenue_channels(session: Session) -> bool:
                 name=name,
                 sort_order=sort_order,
                 requires_bank_match=requires_bank_match,
+                scope_mode="all_stores",
             )
         )
         created = True
@@ -107,8 +169,19 @@ def ensure_default_revenue_channels(session: Session) -> bool:
     return created
 
 
+def sync_channel_store_links(session: Session, channel: RevenueChannel, store_ids: list[str]) -> None:
+    session.query(RevenueChannelStoreLink).filter(RevenueChannelStoreLink.channel_id == channel.id).delete(
+        synchronize_session=False
+    )
+    for store_id in dict.fromkeys(store_ids):
+        if session.get(Store, store_id) is None:
+            raise HTTPException(status_code=404, detail=f"Store not found: {store_id}")
+        session.add(RevenueChannelStoreLink(channel_id=channel.id, store_id=store_id))
+
+
 @channels_router.get("", response_model=ApiEnvelope[Page[RevenueChannelRead]])
 def list_revenue_channels(
+    store_id: str | None = None,
     page: int = 1,
     page_size: int = 100,
     session: Session = Depends(get_session),
@@ -118,9 +191,23 @@ def list_revenue_channels(
     seeded = ensure_default_revenue_channels(session)
     if seeded:
         session.commit()
-    query = select(RevenueChannel).order_by(RevenueChannel.sort_order.asc(), RevenueChannel.created_at.asc())
+    query = (
+        select(RevenueChannel)
+        .where(RevenueChannel.deleted_at.is_(None))
+        .order_by(RevenueChannel.sort_order.asc(), RevenueChannel.created_at.asc())
+    )
+    if store_id:
+        ensure_store_access(session, current_user, store_id)
+        query = query.where(
+            (RevenueChannel.scope_mode == "all_stores")
+            | (
+                RevenueChannel.id.in_(
+                    select(RevenueChannelStoreLink.channel_id).where(RevenueChannelStoreLink.store_id == store_id)
+                )
+            )
+        )
     items, total = paginate(session, query, page, page_size)
-    return ApiEnvelope(data=Page(items=items, total=total, page=page, page_size=page_size))
+    return ApiEnvelope(data=Page(items=[revenue_channel_read(session, item) for item in items], total=total, page=page, page_size=page_size))
 
 
 @channels_router.post("", response_model=ApiEnvelope[RevenueChannelRead], status_code=201)
@@ -130,10 +217,17 @@ def create_revenue_channel(
     current_user: User = Depends(get_current_user),
 ) -> ApiEnvelope[RevenueChannelRead]:
     ensure_permission(session, current_user, "revenue.manage")
-    channel = RevenueChannel(**payload.model_dump())
+    data = payload.model_dump()
+    scope_mode = data.pop("scope_mode", "all_stores")
+    store_ids = data.pop("store_ids", [])
+    if scope_mode == "selected_stores" and not store_ids:
+        raise HTTPException(status_code=422, detail="Store ids are required for selected stores scope")
+    channel = RevenueChannel(**data, scope_mode=scope_mode)
     session.add(channel)
     try:
         session.flush()
+        if scope_mode == "selected_stores":
+            sync_channel_store_links(session, channel, store_ids)
         write_audit_log(
             session,
             actor=audit_actor(current_user),
@@ -141,13 +235,14 @@ def create_revenue_channel(
             resource_type="revenue_channel",
             resource_id=channel.id,
             summary=f"新增收入渠道：{channel.name}",
+            metadata={"scope_mode": scope_mode, "store_ids": store_ids},
         )
         session.commit()
     except IntegrityError as exc:
         session.rollback()
         raise HTTPException(status_code=409, detail="Revenue channel already exists") from exc
     session.refresh(channel)
-    return ApiEnvelope(data=channel)
+    return ApiEnvelope(data=revenue_channel_read(session, channel))
 
 
 @channels_router.patch("/{channel_id}", response_model=ApiEnvelope[RevenueChannelRead])
@@ -161,8 +256,11 @@ def update_revenue_channel(
     channel = session.get(RevenueChannel, channel_id)
     if channel is None:
         raise HTTPException(status_code=404, detail="Revenue channel not found")
+    if channel.deleted_at is not None:
+        raise HTTPException(status_code=409, detail="Revenue channel has been deleted")
 
     changes = payload.model_dump(exclude_unset=True)
+    store_ids = changes.pop("store_ids", None)
     name = changes.get("name", channel.name)
     exists = session.scalar(
         select(RevenueChannel).where(RevenueChannel.id != channel.id, RevenueChannel.name == name)
@@ -171,6 +269,12 @@ def update_revenue_channel(
         raise HTTPException(status_code=409, detail="Revenue channel already exists")
     for field, value in changes.items():
         setattr(channel, field, value.value if hasattr(value, "value") else value)
+    if changes.get("scope_mode") == "all_stores":
+        store_ids = []
+    if store_ids is not None:
+        if changes.get("scope_mode", channel.scope_mode) == "selected_stores" and not store_ids:
+            raise HTTPException(status_code=422, detail="Store ids are required for selected stores scope")
+        sync_channel_store_links(session, channel, store_ids)
     write_audit_log(
         session,
         actor=audit_actor(current_user),
@@ -178,11 +282,39 @@ def update_revenue_channel(
         resource_type="revenue_channel",
         resource_id=channel.id,
         summary=f"更新收入渠道：{channel.name}",
-        metadata=changes,
+        metadata={**changes, "store_ids": store_ids},
     )
     session.commit()
     session.refresh(channel)
-    return ApiEnvelope(data=channel)
+    return ApiEnvelope(data=revenue_channel_read(session, channel))
+
+
+@channels_router.delete("/{channel_id}", response_model=ApiEnvelope[dict[str, bool]])
+def delete_revenue_channel(
+    channel_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> ApiEnvelope[dict[str, bool]]:
+    ensure_permission(session, current_user, "revenue.manage")
+    channel = session.get(RevenueChannel, channel_id)
+    if channel is None:
+        raise HTTPException(status_code=404, detail="Revenue channel not found")
+    if channel.deleted_at is not None:
+        return ApiEnvelope(data={"ok": True})
+    channel_name = channel.name
+    channel.deleted_at = datetime.now(UTC).replace(tzinfo=None)
+    channel.deleted_by = audit_actor(current_user)
+    channel.status = MasterDataStatus.INACTIVE.value
+    write_audit_log(
+        session,
+        actor=audit_actor(current_user),
+        action="revenue_channel.delete",
+        resource_type="revenue_channel",
+        resource_id=channel.id,
+        summary=f"删除收入渠道：{channel_name}",
+    )
+    session.commit()
+    return ApiEnvelope(data={"ok": True})
 
 
 @router.get("", response_model=ApiEnvelope[Page[RevenueRecordRead]])
@@ -218,7 +350,7 @@ def create_revenue_record(
 ) -> ApiEnvelope[RevenueRecordRead]:
     ensure_permission(session, current_user, "revenue.manage")
     ensure_store_access(session, current_user, payload.store_id)
-    ensure_active_channel(session, payload.channel)
+    ensure_channel_for_store(session, payload.channel, payload.store_id)
     record = RevenueRecord(**normalize_revenue_assignment(session, payload.model_dump()))
     session.add(record)
     try:
@@ -269,7 +401,7 @@ def update_revenue_record(
     changes["ledger_period"] = target_period
     ensure_open_or_create_ledger(session, target_store_id, target_period)
     if "channel" in changes and changes["channel"] is not None:
-        ensure_active_channel(session, changes["channel"])
+        ensure_channel_for_store(session, changes["channel"], target_store_id)
     for field, value in changes.items():
         setattr(record, field, value)
     try:

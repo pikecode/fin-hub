@@ -174,7 +174,11 @@ export interface RevenueChannel {
   name: string;
   sort_order: number;
   requires_bank_match: boolean;
+  scope_mode: "all_stores" | "selected_stores";
   status: MasterDataStatus;
+  store_ids?: string[];
+  deleted_at?: string | null;
+  deleted_by?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -183,12 +187,16 @@ export interface RevenueChannelCreate {
   name: string;
   sort_order?: number;
   requires_bank_match?: boolean;
+  scope_mode?: "all_stores" | "selected_stores";
+  store_ids?: string[];
 }
 
 export interface RevenueChannelUpdate {
   name?: string | null;
   sort_order?: number | null;
   requires_bank_match?: boolean | null;
+  scope_mode?: "all_stores" | "selected_stores" | null;
+  store_ids?: string[] | null;
   status?: MasterDataStatus | null;
 }
 

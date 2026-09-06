@@ -124,14 +124,14 @@ function approvalStatusMeta(status: string) {
 function approvalMatchStatusMeta(status?: string | null) {
   const normalized = (status || "").toLowerCase();
   const statusMap: Record<string, { label: string; color: string }> = {
-    matched: { label: "已对账", color: "green" },
-    partial_matched: { label: "已对账", color: "green" },
-    pending_match: { label: "待对账", color: "blue" },
-    pending_classification: { label: "待分类", color: "orange" },
-    sync_conflict: { label: "同步冲突", color: "red" },
-    unparsed: { label: "未解析", color: "default" },
+    matched: { label: "已匹配", color: "green" },
+    partial_matched: { label: "已匹配", color: "green" },
+    pending_match: { label: "未匹配", color: "gold" },
+    pending_classification: { label: "未匹配", color: "gold" },
+    sync_conflict: { label: "未匹配", color: "gold" },
+    unparsed: { label: "未匹配", color: "gold" },
   };
-  return statusMap[normalized] ?? { label: status || "-", color: "default" };
+  return statusMap[normalized] ?? { label: "未匹配", color: "gold" };
 }
 
 function parseDingTalkTableValue(value: unknown): DingTalkTableRow[] {

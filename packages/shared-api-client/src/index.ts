@@ -338,6 +338,10 @@ export function createApiClient(options: ApiClientOptions) {
           method: "PATCH",
           body: JSON.stringify(payload),
         }),
+      delete: (id: string) =>
+        request<{ ok: boolean }>(`/api/revenue-channels/${id}`, {
+          method: "DELETE",
+        }),
     },
     revenueRecords: {
       list: (params = "") => request<Page<RevenueRecord>>(`/api/revenue-records${params}`),

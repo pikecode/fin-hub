@@ -234,7 +234,26 @@ class RevenueChannel(Base):
     name: Mapped[str] = mapped_column(String(80), nullable=False)
     sort_order: Mapped[int] = mapped_column(default=0, nullable=False)
     requires_bank_match: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    scope_mode: Mapped[str] = mapped_column(String(24), default="all_stores", nullable=False)
     status: Mapped[str] = mapped_column(String(24), default=MasterDataStatus.ACTIVE.value, nullable=False)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime)
+    deleted_by: Mapped[str | None] = mapped_column(String(80))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+
+class RevenueChannelStoreLink(Base):
+    __tablename__ = "revenue_channel_store_links"
+    __table_args__ = (
+        UniqueConstraint("channel_id", "store_id", name="uq_revenue_channel_store_link"),
+        Index("ix_revenue_channel_store_links_store_id", "store_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    channel_id: Mapped[str] = mapped_column(ForeignKey("revenue_channels.id", ondelete="CASCADE"), nullable=False)
+    store_id: Mapped[str] = mapped_column(ForeignKey("stores.id", ondelete="CASCADE"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=utc_now, onupdate=utc_now, nullable=False

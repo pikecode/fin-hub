@@ -2574,6 +2574,25 @@ def parse_voucher_items(value: Any) -> list[dict[str, str | None]]:
     return []
 
 
+def approval_effective_date(raw_instance: dict[str, Any], fallback: datetime | None = None) -> datetime | None:
+    return (
+        parse_date(
+            mapped_or_form_value(
+                {},
+                raw_instance,
+                "expense_date",
+                "报销日期",
+                "支出日期",
+                "费用日期",
+                "日期",
+            )
+        )
+        or DingTalkClient.parse_time(raw_instance.get("finish_time") or raw_instance.get("finishTime"))
+        or DingTalkClient.parse_time(raw_instance.get("create_time") or raw_instance.get("createTime"))
+        or fallback
+    )
+
+
 def create_dingtalk_attachment_placeholders(
     session: Session,
     resource_type: str,
@@ -2664,9 +2683,7 @@ def build_approval_parse_preview(
     description = parse_text(
         mapped_or_form_value(mapped, raw_instance, "description", "支出详情", "费用说明", "其他备注信息", "备注")
     ) or template.name
-    expense_date = parse_date(
-        mapped_or_form_value(mapped, raw_instance, "expense_date", "报销日期", "支出日期", "费用日期", "日期")
-    ) or DingTalkClient.parse_time(raw_instance.get("create_time") or raw_instance.get("createTime"))
+    expense_date = approval_effective_date(raw_instance)
     table_value = mapped_or_form_value(mapped, raw_instance, "expense_table", "表格", "费用明细", "支出明细")
     expense_rows = expense_rows_from_table(table_value)
     payee_account = parse_text(
@@ -2986,11 +3003,7 @@ def sync_real_instance(
     description = parse_text(
         mapped_or_form_value(mapped, raw_instance, "description", "支出详情", "费用说明", "其他备注信息", "备注")
     ) or template.name
-    expense_date = parse_date(
-        mapped_or_form_value(mapped, raw_instance, "expense_date", "报销日期", "支出日期", "费用日期", "日期")
-    ) or DingTalkClient.parse_time(
-        raw_instance.get("create_time") or raw_instance.get("createTime")
-    )
+    expense_date = approval_effective_date(raw_instance)
     table_value = mapped_or_form_value(mapped, raw_instance, "expense_table", "表格", "费用明细", "支出明细")
     expense_rows = expense_rows_from_table(table_value)
     voucher_items = [
@@ -3046,12 +3059,10 @@ def sync_real_instance(
     session.flush()
     create_dingtalk_attachment_placeholders(session, "approval_instance", instance.id, voucher_items)
 
-    if store is None or (amount is None and not expense_rows and not installment_rows) or expense_date is None:
+    if store is None or expense_date is None:
         missing_fields = []
         if store is None:
             missing_fields.append("store")
-        if amount is None and not expense_rows and not installment_rows:
-            missing_fields.append("amount")
         if expense_date is None:
             missing_fields.append("expense_date")
         instance.raw_payload = json.dumps(
@@ -3087,6 +3098,12 @@ def sync_real_instance(
         session.flush()
 
     approval_total = amount or sum((Decimal(row["amount"]) for row in [*expense_rows, *installment_rows]), Decimal("0.00"))
+    if approval_total <= 0:
+        instance.parse_status = "skipped"
+        instance.processing_status = "unparsed"
+        instance.parse_error = "Unable to resolve approval amount"
+        instance.last_parsed_at = utc_now()
+        return True
     rows_to_create = expense_rows or installment_rows or [
         {
             "description": parse_text(raw_instance.get("title") or raw_instance.get("titleName"))

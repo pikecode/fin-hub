@@ -1280,7 +1280,8 @@ def list_reconciliation_candidates(
         list({approval.id for _, approval, _ in rows if approval is not None}),
     )
 
-    candidates: list[ReconciliationExpenseCandidate] = []
+    candidates_by_approval_id: dict[str, ReconciliationExpenseCandidate] = {}
+    candidates_without_approval: list[ReconciliationExpenseCandidate] = []
     active_expense_ids = {
         match.expense_item_id
         for match in session.scalars(
@@ -1329,22 +1330,40 @@ def list_reconciliation_candidates(
             remaining_expense_amount,
             approval_total_amount=approval_total_amount,
         )
-        candidates.append(
-            ReconciliationExpenseCandidate(
-                expense_item=expense,
-                approval_instance=approval_instance_response(
-                    approval,
-                    approval_stats.get(approval.id) if approval is not None else None,
-                ),
-                template_name=template.name if template else None,
-                display_fields=display_fields_for_instance(mappings_by_template, approval),
-                remaining_amount=remaining_expense_amount,
-                score=score,
-                reason=reason,
-            )
+        candidate = ReconciliationExpenseCandidate(
+            expense_item=expense,
+            approval_instance=approval_instance_response(
+                approval,
+                approval_stats.get(approval.id) if approval is not None else None,
+            ),
+            template_name=template.name if template else None,
+            display_fields=display_fields_for_instance(mappings_by_template, approval),
+            remaining_amount=remaining_expense_amount,
+            score=score,
+            reason=reason,
         )
+        if approval is None:
+            candidates_without_approval.append(candidate)
+            continue
+        existing = candidates_by_approval_id.get(approval.id)
+        if existing is None:
+            candidates_by_approval_id[approval.id] = candidate
+            continue
+        if candidate.score > existing.score or (
+            candidate.score == existing.score
+            and candidate.expense_item.created_at > existing.expense_item.created_at
+        ):
+            candidates_by_approval_id[approval.id] = candidate
 
-    candidates.sort(key=lambda item: (item.score, item.expense_item.expense_date or item.expense_item.created_at.date()), reverse=True)
+    candidates = list(candidates_by_approval_id.values()) + candidates_without_approval
+    candidates.sort(
+        key=lambda item: (
+            item.score,
+            item.expense_item.expense_date or item.expense_item.created_at.date(),
+            item.expense_item.created_at,
+        ),
+        reverse=True,
+    )
     return ApiEnvelope(
         data=ReconciliationCandidateResult(
             bank_transaction=bank_transaction,

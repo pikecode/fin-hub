@@ -1,6 +1,6 @@
 "use client";
 
-import { Button, Card, Form, Input, Modal, Select, Space, Table, Tag, Typography, message } from "antd";
+import { Button, Card, Checkbox, Form, Input, Modal, Select, Space, Table, Tag, Typography, message } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import customParseFormat from "dayjs/plugin/customParseFormat";
 import dayjs from "dayjs";
@@ -20,6 +20,10 @@ interface RevenueFilterValues {
   store_id?: string;
   ledger_period?: string;
   channel?: string;
+}
+
+interface RevenueChannelFormValues extends RevenueChannelCreate {
+  store_ids: string[];
 }
 
 type RevenueEntryField = "revenue_date" | "gross_amount" | "net_amount" | "remark";
@@ -189,7 +193,7 @@ export default function RevenuePage() {
   const [focusedEntryCell, setFocusedEntryCell] = useState<{ rowIndex: number; field: RevenueEntryField }>({ rowIndex: 0, field: "gross_amount" });
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [filterForm] = Form.useForm<RevenueFilterValues>();
-  const [channelForm] = Form.useForm<RevenueChannelCreate>();
+  const [channelForm] = Form.useForm<RevenueChannelFormValues>();
   const watchedLedgerPeriod = Form.useWatch("ledger_period", filterForm);
   const loadRequestIdRef = useRef(0);
   const entryChannelRef = useRef<string | null>(null);
@@ -275,6 +279,13 @@ export default function RevenuePage() {
   }, [channels, records]);
   const batchEditColumns = useMemo(() => buildEntryColumns(batchEditRows, setBatchEditRows, isEditing), [batchEditRows, focusedEntryCell, isEditing]);
 
+  async function loadChannels(storeId?: string) {
+    const page = await apiClient.revenueChannels.list(
+      `?page_size=500${storeId ? `&store_id=${encodeURIComponent(storeId)}` : ""}`,
+    );
+    setChannels(page.items);
+  }
+
   function calculateFee(grossAmount?: string | number | null, netAmount?: string | number | null) {
     const gross = Number(grossAmount ?? 0);
     const net = Number(netAmount ?? 0);
@@ -349,13 +360,17 @@ export default function RevenuePage() {
       const [storesRes, ledgersRes, channelsRes] = await Promise.all([
         getStores(),
         getLedgers(),
-        apiClient.revenueChannels.list("?page_size=500"),
+        apiClient.revenueChannels.list(`?page_size=500${queryStoreId ? `&store_id=${encodeURIComponent(queryStoreId)}` : ""}`),
       ]);
       setStores(storesRes);
       setLedgers(ledgersRes);
       setChannels(channelsRes.items);
     })();
   }, []);
+
+  useEffect(() => {
+    void loadChannels(queryStoreId);
+  }, [queryStoreId]);
 
   useEffect(() => {
     setSelectedChannel(queryChannel);
@@ -367,9 +382,13 @@ export default function RevenuePage() {
   }, [selectedChannel]);
 
   useEffect(() => {
-    if (selectedChannel || !channels.length) return;
+    if (!channels.length) {
+      setSelectedChannel(undefined);
+      return;
+    }
+    if (selectedChannel && channels.some((channel) => channel.name === selectedChannel)) return;
     const defaultChannel = channels.find((channel) => channel.status === "active") ?? channels[0];
-    if (defaultChannel) setSelectedChannel(defaultChannel.name);
+    setSelectedChannel(defaultChannel?.name);
   }, [channels, selectedChannel]);
 
   useEffect(() => {
@@ -495,10 +514,15 @@ export default function RevenuePage() {
 
   function openChannelModal() {
     channelForm.resetFields();
+    channelForm.setFieldsValue({
+      scope_mode: queryStoreId ? "selected_stores" : "all_stores",
+      store_ids: queryStoreId ? [queryStoreId] : [],
+      requires_bank_match: true,
+    });
     setIsChannelModalOpen(true);
   }
 
-  async function submitChannel(values: RevenueChannelCreate) {
+  async function submitChannel(values: RevenueChannelFormValues) {
     const name = values.name.trim();
     if (!name) return;
 
@@ -508,7 +532,16 @@ export default function RevenuePage() {
       const created = await apiClient.revenueChannels.create({
         name,
         sort_order: sortOrder,
-        requires_bank_match: true,
+        requires_bank_match: values.requires_bank_match ?? true,
+        scope_mode: values.scope_mode ?? (queryStoreId ? "selected_stores" : "all_stores"),
+        store_ids:
+          values.scope_mode === "selected_stores"
+            ? values.store_ids?.length
+              ? values.store_ids
+              : queryStoreId
+                ? [queryStoreId]
+                : []
+            : [],
       });
       setChannels((currentChannels) =>
         [...currentChannels, created].sort(
@@ -825,6 +858,41 @@ export default function RevenuePage() {
             ]}
           >
             <Input autoFocus maxLength={80} placeholder="例如：外卖平台、直营网店" />
+          </Form.Item>
+          <Form.Item name="scope_mode" label="适用范围" initialValue={queryStoreId ? "selected_stores" : "all_stores"}>
+            <Select
+              options={[
+                { label: "全部门店", value: "all_stores" },
+                { label: "指定门店", value: "selected_stores" },
+              ]}
+              onChange={(value) => {
+                if (value === "all_stores") {
+                  channelForm.setFieldValue("store_ids", []);
+                } else if (queryStoreId) {
+                  channelForm.setFieldValue("store_ids", [queryStoreId]);
+                }
+              }}
+            />
+          </Form.Item>
+          <Form.Item noStyle shouldUpdate={(prev, next) => prev.scope_mode !== next.scope_mode}>
+            {({ getFieldValue }) =>
+              getFieldValue("scope_mode") === "selected_stores" ? (
+                <Form.Item name="store_ids" label="适用门店" rules={[{ required: true, message: "请选择适用门店" }]}>
+                  <Select
+                    mode="multiple"
+                    options={stores.map((store) => ({ label: store.name, value: store.id }))}
+                  />
+                </Form.Item>
+              ) : null
+            }
+          </Form.Item>
+          <Form.Item
+            name="requires_bank_match"
+            label="需匹配银行流水"
+            valuePropName="checked"
+            initialValue={true}
+          >
+            <Checkbox>需要匹配</Checkbox>
           </Form.Item>
         </Form>
       </Modal>

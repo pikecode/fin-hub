@@ -285,12 +285,16 @@ class RevenueChannelCreate(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     sort_order: int = 0
     requires_bank_match: bool = True
+    scope_mode: str = Field(default="all_stores", pattern=r"^(all_stores|selected_stores)$")
+    store_ids: list[str] = []
 
 
 class RevenueChannelUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=80)
     sort_order: int | None = None
     requires_bank_match: bool | None = None
+    scope_mode: str | None = Field(default=None, pattern=r"^(all_stores|selected_stores)$")
+    store_ids: list[str] | None = None
     status: MasterDataStatus | None = None
 
 
@@ -299,6 +303,9 @@ class RevenueChannelRead(RevenueChannelCreate):
 
     id: str
     status: MasterDataStatus
+    store_ids: list[str] = []
+    deleted_at: datetime | None = None
+    deleted_by: str | None = None
     created_at: datetime
     updated_at: datetime
 
