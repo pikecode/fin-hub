@@ -39,6 +39,20 @@ const ComparisonBarChart = dynamic(() => import("../components/ComparisonBarChar
   ssr: false,
   loading: () => <Card loading style={{ minHeight: 380 }} />,
 });
+const RevenueChannelStackChart = dynamic(
+  () => import("../components/RevenueChannelStackChart").then((module) => module.RevenueChannelStackChart),
+  {
+    ssr: false,
+    loading: () => <Card loading style={{ minHeight: 360 }} />,
+  },
+);
+const RevenueChannelMonthlyChart = dynamic(
+  () => import("../components/RevenueChannelMonthlyChart").then((module) => module.RevenueChannelMonthlyChart),
+  {
+    ssr: false,
+    loading: () => <Card loading style={{ minHeight: 420 }} />,
+  },
+);
 
 interface ReportFilterValues {
   store_id?: string;
@@ -58,6 +72,10 @@ function toNumber(value: string | number | null | undefined) {
 
 function formatPercent(value: string | number | null | undefined) {
   return `${Number(value ?? 0).toFixed(2)}%`;
+}
+
+function formatRatio(value: number) {
+  return `${value.toFixed(2)}%`;
 }
 
 function buildAnalyticsParams(values: ReportFilterValues) {
@@ -200,6 +218,11 @@ export default function ReportsPage() {
     expense: analytics?.trends.map((item) => toNumber(item.expense_amount)) ?? [],
     profit: analytics?.trends.map((item) => toNumber(item.profit_amount)) ?? [],
   };
+  const revenueChannelData = (analytics?.revenue_channels ?? []).slice(0, 10);
+  const revenueChannelMonthlyData = analytics?.revenue_channel_monthly_summary ?? [];
+  const totalIncomeAmount = toNumber(analytics?.metrics.total_income_amount);
+  const totalProfitAmount = toNumber(analytics?.metrics.total_profit_amount);
+  const profitRate = totalIncomeAmount > 0 ? (totalProfitAmount / totalIncomeAmount) * 100 : 0;
   const storeChartData = (analytics?.stores ?? []).slice(0, 10).map((item) => ({
     name: item.store_name,
     revenue: toNumber(item.income_amount),
@@ -387,18 +410,12 @@ export default function ReportsPage() {
       </Card>
 
       <div className="analytics-metric-grid">
-        <Card><Statistic title="授权门店" value={analytics?.metrics.store_count ?? 0} suffix="家" /></Card>
-        <Card><Statistic title="总收入" value={formatMoney(analytics?.metrics.total_income_amount ?? 0)} /></Card>
+        <Card><Statistic title="经营收入" value={formatMoney(analytics?.metrics.total_income_amount ?? 0)} /></Card>
+        <Card><Statistic title="实收" value={formatMoney(analytics?.metrics.total_net_income_amount ?? 0)} /></Card>
+        <Card><Statistic title="手续费" value={formatMoney(analytics?.metrics.total_fee_amount ?? 0)} /></Card>
         <Card><Statistic title="审批支出" value={formatMoney(analytics?.metrics.total_expense_amount ?? 0)} /></Card>
         <Card><Statistic title="利润" value={formatMoney(analytics?.metrics.total_profit_amount ?? 0)} /></Card>
-        <Card><Statistic title="银行支出" value={formatMoney(analytics?.metrics.bank_expense_amount ?? 0)} /></Card>
-        <Card><Statistic title="已对账金额" value={formatMoney(analytics?.metrics.matched_expense_amount ?? 0)} /></Card>
-        <Card className="analytics-clickable-card" onClick={() => openDrilldown({ detail_type: "unmatched_bank" })}>
-          <Statistic title="未对账流水" value={formatMoney(analytics?.metrics.unmatched_bank_amount ?? 0)} suffix={`${analytics?.metrics.unmatched_bank_count ?? 0} 笔`} />
-        </Card>
-        <Card className="analytics-clickable-card" onClick={() => openDrilldown({ detail_type: "pending_expense" })}>
-          <Statistic title="未付款审批" value={formatMoney(analytics?.metrics.pending_expense_amount ?? 0)} suffix={`${analytics?.metrics.pending_expense_count ?? 0} 笔`} />
-        </Card>
+        <Card><Statistic title="利润率" value={formatRatio(profitRate)} /></Card>
       </div>
 
       <Tabs
@@ -410,11 +427,30 @@ export default function ReportsPage() {
             label: "经营总览",
             children: (
               <Space direction="vertical" size={16} style={{ width: "100%" }}>
+                <RevenueChannelMonthlyChart
+                  title="经营收入渠道月度图"
+                  data={revenueChannelMonthlyData}
+                  loading={isLoading}
+                  height={420}
+                />
                 <div className="analytics-chart-grid">
-                  <TrendChart title="月度收入、支出和利润趋势" data={trendChartData} loading={isLoading} height={340} />
-                  <CategoryPieChart title="费用分类占比" data={categoryChartData} loading={isLoading} height={340} />
+                  <TrendChart title="月度经营趋势" data={trendChartData} loading={isLoading} height={340} />
+                  <RevenueChannelStackChart title="经营收入渠道结构" data={revenueChannelData} loading={isLoading} height={360} />
                 </div>
-                <ComparisonBarChart title="门店经营对比" data={storeChartData} loading={isLoading} height={380} horizontal />
+                <div className="analytics-chart-grid">
+                  <CategoryPieChart title="费用分类占比" data={categoryChartData} loading={isLoading} height={340} />
+                  <ComparisonBarChart title="门店经营对比" data={storeChartData} loading={isLoading} height={380} horizontal />
+                </div>
+                <Card title="经营收入渠道明细" className="data-table-card">
+                  <Table
+                    rowKey="channel"
+                    loading={isLoading}
+                    columns={revenueChannelColumns}
+                    dataSource={analytics?.revenue_channels ?? []}
+                    scroll={{ x: 980 }}
+                    pagination={false}
+                  />
+                </Card>
               </Space>
             ),
           },

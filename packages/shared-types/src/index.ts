@@ -1057,6 +1057,14 @@ export interface RevenueChannelBreakdownItem {
   record_count: number;
 }
 
+export interface RevenueChannelMonthlyBreakdownItem {
+  period: string;
+  channel: string;
+  gross_amount: string;
+  net_amount: string;
+  record_count: number;
+}
+
 export interface LedgerReportDetail {
   summary: LedgerReportSummary;
   revenue_records: RevenueRecord[];
@@ -1090,6 +1098,7 @@ export interface StoreLedgerWorkspaceMetrics {
   net_income_amount: string;
   fee_amount: string;
   approval_amount: string;
+  approval_accounting_amount: string;
   bank_transaction_count: number;
   unmatched_bank_transaction_count: number;
   approval_count: number;
@@ -1112,6 +1121,7 @@ export interface StoreLedgerWorkspaceMetrics {
     reconciliation_rate: string;
     record_count: number;
   }>;
+  revenue_channel_monthly_summary: RevenueChannelMonthlyBreakdownItem[];
 }
 
 export interface StoreLedgerWorkspace {
@@ -1131,6 +1141,8 @@ export interface FinancialAnalyticsMetrics {
   store_count: number;
   period_count: number;
   total_income_amount: string;
+  total_net_income_amount: string;
+  total_fee_amount: string;
   total_expense_amount: string;
   total_profit_amount: string;
   bank_expense_amount: string;
@@ -1193,6 +1205,8 @@ export interface FinancialAnalyticsReport {
   metrics: FinancialAnalyticsMetrics;
   trends: FinancialAnalyticsTrendItem[];
   stores: FinancialAnalyticsStoreItem[];
+  revenue_channels: RevenueChannelBreakdownItem[];
+  revenue_channel_monthly_summary: RevenueChannelMonthlyBreakdownItem[];
   categories: FinancialAnalyticsCategoryItem[];
   templates: FinancialAnalyticsTemplateItem[];
   reconciliation: FinancialAnalyticsReconciliationItem[];

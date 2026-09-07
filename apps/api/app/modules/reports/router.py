@@ -19,6 +19,7 @@ from app.models import (
     Ledger,
     MatchStatus,
     RevenueBankMatch,
+    RevenueBankMatchRecord,
     RevenueRecord,
     ShareholderAccessGrant,
     Store,
@@ -38,6 +39,7 @@ from app.schemas import (
     FinancialAnalyticsStoreItem,
     FinancialAnalyticsTemplateItem,
     FinancialAnalyticsTrendItem,
+    RevenueChannelMonthlyBreakdownItem,
     LedgerPeriodOption,
     LedgerReportDetail,
     LedgerReportSummary,
@@ -315,6 +317,8 @@ def empty_financial_analytics_report() -> FinancialAnalyticsReport:
             store_count=0,
             period_count=0,
             total_income_amount=Decimal("0.00"),
+            total_net_income_amount=Decimal("0.00"),
+            total_fee_amount=Decimal("0.00"),
             total_expense_amount=Decimal("0.00"),
             total_profit_amount=Decimal("0.00"),
             bank_expense_amount=Decimal("0.00"),
@@ -329,6 +333,8 @@ def empty_financial_analytics_report() -> FinancialAnalyticsReport:
         ),
         trends=[],
         stores=[],
+        revenue_channels=[],
+        revenue_channel_monthly_summary=[],
         categories=[],
         templates=[],
         reconciliation=[],
@@ -373,6 +379,18 @@ def read_financial_analytics(
     revenue_rows = session.scalars(revenue_query).all()
     expense_rows = session.scalars(expense_query).all()
     bank_rows = session.scalars(bank_query).all()
+    revenue_match_rows = session.execute(
+        select(RevenueBankMatch, RevenueRecord)
+        .join(RevenueBankMatchRecord, RevenueBankMatchRecord.revenue_bank_match_id == RevenueBankMatch.id)
+        .join(RevenueRecord, RevenueBankMatchRecord.revenue_record_id == RevenueRecord.id)
+        .where(RevenueRecord.store_id.in_(store_ids))
+    ).all()
+    revenue_match_rows = [
+        (match, record)
+        for match, record in revenue_match_rows
+        if (not period_start or (match.accounting_period or record.ledger_period or "") >= period_start)
+        and (not period_end or (match.accounting_period or record.ledger_period or "") <= period_end)
+    ]
     match_rows = session.execute(
         select(ExpenseBankMatch, ExpenseItem)
         .join(ExpenseItem, ExpenseBankMatch.expense_item_id == ExpenseItem.id)
@@ -386,6 +404,8 @@ def read_financial_analytics(
     ]
 
     total_income_amount = sum((Decimal(record.gross_amount) for record in revenue_rows), Decimal("0.00"))
+    total_net_income_amount = sum((Decimal(record.net_amount) for record in revenue_rows), Decimal("0.00"))
+    total_fee_amount = sum((Decimal(record.fee_amount) for record in revenue_rows), Decimal("0.00"))
     total_expense_amount = sum((Decimal(item.amount) for item in expense_rows), Decimal("0.00"))
     bank_expense_amount = sum(
         (Decimal(transaction.amount) for transaction in bank_rows if transaction.direction == "expense"),
@@ -523,6 +543,38 @@ def read_financial_analytics(
         for key, value in category_bucket.items()
     ]
     category_items.sort(key=lambda item: item.amount, reverse=True)
+    revenue_channel_monthly_bucket: dict[tuple[str, str], dict[str, Decimal | int]] = {}
+    for record in revenue_rows:
+        if not record.ledger_period:
+            continue
+        bucket = revenue_channel_monthly_bucket.setdefault(
+            (record.ledger_period, record.channel),
+            {
+                "gross_amount": Decimal("0.00"),
+                "net_amount": Decimal("0.00"),
+                "record_count": 0,
+            },
+        )
+        bucket["gross_amount"] = Decimal(bucket["gross_amount"]) + Decimal(record.gross_amount)
+        bucket["net_amount"] = Decimal(bucket["net_amount"]) + Decimal(record.net_amount)
+        bucket["record_count"] = int(bucket["record_count"]) + 1
+    revenue_channel_monthly_summary = [
+        RevenueChannelMonthlyBreakdownItem(
+            period=period,
+            channel=channel,
+            gross_amount=Decimal(bucket["gross_amount"]),
+            net_amount=Decimal(bucket["net_amount"]),
+            record_count=int(bucket["record_count"]),
+        )
+        for (period, channel), bucket in sorted(
+            revenue_channel_monthly_bucket.items(),
+            key=lambda item: (item[0][0], Decimal(item[1]["gross_amount"])),
+        )
+    ]
+    revenue_channel_breakdown = build_revenue_channel_breakdown(
+        revenue_rows,
+        [match for match, _record in revenue_match_rows],
+    )
 
     approval_instances_query = (
         select(ApprovalInstance, ApprovalTemplate)
@@ -596,6 +648,8 @@ def read_financial_analytics(
             store_count=len(stores),
             period_count=len(periods),
             total_income_amount=total_income_amount,
+            total_net_income_amount=total_net_income_amount,
+            total_fee_amount=total_fee_amount,
             total_expense_amount=total_expense_amount,
             total_profit_amount=total_income_amount - total_expense_amount,
             bank_expense_amount=bank_expense_amount,
@@ -612,6 +666,8 @@ def read_financial_analytics(
         ),
         trends=trend_items,
         stores=store_items[:20],
+        revenue_channels=revenue_channel_breakdown[:20],
+        revenue_channel_monthly_summary=revenue_channel_monthly_summary,
         categories=category_items[:20],
         templates=template_items[:20],
         reconciliation=reconciliation_items,

@@ -806,6 +806,14 @@ class RevenueChannelBreakdownItem(BaseModel):
     record_count: int
 
 
+class RevenueChannelMonthlyBreakdownItem(BaseModel):
+    period: str
+    channel: str
+    gross_amount: Decimal
+    net_amount: Decimal
+    record_count: int
+
+
 class LedgerReportDetail(BaseModel):
     summary: LedgerReportSummary
     revenue_records: list[RevenueRecordRead]
@@ -839,6 +847,7 @@ class StoreLedgerWorkspaceMetrics(BaseModel):
     net_income_amount: Decimal
     fee_amount: Decimal
     approval_amount: Decimal = Decimal("0.00")
+    approval_accounting_amount: Decimal = Decimal("0.00")
     bank_transaction_count: int
     unmatched_bank_transaction_count: int
     approval_count: int
@@ -847,6 +856,7 @@ class StoreLedgerWorkspaceMetrics(BaseModel):
     pending_revenue_match_count: int
     expense_category_summary: list[ExpenseBreakdownItem] = []
     revenue_channel_summary: list[RevenueChannelBreakdownItem] = []
+    revenue_channel_monthly_summary: list[RevenueChannelMonthlyBreakdownItem] = []
 
 
 class StoreLedgerWorkspaceRead(BaseModel):
@@ -866,6 +876,8 @@ class FinancialAnalyticsMetrics(BaseModel):
     store_count: int
     period_count: int
     total_income_amount: Decimal
+    total_net_income_amount: Decimal
+    total_fee_amount: Decimal
     total_expense_amount: Decimal
     total_profit_amount: Decimal
     bank_expense_amount: Decimal
@@ -928,6 +940,8 @@ class FinancialAnalyticsReport(BaseModel):
     metrics: FinancialAnalyticsMetrics
     trends: list[FinancialAnalyticsTrendItem]
     stores: list[FinancialAnalyticsStoreItem]
+    revenue_channels: list[RevenueChannelBreakdownItem] = []
+    revenue_channel_monthly_summary: list[RevenueChannelMonthlyBreakdownItem] = []
     categories: list[FinancialAnalyticsCategoryItem]
     templates: list[FinancialAnalyticsTemplateItem]
     reconciliation: list[FinancialAnalyticsReconciliationItem]
