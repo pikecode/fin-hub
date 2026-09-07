@@ -13,6 +13,7 @@ from app.models import (
     Ledger,
     MatchStatus,
     RevenueBankMatch,
+    RevenueBankMatchRecord,
     RevenueRecord,
     Store,
     User,
@@ -31,6 +32,12 @@ router = APIRouter(prefix="/store-ledgers", tags=["store-ledgers"])
 
 def decimal_sum(value: Decimal | None) -> Decimal:
     return value if value is not None else Decimal("0.00")
+
+
+def decimal_rate(numerator: Decimal, denominator: Decimal) -> Decimal:
+    if denominator <= 0:
+        return Decimal("0.00")
+    return (numerator / denominator * Decimal("100")).quantize(Decimal("0.01"))
 
 
 def parse_period_start(period: str) -> datetime:
@@ -80,18 +87,35 @@ def read_store_ledger_workspace(
     selected_ledger = next((ledger for ledger in ledgers if ledger.period == selected_period), None)
     period_start = parse_period_start(selected_period)
     next_start = next_period_start(selected_period)
+    period_start_date = period_start.date()
+    next_start_date = next_start.date()
 
     revenue_record_count = session.scalar(
         select(func.count()).select_from(RevenueRecord).where(
             RevenueRecord.store_id == store_id,
-            RevenueRecord.ledger_period == selected_period,
+            RevenueRecord.revenue_date >= period_start_date,
+            RevenueRecord.revenue_date < next_start_date,
         )
     )
+    revenue_channel_rows = session.execute(
+        select(
+            RevenueRecord.channel,
+            func.coalesce(func.sum(RevenueRecord.gross_amount), 0),
+            func.coalesce(func.sum(RevenueRecord.net_amount), 0),
+            func.coalesce(func.sum(RevenueRecord.fee_amount), 0),
+            func.count(),
+        ).where(
+            RevenueRecord.store_id == store_id,
+            RevenueRecord.revenue_date >= period_start_date,
+            RevenueRecord.revenue_date < next_start_date,
+        ).group_by(RevenueRecord.channel)
+    ).all()
     income_amount = decimal_sum(
         session.scalar(
             select(func.sum(RevenueRecord.gross_amount)).where(
                 RevenueRecord.store_id == store_id,
-                RevenueRecord.ledger_period == selected_period,
+                RevenueRecord.revenue_date >= period_start_date,
+                RevenueRecord.revenue_date < next_start_date,
             )
         )
     )
@@ -99,7 +123,8 @@ def read_store_ledger_workspace(
         session.scalar(
             select(func.sum(RevenueRecord.net_amount)).where(
                 RevenueRecord.store_id == store_id,
-                RevenueRecord.ledger_period == selected_period,
+                RevenueRecord.revenue_date >= period_start_date,
+                RevenueRecord.revenue_date < next_start_date,
             )
         )
     )
@@ -119,7 +144,17 @@ def read_store_ledger_workspace(
         session.scalar(
             select(func.sum(RevenueRecord.fee_amount)).where(
                 RevenueRecord.store_id == store_id,
-                RevenueRecord.ledger_period == selected_period,
+                RevenueRecord.revenue_date >= period_start_date,
+                RevenueRecord.revenue_date < next_start_date,
+            )
+        )
+    )
+    revenue_net_amount = decimal_sum(
+        session.scalar(
+            select(func.sum(RevenueRecord.net_amount)).where(
+                RevenueRecord.store_id == store_id,
+                RevenueRecord.revenue_date >= period_start_date,
+                RevenueRecord.revenue_date < next_start_date,
             )
         )
     )
@@ -148,10 +183,37 @@ def read_store_ledger_workspace(
         )
     )
     approval_stats_by_id = approval_expense_stats_map(session, [item.id for item in approval_instances])
+    approval_amount = sum(
+        (
+            approval_stats_by_id.get(item.id, {}).get("total_expense_amount")
+            or Decimal("0.00")
+        )
+        for item in approval_instances
+    )
     pending_approval_count = sum(
         1
         for item in approval_instances
         if approval_stats_by_id.get(item.id, {}).get("processing_status") != "matched"
+    )
+    category_map: dict[tuple[str, str | None], dict[str, Decimal | int | str | None]] = {}
+    for item in canonical_expense_items(expense_items):
+        category_l1 = item.category_l1 or "未分类"
+        category_l2 = item.category_l2
+        key = (category_l1, category_l2)
+        bucket = category_map.setdefault(
+            key,
+            {
+                "name": " / ".join([part for part in [category_l1, category_l2] if part]) or "未分类",
+                "amount": Decimal("0.00"),
+                "item_count": 0,
+            },
+        )
+        bucket["amount"] = decimal_sum(bucket["amount"]) + decimal_sum(item.amount)
+        bucket["item_count"] = int(bucket["item_count"]) + 1
+    expense_category_summary = sorted(
+        category_map.values(),
+        key=lambda item: decimal_sum(item["amount"]),
+        reverse=True,
     )
     revenue_match_count = session.scalar(
         select(func.count()).select_from(RevenueBankMatch).join(
@@ -172,6 +234,43 @@ def read_store_ledger_workspace(
             RevenueBankMatch.status == MatchStatus.CANDIDATE.value,
         )
     )
+    matched_channel_rows = session.execute(
+        select(
+            RevenueRecord.channel,
+            func.coalesce(func.sum(RevenueRecord.net_amount), 0),
+        )
+        .join(RevenueBankMatchRecord, RevenueBankMatchRecord.revenue_record_id == RevenueRecord.id)
+        .join(RevenueBankMatch, RevenueBankMatch.id == RevenueBankMatchRecord.revenue_bank_match_id)
+        .join(BankTransaction, BankTransaction.id == RevenueBankMatch.bank_transaction_id)
+        .where(
+            RevenueRecord.store_id == store_id,
+            RevenueRecord.revenue_date >= period_start_date,
+            RevenueRecord.revenue_date < next_start_date,
+            BankTransaction.store_id == store_id,
+            RevenueBankMatch.status == MatchStatus.CONFIRMED.value,
+        )
+        .group_by(RevenueRecord.channel)
+    ).all()
+    matched_by_channel = {row[0]: decimal_sum(row[1]) for row in matched_channel_rows}
+    revenue_channel_summary = []
+    for row in revenue_channel_rows:
+        gross_amount = decimal_sum(row[1])
+        net_amount = decimal_sum(row[2])
+        fee_amount_value = decimal_sum(row[3])
+        matched_amount = min(matched_by_channel.get(row[0], Decimal("0.00")), net_amount)
+        revenue_channel_summary.append(
+            {
+                "channel": row[0],
+                "gross_amount": gross_amount,
+                "net_amount": net_amount,
+                "fee_amount": fee_amount_value,
+                "fee_rate": decimal_rate(fee_amount_value, gross_amount),
+                "matched_amount": matched_amount,
+                "unmatched_amount": max(net_amount - matched_amount, Decimal("0.00")),
+                "reconciliation_rate": decimal_rate(matched_amount, net_amount),
+                "record_count": row[4],
+            }
+        )
 
     bank_transactions = list(
         session.scalars(
@@ -183,7 +282,11 @@ def read_store_ledger_workspace(
     revenue_records = list(
         session.scalars(
             select(RevenueRecord)
-            .where(RevenueRecord.store_id == store_id, RevenueRecord.ledger_period == selected_period)
+            .where(
+                RevenueRecord.store_id == store_id,
+                RevenueRecord.revenue_date >= period_start_date,
+                RevenueRecord.revenue_date < next_start_date,
+            )
             .order_by(RevenueRecord.revenue_date.desc(), RevenueRecord.created_at.desc())
         )
     )
@@ -217,16 +320,21 @@ def read_store_ledger_workspace(
             close_check=build_close_check(session, selected_ledger) if selected_ledger else None,
             metrics=StoreLedgerWorkspaceMetrics(
                 revenue_record_count=revenue_record_count or 0,
+                revenue_income_amount=income_amount,
+                revenue_net_amount=revenue_net_amount,
                 income_amount=income_amount,
                 expense_amount=expense_amount,
                 net_income_amount=net_income_amount,
                 fee_amount=fee_amount,
+                approval_amount=approval_amount,
                 bank_transaction_count=bank_transaction_count or 0,
                 unmatched_bank_transaction_count=unmatched_bank_transaction_count or 0,
                 approval_count=len(approval_instances),
                 pending_approval_count=pending_approval_count,
                 revenue_match_count=revenue_match_count or 0,
                 pending_revenue_match_count=pending_revenue_match_count or 0,
+                expense_category_summary=expense_category_summary,
+                revenue_channel_summary=revenue_channel_summary,
             ),
             bank_transactions=bank_transactions,
             revenue_records=revenue_records,

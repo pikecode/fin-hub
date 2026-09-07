@@ -832,16 +832,21 @@ class StoreComparisonReport(BaseModel):
 
 class StoreLedgerWorkspaceMetrics(BaseModel):
     revenue_record_count: int
+    revenue_income_amount: Decimal = Decimal("0.00")
+    revenue_net_amount: Decimal = Decimal("0.00")
     income_amount: Decimal
     expense_amount: Decimal
     net_income_amount: Decimal
     fee_amount: Decimal
+    approval_amount: Decimal = Decimal("0.00")
     bank_transaction_count: int
     unmatched_bank_transaction_count: int
     approval_count: int
     pending_approval_count: int
     revenue_match_count: int
     pending_revenue_match_count: int
+    expense_category_summary: list[ExpenseBreakdownItem] = []
+    revenue_channel_summary: list[RevenueChannelBreakdownItem] = []
 
 
 class StoreLedgerWorkspaceRead(BaseModel):

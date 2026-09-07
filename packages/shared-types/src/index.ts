@@ -1083,16 +1083,35 @@ export interface StoreComparisonReport {
 
 export interface StoreLedgerWorkspaceMetrics {
   revenue_record_count: number;
+  revenue_income_amount: string;
+  revenue_net_amount: string;
   income_amount: string;
   expense_amount: string;
   net_income_amount: string;
   fee_amount: string;
+  approval_amount: string;
   bank_transaction_count: number;
   unmatched_bank_transaction_count: number;
   approval_count: number;
   pending_approval_count: number;
   revenue_match_count: number;
   pending_revenue_match_count: number;
+  expense_category_summary: Array<{
+    name: string;
+    amount: string;
+    item_count: number;
+  }>;
+  revenue_channel_summary: Array<{
+    channel: string;
+    gross_amount: string;
+    net_amount: string;
+    fee_amount: string;
+    fee_rate: string;
+    matched_amount: string;
+    unmatched_amount: string;
+    reconciliation_rate: string;
+    record_count: number;
+  }>;
 }
 
 export interface StoreLedgerWorkspace {

@@ -343,7 +343,6 @@ def reset_approval_rebuild(conn: Connection) -> dict[str, int]:
     conn.execute(text("DELETE FROM attachments WHERE id IN (SELECT id FROM _reset_dingtalk_attachment_ids)"))
     conn.execute(text("DELETE FROM expense_items WHERE id IN (SELECT id FROM _reset_dingtalk_expense_ids)"))
     conn.execute(text("DELETE FROM approval_instances"))
-    conn.execute(text("DELETE FROM sync_jobs WHERE job_type IN ({})".format(DINGTALK_SYNC_JOB_TYPE_SQL)))
     conn.execute(
         text(
             """
@@ -367,6 +366,7 @@ def reset_approval_rebuild(conn: Connection) -> dict[str, int]:
             """
         )
     )
+    conn.execute(text("DELETE FROM sync_jobs WHERE job_type IN ({})".format(DINGTALK_SYNC_JOB_TYPE_SQL)))
     refresh_affected_bank_matched_amount(conn)
     return counts
 
