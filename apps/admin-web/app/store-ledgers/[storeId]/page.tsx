@@ -25,6 +25,9 @@ function currentPeriod() {
   return new Date().toISOString().slice(0, 7);
 }
 
+const workspaceCache = new Map<string, { data: StoreLedgerWorkspace; expiresAt: number }>();
+const WORKSPACE_CACHE_TTL = 30_000;
+
 function metricCard(title: string, value: string, subtitle: string, icon: React.ReactNode, tone?: "green" | "red" | "gold" | "blue") {
   return (
     <Card size="small" className={`store-ledger-report-metric ${tone ? `store-ledger-report-metric--${tone}` : ""}`}>
@@ -56,11 +59,21 @@ export default function StoreLedgerWorkspacePage() {
     let ignore = false;
     async function loadData() {
       if (!storeId || !period) return;
+      const cacheKey = `${storeId}|${period}`;
+      const cached = workspaceCache.get(cacheKey);
+      if (cached && cached.expiresAt > Date.now()) {
+        setData(cached.data);
+        setIsLoading(false);
+        return;
+      }
       setIsLoading(true);
       setErrorMessage(null);
       try {
         const workspace = await apiClient.storeLedgers.workspace(storeId, `?period=${period}`);
-        if (!ignore) setData(workspace);
+        if (!ignore) {
+          setData(workspace);
+          workspaceCache.set(cacheKey, { data: workspace, expiresAt: Date.now() + WORKSPACE_CACHE_TTL });
+        }
       } catch (error) {
         if (!ignore) setErrorMessage(error instanceof Error ? error.message : "加载失败");
       } finally {

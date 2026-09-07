@@ -878,6 +878,7 @@ class FinancialAnalyticsMetrics(BaseModel):
     total_income_amount: Decimal
     total_net_income_amount: Decimal
     total_fee_amount: Decimal
+    approval_month_amount: Decimal
     total_expense_amount: Decimal
     total_profit_amount: Decimal
     bank_expense_amount: Decimal
@@ -899,6 +900,7 @@ class FinancialAnalyticsTrendItem(BaseModel):
     bank_expense_amount: Decimal
     matched_expense_amount: Decimal
     unmatched_bank_amount: Decimal
+    bank_transaction_count: int
 
 
 class FinancialAnalyticsStoreItem(BaseModel):
@@ -936,12 +938,19 @@ class FinancialAnalyticsReconciliationItem(BaseModel):
     amount: Decimal
 
 
+class FinancialAnalyticsApprovalStatusItem(BaseModel):
+    status: str
+    count: int
+    amount: Decimal
+
+
 class FinancialAnalyticsReport(BaseModel):
     metrics: FinancialAnalyticsMetrics
     trends: list[FinancialAnalyticsTrendItem]
     stores: list[FinancialAnalyticsStoreItem]
     revenue_channels: list[RevenueChannelBreakdownItem] = []
     revenue_channel_monthly_summary: list[RevenueChannelMonthlyBreakdownItem] = []
+    approval_status_summary: list[FinancialAnalyticsApprovalStatusItem] = []
     categories: list[FinancialAnalyticsCategoryItem]
     templates: list[FinancialAnalyticsTemplateItem]
     reconciliation: list[FinancialAnalyticsReconciliationItem]

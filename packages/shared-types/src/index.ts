@@ -1143,6 +1143,7 @@ export interface FinancialAnalyticsMetrics {
   total_income_amount: string;
   total_net_income_amount: string;
   total_fee_amount: string;
+  approval_month_amount: string;
   total_expense_amount: string;
   total_profit_amount: string;
   bank_expense_amount: string;
@@ -1164,6 +1165,7 @@ export interface FinancialAnalyticsTrendItem {
   bank_expense_amount: string;
   matched_expense_amount: string;
   unmatched_bank_amount: string;
+  bank_transaction_count: number;
 }
 
 export interface FinancialAnalyticsStoreItem {
@@ -1201,12 +1203,19 @@ export interface FinancialAnalyticsReconciliationItem {
   amount: string;
 }
 
+export interface FinancialAnalyticsApprovalStatusItem {
+  status: string;
+  count: number;
+  amount: string;
+}
+
 export interface FinancialAnalyticsReport {
   metrics: FinancialAnalyticsMetrics;
   trends: FinancialAnalyticsTrendItem[];
   stores: FinancialAnalyticsStoreItem[];
   revenue_channels: RevenueChannelBreakdownItem[];
   revenue_channel_monthly_summary: RevenueChannelMonthlyBreakdownItem[];
+  approval_status_summary: FinancialAnalyticsApprovalStatusItem[];
   categories: FinancialAnalyticsCategoryItem[];
   templates: FinancialAnalyticsTemplateItem[];
   reconciliation: FinancialAnalyticsReconciliationItem[];

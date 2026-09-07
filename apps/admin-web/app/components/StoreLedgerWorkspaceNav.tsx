@@ -79,6 +79,14 @@ export function StoreLedgerWorkspaceNav({
   const router = useRouter();
   const [stores, setStores] = useState<Store[]>([]);
   const [isStoreLoading, setIsStoreLoading] = useState(false);
+  const tabTargets = useMemo(
+    () =>
+      tabItems.map((item) => ({
+        key: item.key,
+        href: modulePath(storeId, item.key, period),
+      })),
+    [storeId, period],
+  );
   const storeOptions = useMemo(
     () => stores.map((store) => ({ label: store.name, value: store.id })),
     [stores],
@@ -103,8 +111,16 @@ export function StoreLedgerWorkspaceNav({
     };
   }, [storeId, storeName]);
 
+  useEffect(() => {
+    tabTargets.forEach((target) => {
+      router.prefetch(target.href);
+    });
+  }, [router, tabTargets]);
+
   function navigateToTab(key: string) {
-    router.push(modulePath(storeId, key as StoreLedgerTabKey, period));
+    const nextHref = modulePath(storeId, key as StoreLedgerTabKey, period);
+    if (nextHref === window.location.pathname + window.location.search) return;
+    router.push(nextHref);
   }
 
   function changePeriod(nextPeriod: string) {

@@ -25,11 +25,13 @@ from app.models import (
     Store,
     User,
 )
+from app.modules.approvals.status import approval_expense_stats_map
 from app.modules.auth.permissions import effective_store_ids, ensure_permission, ensure_store_access
 from app.modules.auth.router import get_optional_current_user
 from app.modules.shareholder_auth.service import grant_store_ids, require_shareholder_grant
 from app.schemas import (
     ApiEnvelope,
+    FinancialAnalyticsApprovalStatusItem,
     ExpenseBreakdownItem,
     FinancialAnalyticsCategoryItem,
     FinancialAnalyticsDetailReport,
@@ -319,6 +321,7 @@ def empty_financial_analytics_report() -> FinancialAnalyticsReport:
             total_income_amount=Decimal("0.00"),
             total_net_income_amount=Decimal("0.00"),
             total_fee_amount=Decimal("0.00"),
+            approval_month_amount=Decimal("0.00"),
             total_expense_amount=Decimal("0.00"),
             total_profit_amount=Decimal("0.00"),
             bank_expense_amount=Decimal("0.00"),
@@ -335,6 +338,7 @@ def empty_financial_analytics_report() -> FinancialAnalyticsReport:
         stores=[],
         revenue_channels=[],
         revenue_channel_monthly_summary=[],
+        approval_status_summary=[],
         categories=[],
         templates=[],
         reconciliation=[],
@@ -473,6 +477,7 @@ def read_financial_analytics(
             ),
             Decimal("0.00"),
         )
+        period_bank_count = sum(1 for transaction in bank_rows if transaction.ledger_period == period)
         trend_items.append(
             FinancialAnalyticsTrendItem(
                 period=period,
@@ -482,6 +487,7 @@ def read_financial_analytics(
                 bank_expense_amount=period_bank_expense,
                 matched_expense_amount=period_matched,
                 unmatched_bank_amount=period_unmatched,
+                bank_transaction_count=period_bank_count,
             )
         )
 
@@ -588,10 +594,27 @@ def read_financial_analytics(
         period_end,
     )
     approval_instances = session.execute(approval_instances_query).all()
+    approval_stats_map = approval_expense_stats_map(session, [approval.id for approval, _template in approval_instances])
     approvals_by_document_id = {
         approval.dingtalk_instance_id: (approval, template)
         for approval, template in approval_instances
     }
+    approval_month_amount = sum(
+        (
+            Decimal(approval_stats_map.get(approval.id, {}).get("total_expense_amount", Decimal("0.00")))
+            for approval, _template in approval_instances
+        ),
+        Decimal("0.00"),
+    )
+    approval_status_bucket: dict[str, dict[str, Decimal | int]] = {}
+    for approval, _template in approval_instances:
+        stats = approval_stats_map.get(approval.id, {})
+        bucket = approval_status_bucket.setdefault(
+            approval.processing_status or "unparsed",
+            {"count": 0, "amount": Decimal("0.00")},
+        )
+        bucket["count"] = int(bucket["count"]) + 1
+        bucket["amount"] = Decimal(bucket["amount"]) + Decimal(stats.get("total_expense_amount", Decimal("0.00")))
     template_approval_counts: dict[str, tuple[str, int]] = {}
     for approval, template in approval_instances:
         count = template_approval_counts.get(template.id, (template.name, 0))[1]
@@ -642,6 +665,15 @@ def read_financial_analytics(
         )
         for status in (MatchStatus.CONFIRMED.value, MatchStatus.CANDIDATE.value, MatchStatus.REJECTED.value)
     ]
+    approval_status_summary = [
+        FinancialAnalyticsApprovalStatusItem(
+            status=status,
+            count=int(bucket["count"]),
+            amount=Decimal(bucket["amount"]),
+        )
+        for status, bucket in approval_status_bucket.items()
+    ]
+    approval_status_summary.sort(key=lambda item: item.count, reverse=True)
 
     report = FinancialAnalyticsReport(
         metrics=FinancialAnalyticsMetrics(
@@ -650,6 +682,7 @@ def read_financial_analytics(
             total_income_amount=total_income_amount,
             total_net_income_amount=total_net_income_amount,
             total_fee_amount=total_fee_amount,
+            approval_month_amount=approval_month_amount,
             total_expense_amount=total_expense_amount,
             total_profit_amount=total_income_amount - total_expense_amount,
             bank_expense_amount=bank_expense_amount,
@@ -668,6 +701,7 @@ def read_financial_analytics(
         stores=store_items[:20],
         revenue_channels=revenue_channel_breakdown[:20],
         revenue_channel_monthly_summary=revenue_channel_monthly_summary,
+        approval_status_summary=approval_status_summary,
         categories=category_items[:20],
         templates=template_items[:20],
         reconciliation=reconciliation_items,

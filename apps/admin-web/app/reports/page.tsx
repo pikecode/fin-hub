@@ -53,6 +53,17 @@ const RevenueChannelMonthlyChart = dynamic(
     loading: () => <Card loading style={{ minHeight: 420 }} />,
   },
 );
+const BankTrendChart = dynamic(() => import("../components/BankTrendChart").then((module) => module.BankTrendChart), {
+  ssr: false,
+  loading: () => <Card loading style={{ minHeight: 340 }} />,
+});
+const ApprovalStatusChart = dynamic(
+  () => import("../components/ApprovalStatusChart").then((module) => module.ApprovalStatusChart),
+  {
+    ssr: false,
+    loading: () => <Card loading style={{ minHeight: 320 }} />,
+  },
+);
 
 interface ReportFilterValues {
   store_id?: string;
@@ -220,9 +231,17 @@ export default function ReportsPage() {
   };
   const revenueChannelData = (analytics?.revenue_channels ?? []).slice(0, 10);
   const revenueChannelMonthlyData = analytics?.revenue_channel_monthly_summary ?? [];
+  const approvalStatusData = analytics?.approval_status_summary ?? [];
   const totalIncomeAmount = toNumber(analytics?.metrics.total_income_amount);
   const totalProfitAmount = toNumber(analytics?.metrics.total_profit_amount);
   const profitRate = totalIncomeAmount > 0 ? (totalProfitAmount / totalIncomeAmount) * 100 : 0;
+  const bankTrendData = (analytics?.trends ?? []).map((item) => ({
+    period: formatPeriod(item.period),
+    bank_expense_amount: toNumber(item.bank_expense_amount),
+    matched_expense_amount: toNumber(item.matched_expense_amount),
+    unmatched_bank_amount: toNumber(item.unmatched_bank_amount),
+    bank_transaction_count: item.bank_transaction_count,
+  }));
   const storeChartData = (analytics?.stores ?? []).slice(0, 10).map((item) => ({
     name: item.store_name,
     revenue: toNumber(item.income_amount),
@@ -413,6 +432,7 @@ export default function ReportsPage() {
         <Card><Statistic title="经营收入" value={formatMoney(analytics?.metrics.total_income_amount ?? 0)} /></Card>
         <Card><Statistic title="实收" value={formatMoney(analytics?.metrics.total_net_income_amount ?? 0)} /></Card>
         <Card><Statistic title="手续费" value={formatMoney(analytics?.metrics.total_fee_amount ?? 0)} /></Card>
+        <Card><Statistic title="本月审批金额" value={formatMoney(analytics?.metrics.approval_month_amount ?? 0)} /></Card>
         <Card><Statistic title="审批支出" value={formatMoney(analytics?.metrics.total_expense_amount ?? 0)} /></Card>
         <Card><Statistic title="利润" value={formatMoney(analytics?.metrics.total_profit_amount ?? 0)} /></Card>
         <Card><Statistic title="利润率" value={formatRatio(profitRate)} /></Card>
@@ -427,6 +447,10 @@ export default function ReportsPage() {
             label: "经营总览",
             children: (
               <Space direction="vertical" size={16} style={{ width: "100%" }}>
+                <div className="analytics-chart-grid">
+                  <BankTrendChart title="银行流水趋势" data={bankTrendData} loading={isLoading} height={340} />
+                  <ApprovalStatusChart title="审批状态分布" data={approvalStatusData} loading={isLoading} height={340} />
+                </div>
                 <RevenueChannelMonthlyChart
                   title="经营收入渠道月度图"
                   data={revenueChannelMonthlyData}

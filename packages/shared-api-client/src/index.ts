@@ -140,26 +140,61 @@ export interface ApiClientOptions {
 export function createApiClient(options: ApiClientOptions) {
   const fetcher = options.fetcher ?? fetch;
   const baseUrl = options.baseUrl.replace(/\/$/, "");
+  const getCache = new Map<string, { expiresAt: number; promise: Promise<unknown> }>();
+  const GET_CACHE_TTL = 5_000;
+
+  function clearGetCache() {
+    getCache.clear();
+  }
 
   async function request<T>(path: string, init?: RequestInit): Promise<T> {
+    const method = (init?.method || "GET").toUpperCase();
+    const isGet = method === "GET";
+    const cacheKey = `${method}:${path}`;
     const isFormData = typeof FormData !== "undefined" && init?.body instanceof FormData;
-    const response = await fetcher(`${baseUrl}${path}`, {
+    if (isGet) {
+      const now = Date.now();
+      const cached = getCache.get(cacheKey);
+      if (cached && cached.expiresAt > now) {
+        return cached.promise as Promise<T>;
+      }
+    }
+    const promise = fetcher(`${baseUrl}${path}`, {
       ...init,
       credentials: "include",
       headers: {
         ...(isFormData ? {} : { "content-type": "application/json" }),
         ...(init?.headers ?? {}),
       },
+    }).then(async (response) => {
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) {
+        const detail =
+          payload && typeof payload === "object" && "detail" in payload && typeof (payload as { detail?: unknown }).detail === "string"
+            ? (payload as { detail: string }).detail
+            : null;
+        throw new ApiError(detail || response.statusText || "Request failed", response.status, payload);
+      }
+      return (payload as ApiEnvelope<T>).data ?? payload;
     });
-    const payload = await response.json().catch(() => null);
-    if (!response.ok) {
-      const detail =
-        payload && typeof payload === "object" && "detail" in payload && typeof (payload as { detail?: unknown }).detail === "string"
-          ? (payload as { detail: string }).detail
-          : null;
-      throw new ApiError(detail || response.statusText || "Request failed", response.status, payload);
+    if (isGet) {
+      getCache.set(cacheKey, {
+        expiresAt: Date.now() + GET_CACHE_TTL,
+        promise,
+      });
+      promise.catch(() => {
+        getCache.delete(cacheKey);
+      });
+      return promise;
     }
-    return (payload as ApiEnvelope<T>).data ?? payload;
+    try {
+      const result = await promise;
+      clearGetCache();
+      return result;
+    } catch (error) {
+      clearGetCache();
+      throw error;
+    }
   }
 
   async function requestBlob(path: string, init?: RequestInit): Promise<Blob> {
