@@ -10,6 +10,7 @@ from app.models import (
     ApprovalTemplate,
     BankTransaction,
     ExpenseBankMatch,
+    ExpenseCategory,
     ExpenseItem,
     MatchStatus,
 )
@@ -306,6 +307,17 @@ def test_store_ledger_workspace_calculates_gross_profit_from_food_cost(
     )
     session.add(ApprovalTemplate(id="template-gross-profit", process_code="PROC-GROSS", name="毛利测试模板"))
     session.flush()
+    food_category = ExpenseCategory(name="食材成本", parent_id=None, sort_order=1)
+    operation_category = ExpenseCategory(name="运营支出", parent_id=None, sort_order=2)
+    session.add_all([food_category, operation_category])
+    session.flush()
+    session.add_all(
+        [
+            ExpenseCategory(name="肉类", parent_id=food_category.id, sort_order=1),
+            ExpenseCategory(name="物料采购", parent_id=operation_category.id, sort_order=1),
+        ]
+    )
+    session.flush()
     approval = ApprovalInstance(
         template_id="template-gross-profit",
         dingtalk_instance_id="gross-profit-approval",
@@ -335,6 +347,14 @@ def test_store_ledger_workspace_calculates_gross_profit_from_food_cost(
         source="dingtalk",
         source_document_id="gross-profit-approval:other",
     )
+    uncategorized_expense = ExpenseItem(
+        store_id=store_id,
+        ledger_period="2026-08",
+        description="待分类支出",
+        amount=Decimal("80.00"),
+        source="dingtalk",
+        source_document_id="gross-profit-approval:uncategorized",
+    )
     food_bank = BankTransaction(
         store_id=store_id,
         ledger_period="2026-08",
@@ -353,7 +373,16 @@ def test_store_ledger_workspace_calculates_gross_profit_from_food_cost(
         matched_amount=Decimal("50.00"),
         summary="清洁用品付款",
     )
-    session.add_all([food_expense, other_expense, food_bank, other_bank])
+    uncategorized_bank = BankTransaction(
+        store_id=store_id,
+        ledger_period="2026-08",
+        occurred_at=datetime(2026, 8, 24, 10, 30, 0),
+        direction="expense",
+        amount=Decimal("80.00"),
+        matched_amount=Decimal("80.00"),
+        summary="待分类付款",
+    )
+    session.add_all([food_expense, other_expense, uncategorized_expense, food_bank, other_bank, uncategorized_bank])
     session.flush()
     session.add_all(
         [
@@ -371,6 +400,13 @@ def test_store_ledger_workspace_calculates_gross_profit_from_food_cost(
                 accounting_period="2026-08",
                 status=MatchStatus.CONFIRMED.value,
             ),
+            ExpenseBankMatch(
+                expense_item_id=uncategorized_expense.id,
+                bank_transaction_id=uncategorized_bank.id,
+                amount=Decimal("80.00"),
+                accounting_period="2026-08",
+                status=MatchStatus.CONFIRMED.value,
+            ),
         ]
     )
     session.commit()
@@ -378,9 +414,13 @@ def test_store_ledger_workspace_calculates_gross_profit_from_food_cost(
     workspace = client.get(f"/api/store-ledgers/{store_id}/workspace?period=2026-08").json()["data"]
 
     assert workspace["metrics"]["revenue_income_amount"] == "1000.00"
-    assert workspace["metrics"]["expense_amount"] == "350.00"
+    assert workspace["metrics"]["expense_amount"] == "430.00"
     assert workspace["metrics"]["food_cost_amount"] == "300.00"
     assert workspace["metrics"]["gross_profit_amount"] == "700.00"
+    category_names = [item["name"] for item in workspace["metrics"]["expense_category_summary"]]
+    assert "食材成本 / 肉类" in category_names
+    assert "运营支出 / 物料采购" in category_names
+    assert "未分类" not in category_names
 
 
 def test_bank_transaction_create_auto_creates_ledger(client: TestClient) -> None:

@@ -10,6 +10,7 @@ from app.models import (
     ApprovalInstance,
     ApprovalTemplate,
     BankTransaction,
+    ExpenseCategory,
     ExpenseItem,
     ExpenseBankMatch,
     Ledger,
@@ -320,9 +321,35 @@ def read_store_ledger_workspace(
         for item in approval_instances
         if approval_stats_by_id.get(item.id, {}).get("processing_status") in {"unparsed", "pending_classification", "pending_match"}
     )
+    active_category_rows = session.execute(
+        select(
+            ExpenseCategory.id,
+            ExpenseCategory.name,
+            ExpenseCategory.parent_id,
+        ).where(
+            ExpenseCategory.status == "active",
+        )
+    ).all()
+    active_category_by_id = {
+        category_id: {"name": name, "parent_id": parent_id}
+        for category_id, name, parent_id in active_category_rows
+    }
+    active_root_names = {name for _, name, parent_id in active_category_rows if parent_id is None}
+    active_child_pairs = {
+        (parent_name, child_name)
+        for _, child_name, parent_id in active_category_rows
+        if parent_id is not None
+        for parent in [active_category_by_id.get(parent_id)]
+        if parent is not None and parent["parent_id"] is None
+        for parent_name in [str(parent["name"])]
+    }
     category_map: dict[tuple[str, str | None], dict[str, Decimal | int | str | None]] = {}
     for category_l1, category_l2, amount in [*confirmed_expense_rows, *revenue_fee_rows]:
-        l1 = category_l1 or "未分类"
+        if not category_l1 or category_l1 not in active_root_names:
+            continue
+        if category_l2 and (category_l1, category_l2) not in active_child_pairs:
+            continue
+        l1 = category_l1
         l2 = category_l2
         key = (l1, l2)
         bucket = category_map.setdefault(
