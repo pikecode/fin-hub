@@ -103,6 +103,7 @@ DINGTALK_SYNC_JOB_TYPES = {
     "dingtalk_auto_sync",
 }
 COMPLETED_APPROVAL_STATUSES = {"agree", "approved", "completed", "finish", "success"}
+PARSABLE_APPROVAL_STATUSES = COMPLETED_APPROVAL_STATUSES | {"running", "new"}
 RESYNC_PROCESSING_STATUSES = {"unparsed", "sync_conflict", "pending_classification", "pending_match"}
 
 
@@ -3307,10 +3308,10 @@ def sync_real_instance(
         instance.parse_error = f"Missing required fields: {', '.join(missing_fields)}"
         instance.last_parsed_at = utc_now()
         return True
-    if instance.approval_status.lower() not in COMPLETED_APPROVAL_STATUSES:
+    if instance.approval_status.lower() not in PARSABLE_APPROVAL_STATUSES:
         instance.parse_status = "skipped"
         instance.processing_status = "unparsed"
-        instance.parse_error = f"Approval status is not completed: {instance.approval_status}"
+        instance.parse_error = f"Approval status is not parsable: {instance.approval_status}"
         instance.last_parsed_at = utc_now()
         return True
     period = expense_date.strftime("%Y-%m")

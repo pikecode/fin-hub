@@ -1346,8 +1346,78 @@ def test_real_approval_sync_resyncs_existing_unparsed_instance(
     assert instance.approval_status == "agree"
     assert instance.dingtalk_modified_at == datetime(2026, 8, 30, 12, 34, 56)
     assert instance.parse_status == "parsed"
-    assert instance.processing_status == "pending_match"
+    assert instance.processing_status == "pending_classification"
     assert instance.parse_error is None
+    expenses = client.get(
+        f"/api/expense-items?approval_instance_id={instance.id}&page_size=20"
+    ).json()["data"]["items"]
+    assert len(expenses) == 1
+    assert expenses[0]["amount"] == "128.00"
+
+
+def test_real_approval_sync_parses_running_instance_for_reconciliation(
+    client: TestClient,
+    session,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(settings, "dingtalk_sync_mode", "real")
+    client.put(
+        "/api/dingtalk/config",
+        json={"app_key": "ding-app-key", "app_secret": "super-secret"},
+    )
+    store_id = client.post(
+        "/api/stores",
+        json={"name": "蘑说审批中可对账店", "dingtalk_dept_id": "dept-running"},
+    ).json()["data"]["id"]
+    template_id = client.post(
+        "/api/dingtalk/templates",
+        json={"process_code": "PROC-RUNNING", "name": "审批中对账模板", "is_enabled": True},
+    ).json()["data"]["id"]
+
+    class FakeDingTalkClient:
+        def list_process_instance_ids(self, process_code, start_time_ms, end_time_ms, cursor=0, size=20):
+            return ["running-instance"], None
+
+        def get_process_instance(self, instance_id):
+            return {
+                "process_instance_id": instance_id,
+                "business_id": "RUN-001",
+                "originator_dept_id": "dept-running",
+                "originator_dept_name": "门店运营部-蘑说审批中可对账店",
+                "status": "RUNNING",
+                "create_time": "2026-08-29 10:00:00",
+                "modify_time": "2026-08-30 12:34:56",
+                "form_component_values": [
+                    {"name": "报销日期", "value": "2026-08-29"},
+                    {"name": "支出门店", "value": "蘑说审批中可对账店"},
+                    {"name": "汇总金额（元）", "value": "128.00"},
+                    {"name": "支出详情", "value": "审批中支出"},
+                    {"name": "支出类型", "value": "门店费用"},
+                ],
+            }
+
+    monkeypatch.setattr("app.modules.dingtalk.router.dingtalk_client", lambda config: FakeDingTalkClient())
+    response = client.post(
+        "/api/dingtalk/approval-sync",
+        json={
+            "template_id": template_id,
+            "started_by": "tester",
+            "start_at": "2026-08-01T00:00:00",
+            "end_at": "2026-08-31T23:59:59",
+            "skip_existing": True,
+        },
+    )
+
+    assert response.status_code == 201
+    instance = session.scalar(
+        select(ApprovalInstance).where(
+            ApprovalInstance.dingtalk_instance_id == "running-instance"
+        )
+    )
+    assert instance is not None
+    assert instance.approval_status == "RUNNING"
+    assert instance.parse_status == "parsed"
+    assert instance.processing_status == "pending_classification"
     expenses = client.get(
         f"/api/expense-items?approval_instance_id={instance.id}&page_size=20"
     ).json()["data"]["items"]

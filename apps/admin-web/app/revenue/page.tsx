@@ -252,8 +252,7 @@ export default function RevenuePage() {
       ensureSummary(channel.name).channel = channel;
     });
     records.forEach((record) => {
-      const summary = summaryMap.get(record.channel);
-      if (!summary) return;
+      const summary = ensureSummary(record.channel);
       summary.grossAmount += Number(record.gross_amount || 0);
       summary.netAmount += Number(record.net_amount || 0);
       summary.feeAmount += Number(record.fee_amount || 0);
@@ -279,6 +278,7 @@ export default function RevenuePage() {
         return leftSort - rightSort || left.name.localeCompare(right.name);
       });
   }, [channels, records]);
+  const recordChannelNames = useMemo(() => new Set(records.map((record) => record.channel)), [records]);
   const batchEditColumns = useMemo(() => buildEntryColumns(batchEditRows, setBatchEditRows, isEditing), [batchEditRows, focusedEntryCell, isEditing]);
   const hasUnsavedBatchEdit = isEditing && isBatchEditDirty;
 
@@ -408,10 +408,10 @@ export default function RevenuePage() {
       setSelectedChannel(undefined);
       return;
     }
-    if (selectedChannel && channels.some((channel) => channel.name === selectedChannel)) return;
+    if (selectedChannel && (channels.some((channel) => channel.name === selectedChannel) || recordChannelNames.has(selectedChannel))) return;
     const defaultChannel = channels.find((channel) => channel.status === "active") ?? channels[0];
     setSelectedChannel(defaultChannel?.name);
-  }, [channels, selectedChannel]);
+  }, [channels, recordChannelNames, selectedChannel]);
 
   useEffect(() => {
     if (!selectedChannel) return;

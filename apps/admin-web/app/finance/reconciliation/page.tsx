@@ -428,6 +428,15 @@ export default function FinanceReconciliationPage() {
     return parentCategory ? [parentCategory.name] : undefined;
   }
 
+  function shouldBulkApplyCategory(
+    selectedIds: string[],
+    currentId: string,
+    existingPath?: string[] | null,
+  ) {
+    if (!selectedIds.includes(currentId) || selectedIds.length <= 1) return false;
+    return !existingPath?.length;
+  }
+
   function confirmCategoryPathForExpenseItem(item: ExpenseItem) {
     return confirmDetailCategoryDrafts[item.id]?.category_path ?? categoryPathForExpenseItem(item);
   }
@@ -1471,7 +1480,12 @@ export default function FinanceReconciliationPage() {
                           const path = value.map(String);
                           setConfirmDetailCategoryDrafts((current) => {
                             const next = { ...current };
-                            const targetIds = selectedConfirmExpenseItemIds.includes(record.id) && selectedConfirmExpenseItemIds.length
+                            const existingPath = current[record.id]?.category_path ?? categoryPathForExpenseItem(record);
+                            const targetIds = shouldBulkApplyCategory(
+                              selectedConfirmExpenseItemIds,
+                              record.id,
+                              existingPath,
+                            )
                               ? selectedConfirmExpenseItemIds
                               : [record.id];
                             targetIds.forEach((id) => {
@@ -1573,7 +1587,12 @@ export default function FinanceReconciliationPage() {
                             const path = value.map(String);
                             setEditingDetailCategoryDrafts((current) => {
                               const next = { ...current };
-                              const targetIds = selectedEditExpenseItemIds.includes(record.id) && selectedEditExpenseItemIds.length
+                              const existingPath = current[record.id]?.category_path ?? categoryPathForExpenseItem(record);
+                              const targetIds = shouldBulkApplyCategory(
+                                selectedEditExpenseItemIds,
+                                record.id,
+                                existingPath,
+                              )
                                 ? selectedEditExpenseItemIds
                                 : [record.id];
                               targetIds.forEach((id) => {
