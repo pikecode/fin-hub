@@ -1,9 +1,9 @@
 "use client";
 
-import { Alert, Button, Card, Form, Input, InputNumber, Modal, Select, Space, Statistic, Table, Typography, message } from "antd";
+import { Alert, Button, Card, Form, Input, InputNumber, Modal, Select, Space, Statistic, Table, Tooltip, Typography, message } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { useEffect, useMemo, useState } from "react";
-import { PlusOutlined, TagsOutlined } from "@ant-design/icons";
+import { PlusOutlined } from "@ant-design/icons";
 import type { ExpenseCategory, ExpenseCategoryCreate } from "@fin-hub/shared-types";
 import { AppShell } from "../components/AppShell";
 import { StatusBadge } from "../components/StatusBadge";
@@ -13,10 +13,14 @@ interface CategoryTreeNode extends ExpenseCategory {
   children?: CategoryTreeNode[];
 }
 
+const REVENUE_FEE_CATEGORY_L1 = "手续费";
+const FOOD_COST_CATEGORY_L1 = "食材成本";
+
 export default function CategoriesPage() {
   const [categories, setCategories] = useState<ExpenseCategory[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isCreatingFirstLevel, setIsCreatingFirstLevel] = useState(false);
   const [editingCategory, setEditingCategory] = useState<ExpenseCategory | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [form] = Form.useForm<ExpenseCategoryCreate>();
@@ -80,14 +84,18 @@ export default function CategoriesPage() {
   async function submitCategory(values: ExpenseCategoryCreate) {
     setIsLoading(true);
     try {
+      const payload = !editingCategory && isCreatingFirstLevel
+        ? { ...values, parent_id: null }
+        : values;
       if (editingCategory) {
-        await apiClient.categories.update(editingCategory.id, values);
+        await apiClient.categories.update(editingCategory.id, payload);
         message.success("更新成功");
       } else {
-        await apiClient.categories.create(values);
+        await apiClient.categories.create(payload);
         message.success("创建成功");
       }
       setIsModalOpen(false);
+      setIsCreatingFirstLevel(false);
       setEditingCategory(null);
       form.resetFields();
       await loadCategories();
@@ -99,13 +107,15 @@ export default function CategoriesPage() {
   }
 
   function openCreateModal() {
+    setIsCreatingFirstLevel(true);
     setEditingCategory(null);
     form.resetFields();
-    form.setFieldsValue({ sort_order: 0 });
+    form.setFieldsValue({ parent_id: undefined, sort_order: 0 });
     setIsModalOpen(true);
   }
 
   function openCreateChildModal(parent: ExpenseCategory) {
+    setIsCreatingFirstLevel(false);
     setEditingCategory(null);
     form.resetFields();
     form.setFieldsValue({ parent_id: parent.id, sort_order: 0 });
@@ -113,6 +123,7 @@ export default function CategoriesPage() {
   }
 
   function openEditModal(category: ExpenseCategory) {
+    setIsCreatingFirstLevel(false);
     setEditingCategory(category);
     form.setFieldsValue({
       name: category.name,
@@ -123,6 +134,14 @@ export default function CategoriesPage() {
   }
 
   async function toggleStatus(category: ExpenseCategory) {
+    if (isRevenueFeeCategory(category)) {
+      message.warning("手续费分类由营业收入渠道自动维护，不能停用");
+      return;
+    }
+    if (isProtectedFirstLevelCategory(category)) {
+      message.warning("食材成本是毛利计算口径，不能停用");
+      return;
+    }
     setIsLoading(true);
     try {
       await apiClient.categories.update(category.id, {
@@ -137,6 +156,15 @@ export default function CategoriesPage() {
     }
   }
 
+  function isRevenueFeeCategory(category: ExpenseCategory) {
+    if (!category.parent_id) return category.name === REVENUE_FEE_CATEGORY_L1;
+    return categoryById.get(category.parent_id)?.name === REVENUE_FEE_CATEGORY_L1;
+  }
+
+  function isProtectedFirstLevelCategory(category: ExpenseCategory) {
+    return !category.parent_id && category.name === FOOD_COST_CATEGORY_L1;
+  }
+
   const columns: ColumnsType<CategoryTreeNode> = [
     {
       title: "分类名称",
@@ -149,6 +177,8 @@ export default function CategoriesPage() {
           ) : (
             <StatusBadge status="info" text="一级分类" />
           )}
+          {isRevenueFeeCategory(record) ? <StatusBadge status="warning" text="渠道关联" /> : null}
+          {isProtectedFirstLevelCategory(record) ? <StatusBadge status="warning" text="毛利口径" /> : null}
         </Space>
       ),
     },
@@ -189,47 +219,55 @@ export default function CategoriesPage() {
     {
       title: "操作",
       width: 200,
-      render: (_, record) => (
-        <Space>
-          {!record.parent_id ? (
-            <Button type="link" size="small" onClick={() => openCreateChildModal(record)}>
-              新增子分类
-            </Button>
-          ) : null}
-          <Button type="link" size="small" onClick={() => openEditModal(record)}>
-            编辑
-          </Button>
-          <Button
-            type="link"
-            size="small"
-            onClick={() => toggleStatus(record)}
-          >
-            {record.status === "active" ? "停用" : "启用"}
-          </Button>
-        </Space>
-      ),
+      render: (_, record) => {
+        const isSystemFeeCategory = isRevenueFeeCategory(record);
+        const isProtectedRootCategory = isProtectedFirstLevelCategory(record);
+        return (
+          <Space>
+            {!record.parent_id ? (
+              <Tooltip title={isSystemFeeCategory ? "手续费子分类由营业收入渠道自动维护" : undefined}>
+                <Button type="link" size="small" disabled={isSystemFeeCategory} onClick={() => openCreateChildModal(record)}>
+                  新增子分类
+                </Button>
+              </Tooltip>
+            ) : null}
+            <Tooltip title={isSystemFeeCategory ? "手续费分类由营业收入渠道自动维护" : isProtectedRootCategory ? "食材成本是毛利计算口径，不能编辑一级分类" : undefined}>
+              <Button type="link" size="small" disabled={isSystemFeeCategory || isProtectedRootCategory} onClick={() => openEditModal(record)}>
+                编辑
+              </Button>
+            </Tooltip>
+            <Tooltip title={isSystemFeeCategory ? "手续费分类由营业收入渠道自动维护，不能停用" : isProtectedRootCategory ? "食材成本是毛利计算口径，不能停用" : undefined}>
+              <Button
+                type="link"
+                size="small"
+                disabled={isSystemFeeCategory || isProtectedRootCategory}
+                onClick={() => toggleStatus(record)}
+              >
+                {record.status === "active" ? "停用" : "启用"}
+              </Button>
+            </Tooltip>
+          </Space>
+        );
+      },
     },
   ];
 
   return (
-    <AppShell
-      title="费用分类"
-      kicker="维护支出归类口径，用于对账和报表分析"
-      action={
-        <Button type="primary" icon={<PlusOutlined />} onClick={openCreateModal}>
-          新增一级分类
-        </Button>
-      }
-    >
+    <AppShell title="费用分类" kicker="维护支出归类口径，用于对账和报表分析">
       <div className="category-tree-page">
         {errorMessage ? (
           <Alert className="dashboard-alert" message={errorMessage} type="warning" showIcon />
         ) : null}
         <Card className="dashboard-alert">
-          <Space wrap size={24}>
-            <Statistic title="一级分类" value={firstLevelCount} />
-            <Statistic title="二级分类" value={secondLevelCount} />
-            <Statistic title="启用分类" value={activeCount} />
+          <Space direction="vertical" size={16} className="full-width">
+            <Button type="primary" icon={<PlusOutlined />} onClick={openCreateModal}>
+              新增一级分类
+            </Button>
+            <Space wrap size={24}>
+              <Statistic title="一级分类" value={firstLevelCount} />
+              <Statistic title="二级分类" value={secondLevelCount} />
+              <Statistic title="启用分类" value={activeCount} />
+            </Space>
           </Space>
         </Card>
         <Card title="分类树" className="data-table-card">
@@ -245,10 +283,11 @@ export default function CategoriesPage() {
         </Card>
       </div>
       <Modal
-        title={editingCategory ? "编辑分类" : "新增分类"}
+        title={editingCategory ? "编辑分类" : isCreatingFirstLevel ? "新增一级分类" : "新增分类"}
         open={isModalOpen}
         onCancel={() => {
           setIsModalOpen(false);
+          setIsCreatingFirstLevel(false);
           setEditingCategory(null);
         }}
         onOk={() => form.submit()}
@@ -262,13 +301,15 @@ export default function CategoriesPage() {
           >
             <Input placeholder="如：员工工资、房租" />
           </Form.Item>
-          <Form.Item name="parent_id" label="上级分类" tooltip="留空则创建一级分类">
-            <Select
-              allowClear
-              placeholder="选择上级分类（留空为一级分类）"
-              options={parentOptions}
-            />
-          </Form.Item>
+          {isCreatingFirstLevel && !editingCategory ? null : (
+            <Form.Item name="parent_id" label="上级分类" tooltip="留空则创建一级分类">
+              <Select
+                allowClear
+                placeholder="选择上级分类（留空为一级分类）"
+                options={parentOptions}
+              />
+            </Form.Item>
+          )}
           <Form.Item name="sort_order" label="排序" tooltip="数字越小越靠前">
             <InputNumber className="full-width" min={0} placeholder="0" />
           </Form.Item>

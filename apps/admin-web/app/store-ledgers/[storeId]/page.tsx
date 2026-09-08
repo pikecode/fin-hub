@@ -1,22 +1,18 @@
 "use client";
 
-import { Alert, Card, Empty, Space, Table, Typography, Row, Col } from "antd";
+import { Alert, Button, Card, Descriptions, Empty, List, Modal, Space, Table, Typography, Row, Col, message } from "antd";
 import {
   FileTextOutlined,
   WalletOutlined,
-  DollarOutlined,
-  WarningOutlined,
   RiseOutlined,
   FallOutlined,
 } from "@ant-design/icons";
 import { useParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
-import type { StoreLedgerWorkspace } from "@fin-hub/shared-types";
+import type { LedgerCloseCheck, StoreLedgerWorkspace } from "@fin-hub/shared-types";
 import { formatMoney } from "@fin-hub/shared-utils";
 import { AppShell } from "../../components/AppShell";
-import { BankTransactionChart } from "../../components/BankTransactionChart";
 import { MoneyDisplay } from "../../components/MoneyDisplay";
-import { RevenueChannelMonthlyChart } from "../../components/RevenueChannelMonthlyChart";
 import { StoreLedgerWorkspaceNav } from "../../components/StoreLedgerWorkspaceNav";
 import { apiClient } from "../../lib/api";
 import { useClientSearchParams } from "../../lib/searchParams";
@@ -24,9 +20,6 @@ import { useClientSearchParams } from "../../lib/searchParams";
 function currentPeriod() {
   return new Date().toISOString().slice(0, 7);
 }
-
-const workspaceCache = new Map<string, { data: StoreLedgerWorkspace; expiresAt: number }>();
-const WORKSPACE_CACHE_TTL = 30_000;
 
 function metricCard(title: string, value: string, subtitle: string, icon: React.ReactNode, tone?: "green" | "red" | "gold" | "blue") {
   return (
@@ -54,25 +47,19 @@ export default function StoreLedgerWorkspacePage() {
   const [data, setData] = useState<StoreLedgerWorkspace | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [isClosing, setIsClosing] = useState(false);
+  const [closePreview, setClosePreview] = useState<{ ledger: NonNullable<StoreLedgerWorkspace["selected_ledger"]>; check: LedgerCloseCheck } | null>(null);
 
   useEffect(() => {
     let ignore = false;
     async function loadData() {
       if (!storeId || !period) return;
-      const cacheKey = `${storeId}|${period}`;
-      const cached = workspaceCache.get(cacheKey);
-      if (cached && cached.expiresAt > Date.now()) {
-        setData(cached.data);
-        setIsLoading(false);
-        return;
-      }
       setIsLoading(true);
       setErrorMessage(null);
       try {
         const workspace = await apiClient.storeLedgers.workspace(storeId, `?period=${period}`);
         if (!ignore) {
           setData(workspace);
-          workspaceCache.set(cacheKey, { data: workspace, expiresAt: Date.now() + WORKSPACE_CACHE_TTL });
         }
       } catch (error) {
         if (!ignore) setErrorMessage(error instanceof Error ? error.message : "加载失败");
@@ -87,32 +74,21 @@ export default function StoreLedgerWorkspacePage() {
   }, [storeId, period]);
 
   const storeName = data?.store.name ?? "门店";
-
   const stats = useMemo(() => {
     if (!data) return null;
+    const profit = Number(data.metrics.revenue_income_amount || 0) - Number(data.metrics.expense_amount || 0);
+    const grossIncome = Number(data.metrics.revenue_income_amount || 0);
+    const grossProfit = Number(data.metrics.gross_profit_amount || 0);
     return {
-      grossIncome: Number(data.metrics.revenue_income_amount || 0),
+      grossIncome,
       netIncome: Number(data.metrics.revenue_net_amount || 0),
       expense: Number(data.metrics.expense_amount || 0),
-      approvalAmount: Number(data.metrics.approval_amount || 0),
-      approvalAccountingAmount: Number(data.metrics.approval_accounting_amount || 0),
-      balance: Number(data.metrics.revenue_income_amount || 0) - Number(data.metrics.expense_amount || 0),
-      unmatchedBank: data.metrics.unmatched_bank_transaction_count,
-      pendingApprovals: data.metrics.pending_approval_count,
-      bankIncome: Number(data.bank_transactions.filter((item) => item.direction === "income").reduce((total, item) => total + Number(item.amount || 0), 0)),
-      bankExpense: Number(data.bank_transactions.filter((item) => item.direction === "expense").reduce((total, item) => total + Number(item.amount || 0), 0)),
-      unmatchedBankAmount: Number(data.bank_transactions.filter((item) => Number(item.matched_amount || 0) <= 0).reduce((total, item) => total + Number(item.amount || 0), 0)),
+      grossProfit,
+      grossProfitRate: grossIncome > 0 ? grossProfit / grossIncome : 0,
+      netProfit: profit,
+      profitRate: grossIncome > 0 ? profit / grossIncome : 0,
     };
   }, [data]);
-
-  const bankChartData = useMemo(() => {
-    if (!data) return [];
-    return [
-      { name: "收入流水", value: Number(stats?.bankIncome || 0) },
-      { name: "支出流水", value: Number(stats?.bankExpense || 0) },
-      { name: "未匹配流水", value: Number(stats?.unmatchedBankAmount || 0) },
-    ];
-  }, [data, stats]);
 
   const categoryColumns = [
     { title: "分类", dataIndex: "name", ellipsis: true },
@@ -125,32 +101,39 @@ export default function StoreLedgerWorkspacePage() {
     { title: "条数", dataIndex: "item_count", width: 90, align: "right" as const },
   ];
 
-  const channelColumns = [
-    { title: "渠道", dataIndex: "channel", ellipsis: true },
-    {
-      title: "经营收入",
-      dataIndex: "gross_amount",
-      align: "right" as const,
-      render: (value: string) => <MoneyDisplay value={Number(value || 0)} colorize />,
-    },
-    {
-      title: "实收",
-      dataIndex: "net_amount",
-      align: "right" as const,
-      render: (value: string) => <MoneyDisplay value={Number(value || 0)} colorize />,
-    },
-    {
-      title: "费率",
-      dataIndex: "fee_rate",
-      align: "right" as const,
-      render: (value: string) => `${value || "0.00"}%`,
-    },
-    { title: "记录数", dataIndex: "record_count", width: 90, align: "right" as const },
-  ];
+  async function openClosePreview() {
+    if (!data?.selected_ledger) return;
+    setIsClosing(true);
+    setErrorMessage(null);
+    try {
+      const check = await apiClient.ledgers.closeCheck(data.selected_ledger.id);
+      setClosePreview({ ledger: data.selected_ledger, check });
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "无法预检封账");
+    } finally {
+      setIsClosing(false);
+    }
+  }
+
+  async function confirmCloseLedger() {
+    if (!closePreview?.check?.can_close) return;
+    setIsClosing(true);
+    try {
+      await apiClient.ledgers.close(closePreview.ledger.id, "admin");
+      setClosePreview(null);
+      message.success("已封账");
+      const workspace = await apiClient.storeLedgers.workspace(storeId, `?period=${period}`);
+      setData(workspace);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "无法封账");
+    } finally {
+      setIsClosing(false);
+    }
+  }
 
   return (
-    <AppShell title={`${storeName} · 总览`} kicker={`账期: ${period}`}>
-      <Space direction="vertical" size={16} style={{ width: "100%", display: "flex" }}>
+    <AppShell title={`${storeName} · 总览`}>
+      <Space direction="vertical" size={12} style={{ width: "100%", display: "flex" }}>
         {errorMessage ? <Alert message="加载失败" description={errorMessage} type="error" showIcon closable /> : null}
 
         {data ? (
@@ -161,40 +144,25 @@ export default function StoreLedgerWorkspacePage() {
             periodOptions={data.ledgers.map((ledger) => ({ label: ledger.period, value: ledger.period }))}
             ledgerStatusLabel={data.selected_ledger?.status === "closed" ? "已封账" : data.selected_ledger ? "进行中" : undefined}
             activeKey="overview"
+            extra={data.selected_ledger?.status !== "closed" ? <Button onClick={() => void openClosePreview()} loading={isClosing}>封账</Button> : undefined}
           />
         ) : null}
 
         {stats ? (
-          <div className="store-ledger-report-metrics">
+          <div className="store-ledger-report-metrics store-ledger-report-metrics--compact">
             {metricCard("经营收入", formatMoney(stats.grossIncome), "各渠道录入累计，按录入日期统计", <RiseOutlined />, "green")}
-            {metricCard("实收", formatMoney(stats.netIncome), "录入时填写的实收金额汇总", <WalletOutlined />, "blue")}
-            {metricCard("本期支出", formatMoney(stats.expense), "审批支出按账期汇总", <FallOutlined />, "red")}
-            {metricCard(
-              "审批金额",
-              formatMoney(stats.approvalAmount),
-              `创建时间累计；对账账期累计：${formatMoney(stats.approvalAccountingAmount)}`,
-              <FileTextOutlined />,
-              "gold",
-            )}
-            {metricCard("本期结余", formatMoney(stats.netIncome - stats.expense), "实收减本期支出", <DollarOutlined />, stats.netIncome - stats.expense >= 0 ? "green" : "red")}
-            {metricCard("待处理项", `${stats.unmatchedBank} / ${stats.pendingApprovals}`, "未处理流水 / 未处理审批", <WarningOutlined />, "blue")}
+            {metricCard("营业实收", formatMoney(stats.netIncome), "录入时填写的实收金额汇总", <WalletOutlined />, "blue")}
+            {metricCard("本期支出", formatMoney(stats.expense), "审批入账支出 + 当月手续费", <FallOutlined />, "red")}
+            {metricCard("毛利", formatMoney(stats.grossProfit), "营业收入减食材成本", <FileTextOutlined />, stats.grossProfit >= 0 ? "green" : "red")}
+            {metricCard("毛利率", `${(stats.grossProfitRate * 100).toFixed(2)}%`, "毛利 ÷ 营业收入", <FileTextOutlined />, "gold")}
+            {metricCard("净利润", formatMoney(stats.netProfit), "营业收入减累计支出", <FileTextOutlined />, stats.netProfit >= 0 ? "green" : "red")}
+            {metricCard("利润率", `${(stats.profitRate * 100).toFixed(2)}%`, "净利润 ÷ 营业收入", <FileTextOutlined />, "gold")}
           </div>
         ) : null}
 
         {data ? (
-          <Row gutter={16}>
-            <Col xs={24} lg={12}>
-              <Card size="small" title="经营收入渠道统计">
-                <Table
-                  rowKey="channel"
-                  columns={channelColumns}
-                  dataSource={data.metrics.revenue_channel_summary}
-                  pagination={false}
-                  size="small"
-                />
-              </Card>
-            </Col>
-            <Col xs={24} lg={12}>
+          <Row gutter={[12, 12]}>
+            <Col xs={24}>
               <Card size="small" title="支出分类统计">
                 <Table
                   rowKey={(item) => item.name}
@@ -206,27 +174,57 @@ export default function StoreLedgerWorkspacePage() {
               </Card>
             </Col>
           </Row>
-        ) : null}
-
-        {data && stats ? (
-          <Row gutter={16}>
-            <Col xs={24} lg={12}>
-              <BankTransactionChart title="银行流水统计" data={bankChartData} height={360} />
-            </Col>
-            <Col xs={24} lg={12}>
-              <RevenueChannelMonthlyChart
-                title="经营收入渠道月度图"
-                data={data.metrics.revenue_channel_monthly_summary}
-                height={360}
-              />
-            </Col>
-          </Row>
         ) : isLoading ? (
           <Card loading />
         ) : (
           <Empty description="暂无数据" />
         )}
       </Space>
+
+      <Modal
+        title="封账预检"
+        open={Boolean(closePreview)}
+        onCancel={() => setClosePreview(null)}
+        onOk={() => void confirmCloseLedger()}
+        okButtonProps={{ disabled: !closePreview?.check?.can_close }}
+        okText={closePreview?.check?.can_close ? "确认封账" : "暂不能封账"}
+        cancelText="关闭"
+        confirmLoading={isClosing}
+      >
+        {closePreview ? (
+          <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+            <Descriptions column={2} size="small" bordered>
+              <Descriptions.Item label="门店">{data?.store.name ?? "未知门店"}</Descriptions.Item>
+              <Descriptions.Item label="账期">{closePreview.ledger.period}</Descriptions.Item>
+              <Descriptions.Item label="未付款支出">{closePreview.check.unpaid_expense_count}</Descriptions.Item>
+              <Descriptions.Item label="未匹配流水">{closePreview.check.unmatched_bank_transaction_count}</Descriptions.Item>
+              <Descriptions.Item label="营业收入记录">{closePreview.check.revenue_record_count}</Descriptions.Item>
+              <Descriptions.Item label="未对账收入">{closePreview.check.unmatched_revenue_record_count}</Descriptions.Item>
+              <Descriptions.Item label="未对账实收金额" span={2}>{formatMoney(closePreview.check.unmatched_revenue_amount)}</Descriptions.Item>
+              <Descriptions.Item label="候选匹配" span={2}>{closePreview.check.candidate_match_count}</Descriptions.Item>
+            </Descriptions>
+            {closePreview.check.issues.length ? (
+              <Alert
+                type="error"
+                showIcon
+                message="封账阻断项"
+                description={<List size="small" dataSource={closePreview.check.issues} renderItem={(item) => <List.Item>{item}</List.Item>} />}
+              />
+            ) : null}
+            {closePreview.check.warnings.length ? (
+              <Alert
+                type="warning"
+                showIcon
+                message="封账提示"
+                description={<List size="small" dataSource={closePreview.check.warnings} renderItem={(item) => <List.Item>{item}</List.Item>} />}
+              />
+            ) : null}
+            {!closePreview.check.issues.length && !closePreview.check.warnings.length ? (
+              <Alert type="success" showIcon message="预检通过，可以封账" />
+            ) : null}
+          </Space>
+        ) : null}
+      </Modal>
     </AppShell>
   );
 }

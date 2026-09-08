@@ -1,7 +1,9 @@
 "use client";
 
-import { Alert, Button, Card, DatePicker, Empty, Modal, Popconfirm, Select, Space, Statistic, Table, Tabs, Tag, Typography, message } from "antd";
+import { Alert, Button, Card, ConfigProvider, DatePicker, Empty, Modal, Popconfirm, Select, Space, Statistic, Table, Tabs, Tag, Typography, message } from "antd";
 import type { ColumnsType } from "antd/es/table";
+import zhCN from "antd/locale/zh_CN";
+import "dayjs/locale/zh-cn";
 import dayjs from "dayjs";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { BankTransaction, Ledger, RevenueBankMatch, RevenueChannel, RevenueRecord, Store } from "@fin-hub/shared-types";
@@ -11,6 +13,8 @@ import { StoreLedgerWorkspaceNav } from "../../components/StoreLedgerWorkspaceNa
 import { apiClient } from "../../lib/api";
 import { getLedgers, getRevenueChannels, getStores } from "../../lib/referenceData";
 import { useClientSearchParams } from "../../lib/searchParams";
+
+dayjs.locale("zh-cn");
 
 function remainingAmount(transaction: BankTransaction) {
   return Number(transaction.amount) - Number(transaction.matched_amount || 0);
@@ -151,6 +155,15 @@ export default function RevenueReconciliationPage() {
   const matchModalDifference = bankRemaining - matchModalNetAmount;
   const matchModalVisibleRecordIds = matchModalVisibleRecords.map((record) => record.id).join("|");
   const isMatchDateRangeComplete = Boolean(matchDateRange[0] && matchDateRange[1]);
+  const matchedRevenueDateSet = useMemo(() => {
+    const next = new Set<string>();
+    records.forEach((record) => {
+      if (isRevenueRecordCovered(record, activeMatches)) {
+        next.add(record.revenue_date);
+      }
+    });
+    return next;
+  }, [activeMatches, records]);
   const filteredRecords = unmatchedRecords
     .filter((record) => !channelFilter || record.channel === channelFilter)
     .filter((record) => {
@@ -577,19 +590,20 @@ export default function RevenueReconciliationPage() {
   ];
 
   return (
-    <AppShell title={currentStore?.name ? `${currentStore.name} · 收入对账` : "收入对账"} kicker={`账期：${selectedLedgerPeriod}`}>
-      {initialStoreId ? (
-        <StoreLedgerWorkspaceNav
-          storeId={selectedStoreId ?? initialStoreId}
-          storeName={currentStore?.name}
-          period={selectedLedgerPeriod}
-          periodOptions={ledgerPeriodOptions}
-          statusLabel={currentStore?.status === "active" ? "启用门店" : currentStore ? "停用门店" : undefined}
-          ledgerStatusLabel={currentLedger?.status === "closed" ? "已封账" : currentLedger ? "进行中" : undefined}
-          activeKey="revenueMatching"
-        />
-      ) : null}
-      {errorMessage ? <Alert className="dashboard-alert" type="warning" showIcon message={errorMessage} closable onClose={() => setErrorMessage(null)} /> : null}
+    <ConfigProvider locale={zhCN}>
+      <AppShell title={currentStore?.name ? `${currentStore.name} · 收入对账` : "收入对账"} kicker={`账期：${selectedLedgerPeriod}`}>
+        {initialStoreId ? (
+          <StoreLedgerWorkspaceNav
+            storeId={selectedStoreId ?? initialStoreId}
+            storeName={currentStore?.name}
+            period={selectedLedgerPeriod}
+            periodOptions={ledgerPeriodOptions}
+            statusLabel={currentStore?.status === "active" ? "启用门店" : currentStore ? "停用门店" : undefined}
+            ledgerStatusLabel={currentLedger?.status === "closed" ? "已封账" : currentLedger ? "进行中" : undefined}
+            activeKey="revenueMatching"
+          />
+        ) : null}
+        {errorMessage ? <Alert className="dashboard-alert" type="warning" showIcon message={errorMessage} closable onClose={() => setErrorMessage(null)} /> : null}
 
       {!initialStoreId ? (
         <Card className="reconciliation-summary-card">
@@ -779,6 +793,8 @@ export default function RevenueReconciliationPage() {
                   setMatchDateRange(nextRange);
                   setMatchValidationMessage(null);
                 }}
+                disabledDate={(current) => Boolean(current && matchedRevenueDateSet.has(current.format("YYYY-MM-DD")))}
+                placeholder={["开始日期", "结束日期"]}
                 style={{ width: "100%" }}
               />
             </div>
@@ -850,6 +866,7 @@ export default function RevenueReconciliationPage() {
           />
         </div>
       </Modal>
-    </AppShell>
+      </AppShell>
+    </ConfigProvider>
   );
 }

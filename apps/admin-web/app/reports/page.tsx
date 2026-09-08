@@ -449,7 +449,7 @@ export default function ReportsPage() {
               <Space direction="vertical" size={16} style={{ width: "100%" }}>
                 <div className="analytics-chart-grid">
                   <BankTrendChart title="银行流水趋势" data={bankTrendData} loading={isLoading} height={340} />
-                  <ApprovalStatusChart title="审批状态分布" data={approvalStatusData} loading={isLoading} height={340} />
+                  <ApprovalStatusChart title="审批匹配分布" data={approvalStatusData} loading={isLoading} height={340} />
                 </div>
                 <RevenueChannelMonthlyChart
                   title="经营收入渠道月度图"

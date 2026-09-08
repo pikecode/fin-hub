@@ -12,9 +12,12 @@ from app.models import (
     ApprovalInstance,
     ApprovalTemplate,
     BankTransaction,
+    ExpenseCategory,
     ExpenseBankMatch,
     ExpenseItem,
     ExpensePaymentStatus,
+    Ledger,
+    LedgerStatus,
     MasterDataStatus,
     MatchStatus,
     RevenueBankMatch,
@@ -55,6 +58,7 @@ from app.schemas import (
 )
 
 router = APIRouter(prefix="/matches", tags=["matching"])
+REVENUE_FEE_CATEGORY_L1 = "手续费"
 
 
 def ledger_period_bounds(period: str) -> tuple[datetime, datetime]:
@@ -302,6 +306,73 @@ def approval_expense_join_condition():
         ExpenseItem.source_document_id == ApprovalInstance.dingtalk_instance_id,
         ExpenseItem.source_document_id.like(ApprovalInstance.dingtalk_instance_id + ":%"),
     )
+
+
+def is_approval_expense_item(expense_item: ExpenseItem) -> bool:
+    return bool(
+        expense_item.approval_instance_id
+        or expense_item.source == "dingtalk"
+        or expense_item.source_document_id
+    )
+
+
+def expense_category_exists(session: Session, category_l1: str | None, category_l2: str | None) -> bool:
+    category_l1 = (category_l1 or "").strip()
+    category_l2 = (category_l2 or "").strip()
+    if category_l2 == category_l1:
+        category_l2 = ""
+    if not category_l1 or category_l1 == REVENUE_FEE_CATEGORY_L1:
+        return False
+    parent = session.scalar(
+        select(ExpenseCategory).where(
+            ExpenseCategory.name == category_l1,
+            ExpenseCategory.parent_id.is_(None),
+            ExpenseCategory.status == MasterDataStatus.ACTIVE.value,
+        )
+    )
+    if parent is None:
+        return False
+    if not category_l2:
+        return True
+    return (
+        session.scalar(
+            select(ExpenseCategory.id).where(
+                ExpenseCategory.name == category_l2,
+                ExpenseCategory.parent_id == parent.id,
+                ExpenseCategory.status == MasterDataStatus.ACTIVE.value,
+            )
+        )
+        is not None
+    )
+
+
+def normalized_expense_category_payload(category_l1: str | None, category_l2: str | None) -> tuple[str | None, str | None]:
+    normalized_l1 = (category_l1 or "").strip() or None
+    normalized_l2 = (category_l2 or "").strip() or None
+    if normalized_l2 == normalized_l1:
+        normalized_l2 = None
+    return normalized_l1, normalized_l2
+
+
+def expense_category_was_user_selected(expense_item: ExpenseItem) -> bool:
+    if not expense_item.user_edited_fields_json:
+        return False
+    try:
+        decoded = json.loads(expense_item.user_edited_fields_json)
+    except ValueError:
+        return False
+    return isinstance(decoded, list) and any(field in decoded for field in ("category_l1", "category_l2"))
+
+
+def ensure_approval_expense_category_selected(session: Session, expense_item: ExpenseItem) -> None:
+    if not is_approval_expense_item(expense_item):
+        return
+    if not expense_category_was_user_selected(expense_item) or not expense_category_exists(
+        session,
+        expense_item.category_l1,
+        expense_item.category_l2,
+    ):
+        raise HTTPException(status_code=409, detail="请选择费用分类后再确认匹配")
 
 
 def approval_instance_response(
@@ -596,6 +667,15 @@ def create_revenue_match_candidate(
     ensure_store_access(session, current_user, bank_transaction.store_id)
     if bank_transaction.direction != "income":
         raise HTTPException(status_code=409, detail="Bank transaction is not income")
+    if bank_transaction.ledger_period:
+        ledger = session.scalar(
+            select(Ledger).where(
+                Ledger.store_id == bank_transaction.store_id,
+                Ledger.period == bank_transaction.ledger_period,
+            )
+        )
+        if ledger is not None and ledger.status == LedgerStatus.CLOSED.value:
+            raise HTTPException(status_code=409, detail="Ledger is closed")
     channel = session.scalar(select(RevenueChannel).where(RevenueChannel.name == payload.channel))
     if channel is None:
         raise HTTPException(status_code=404, detail="Revenue channel not found")
@@ -677,6 +757,15 @@ def create_revenue_match_batch(
     ensure_store_access(session, current_user, bank_transaction.store_id)
     if bank_transaction.direction != "income":
         raise HTTPException(status_code=409, detail="Bank transaction is not income")
+    if bank_transaction.ledger_period:
+        ledger = session.scalar(
+            select(Ledger).where(
+                Ledger.store_id == bank_transaction.store_id,
+                Ledger.period == bank_transaction.ledger_period,
+            )
+        )
+        if ledger is not None and ledger.status == LedgerStatus.CLOSED.value:
+            raise HTTPException(status_code=409, detail="Ledger is closed")
     existing_bank_match = session.scalar(
         select(RevenueBankMatch)
         .where(
@@ -985,6 +1074,15 @@ def create_match_candidate(
     ensure_store_access(session, current_user, bank_transaction.store_id)
     if bank_transaction.direction != "expense":
         raise HTTPException(status_code=409, detail="Bank transaction is not expense")
+    if bank_transaction.ledger_period:
+        ledger = session.scalar(
+            select(Ledger).where(
+                Ledger.store_id == bank_transaction.store_id,
+                Ledger.period == bank_transaction.ledger_period,
+            )
+        )
+        if ledger is not None and ledger.status == LedgerStatus.CLOSED.value:
+            raise HTTPException(status_code=409, detail="Ledger is closed")
     if bank_transaction.store_id and expense_item.store_id != bank_transaction.store_id:
         raise HTTPException(status_code=409, detail="Store mismatch")
     existing_match = session.scalar(
@@ -996,10 +1094,14 @@ def create_match_candidate(
     if existing_match is not None:
         if existing_match.status == MatchStatus.CONFIRMED.value:
             raise HTTPException(status_code=409, detail="This bank transaction is already matched to the approval")
+        payload_category_l1, payload_category_l2 = normalized_expense_category_payload(
+            payload.category_l1,
+            payload.category_l2,
+        )
         if payload.category_l1 is not None:
-            expense_item.category_l1 = payload.category_l1
+            expense_item.category_l1 = payload_category_l1
         if payload.category_l2 is not None:
-            expense_item.category_l2 = payload.category_l2
+            expense_item.category_l2 = payload_category_l2
         mark_expense_fields_user_edited(
             expense_item,
             {
@@ -1011,6 +1113,7 @@ def create_match_candidate(
                 if value is not None
             },
         )
+        ensure_approval_expense_category_selected(session, expense_item)
         for key, value in payload.model_dump(exclude={"category_l1", "category_l2"}).items():
             setattr(existing_match, key, value)
         existing_match.status = MatchStatus.CANDIDATE.value
@@ -1037,10 +1140,14 @@ def create_match_candidate(
     # if payload.accounting_period and bank_transaction.ledger_period and payload.accounting_period != bank_transaction.ledger_period:
     #     raise HTTPException(status_code=409, detail="Accounting period does not match bank transaction period")
     payload_data = payload.model_dump(exclude={"category_l1", "category_l2"})
+    payload_category_l1, payload_category_l2 = normalized_expense_category_payload(
+        payload.category_l1,
+        payload.category_l2,
+    )
     if payload.category_l1 is not None:
-        expense_item.category_l1 = payload.category_l1
+        expense_item.category_l1 = payload_category_l1
     if payload.category_l2 is not None:
-        expense_item.category_l2 = payload.category_l2
+        expense_item.category_l2 = payload_category_l2
     mark_expense_fields_user_edited(
         expense_item,
         {
@@ -1052,6 +1159,7 @@ def create_match_candidate(
             if value is not None
         },
     )
+    ensure_approval_expense_category_selected(session, expense_item)
     match = ExpenseBankMatch(**payload_data, status=MatchStatus.CANDIDATE.value)
     session.add(match)
     session.flush()
@@ -1230,6 +1338,8 @@ def list_reconciliation_candidates(
                 ApprovalTemplate.is_enabled.is_(True),
             )
         )
+        .where(ExpenseItem.source != "revenue_fee")
+        .where(ExpenseItem.amount > 0)
     )
     if not approval_search:
         query = query.where(
@@ -1245,7 +1355,7 @@ def list_reconciliation_candidates(
         query = query.where(ExpenseItem.store_id == store_id)
     else:
         query = query.where(scoped_store_condition(session, current_user, ExpenseItem.store_id))
-    if ledger_period:
+    if ledger_period and not approval_search:
         query = query.where(ExpenseItem.ledger_period == ledger_period)
     if approval_search:
         like = f"%{approval_search}%"
@@ -1635,6 +1745,7 @@ def confirm_match(
     if active_bank_match is not None:
         raise HTTPException(status_code=409, detail="This bank transaction is already matched to an approval")
     confirmed_expense_amount = confirmed_expense_match_amount(session, expense_item.id, exclude_match_id=match.id)
+    ensure_approval_expense_category_selected(session, expense_item)
     match.status = MatchStatus.CONFIRMED.value
     match.confirmed_by = operator
     match.confirmed_at = utc_now()

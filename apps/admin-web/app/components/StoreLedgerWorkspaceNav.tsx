@@ -12,6 +12,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import type { Store } from "@fin-hub/shared-types";
 import { getMyStores } from "../lib/referenceData";
+import { confirmLeaveIfNeeded } from "./navigationGuard";
 
 type StoreLedgerTabKey = "overview" | "bank" | "approvals" | "revenue" | "revenueMatching" | "matching";
 
@@ -120,15 +121,18 @@ export function StoreLedgerWorkspaceNav({
   function navigateToTab(key: string) {
     const nextHref = modulePath(storeId, key as StoreLedgerTabKey, period);
     if (nextHref === window.location.pathname + window.location.search) return;
+    if (!confirmLeaveIfNeeded()) return;
     router.push(nextHref);
   }
 
   function changePeriod(nextPeriod: string) {
+    if (!confirmLeaveIfNeeded()) return;
     onPeriodChange?.(nextPeriod);
     router.push(modulePath(storeId, activeKey, nextPeriod));
   }
 
   function changeStore(nextStoreId: string) {
+    if (!confirmLeaveIfNeeded()) return;
     router.push(modulePath(nextStoreId, activeKey, period));
   }
 
@@ -163,7 +167,10 @@ export function StoreLedgerWorkspaceNav({
             onChange={changeStore}
             className="store-ledger-store-select"
           />
-          <Button onClick={() => router.push("/store-ledgers")}>门店入口</Button>
+          <Button onClick={() => {
+            if (!confirmLeaveIfNeeded()) return;
+            router.push("/store-ledgers");
+          }}>门店入口</Button>
           {extra}
         </Space>
       </div>

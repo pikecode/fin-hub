@@ -4,13 +4,13 @@ import { Alert, Button, Card, DatePicker, Descriptions, Drawer, Empty, Image, In
 import dayjs from "dayjs";
 import { useParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
-import type { ApprovalInstance, ApprovalTemplate, Attachment, Ledger, Store } from "@fin-hub/shared-types";
+import type { ApprovalInstance, ApprovalTemplate, Attachment, Store } from "@fin-hub/shared-types";
 import { AppShell } from "../../../components/AppShell";
 import { EnterpriseTable } from "../../../components/EnterpriseTable";
 import type { EnterpriseTableColumn } from "../../../components/EnterpriseTable";
 import { StoreLedgerWorkspaceNav } from "../../../components/StoreLedgerWorkspaceNav";
 import { apiClient } from "../../../lib/api";
-import { getApprovalTemplates, getStoreLedgers, getStores } from "../../../lib/referenceData";
+import { getApprovalTemplates, getStores } from "../../../lib/referenceData";
 import { useClientSearchParams } from "../../../lib/searchParams";
 
 type SyncDateRange = [dayjs.Dayjs, dayjs.Dayjs];
@@ -23,10 +23,6 @@ function syncRangeForPeriod(period: string): SyncDateRange | null {
   const latestAllowed = dayjs().endOf("day");
   if (start.isAfter(latestAllowed)) return null;
   return [start, end.isAfter(latestAllowed) ? latestAllowed : end];
-}
-
-function defaultLedgerPeriod() {
-  return dayjs().subtract(1, "month").format("YYYY-MM");
 }
 
 type DingTalkFormField = {
@@ -43,6 +39,8 @@ type ImagePreviewState = {
   title: string;
   url: string;
 };
+
+const APPROVAL_LIST_PAGE_SIZE = 500;
 
 function formatBeijingDateTime(value?: string | null) {
   if (!value) return "-";
@@ -275,19 +273,33 @@ function tableFiltersToSelectOptions(filters: Array<{ text: string; value: strin
   return filters.map((filter) => ({ label: filter.text, value: filter.value }));
 }
 
+async function loadAllApprovalPages<T>(
+  loader: (page: number, pageSize: number) => Promise<{ items: T[]; total: number }>,
+  pageSize = APPROVAL_LIST_PAGE_SIZE,
+) {
+  const items: T[] = [];
+  let page = 1;
+  let total = Number.POSITIVE_INFINITY;
+  while (items.length < total) {
+    const result = await loader(page, pageSize);
+    items.push(...result.items);
+    total = result.total;
+    if (result.items.length < pageSize) break;
+    page += 1;
+  }
+  return items;
+}
+
 export default function StoreLedgerApprovalsPage() {
   const params = useParams<{ storeId: string }>();
   const searchParams = useClientSearchParams();
   const storeId = params.storeId;
   const [store, setStore] = useState<Store | null>(null);
-  const [ledgers, setLedgers] = useState<Ledger[]>([]);
   const [templates, setTemplates] = useState<ApprovalTemplate[]>([]);
   const [approvals, setApprovals] = useState<ApprovalInstance[]>([]);
   const [selectedApproval, setSelectedApproval] = useState<ApprovalInstance | null>(null);
   const [detailAttachments, setDetailAttachments] = useState<Attachment[]>([]);
   const [imagePreview, setImagePreview] = useState<ImagePreviewState | null>(null);
-  const fallbackPeriod = useMemo(() => defaultLedgerPeriod(), []);
-  const [selectedPeriod, setSelectedPeriod] = useState(searchParams.get("period") || fallbackPeriod);
   const [keyword, setKeyword] = useState("");
   const [templateFilter, setTemplateFilter] = useState<string>();
   const [approvalStatusFilter, setApprovalStatusFilter] = useState<string>();
@@ -305,17 +317,10 @@ export default function StoreLedgerApprovalsPage() {
       setIsLoading(true);
       setErrorMessage(null);
       try {
-        const [storePage, ledgerPage, templatePage] = await Promise.all([
-          getStores(),
-          getStoreLedgers(storeId),
-          getApprovalTemplates(500),
-        ]);
+        const [storePage, templatePage] = await Promise.all([getStores(), getApprovalTemplates(500)]);
         if (!ignore) {
-          const nextLedgers = ledgerPage.sort((left, right) => right.period.localeCompare(left.period));
           setStore(storePage.find((item) => item.id === storeId) ?? null);
-          setLedgers(nextLedgers);
           setTemplates(templatePage);
-          setSelectedPeriod((current) => current || fallbackPeriod);
         }
       } catch (error) {
         if (!ignore) setErrorMessage(error instanceof Error ? error.message : "无法加载审批单");
@@ -327,7 +332,7 @@ export default function StoreLedgerApprovalsPage() {
     return () => {
       ignore = true;
     };
-  }, [fallbackPeriod, storeId]);
+  }, [storeId]);
 
   useEffect(() => {
     let ignore = false;
@@ -336,13 +341,12 @@ export default function StoreLedgerApprovalsPage() {
       setIsApprovalLoading(true);
       setErrorMessage(null);
       try {
-        const params = new URLSearchParams({ store_id: storeId, page_size: "500" });
-        if (keyword.trim().length > 0) {
-          params.set("include_matched", "true");
-        }
-        const approvalPage = await apiClient.dingtalk.listApprovalInstances(`?${params.toString()}`);
+        const approvalPage = await loadAllApprovalPages((page, pageSize) => {
+          const params = new URLSearchParams({ store_id: storeId, page: String(page), page_size: String(pageSize) });
+          return apiClient.dingtalk.listApprovalInstances(`?${params.toString()}`);
+        });
         if (!ignore) {
-          setApprovals(approvalPage.items);
+          setApprovals(approvalPage);
         }
       } catch (error) {
         if (!ignore) setErrorMessage(error instanceof Error ? error.message : "无法加载审批单");
@@ -356,14 +360,6 @@ export default function StoreLedgerApprovalsPage() {
     };
   }, [keyword, storeId]);
 
-  const periodOptions = useMemo(() => {
-    const periods = new Set(ledgers.map((ledger) => ledger.period));
-    if (selectedPeriod) periods.add(selectedPeriod);
-    return Array.from(periods)
-      .sort()
-      .reverse()
-      .map((period) => ({ label: period, value: period }));
-  }, [ledgers, selectedPeriod]);
   const templateNameById = useMemo(
     () => new Map(templates.map((template) => [template.id, template.name])),
     [templates],
@@ -416,11 +412,7 @@ export default function StoreLedgerApprovalsPage() {
   });
 
   async function syncApprovalsByModifiedTime() {
-    if (!selectedPeriod) {
-      message.warning("请先选择账期");
-      return;
-    }
-    const range = syncDateRange ?? syncRangeForPeriod(selectedPeriod);
+    const range = syncDateRange;
     if (!range) {
       message.warning("请先选择日期范围");
       return;
@@ -435,12 +427,11 @@ export default function StoreLedgerApprovalsPage() {
         started_by: "store-ledger",
       });
       setIsSyncModalOpen(false);
-      const params = new URLSearchParams({
-        store_id: storeId,
-        page_size: "500",
+      const approvalPage = await loadAllApprovalPages((page, pageSize) => {
+        const params = new URLSearchParams({ store_id: storeId, page: String(page), page_size: String(pageSize) });
+        return apiClient.dingtalk.listApprovalInstances(`?${params.toString()}`);
       });
-      const approvalPage = await apiClient.dingtalk.listApprovalInstances(`?${params.toString()}`);
-      setApprovals(approvalPage.items);
+      setApprovals(approvalPage);
       message.success(`同步完成：处理 ${result.processed_count} 条，更新 ${result.updated_count} 条`);
     } catch (error) {
       const nextError = error instanceof Error ? error.message : "无法同步审批单";
@@ -452,8 +443,7 @@ export default function StoreLedgerApprovalsPage() {
   }
 
   function openSyncModal() {
-    const range = selectedPeriod ? syncRangeForPeriod(selectedPeriod) : null;
-    setSyncDateRange(range);
+    setSyncDateRange(null);
     setIsSyncModalOpen(true);
   }
   const selectedApprovalPayload = useMemo(() => {
@@ -606,16 +596,13 @@ export default function StoreLedgerApprovalsPage() {
   return (
     <AppShell
       title={store?.name ? `${store.name} · 审批单管理` : "审批单管理"}
-      kicker={selectedPeriod ? `账期：${selectedPeriod}` : "按门店展示全部审批单"}
+      kicker={store?.name ? "按门店展示全部审批单" : undefined}
     >
       <StoreLedgerWorkspaceNav
         storeId={storeId}
         storeName={store?.name}
-        period={selectedPeriod}
-        periodOptions={periodOptions}
         statusLabel={store?.status === "active" ? "启用门店" : store ? "停用门店" : undefined}
         activeKey="approvals"
-        onPeriodChange={setSelectedPeriod}
       />
       {errorMessage ? <Alert className="dashboard-alert" message={errorMessage} type="warning" showIcon /> : null}
       <Card
@@ -656,7 +643,7 @@ export default function StoreLedgerApprovalsPage() {
               onChange={setMatchStatusFilter}
               style={{ width: 130 }}
             />
-            <Button type="primary" loading={isStoreSyncing} disabled={!selectedPeriod} onClick={openSyncModal}>
+            <Button type="primary" loading={isStoreSyncing} onClick={openSyncModal}>
               同步审批单
             </Button>
           </Space>
@@ -675,7 +662,7 @@ export default function StoreLedgerApprovalsPage() {
             fixedColumns={{ left: ["approval_no"], right: ["actions"] }}
           />
         ) : (
-          <Empty description="当前门店账期暂无审批单" />
+          <Empty description="当前门店暂无审批单" />
         )}
       </Card>
       <Modal
@@ -686,13 +673,12 @@ export default function StoreLedgerApprovalsPage() {
         okText="开始同步"
         cancelText="关闭"
         confirmLoading={isStoreSyncing}
-        okButtonProps={{ disabled: !selectedPeriod || !syncDateRange }}
+        okButtonProps={{ disabled: !syncDateRange }}
         destroyOnHidden
       >
         <Space direction="vertical" size={16} className="full-width">
           <Descriptions size="small" column={1}>
             <Descriptions.Item label="门店">{store?.name ?? "-"}</Descriptions.Item>
-            <Descriptions.Item label="账期">{selectedPeriod || "-"}</Descriptions.Item>
           </Descriptions>
           <div>
             <Typography.Text strong>修改时间范围</Typography.Text>
@@ -707,9 +693,7 @@ export default function StoreLedgerApprovalsPage() {
                 setSyncDateRange(dates as SyncDateRange | null);
               }}
             />
-            <Typography.Text type="secondary">
-              仅同步最后修改时间落在所选范围内的本店审批单，按修改时间增量重刷。
-            </Typography.Text>
+            <Typography.Text type="secondary">仅同步最后修改时间落在所选范围内的本店审批单，按修改时间增量重刷。</Typography.Text>
           </div>
           <Alert
             type="info"

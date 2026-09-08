@@ -844,19 +844,25 @@ class StoreLedgerWorkspaceMetrics(BaseModel):
     revenue_net_amount: Decimal = Decimal("0.00")
     income_amount: Decimal
     expense_amount: Decimal
+    food_cost_amount: Decimal = Decimal("0.00")
+    gross_profit_amount: Decimal = Decimal("0.00")
     net_income_amount: Decimal
     fee_amount: Decimal
     approval_amount: Decimal = Decimal("0.00")
     approval_accounting_amount: Decimal = Decimal("0.00")
     bank_transaction_count: int
+    matched_bank_amount: Decimal = Decimal("0.00")
     unmatched_bank_transaction_count: int
     approval_count: int
+    matched_approval_count: int
+    unmatched_approval_count: int
     pending_approval_count: int
     revenue_match_count: int
     pending_revenue_match_count: int
     expense_category_summary: list[ExpenseBreakdownItem] = []
     revenue_channel_summary: list[RevenueChannelBreakdownItem] = []
     revenue_channel_monthly_summary: list[RevenueChannelMonthlyBreakdownItem] = []
+    approval_template_summary: list["StoreLedgerApprovalTemplateSummaryItem"] = []
 
 
 class StoreLedgerWorkspaceRead(BaseModel):
@@ -870,6 +876,15 @@ class StoreLedgerWorkspaceRead(BaseModel):
     revenue_records: list[RevenueRecordRead]
     approval_instances: list["ApprovalInstanceRead"]
     revenue_matches: list["RevenueMatchRead"]
+
+
+class StoreLedgerApprovalTemplateSummaryItem(BaseModel):
+    template_id: str
+    template_name: str
+    approval_count: int
+    matched_count: int
+    unmatched_count: int
+    total_amount: Decimal = Decimal("0.00")
 
 
 class FinancialAnalyticsMetrics(BaseModel):
@@ -962,7 +977,7 @@ class StartApprovalSyncRequest(BaseModel):
     start_at: datetime | None = None
     end_at: datetime | None = None
     page_size: int = Field(default=10, ge=1, le=10)
-    max_pages: int = Field(default=100, ge=1, le=100)
+    max_pages: int = Field(default=500, ge=1, le=500)
     skip_existing: bool = True
     run_async: bool = False
 
@@ -980,8 +995,6 @@ class StartApprovalSyncRequest(BaseModel):
         )
         if start_at and end_at and end_at < start_at:
             raise ValueError("结束时间不能早于开始时间")
-        if start_at and end_at and end_at - start_at > timedelta(days=120):
-            raise ValueError("单次审批同步时间范围不能超过 120 天")
         return self
 
 
@@ -1010,15 +1023,13 @@ class StartStoreApprovalSyncRequest(BaseModel):
         )
         if start_at and end_at and end_at <= start_at:
             raise ValueError("结束时间必须晚于开始时间")
-        if start_at and end_at and end_at - start_at > timedelta(days=120):
-            raise ValueError("单次审批同步时间范围不能超过 120 天")
         return self
 
 
 class ResumeApprovalSyncRequest(BaseModel):
     started_by: str = Field(default="system", max_length=80)
     page_size: int = Field(default=10, ge=1, le=10)
-    max_pages: int = Field(default=100, ge=1, le=100)
+    max_pages: int = Field(default=500, ge=1, le=500)
     skip_existing: bool = True
     run_async: bool = False
 
@@ -1102,6 +1113,28 @@ class ApprovalReparseResult(BaseModel):
     skipped_count: int
     created_expense_count: int
     job: SyncJobRead
+
+
+class ApprovalDiagnosisItem(BaseModel):
+    approval_no: str
+    found: bool
+    approval_instance_id: str | None = None
+    dingtalk_instance_id: str | None = None
+    template_id: str | None = None
+    template_name: str | None = None
+    store_id: str | None = None
+    parse_status: str | None = None
+    processing_status: str | None = None
+    approval_status: str | None = None
+    submit_at: datetime | None = None
+    dingtalk_modified_at: datetime | None = None
+    matched_expense_item_count: int = 0
+    pending_expense_item_count: int = 0
+    total_expense_amount: Decimal = Decimal("0.00")
+
+
+class ApprovalDiagnosisResult(BaseModel):
+    items: list[ApprovalDiagnosisItem]
 
 
 class ApprovalModifiedResyncRequest(BaseModel):

@@ -606,13 +606,14 @@ def read_financial_analytics(
         ),
         Decimal("0.00"),
     )
-    approval_status_bucket: dict[str, dict[str, Decimal | int]] = {}
+    approval_status_bucket: dict[str, dict[str, Decimal | int]] = {
+        "matched": {"count": 0, "amount": Decimal("0.00")},
+        "unmatched": {"count": 0, "amount": Decimal("0.00")},
+    }
     for approval, _template in approval_instances:
         stats = approval_stats_map.get(approval.id, {})
-        bucket = approval_status_bucket.setdefault(
-            approval.processing_status or "unparsed",
-            {"count": 0, "amount": Decimal("0.00")},
-        )
+        status = "matched" if approval.processing_status in {"matched", "partial_matched"} else "unmatched"
+        bucket = approval_status_bucket[status]
         bucket["count"] = int(bucket["count"]) + 1
         bucket["amount"] = Decimal(bucket["amount"]) + Decimal(stats.get("total_expense_amount", Decimal("0.00")))
     template_approval_counts: dict[str, tuple[str, int]] = {}

@@ -82,6 +82,53 @@ def test_create_update_revenue_record_and_report(client: TestClient) -> None:
     assert any(log["action"] == "revenue_record.update" and log["resource_id"] == record_id for log in logs)
 
 
+def test_revenue_fee_expense_is_synced_from_revenue_record(client: TestClient) -> None:
+    store_id = client.post("/api/stores", json={"name": "蘑说手续费同步店"}).json()["data"]["id"]
+    client.post("/api/ledgers", json={"store_id": store_id, "period": "2026-08"})
+    client.post(
+        "/api/revenue-channels",
+        json={"name": "手续费渠道", "sort_order": 10, "requires_bank_match": False},
+    )
+
+    create_response = client.post(
+        "/api/revenue-records",
+        json={
+            "store_id": store_id,
+            "ledger_period": "2026-08",
+            "revenue_date": "2026-08-20",
+            "channel": "手续费渠道",
+            "gross_amount": "1000.00",
+            "net_amount": "970.00",
+            "fee_amount": "30.00",
+        },
+    )
+    assert create_response.status_code == 201
+    record_id = create_response.json()["data"]["id"]
+
+    expenses = client.get(f"/api/expense-items?store_id={store_id}&ledger_period=2026-08").json()["data"]["items"]
+    fee_items = [item for item in expenses if item["source"] == "revenue_fee"]
+    assert len(fee_items) == 1
+    assert fee_items[0]["amount"] == "30.00"
+    assert fee_items[0]["category_l1"] == "手续费"
+    assert fee_items[0]["category_l2"] == "手续费渠道手续费"
+    assert fee_items[0]["payment_status"] == "paid"
+
+    update_response = client.patch(
+        f"/api/revenue-records/{record_id}",
+        json={"fee_amount": "40.00", "net_amount": "960.00"},
+    )
+    assert update_response.status_code == 200
+    expenses = client.get(f"/api/expense-items?store_id={store_id}&ledger_period=2026-08").json()["data"]["items"]
+    fee_items = [item for item in expenses if item["source"] == "revenue_fee"]
+    assert len(fee_items) == 1
+    assert fee_items[0]["amount"] == "40.00"
+
+    delete_response = client.delete(f"/api/revenue-records/{record_id}")
+    assert delete_response.status_code == 200
+    expenses = client.get(f"/api/expense-items?store_id={store_id}&ledger_period=2026-08").json()["data"]["items"]
+    assert all(item["source"] != "revenue_fee" for item in expenses)
+
+
 def test_create_revenue_record_auto_creates_open_ledger(client: TestClient) -> None:
     store_id = client.post("/api/stores", json={"name": "蘑说收入自动账套店"}).json()["data"]["id"]
     client.post("/api/revenue-channels", json={"name": "扫码收入", "requires_bank_match": False})

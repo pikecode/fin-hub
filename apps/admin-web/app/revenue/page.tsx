@@ -8,6 +8,7 @@ import { EditOutlined, PlusOutlined } from "@ant-design/icons";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Ledger, RevenueBankMatch, RevenueChannel, RevenueChannelCreate, RevenueRecord, Store } from "@fin-hub/shared-types";
 import { AppShell } from "../components/AppShell";
+import { confirmLeaveIfNeeded, setConfirmLeaveMessage } from "../components/navigationGuard";
 import { MoneyDisplay } from "../components/MoneyDisplay";
 import { StoreLedgerWorkspaceNav } from "../components/StoreLedgerWorkspaceNav";
 import { apiClient } from "../lib/api";
@@ -190,6 +191,7 @@ export default function RevenuePage() {
   const [isEditing, setIsEditing] = useState(false);
   const [isChannelModalOpen, setIsChannelModalOpen] = useState(false);
   const [batchEditRows, setBatchEditRows] = useState<RevenueEntryRow[]>([]);
+  const [isBatchEditDirty, setIsBatchEditDirty] = useState(false);
   const [focusedEntryCell, setFocusedEntryCell] = useState<{ rowIndex: number; field: RevenueEntryField }>({ rowIndex: 0, field: "gross_amount" });
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [filterForm] = Form.useForm<RevenueFilterValues>();
@@ -278,6 +280,11 @@ export default function RevenuePage() {
       });
   }, [channels, records]);
   const batchEditColumns = useMemo(() => buildEntryColumns(batchEditRows, setBatchEditRows, isEditing), [batchEditRows, focusedEntryCell, isEditing]);
+  const hasUnsavedBatchEdit = isEditing && isBatchEditDirty;
+
+  function confirmUnsavedBatchEdit() {
+    return !hasUnsavedBatchEdit || confirmLeaveIfNeeded();
+  }
 
   async function loadChannels(storeId?: string) {
     const page = await apiClient.revenueChannels.list(
@@ -382,6 +389,21 @@ export default function RevenuePage() {
   }, [selectedChannel]);
 
   useEffect(() => {
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (!isEditing || !isBatchEditDirty) return;
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [isEditing, isBatchEditDirty]);
+
+  useEffect(() => {
+    setConfirmLeaveMessage(hasUnsavedBatchEdit ? "营业收入有未保存修改，确定离开吗？" : null);
+    return () => setConfirmLeaveMessage(null);
+  }, [hasUnsavedBatchEdit]);
+
+  useEffect(() => {
     if (!channels.length) {
       setSelectedChannel(undefined);
       return;
@@ -423,10 +445,12 @@ export default function RevenuePage() {
         if (channel) {
           const channelRecords = recordsRes.items.filter((record) => record.channel === channel);
           setBatchEditRows(buildRowsFromRecords(createRevenueEntryRows(period, false), channelRecords, revenueMatchesRes.items));
+          setIsBatchEditDirty(false);
           setIsEditing(entryChannelRef.current === channel);
           if (entryChannelRef.current === channel) entryChannelRef.current = null;
         } else {
           setBatchEditRows([]);
+          setIsBatchEditDirty(false);
         }
       }
     } catch (error) {
@@ -502,9 +526,11 @@ export default function RevenuePage() {
       if (failedRows.length) {
         setErrorMessage(`部分收入未保存：${failedRows.slice(0, 5).join("；")}`);
         await loadRecords(getActiveFilters(), selectedChannel);
+        setIsBatchEditDirty(false);
         return;
       }
       await loadRecords(getActiveFilters(), selectedChannel);
+      setIsBatchEditDirty(false);
     } catch (error) {
       message.error(error instanceof Error ? error.message : "批量编辑失败");
     } finally {
@@ -563,15 +589,18 @@ export default function RevenuePage() {
     const period = queryLedgerPeriod ?? filterForm.getFieldValue("ledger_period") ?? fallbackLedgerPeriod;
     const channelRecords = records.filter((record) => record.channel === selectedChannel);
     setBatchEditRows(buildRowsFromRecords(createRevenueEntryRows(period, false), channelRecords, revenueMatches));
+    setIsBatchEditDirty(false);
   }
 
   function clearBatchEditRows() {
     const period = queryLedgerPeriod ?? filterForm.getFieldValue("ledger_period") ?? fallbackLedgerPeriod;
     setBatchEditRows(createRevenueEntryRows(period, false));
+    setIsBatchEditDirty(true);
     setIsEditing(true);
   }
 
   function startChannelEntry(channelName: string) {
+    if (channelName !== selectedChannel && !confirmUnsavedBatchEdit()) return;
     entryChannelRef.current = channelName;
     setSelectedChannel(channelName);
     if (selectedChannel === channelName) {
@@ -641,6 +670,7 @@ export default function RevenuePage() {
                 });
               });
               setRows(updatedRows);
+              setIsBatchEditDirty(true);
               message.success("已粘贴收入数据");
             }}
             onChange={(event) => {
@@ -650,6 +680,7 @@ export default function RevenuePage() {
                   ? normalizePastedAmount(event.target.value)
                   : event.target.value;
               setRows(updated);
+              setIsBatchEditDirty(true);
             }}
             onFocus={() => setFocusedEntryCell({ rowIndex: index, field })}
             style={{
@@ -737,7 +768,10 @@ export default function RevenuePage() {
                   size="small"
                   className={`revenue-channel-card${isInactive ? " revenue-channel-card--inactive" : ""}${isSelected ? " revenue-channel-card--selected" : ""}`}
                   hoverable
-                  onClick={() => setSelectedChannel(summary.name)}
+                  onClick={() => {
+                    if (!confirmUnsavedBatchEdit()) return;
+                    setSelectedChannel(summary.name);
+                  }}
                   role="button"
                   tabIndex={0}
                   aria-pressed={isSelected}
@@ -745,6 +779,7 @@ export default function RevenuePage() {
                   onKeyDown={(event) => {
                     if (event.key === "Enter" || event.key === " ") {
                       event.preventDefault();
+                      if (!confirmUnsavedBatchEdit()) return;
                       setSelectedChannel(summary.name);
                     }
                   }}
@@ -787,11 +822,13 @@ export default function RevenuePage() {
                   className={isEditing ? undefined : "revenue-detail-edit-button"}
                   onClick={() => {
                     if (isEditing) {
+                      if (!confirmUnsavedBatchEdit()) return;
                       setIsEditing(false);
                       resetBatchEditRows();
                       return;
                     }
                     setIsEditing(true);
+                    setIsBatchEditDirty(false);
                   }}
                 >
                   {isEditing ? "取消" : "编辑"}
@@ -811,7 +848,15 @@ export default function RevenuePage() {
           }
         >
           {queryStoreId ? null : (
-            <Form form={filterForm} layout="inline" onFinish={(values) => loadRecords(values, selectedChannel)} className="table-filter-form">
+            <Form
+              form={filterForm}
+              layout="inline"
+              onFinish={(values) => {
+                if (!confirmUnsavedBatchEdit()) return;
+                void loadRecords(values, selectedChannel);
+              }}
+              className="table-filter-form"
+            >
               <Form.Item name="store_id" label="门店">
                 <Select allowClear className="filter-select" options={stores.map((store) => ({ label: store.name, value: store.id }))} />
               </Form.Item>

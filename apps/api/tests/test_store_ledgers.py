@@ -1,10 +1,18 @@
 from datetime import datetime
+from decimal import Decimal
 
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import ApprovalInstance, ApprovalTemplate, ExpenseItem
+from app.models import (
+    ApprovalInstance,
+    ApprovalTemplate,
+    BankTransaction,
+    ExpenseBankMatch,
+    ExpenseItem,
+    MatchStatus,
+)
 
 
 def test_store_ledger_workspace_returns_period_metrics(client: TestClient, session: Session) -> None:
@@ -76,22 +84,23 @@ def test_store_ledger_workspace_returns_period_metrics(client: TestClient, sessi
     assert workspace["close_check"]["can_close"] is False
     assert workspace["close_check"]["unmatched_revenue_record_count"] == 1
     assert workspace["close_check"]["unmatched_revenue_amount"] == "98.00"
-    assert workspace["metrics"] == {
-        "revenue_record_count": 1,
-        "income_amount": "100.00",
-        "expense_amount": "0.00",
-        "net_income_amount": "98.00",
-        "fee_amount": "2.00",
-        "bank_transaction_count": 1,
-        "unmatched_bank_transaction_count": 1,
-        "approval_count": 1,
-        "pending_approval_count": 0,
-        "revenue_match_count": 1,
-        "pending_revenue_match_count": 1,
-    }
+    metrics = workspace["metrics"]
+    assert metrics["revenue_record_count"] == 1
+    assert metrics["income_amount"] == "100.00"
+    assert metrics["expense_amount"] == "2.00"
+    assert metrics["food_cost_amount"] == "0.00"
+    assert metrics["gross_profit_amount"] == "100.00"
+    assert metrics["net_income_amount"] == "98.00"
+    assert metrics["fee_amount"] == "2.00"
+    assert metrics["bank_transaction_count"] == 1
+    assert metrics["unmatched_bank_transaction_count"] == 1
+    assert metrics["approval_count"] == 0
+    assert metrics["pending_approval_count"] == 0
+    assert metrics["revenue_match_count"] == 1
+    assert metrics["pending_revenue_match_count"] == 1
     assert len(workspace["bank_transactions"]) == 1
     assert len(workspace["revenue_records"]) == 1
-    assert len(workspace["approval_instances"]) == 1
+    assert len(workspace["approval_instances"]) == 0
     assert len(workspace["revenue_matches"]) == 1
 
 
@@ -207,14 +216,171 @@ def test_store_ledger_workspace_excludes_whole_approval_summary_when_line_items_
 
     workspace = client.get(f"/api/store-ledgers/{store_id}/workspace?period=2026-08").json()["data"]
 
-    assert workspace["metrics"]["expense_amount"] == "101.00"
-    assert workspace["metrics"]["approval_count"] == 3
-    assert workspace["metrics"]["pending_approval_count"] == 2
+    assert workspace["metrics"]["expense_amount"] == "0.00"
+    assert workspace["metrics"]["approval_count"] == 1
+    assert workspace["metrics"]["pending_approval_count"] == 1
     approval_read = next(
         item for item in workspace["approval_instances"] if item["dingtalk_instance_id"] == "approval-with-lines"
     )
     assert approval_read["expense_item_count"] == 2
     assert approval_read["total_expense_amount"] == "100.00"
+
+
+def test_store_ledger_workspace_counts_confirmed_approval_match_by_accounting_period(
+    client: TestClient,
+    session: Session,
+) -> None:
+    store_id = client.post("/api/stores", json={"name": "蘑说历史对账支出店"}).json()["data"]["id"]
+    client.post("/api/ledgers", json={"store_id": store_id, "period": "2026-08"})
+    client.post("/api/ledgers", json={"store_id": store_id, "period": "2026-09"})
+    session.add(ApprovalTemplate(id="template-legacy-match", process_code="PROC-LEGACY", name="历史审批模板"))
+    session.flush()
+    approval = ApprovalInstance(
+        template_id="template-legacy-match",
+        dingtalk_instance_id="legacy-approval-001",
+        approval_no="LEGACY-001",
+        store_id=store_id,
+        approval_status="agree",
+        submit_at=datetime(2026, 9, 5, 9, 0, 0),
+    )
+    session.add(approval)
+    expense = ExpenseItem(
+        store_id=store_id,
+        ledger_period="2026-08",
+        description="历史导入审批明细",
+        amount=Decimal("500.00"),
+        category_l1="运营支出",
+        category_l2="物料采购",
+        source="dingtalk",
+        source_document_id="legacy-approval-001",
+    )
+    bank_transaction = BankTransaction(
+        store_id=store_id,
+        ledger_period="2026-09",
+        occurred_at=datetime(2026, 9, 6, 10, 30, 0),
+        direction="expense",
+        amount=Decimal("320.00"),
+        matched_amount=Decimal("320.00"),
+        summary="历史导入审批付款",
+    )
+    session.add_all([expense, bank_transaction])
+    session.flush()
+    session.add(
+        ExpenseBankMatch(
+            expense_item_id=expense.id,
+            bank_transaction_id=bank_transaction.id,
+            amount=Decimal("320.00"),
+            accounting_period="2026-08",
+            status=MatchStatus.CONFIRMED.value,
+        )
+    )
+    session.commit()
+
+    august_workspace = client.get(f"/api/store-ledgers/{store_id}/workspace?period=2026-08").json()["data"]
+    september_workspace = client.get(f"/api/store-ledgers/{store_id}/workspace?period=2026-09").json()["data"]
+
+    assert august_workspace["metrics"]["expense_amount"] == "320.00"
+    assert august_workspace["metrics"]["approval_accounting_amount"] == "320.00"
+    assert august_workspace["metrics"]["expense_category_summary"][0]["amount"] == "320.00"
+    assert september_workspace["metrics"]["expense_amount"] == "0.00"
+
+
+def test_store_ledger_workspace_calculates_gross_profit_from_food_cost(
+    client: TestClient,
+    session: Session,
+) -> None:
+    store_id = client.post("/api/stores", json={"name": "蘑说毛利计算店"}).json()["data"]["id"]
+    client.post("/api/ledgers", json={"store_id": store_id, "period": "2026-08"})
+    client.post("/api/revenue-channels", json={"name": "堂食", "sort_order": 10})
+    client.post(
+        "/api/revenue-records",
+        json={
+            "store_id": store_id,
+            "ledger_period": "2026-08",
+            "revenue_date": "2026-08-20",
+            "channel": "堂食",
+            "gross_amount": "1000.00",
+            "net_amount": "1000.00",
+            "fee_amount": "0.00",
+        },
+    )
+    session.add(ApprovalTemplate(id="template-gross-profit", process_code="PROC-GROSS", name="毛利测试模板"))
+    session.flush()
+    approval = ApprovalInstance(
+        template_id="template-gross-profit",
+        dingtalk_instance_id="gross-profit-approval",
+        approval_no="GROSS-001",
+        store_id=store_id,
+        approval_status="agree",
+        submit_at=datetime(2026, 8, 21, 9, 0, 0),
+    )
+    session.add(approval)
+    food_expense = ExpenseItem(
+        store_id=store_id,
+        ledger_period="2026-08",
+        description="牛肉采购",
+        amount=Decimal("300.00"),
+        category_l1="食材成本",
+        category_l2="肉类",
+        source="dingtalk",
+        source_document_id="gross-profit-approval:food",
+    )
+    other_expense = ExpenseItem(
+        store_id=store_id,
+        ledger_period="2026-08",
+        description="清洁用品",
+        amount=Decimal("50.00"),
+        category_l1="运营支出",
+        category_l2="物料采购",
+        source="dingtalk",
+        source_document_id="gross-profit-approval:other",
+    )
+    food_bank = BankTransaction(
+        store_id=store_id,
+        ledger_period="2026-08",
+        occurred_at=datetime(2026, 8, 22, 10, 30, 0),
+        direction="expense",
+        amount=Decimal("300.00"),
+        matched_amount=Decimal("300.00"),
+        summary="牛肉采购付款",
+    )
+    other_bank = BankTransaction(
+        store_id=store_id,
+        ledger_period="2026-08",
+        occurred_at=datetime(2026, 8, 23, 10, 30, 0),
+        direction="expense",
+        amount=Decimal("50.00"),
+        matched_amount=Decimal("50.00"),
+        summary="清洁用品付款",
+    )
+    session.add_all([food_expense, other_expense, food_bank, other_bank])
+    session.flush()
+    session.add_all(
+        [
+            ExpenseBankMatch(
+                expense_item_id=food_expense.id,
+                bank_transaction_id=food_bank.id,
+                amount=Decimal("300.00"),
+                accounting_period="2026-08",
+                status=MatchStatus.CONFIRMED.value,
+            ),
+            ExpenseBankMatch(
+                expense_item_id=other_expense.id,
+                bank_transaction_id=other_bank.id,
+                amount=Decimal("50.00"),
+                accounting_period="2026-08",
+                status=MatchStatus.CONFIRMED.value,
+            ),
+        ]
+    )
+    session.commit()
+
+    workspace = client.get(f"/api/store-ledgers/{store_id}/workspace?period=2026-08").json()["data"]
+
+    assert workspace["metrics"]["revenue_income_amount"] == "1000.00"
+    assert workspace["metrics"]["expense_amount"] == "350.00"
+    assert workspace["metrics"]["food_cost_amount"] == "300.00"
+    assert workspace["metrics"]["gross_profit_amount"] == "700.00"
 
 
 def test_bank_transaction_create_auto_creates_ledger(client: TestClient) -> None:

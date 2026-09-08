@@ -255,6 +255,8 @@ def get_or_create_supplier(session: Session, name: str, **values: str) -> Suppli
 
 
 def seed_master_data(session: Session) -> None:
+    food_cost = get_or_create_category(session, "食材成本", sort_order=5)
+    get_or_create_category(session, "食材采购", parent_id=food_cost.id, sort_order=6)
     rent = get_or_create_category(session, "房租水电", sort_order=10)
     get_or_create_category(session, "水电费", parent_id=rent.id, sort_order=11)
     get_or_create_category(session, "房租", parent_id=rent.id, sort_order=12)

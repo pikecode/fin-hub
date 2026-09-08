@@ -320,9 +320,7 @@ export default function BankPage() {
       value: `${ledger.store_id}|${ledger.period}`,
     }));
   const currentStore = queryStoreId ? storesById.get(queryStoreId) : undefined;
-  const currentStoreLedgerLabel = queryStoreId
-    ? `${currentStore?.name ?? "当前门店"}${queryLedgerPeriod ? ` / ${queryLedgerPeriod}` : ""}`
-    : "";
+  const currentStoreLedgerLabel = queryStoreId ? `${currentStore?.name ?? "当前门店"}` : "";
 
   function buildFilterParams(values?: BankFilterValues) {
     const params = new URLSearchParams({ page_size: "500" });
@@ -418,7 +416,7 @@ export default function BankPage() {
     const storeId = formStoreId || queryStoreId;
     const period = formPeriod || queryLedgerPeriod;
     if (!storeId || !period) {
-      message.warning("缺少门店或账期，无法保存流水");
+      message.warning("缺少门店，无法保存流水");
       return;
     }
     setIsLoading(true);
@@ -962,7 +960,7 @@ export default function BankPage() {
   ];
 
   return (
-    <AppShell title={currentStore?.name ? `${currentStore.name} · 银行流水` : "银行流水"} kicker={queryLedgerPeriod ? `账期：${queryLedgerPeriod}` : undefined}>
+    <AppShell title={currentStore?.name ? `${currentStore.name} · 银行流水` : "银行流水"}>
       <Space direction="vertical" size={16} style={{ width: "100%", display: "flex" }} className="maintenance-page">
         {queryStoreId && (
           <StoreLedgerWorkspaceNav
@@ -1085,8 +1083,8 @@ export default function BankPage() {
         confirmLoading={isLoading}
       >
         <Form form={form} layout="vertical" onFinish={submitTransaction}>
-          {queryStoreId && queryLedgerPeriod ? (
-            <Alert type="info" showIcon message={`流水归属：${currentStoreLedgerLabel}`} style={{ marginBottom: 16 }} />
+          {queryStoreId ? (
+            <Alert type="info" showIcon message={`流水归属门店：${currentStoreLedgerLabel}`} style={{ marginBottom: 16 }} />
           ) : (
             <Form.Item name="ledger_key" label="账套" rules={[{ required: true }]}>
               <Select disabled={Boolean(editingTransaction)} options={openLedgerOptions} />
@@ -1140,8 +1138,8 @@ export default function BankPage() {
         okText="确认录入"
       >
         <Form form={entryForm} layout="vertical" onFinish={submitEntryBatch}>
-          {queryStoreId && queryLedgerPeriod ? (
-            <Alert type="info" showIcon message={`流水归属：${currentStoreLedgerLabel}`} style={{ marginBottom: 16 }} />
+          {queryStoreId ? (
+            <Alert type="info" showIcon message={`流水归属门店：${currentStoreLedgerLabel}`} style={{ marginBottom: 16 }} />
           ) : (
             <Form.Item name="ledger_key" label="账套" rules={[{ required: true }]}>
               <Select options={openLedgerOptions} />
@@ -1194,8 +1192,8 @@ export default function BankPage() {
                 label: "1. 选择账套和文件",
                 children: (
                   <Space direction="vertical" style={{ width: "100%" }}>
-                    {queryStoreId && queryLedgerPeriod ? (
-                      <Alert type="info" showIcon message={`流水归属：${currentStoreLedgerLabel}`} />
+                    {queryStoreId ? (
+                      <Alert type="info" showIcon message={`流水归属门店：${currentStoreLedgerLabel}`} />
                     ) : (
                       <Form.Item name="ledger_key" label="账套" rules={[{ required: true }]}>
                         <Select options={openLedgerOptions} />

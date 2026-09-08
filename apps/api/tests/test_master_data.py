@@ -2,7 +2,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 from app.core.security import hash_password
-from app.models import User
+from app.models import ExpenseCategory, User
 
 
 def test_category_and_supplier_master_data(client: TestClient) -> None:
@@ -94,6 +94,47 @@ def test_update_category_and_supplier_status(client: TestClient) -> None:
     logs = client.get("/api/audit-logs?page_size=20").json()["data"]["items"]
     assert any(log["action"] == "category.update" for log in logs)
     assert any(log["action"] == "supplier.update" for log in logs)
+
+
+def test_revenue_fee_categories_are_channel_managed(client: TestClient) -> None:
+    create_root_response = client.post("/api/categories", json={"name": "手续费"})
+    assert create_root_response.status_code == 409
+
+    channel_response = client.post("/api/revenue-channels", json={"name": "美团", "sort_order": 10})
+    assert channel_response.status_code == 201
+    category_page = client.get("/api/categories?page_size=100").json()["data"]
+    fee_category = next(item for item in category_page["items"] if item["name"] == "手续费")
+    fee_child = next(item for item in category_page["items"] if item["name"] == "美团手续费")
+
+    create_child_response = client.post(
+        "/api/categories",
+        json={"name": "手工手续费", "parent_id": fee_category["id"]},
+    )
+    assert create_child_response.status_code == 409
+
+    edit_root_response = client.patch(f"/api/categories/{fee_category['id']}", json={"name": "渠道手续费"})
+    assert edit_root_response.status_code == 409
+
+    disable_child_response = client.patch(f"/api/categories/{fee_child['id']}", json={"status": "inactive"})
+    assert disable_child_response.status_code == 409
+
+
+def test_food_cost_root_category_is_metric_managed(client: TestClient, session: Session) -> None:
+    food_cost = ExpenseCategory(name="食材成本", parent_id=None, sort_order=5)
+    session.add(food_cost)
+    session.commit()
+
+    create_child_response = client.post(
+        "/api/categories",
+        json={"name": "肉类", "parent_id": food_cost.id, "sort_order": 6},
+    )
+    assert create_child_response.status_code == 201
+
+    edit_root_response = client.patch(f"/api/categories/{food_cost.id}", json={"name": "原材料成本"})
+    assert edit_root_response.status_code == 409
+
+    disable_root_response = client.patch(f"/api/categories/{food_cost.id}", json={"status": "inactive"})
+    assert disable_root_response.status_code == 409
 
 
 def test_admin_can_manage_virtual_store_groups_and_assign_stores(client: TestClient) -> None:

@@ -1,3 +1,6 @@
+import json
+from decimal import Decimal
+
 from fastapi import APIRouter, Depends, HTTPException
 from datetime import UTC, datetime
 
@@ -8,6 +11,9 @@ from sqlalchemy.orm import Session
 from app.core.database import get_session
 from app.models import (
     BankTransaction,
+    ExpenseCategory,
+    ExpenseItem,
+    ExpensePaymentStatus,
     Ledger,
     LedgerStatus,
     MasterDataStatus,
@@ -50,6 +56,8 @@ DEFAULT_REVENUE_CHANNELS: tuple[tuple[str, int, bool], ...] = (
     ("现金收款", 60, False),
     ("淘宝团购", 70, True),
 )
+REVENUE_FEE_SOURCE = "revenue_fee"
+REVENUE_FEE_CATEGORY_L1 = "手续费"
 
 
 def period_from_revenue_date(revenue_date) -> str:
@@ -131,6 +139,119 @@ def revenue_channel_store_ids(session: Session, channel_id: str) -> list[str]:
             .order_by(RevenueChannelStoreLink.created_at.asc())
         ).all()
     )
+
+
+def revenue_fee_category_name(channel_name: str) -> str:
+    return f"{channel_name}手续费"
+
+
+def ensure_revenue_fee_categories(session: Session, channel_name: str) -> None:
+    l1 = session.scalar(
+        select(ExpenseCategory).where(
+            ExpenseCategory.parent_id.is_(None),
+            ExpenseCategory.name == REVENUE_FEE_CATEGORY_L1,
+        )
+    )
+    if l1 is None:
+        l1 = ExpenseCategory(name=REVENUE_FEE_CATEGORY_L1, parent_id=None, sort_order=0)
+        session.add(l1)
+        session.flush()
+    elif l1.status != MasterDataStatus.ACTIVE.value:
+        l1.status = MasterDataStatus.ACTIVE.value
+
+    l2_name = revenue_fee_category_name(channel_name)
+    l2 = session.scalar(
+        select(ExpenseCategory).where(
+            ExpenseCategory.parent_id == l1.id,
+            ExpenseCategory.name == l2_name,
+        )
+    )
+    if l2 is None:
+        l2 = ExpenseCategory(name=l2_name, parent_id=l1.id, sort_order=0)
+        session.add(l2)
+    elif l2.status != MasterDataStatus.ACTIVE.value:
+        l2.status = MasterDataStatus.ACTIVE.value
+
+
+def disable_revenue_fee_category(session: Session, channel_name: str) -> None:
+    l1 = session.scalar(
+        select(ExpenseCategory).where(
+            ExpenseCategory.parent_id.is_(None),
+            ExpenseCategory.name == REVENUE_FEE_CATEGORY_L1,
+        )
+    )
+    if l1 is None:
+        return
+    l2 = session.scalar(
+        select(ExpenseCategory).where(
+            ExpenseCategory.parent_id == l1.id,
+            ExpenseCategory.name == revenue_fee_category_name(channel_name),
+        )
+    )
+    if l2 is not None:
+        l2.status = MasterDataStatus.INACTIVE.value
+
+
+def revenue_fee_source_document_id(record_id: str) -> str:
+    return record_id
+
+
+def upsert_revenue_fee_expense(session: Session, record: RevenueRecord) -> None:
+    existing = session.scalar(
+        select(ExpenseItem).where(
+            ExpenseItem.source == REVENUE_FEE_SOURCE,
+            ExpenseItem.source_document_id == revenue_fee_source_document_id(record.id),
+        )
+    )
+    if Decimal(record.fee_amount) <= 0:
+        if existing is not None:
+            session.delete(existing)
+        return
+
+    ensure_revenue_fee_categories(session, record.channel)
+    category_l2_name = revenue_fee_category_name(record.channel)
+    description = f"{record.channel} 手续费"
+    snapshot = json.dumps(
+        {
+            "revenue_record_id": record.id,
+            "store_id": record.store_id,
+            "ledger_period": record.ledger_period,
+            "revenue_date": record.revenue_date.isoformat(),
+            "channel": record.channel,
+            "gross_amount": str(record.gross_amount),
+            "net_amount": str(record.net_amount),
+            "fee_amount": str(record.fee_amount),
+        },
+        ensure_ascii=False,
+    )
+    if existing is None:
+        existing = ExpenseItem(
+            store_id=record.store_id,
+            ledger_period=record.ledger_period,
+            expense_date=record.revenue_date,
+            description=description,
+            amount=Decimal(record.fee_amount),
+            category_l1=REVENUE_FEE_CATEGORY_L1,
+            category_l2=category_l2_name,
+            remark=f"{record.channel} 手续费",
+            payment_status=ExpensePaymentStatus.PAID.value,
+            source=REVENUE_FEE_SOURCE,
+            source_document_id=revenue_fee_source_document_id(record.id),
+            source_snapshot_json=snapshot,
+        )
+        session.add(existing)
+        return
+
+    existing.store_id = record.store_id
+    existing.ledger_period = record.ledger_period
+    existing.expense_date = record.revenue_date
+    existing.description = description
+    existing.amount = Decimal(record.fee_amount)
+    existing.category_l1 = REVENUE_FEE_CATEGORY_L1
+    existing.category_l2 = category_l2_name
+    existing.remark = f"{record.channel} 手续费"
+    existing.payment_status = ExpensePaymentStatus.PAID.value
+    existing.source_snapshot_json = snapshot
 
 
 def revenue_channel_read(session: Session, channel: RevenueChannel) -> RevenueChannelRead:
@@ -226,6 +347,7 @@ def create_revenue_channel(
     session.add(channel)
     try:
         session.flush()
+        ensure_revenue_fee_categories(session, channel.name)
         if scope_mode == "selected_stores":
             sync_channel_store_links(session, channel, store_ids)
         write_audit_log(
@@ -261,6 +383,7 @@ def update_revenue_channel(
 
     changes = payload.model_dump(exclude_unset=True)
     store_ids = changes.pop("store_ids", None)
+    old_name = channel.name
     name = changes.get("name", channel.name)
     exists = session.scalar(
         select(RevenueChannel).where(RevenueChannel.id != channel.id, RevenueChannel.name == name)
@@ -269,6 +392,9 @@ def update_revenue_channel(
         raise HTTPException(status_code=409, detail="Revenue channel already exists")
     for field, value in changes.items():
         setattr(channel, field, value.value if hasattr(value, "value") else value)
+    if "name" in changes:
+        disable_revenue_fee_category(session, old_name)
+        ensure_revenue_fee_categories(session, name)
     if changes.get("scope_mode") == "all_stores":
         store_ids = []
     if store_ids is not None:
@@ -305,6 +431,7 @@ def delete_revenue_channel(
     channel.deleted_at = datetime.now(UTC).replace(tzinfo=None)
     channel.deleted_by = audit_actor(current_user)
     channel.status = MasterDataStatus.INACTIVE.value
+    disable_revenue_fee_category(session, channel_name)
     write_audit_log(
         session,
         actor=audit_actor(current_user),
@@ -355,6 +482,7 @@ def create_revenue_record(
     session.add(record)
     try:
         session.flush()
+        upsert_revenue_fee_expense(session, record)
         write_audit_log(
             session,
             actor=audit_actor(current_user),
@@ -406,6 +534,7 @@ def update_revenue_record(
         setattr(record, field, value)
     try:
         session.flush()
+        upsert_revenue_fee_expense(session, record)
         write_audit_log(
             session,
             actor=audit_actor(current_user),
@@ -467,6 +596,14 @@ def delete_revenue_record(
         raise HTTPException(status_code=409, detail="Revenue record already matched")
 
     deleted = RevenueRecordRead.model_validate(record)
+    fee_item = session.scalar(
+        select(ExpenseItem).where(
+            ExpenseItem.source == REVENUE_FEE_SOURCE,
+            ExpenseItem.source_document_id == revenue_fee_source_document_id(record.id),
+        )
+    )
+    if fee_item is not None:
+        session.delete(fee_item)
     write_audit_log(
         session,
         actor=audit_actor(current_user),

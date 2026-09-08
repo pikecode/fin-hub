@@ -20,12 +20,8 @@ function formatMoney(value: number) {
 }
 
 const statusLabels: Record<string, string> = {
-  unparsed: "未解析",
-  pending_classification: "待分类",
-  pending_match: "待匹配",
   matched: "已匹配",
-  partial_matched: "已匹配",
-  sync_conflict: "同步冲突",
+  unmatched: "未匹配",
 };
 
 const colors = ["#9ca3af", "#f59e0b", "#3b82f6", "#10b981", "#14b8a6", "#ef4444"];

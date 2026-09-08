@@ -925,6 +925,46 @@ def test_real_approval_sync_paginates_and_records_window(client: TestClient, mon
     assert "真实同步 instance-2" in descriptions
 
 
+def test_start_approval_sync_uses_early_default_window(client: TestClient, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "dingtalk_sync_mode", "real")
+    monkeypatch.setattr("app.modules.dingtalk.router.utc_now", lambda: datetime(2026, 9, 8, 12, 0, 0))
+    client.put(
+        "/api/dingtalk/config",
+        json={"app_key": "ding-app-key", "app_secret": "super-secret"},
+    )
+    template_id = client.post(
+        "/api/dingtalk/templates",
+        json={"process_code": "PROC-DEFAULT-WINDOW", "name": "默认窗口模板", "is_enabled": True},
+    ).json()["data"]["id"]
+
+    class FakeDingTalkClient:
+        def list_process_instance_ids(self, process_code, start_time_ms, end_time_ms, cursor=0, size=20):
+            return [], None
+
+        def get_process_instance(self, instance_id):
+            return {
+                "process_instance_id": instance_id,
+                "business_id": "NO-DEFAULT",
+                "status": "approved",
+                "create_time": 1786752000000,
+                "form_component_values": [],
+            }
+
+    seen: dict[str, int] = {}
+
+    def fake_client(_config):
+        return FakeDingTalkClient()
+
+    monkeypatch.setattr("app.modules.dingtalk.router.dingtalk_client", fake_client)
+    response = client.post(
+        "/api/dingtalk/approval-sync",
+        json={"template_id": template_id, "started_by": "tester"},
+    )
+    assert response.status_code == 201
+    job = response.json()["data"]
+    assert job["request_start_at"].startswith("2026-06-01")
+
+
 def test_real_approval_sync_keeps_resume_cursor_when_max_pages_reached(client: TestClient, monkeypatch) -> None:
     monkeypatch.setattr(settings, "dingtalk_sync_mode", "real")
     client.put(
@@ -1907,7 +1947,7 @@ def test_real_approval_sync_creates_one_expense_per_approval_line_and_resolves_s
     assert len(items) == 2
     assert items[0]["description"] == "消杀"
     assert items[0]["amount"] == "120.00"
-    assert items[0]["category_l1"] == "门店零星报销"
+    assert items[0]["category_l1"] is None
     assert items[0]["payee_account"] == "安少辉"
     assert items[0]["approval_instance_id"] == instances[0]["id"]
     assert items[0]["approval_line_no"] == 1
@@ -1935,6 +1975,7 @@ def test_real_approval_sync_creates_one_expense_per_approval_line_and_resolves_s
     assert preview["expense_row_count"] == 2
     assert preview["rows"][0]["description"] == "消杀"
     assert preview["rows"][0]["amount"] == "120.00"
+    assert preview["rows"][0]["category_l1"] is None
     assert preview["rows"][1]["description"] == "维修"
     assert preview["rows"][1]["amount"] == "230.00"
     assert preview["voucher_count"] == 2

@@ -35,10 +35,9 @@ export function RevenueChannelMonthlyChart({ title, data, height = 420, loading 
     matrix.get(item.period)?.set(item.channel, item);
   });
 
-  const series: SeriesOption[] = channels.map((channel, index) => ({
-    name: channel,
+  const series: SeriesOption[] = periods.map((period, index) => ({
+    name: period,
     type: "bar",
-    stack: "income",
     barMaxWidth: 36,
     itemStyle: {
       borderRadius: [4, 4, 0, 0],
@@ -47,7 +46,7 @@ export function RevenueChannelMonthlyChart({ title, data, height = 420, loading 
     emphasis: {
       focus: "series",
     },
-    data: periods.map((period) => Number(matrix.get(period)?.get(channel)?.gross_amount || 0)),
+    data: channels.map((channel) => Number(matrix.get(period)?.get(channel)?.gross_amount || 0)),
   }));
 
   const option: EChartsOption = {
@@ -64,10 +63,10 @@ export function RevenueChannelMonthlyChart({ title, data, height = 420, loading 
       },
       formatter: (params: any) => {
         if (!Array.isArray(params) || params.length === 0) return "";
-        const period = params[0].axisValue;
-        let html = `<div style="font-weight: 600; margin-bottom: 8px;">${period}</div>`;
+        const channel = params[0].axisValue;
+        let html = `<div style="font-weight: 600; margin-bottom: 8px;">${channel}</div>`;
         params.forEach((item: any) => {
-          const row = matrix.get(period)?.get(item.seriesName);
+          const row = matrix.get(item.seriesName)?.get(channel);
           const gross = Number(row?.gross_amount || 0);
           const net = Number(row?.net_amount || 0);
           html += `<div style="display:flex;align-items:center;gap:8px;margin:4px 0;">
@@ -97,7 +96,7 @@ export function RevenueChannelMonthlyChart({ title, data, height = 420, loading 
     },
     xAxis: {
       type: "category",
-      data: periods,
+      data: channels,
       axisLine: { lineStyle: { color: "#e5e7eb" } },
       axisTick: { show: false },
       axisLabel: {

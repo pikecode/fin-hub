@@ -18,6 +18,34 @@ from app.schemas import (
 )
 
 router = APIRouter(prefix="/categories", tags=["categories"])
+REVENUE_FEE_CATEGORY_L1 = "手续费"
+FOOD_COST_CATEGORY_L1 = "食材成本"
+SYSTEM_ROOT_CATEGORY_NAMES = {REVENUE_FEE_CATEGORY_L1, FOOD_COST_CATEGORY_L1}
+
+
+def is_revenue_fee_category(session: Session, category: ExpenseCategory) -> bool:
+    if category.parent_id is None:
+        return category.name == REVENUE_FEE_CATEGORY_L1
+    parent = session.get(ExpenseCategory, category.parent_id)
+    return parent is not None and parent.name == REVENUE_FEE_CATEGORY_L1 and parent.parent_id is None
+
+
+def ensure_category_is_not_revenue_fee(session: Session, category: ExpenseCategory) -> None:
+    if is_revenue_fee_category(session, category):
+        raise HTTPException(status_code=409, detail="手续费分类由营业收入渠道自动维护，不能编辑或停用")
+
+
+def ensure_category_root_is_not_system_metric(category: ExpenseCategory) -> None:
+    if category.parent_id is None and category.name == FOOD_COST_CATEGORY_L1:
+        raise HTTPException(status_code=409, detail="食材成本是毛利计算口径，不能编辑或停用")
+
+
+def ensure_parent_is_not_revenue_fee(session: Session, parent_id: str | None) -> None:
+    if parent_id is None:
+        return
+    parent = session.get(ExpenseCategory, parent_id)
+    if parent is not None and parent.parent_id is None and parent.name == REVENUE_FEE_CATEGORY_L1:
+        raise HTTPException(status_code=409, detail="手续费子分类由营业收入渠道自动维护，不能手工新增")
 
 
 @router.get("", response_model=ApiEnvelope[Page[ExpenseCategoryRead]])
@@ -45,6 +73,9 @@ def create_category(
     ensure_permission(session, current_user, "categories.manage")
     if payload.parent_id is not None and session.get(ExpenseCategory, payload.parent_id) is None:
         raise HTTPException(status_code=404, detail="Parent category not found")
+    if payload.parent_id is None and payload.name in SYSTEM_ROOT_CATEGORY_NAMES:
+        raise HTTPException(status_code=409, detail=f"{payload.name}是系统分类，不能手工新增")
+    ensure_parent_is_not_revenue_fee(session, payload.parent_id)
     exists = session.scalar(
         select(ExpenseCategory).where(
             ExpenseCategory.name == payload.name,
@@ -86,6 +117,8 @@ def update_category(
     category = session.get(ExpenseCategory, category_id)
     if category is None:
         raise HTTPException(status_code=404, detail="Category not found")
+    ensure_category_is_not_revenue_fee(session, category)
+    ensure_category_root_is_not_system_metric(category)
 
     changes = payload.model_dump(exclude_unset=True)
     parent_id = changes.get("parent_id", category.parent_id)
@@ -94,6 +127,9 @@ def update_category(
         raise HTTPException(status_code=409, detail="Category cannot be its own parent")
     if parent_id is not None and session.get(ExpenseCategory, parent_id) is None:
         raise HTTPException(status_code=404, detail="Parent category not found")
+    if parent_id is None and name in SYSTEM_ROOT_CATEGORY_NAMES:
+        raise HTTPException(status_code=409, detail=f"{name}是系统分类，不能手工新增")
+    ensure_parent_is_not_revenue_fee(session, parent_id)
     exists = session.scalar(
         select(ExpenseCategory).where(
             ExpenseCategory.id != category.id,

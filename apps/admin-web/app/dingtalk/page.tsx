@@ -33,6 +33,7 @@ import type {
   ApprovalTemplateCreate,
   ApprovalTemplateNode,
   ApprovalInstance,
+  ApprovalDiagnosisItem,
   Attachment,
   DingTalkAutoSyncSetting,
   DingTalkAutoSyncSettingUpdate,
@@ -109,6 +110,8 @@ type ImagePreviewState = {
 };
 
 type DingTalkTabKey = "auto-sync" | "departments" | "templates" | "instances";
+
+const DINGTALK_LIST_PAGE_SIZE = 500;
 
 const AUTO_SYNC_TIME_OPTIONS = Array.from({ length: 24 }, (_, hour) => {
   const value = `${String(hour).padStart(2, "0")}:00`;
@@ -324,6 +327,23 @@ function dingtalkPageErrorMessage(error: unknown, fallback: string) {
   return apiErrorMessage(error, fallback);
 }
 
+async function loadAllDingTalkPages<T>(
+  loader: (page: number, pageSize: number) => Promise<{ items: T[]; total: number }>,
+  pageSize = DINGTALK_LIST_PAGE_SIZE,
+) {
+  const items: T[] = [];
+  let page = 1;
+  let total = Number.POSITIVE_INFINITY;
+  while (items.length < total) {
+    const result = await loader(page, pageSize);
+    if (!result.items.length) break;
+    items.push(...result.items);
+    total = result.total;
+    page += 1;
+  }
+  return items;
+}
+
 function isSeedTemplate(template: ApprovalTemplate) {
   return template.process_code.startsWith("seed-");
 }
@@ -379,6 +399,19 @@ function approvalStatusMeta(status: string) {
     NEW: { label: "审批中", color: "blue" },
   };
   return statusMap[normalized] ?? { label: status || "-", color: "default" };
+}
+
+function approvalMatchStatusMeta(status?: string | null) {
+  const normalized = (status || "").toLowerCase();
+  const statusMap: Record<string, { label: string; color: string }> = {
+    matched: { label: "已匹配", color: "green" },
+    partial_matched: { label: "已匹配", color: "green" },
+    pending_match: { label: "未匹配", color: "gold" },
+    pending_classification: { label: "未匹配", color: "gold" },
+    sync_conflict: { label: "未匹配", color: "gold" },
+    unparsed: { label: "未匹配", color: "gold" },
+  };
+  return statusMap[normalized] ?? { label: "未匹配", color: "gold" };
 }
 
 function payloadArray(payload: unknown, ...keys: string[]) {
@@ -576,6 +609,17 @@ function candidateKey(candidate: TemplateFieldCandidate) {
   return candidate.source_field_id || candidate.source_field_name;
 }
 
+function parseApprovalNumberList(value: string) {
+  return Array.from(
+    new Set(
+      value
+        .split(/[\s,，;；]+/g)
+        .map((item) => item.trim())
+        .filter(Boolean),
+    ),
+  );
+}
+
 export default function DingTalkPage() {
   const [config, setConfig] = useState<DingTalkConfig | null>(null);
   const [autoSyncSetting, setAutoSyncSetting] = useState<DingTalkAutoSyncSetting | null>(null);
@@ -602,6 +646,11 @@ export default function DingTalkPage() {
   const [isSyncModalOpen, setIsSyncModalOpen] = useState(false);
   const [isModifiedResyncModalOpen, setIsModifiedResyncModalOpen] = useState(false);
   const [isConfigModalOpen, setIsConfigModalOpen] = useState(false);
+  const [isApprovalAuditModalOpen, setIsApprovalAuditModalOpen] = useState(false);
+  const [approvalAuditInput, setApprovalAuditInput] = useState("");
+  const [approvalAuditItems, setApprovalAuditItems] = useState<ApprovalDiagnosisItem[]>([]);
+  const [isAuditingApprovals, setIsAuditingApprovals] = useState(false);
+  const [isReparsingApprovals, setIsReparsingApprovals] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [form] = Form.useForm<DingTalkFormValues>();
   const [templateForm] = Form.useForm<ApprovalTemplateCreate>();
@@ -673,16 +722,70 @@ export default function DingTalkPage() {
   const instanceTemplateFilter = instanceTemplateFilterId
     ? templates.find((template) => template.id === instanceTemplateFilterId) ?? null
     : null;
-  const enabledTemplateIds = useMemo(
-    () => new Set(templates.filter((t) => t.is_enabled).map((t) => t.id)),
-    [templates],
-  );
   const displayedApprovalInstances = useMemo(() => {
-    let instances = instanceTemplateFilterId
+    return instanceTemplateFilterId
       ? approvalInstances.filter((instance) => instance.template_id === instanceTemplateFilterId)
       : approvalInstances;
-    return instances.filter((instance) => enabledTemplateIds.has(instance.template_id));
-  }, [instanceTemplateFilterId, approvalInstances, enabledTemplateIds]);
+  }, [instanceTemplateFilterId, approvalInstances]);
+  const approvalAuditColumns = useMemo(
+    () => [
+      {
+        key: "approval_no",
+        dataIndex: "approval_no",
+        title: "审批编号",
+        width: 220,
+      },
+      {
+        key: "found",
+        dataIndex: "found",
+        title: "状态",
+        width: 90,
+        render: (value: boolean) => <Tag color={value ? "green" : "red"}>{value ? "已同步" : "未找到"}</Tag>,
+      },
+      {
+        key: "template_name",
+        dataIndex: "template_name",
+        title: "模板",
+        width: 150,
+        render: (value: string | null | undefined) => value || "-",
+      },
+      {
+        key: "processing_status",
+        dataIndex: "processing_status",
+        title: "匹配状态",
+        width: 110,
+        render: (value: string | null | undefined) => {
+          const meta = approvalMatchStatusMeta(value);
+          return <Tag color={meta.color}>{meta.label}</Tag>;
+        },
+      },
+      {
+        key: "approval_status",
+        dataIndex: "approval_status",
+        title: "审批状态",
+        width: 110,
+        render: (value: string | null | undefined) => {
+          const meta = approvalStatusMeta(value || "");
+          return <Tag color={meta.color}>{meta.label}</Tag>;
+        },
+      },
+      {
+        key: "submit_at",
+        dataIndex: "submit_at",
+        title: "提交时间",
+        width: 150,
+        render: (value: string | null | undefined) => (value ? formatBeijingDateTime(value) : "-"),
+      },
+      {
+        key: "total_expense_amount",
+        dataIndex: "total_expense_amount",
+        title: "总金额",
+        width: 120,
+        render: (value: string | null | undefined) => value || "0.00",
+      },
+    ],
+    [],
+  );
   const syncExecutionLogs = useMemo(
     () =>
       syncJobs.filter((job) =>
@@ -753,7 +856,9 @@ export default function DingTalkPage() {
     const results = await Promise.allSettled([
       apiClient.dingtalk.readConfig(),
       apiClient.dingtalk.readAutoSyncSetting(),
-      apiClient.dingtalk.listSyncJobs("?page_size=50"),
+      loadAllDingTalkPages((page, pageSize) =>
+        apiClient.dingtalk.listSyncJobs(`?page=${page}&page_size=${pageSize}`),
+      ),
       apiClient.dingtalk.readSyncReadiness(),
       apiClient.stores.list("?page_size=500"),
     ]);
@@ -773,7 +878,7 @@ export default function DingTalkPage() {
     }
 
     if (jobResult.status === "fulfilled") {
-      setSyncJobs(jobResult.value.items);
+      setSyncJobs(jobResult.value);
     } else {
       errors.push(dingtalkPageErrorMessage(jobResult.reason, "无法读取同步执行日志"));
     }
@@ -799,9 +904,11 @@ export default function DingTalkPage() {
 
   async function refreshSyncJobs() {
     try {
-      const result = await apiClient.dingtalk.listSyncJobs("?page_size=50");
-      setSyncJobs(result.items);
-      return result.items;
+      const items = await loadAllDingTalkPages((page, pageSize) =>
+        apiClient.dingtalk.listSyncJobs(`?page=${page}&page_size=${pageSize}`),
+      );
+      setSyncJobs(items);
+      return items;
     } catch {
       // Keep the current progress visible when a background refresh briefly fails.
       return null;
@@ -863,8 +970,12 @@ export default function DingTalkPage() {
     const results = await Promise.allSettled([
       apiClient.dingtalk.readConfig(),
       apiClient.dingtalk.listTemplates("?page_size=200"),
-      apiClient.dingtalk.listSyncJobs("?page_size=20"),
-      apiClient.dingtalk.listApprovalInstances("?page_size=100"),
+      loadAllDingTalkPages((page, pageSize) =>
+        apiClient.dingtalk.listSyncJobs(`?page=${page}&page_size=${pageSize}`),
+      ),
+      loadAllDingTalkPages((page, pageSize) =>
+        apiClient.dingtalk.listApprovalInstances(`?page=${page}&page_size=${pageSize}`),
+      ),
     ]);
     const [configResult, templateResult, jobResult, instanceResult] = results;
     const errors: string[] = [];
@@ -881,12 +992,12 @@ export default function DingTalkPage() {
       errors.push(dingtalkPageErrorMessage(templateResult.reason, "无法读取审批模板"));
     }
     if (jobResult.status === "fulfilled") {
-      setSyncJobs(jobResult.value.items);
+      setSyncJobs(jobResult.value);
     } else {
       errors.push(dingtalkPageErrorMessage(jobResult.reason, "无法读取同步任务"));
     }
     if (instanceResult.status === "fulfilled") {
-      setApprovalInstances(instanceResult.value.items);
+      setApprovalInstances(instanceResult.value);
     } else {
       errors.push(dingtalkPageErrorMessage(instanceResult.reason, "无法读取审批列表"));
     }
@@ -1081,7 +1192,7 @@ export default function DingTalkPage() {
     }
     syncForm.setFieldsValue({
       template_id: instanceTemplateFilterId ?? selectedTemplate?.id,
-      start_at: dayjs().subtract(7, "day"),
+      start_at: dayjs().subtract(365, "day"),
       end_at: undefined,
       sync_to_now: true,
       skip_existing: true,
@@ -1095,7 +1206,7 @@ export default function DingTalkPage() {
     }
     syncForm.setFieldsValue({
       template_id: undefined,
-      start_at: dayjs().subtract(7, "day"),
+      start_at: dayjs().subtract(365, "day"),
       end_at: undefined,
       sync_to_now: true,
       skip_existing: true,
@@ -1118,11 +1229,6 @@ export default function DingTalkPage() {
   }
 
   async function startApprovalSync(values: ApprovalSyncFormValues) {
-    const endAt = values.sync_to_now ? dayjs() : values.end_at;
-    if (values.start_at && endAt && endAt.diff(values.start_at, "day", true) > 120) {
-      message.error("单次审批同步时间范围不能超过 120 天");
-      return;
-    }
     setIsLoading(true);
     setIsStartingApprovalSync(true);
     setErrorMessage(null);
@@ -1152,10 +1258,6 @@ export default function DingTalkPage() {
       message.error("请选择修改时间范围");
       return;
     }
-    if (values.end_at.diff(values.start_at, "day", true) > 120) {
-      message.error("单次重刷时间范围不能超过 120 天");
-      return;
-    }
     setIsLoading(true);
     try {
       const result = await apiClient.dingtalk.resyncApprovalsByModifiedTime({
@@ -1173,6 +1275,42 @@ export default function DingTalkPage() {
       setErrorMessage(dingtalkPageErrorMessage(error, "无法按修改时间重刷审批"));
     } finally {
       setIsLoading(false);
+    }
+  }
+
+  async function diagnoseApprovalNumbers() {
+    const approvalNos = parseApprovalNumberList(approvalAuditInput);
+    if (!approvalNos.length) {
+      message.warning("请先输入审批编号");
+      return;
+    }
+    setIsAuditingApprovals(true);
+    try {
+      const result = await apiClient.dingtalk.diagnoseApprovalsByNumber(approvalNos);
+      setApprovalAuditItems(result.items);
+      message.success(`诊断完成：${result.items.filter((item) => item.found).length} 条已找到`);
+    } catch (error) {
+      setErrorMessage(dingtalkPageErrorMessage(error, "无法诊断审批编号"));
+    } finally {
+      setIsAuditingApprovals(false);
+    }
+  }
+
+  async function reparseApprovalNumbers() {
+    const approvalNos = parseApprovalNumberList(approvalAuditInput);
+    if (!approvalNos.length) {
+      message.warning("请先输入审批编号");
+      return;
+    }
+    setIsReparsingApprovals(true);
+    try {
+      const result = await apiClient.dingtalk.reparseApprovalsByNumber(approvalNos);
+      await loadInstancesTab(true);
+      message.success(`重解析完成：${result.reparsed_count} 条`);
+    } catch (error) {
+      setErrorMessage(dingtalkPageErrorMessage(error, "无法重解析审批编号"));
+    } finally {
+      setIsReparsingApprovals(false);
     }
   }
 
@@ -2193,6 +2331,9 @@ export default function DingTalkPage() {
                           disabled: !template.is_enabled,
                         }))}
                       />
+                      <Button onClick={() => setIsApprovalAuditModalOpen(true)}>
+                        诊断/重解析
+                      </Button>
                       <Button type="primary" onClick={openSyncModal} loading={isLoading}>
                         按时间范围同步审批单
                       </Button>
@@ -2607,7 +2748,7 @@ export default function DingTalkPage() {
                 <DatePicker
                   showTime
                   className="full-width"
-                  disabledDate={(current) => current.isBefore(dayjs().subtract(365, "day").startOf("day")) || current.isAfter(dayjs().endOf("day"))}
+                  disabledDate={(current) => current.isAfter(dayjs().endOf("day"))}
                 />
               </Form.Item>
             </Col>
@@ -2621,10 +2762,7 @@ export default function DingTalkPage() {
                         className="full-width"
                         disabledDate={(current) => {
                           const startAt = syncForm.getFieldValue("start_at") as dayjs.Dayjs | undefined;
-                          return (
-                            current.isAfter(dayjs().endOf("day")) ||
-                            (startAt ? current.isBefore(startAt.startOf("day")) || current.isAfter(startAt.add(120, "day").endOf("day")) : false)
-                          );
+                          return current.isAfter(dayjs().endOf("day")) || (startAt ? current.isBefore(startAt.startOf("day")) : false);
                         }}
                       />
                     </Form.Item>
@@ -2642,7 +2780,7 @@ export default function DingTalkPage() {
             <Switch checkedChildren="同步至当前时间" unCheckedChildren="指定结束时间" />
           </Form.Item>
           <Typography.Text type="secondary">
-            钉钉仅支持同步最近 365 天内的数据，单次日期范围最多 120 天。
+            同步当前启用模板的全部可拉取历史数据，不再限制天数；自动同步仍按增量推进。
           </Typography.Text>
           <Form.Item name="skip_existing" label="跳过本地已有审批" initialValue={true}>
             <Switch />
@@ -2690,6 +2828,47 @@ export default function DingTalkPage() {
             <InputNumber className="full-width" min={1} max={1000} />
           </Form.Item>
         </Form>
+      </Modal>
+      <Modal
+        title="审批号诊断 / 重解析"
+        open={isApprovalAuditModalOpen}
+        onCancel={() => setIsApprovalAuditModalOpen(false)}
+        width={1100}
+        footer={
+          <Space>
+            <Button onClick={() => setIsApprovalAuditModalOpen(false)}>关闭</Button>
+            <Button onClick={diagnoseApprovalNumbers} loading={isAuditingApprovals}>
+              诊断
+            </Button>
+            <Button type="primary" onClick={reparseApprovalNumbers} loading={isReparsingApprovals}>
+              重解析
+            </Button>
+          </Space>
+        }
+      >
+        <Space direction="vertical" size={16} className="full-width">
+          <Alert
+            type="info"
+            showIcon
+            message="一行一个审批号，或者用逗号分隔。"
+            description="先诊断确认状态，再决定是否重解析。"
+          />
+          <Input.TextArea
+            value={approvalAuditInput}
+            onChange={(event) => setApprovalAuditInput(event.target.value)}
+            placeholder="202609041211000480821\n202609021217000478289"
+            autoSize={{ minRows: 6, maxRows: 12 }}
+          />
+          <Table<ApprovalDiagnosisItem>
+            size="small"
+            rowKey="approval_no"
+            loading={isAuditingApprovals || isReparsingApprovals}
+            columns={approvalAuditColumns}
+            dataSource={approvalAuditItems}
+            pagination={{ pageSize: 8, showSizeChanger: true }}
+            scroll={{ x: 980 }}
+          />
+        </Space>
       </Modal>
       <Modal
         title="新增审批模板"

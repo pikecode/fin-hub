@@ -23,6 +23,7 @@ import {
 } from "@ant-design/icons";
 import type { CurrentUser, PermissionKey } from "@fin-hub/shared-types";
 import { apiClient } from "../lib/api";
+import { getConfirmLeaveMessage } from "./navigationGuard";
 
 const { Sider, Content } = Layout;
 const MAX_OPEN_PAGE_TABS = 6;
@@ -354,7 +355,8 @@ export function ProLayout({ title, kicker, action, children }: ProLayoutProps) {
   const [collapsed, setCollapsed] = useState(false);
   const [displayName, setDisplayName] = useState<string | null>(null);
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
-  const [openedTabs, setOpenedTabs] = useState<OpenPageTab[]>(() => readStoredOpenTabs());
+  const [openedTabs, setOpenedTabs] = useState<OpenPageTab[]>([]);
+  const [hasLoadedStoredTabs, setHasLoadedStoredTabs] = useState(false);
   const draggedTabKeyRef = useRef<string | null>(null);
   const visibleTree = useMemo(() => visibleNavigationTree(currentUser), [currentUser]);
   const activeNav = useMemo(() => navTrail(pathname, visibleTree, hasStoreContext), [pathname, visibleTree, hasStoreContext]);
@@ -365,6 +367,11 @@ export function ProLayout({ title, kicker, action, children }: ProLayoutProps) {
   );
   const activeTabKey = useMemo(() => normalizePageHref(pathname, new URLSearchParams(searchParams.toString())), [pathname, searchParams]);
   const activeTabHref = useMemo(() => normalizePageHref(pathname, new URLSearchParams(searchParams.toString())), [pathname, searchParams]);
+
+  useEffect(() => {
+    setOpenedTabs(readStoredOpenTabs());
+    setHasLoadedStoredTabs(true);
+  }, []);
 
   useEffect(() => {
     const name = localStorage.getItem("user_name");
@@ -391,7 +398,7 @@ export function ProLayout({ title, kicker, action, children }: ProLayoutProps) {
   }, [router]);
 
   useEffect(() => {
-    if (!currentUser) return;
+    if (!hasLoadedStoredTabs || !currentUser) return;
     const validatedTabs = validateTabsAgainstPermissions(openedTabs, visibleTree);
     if (validatedTabs.length !== openedTabs.length) {
       setOpenedTabs(validatedTabs);
@@ -402,9 +409,10 @@ export function ProLayout({ title, kicker, action, children }: ProLayoutProps) {
         router.push("/");
       }
     }
-  }, [currentUser, visibleTree]);
+  }, [activeTabKey, currentUser, hasLoadedStoredTabs, openedTabs, router, visibleTree]);
 
   useEffect(() => {
+    if (!hasLoadedStoredTabs) return;
     setOpenedTabs((currentTabs) => {
       const nextTab: OpenPageTab = {
         key: activeTabKey,
@@ -427,11 +435,12 @@ export function ProLayout({ title, kicker, action, children }: ProLayoutProps) {
       }
       return [...currentTabs, nextTab];
     });
-  }, [activeTabHref, activeTabKey, kicker, title]);
+  }, [activeTabHref, activeTabKey, hasLoadedStoredTabs, kicker, title]);
 
   useEffect(() => {
+    if (!hasLoadedStoredTabs) return;
     localStorage.setItem(OPEN_PAGE_TABS_STORAGE_KEY, JSON.stringify(openedTabs));
-  }, [openedTabs]);
+  }, [hasLoadedStoredTabs, openedTabs]);
 
   async function logout() {
     await apiClient.auth.logout();
@@ -447,11 +456,15 @@ export function ProLayout({ title, kicker, action, children }: ProLayoutProps) {
     if (!item || item.children?.length) return;
     const href = item.href ?? item.key;
     if (href === pathname) return;
+    const leaveMessage = getConfirmLeaveMessage();
+    if (leaveMessage && !window.confirm(leaveMessage)) return;
     router.push(href);
   }
 
   function openTab(tab: OpenPageTab) {
     if (tab.href !== activeTabHref) {
+      const leaveMessage = getConfirmLeaveMessage();
+      if (leaveMessage && !window.confirm(leaveMessage)) return;
       try {
         router.push(tab.href);
       } catch (error) {
@@ -481,6 +494,10 @@ export function ProLayout({ title, kicker, action, children }: ProLayoutProps) {
       const nextTabs = currentTabs.filter((tab) => tab.key !== tabKey);
       if (tabKey === activeTabKey) {
         const fallback = nextTabs[index - 1] ?? nextTabs[index] ?? nextTabs[0];
+        const leaveMessage = getConfirmLeaveMessage();
+        if (leaveMessage && !window.confirm(leaveMessage)) {
+          return currentTabs;
+        }
         router.push(fallback?.href ?? "/");
       }
       return nextTabs;
@@ -492,6 +509,8 @@ export function ProLayout({ title, kicker, action, children }: ProLayoutProps) {
       const keepTab = currentTabs.find((tab) => tab.key === keepTabKey);
       if (!keepTab) return currentTabs;
       if (keepTabKey !== activeTabKey) {
+        const leaveMessage = getConfirmLeaveMessage();
+        if (leaveMessage && !window.confirm(leaveMessage)) return currentTabs;
         router.push(keepTab.href);
       }
       return [keepTab];
@@ -499,6 +518,8 @@ export function ProLayout({ title, kicker, action, children }: ProLayoutProps) {
   }
 
   function closeAllTabs() {
+    const leaveMessage = getConfirmLeaveMessage();
+    if (leaveMessage && !window.confirm(leaveMessage)) return;
     setOpenedTabs([]);
     router.push("/");
   }

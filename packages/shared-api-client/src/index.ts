@@ -1,6 +1,7 @@
 import type {
   ApiEnvelope,
   ApprovalInstance,
+  ApprovalDiagnosisResult,
   ApprovalParsePreview,
   ApprovalReparseRequest,
   ApprovalReparseResult,
@@ -618,6 +619,16 @@ export function createApiClient(options: ApiClientOptions) {
         request<ApprovalReparseResult>(`/api/dingtalk/templates/${templateId}/reparse`, {
           method: "POST",
           body: JSON.stringify(payload),
+        }),
+      diagnoseApprovalsByNumber: (approvalNos: string[]) =>
+        request<ApprovalDiagnosisResult>("/api/dingtalk/approvals/diagnose", {
+          method: "POST",
+          body: JSON.stringify(approvalNos),
+        }),
+      reparseApprovalsByNumber: (approvalNos: string[]) =>
+        request<ApprovalReparseResult>("/api/dingtalk/approvals/reparse", {
+          method: "POST",
+          body: JSON.stringify(approvalNos),
         }),
       resyncApprovalsByModifiedTime: (payload: ApprovalModifiedResyncRequest) =>
         request<ApprovalModifiedResyncResult>("/api/dingtalk/approval-resync-by-modified", {

@@ -6,7 +6,7 @@ from time import sleep
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -21,9 +21,11 @@ from app.models import (
     AttachmentStatus,
     DingTalkAutoSyncSetting,
     DingTalkConfig,
+    ExpenseCategory,
     ExpenseBankMatch,
     ExpenseItem,
     Ledger,
+    MasterDataStatus,
     Store,
     SyncJob,
     SyncJobStatus,
@@ -45,6 +47,8 @@ from app.modules.dingtalk.client import DingTalkClient, DingTalkClientError, Din
 from app.schemas import (
     ApiEnvelope,
     ApprovalInstanceRead,
+    ApprovalDiagnosisItem,
+    ApprovalDiagnosisResult,
     ApprovalParsePreview,
     ApprovalModifiedResyncRequest,
     ApprovalModifiedResyncResult,
@@ -90,10 +94,8 @@ AUTO_SYNC_TIMEZONE = ZoneInfo("Asia/Shanghai")
 AUTO_SYNC_DEPARTMENT_ROOT_ID = "1"
 AUTO_SYNC_DEPARTMENT_MAX_DEPTH = 8
 AUTO_SYNC_APPROVAL_PAGE_SIZE = 10
-AUTO_SYNC_APPROVAL_MAX_PAGES = 100
+AUTO_SYNC_APPROVAL_MAX_PAGES = 500
 AUTO_SYNC_INITIAL_APPROVAL_LOOKBACK_DAYS = 120
-APPROVAL_SYNC_MAX_WINDOW_DAYS = 120
-APPROVAL_SYNC_MAX_LOOKBACK_DAYS = 365
 APPROVAL_SYNC_OVERLAP = timedelta(minutes=10)
 DINGTALK_SYNC_JOB_TYPES = {
     "dingtalk_approval_sync",
@@ -251,7 +253,7 @@ def get_or_create_auto_sync_setting(session: Session) -> DingTalkAutoSyncSetting
     setting = session.scalar(select(DingTalkAutoSyncSetting).order_by(DingTalkAutoSyncSetting.created_at.asc()))
     if setting is None:
         # 默认时间设置为 02:15，避开整点时刻的钉钉 API 限流高峰
-        setting = DingTalkAutoSyncSetting(scheduled_time="02:15")
+        setting = DingTalkAutoSyncSetting(scheduled_time="02:15", window_days=120, max_pages=500)
         refresh_auto_sync_next_run(setting)
         session.add(setting)
         session.commit()
@@ -2076,6 +2078,178 @@ def reparse_template_instances(
 
 
 @router.post(
+    "/approvals/reparse",
+    response_model=ApiEnvelope[ApprovalReparseResult],
+)
+def reparse_approvals_by_number(
+    approval_nos: list[str] = Body(default_factory=list),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_permission("dingtalk.manage")),
+) -> ApiEnvelope[ApprovalReparseResult]:
+    normalized = [item.strip() for item in approval_nos if item and item.strip()]
+    if not normalized:
+        job = SyncJob(
+            job_type="dingtalk_approval_reparse",
+            status=SyncJobStatus.SUCCEEDED.value,
+            started_by=audit_actor(current_user),
+            started_at=utc_now(),
+            finished_at=utc_now(),
+        )
+        session.add(job)
+        session.commit()
+        return ApiEnvelope(
+            data=ApprovalReparseResult(
+                processed_count=0,
+                reparsed_count=0,
+                skipped_count=0,
+                created_expense_count=0,
+                job=SyncJobRead.model_validate(job),
+            )
+        )
+
+    instances = list(
+        session.scalars(
+            select(ApprovalInstance)
+            .where(ApprovalInstance.approval_no.in_(normalized))
+            .order_by(ApprovalInstance.updated_at.desc())
+        )
+    )
+    template_ids = {instance.template_id for instance in instances}
+    templates = {
+        template.id: template
+        for template in session.scalars(select(ApprovalTemplate).where(ApprovalTemplate.id.in_(template_ids)))
+    }
+    job = SyncJob(
+        job_type="dingtalk_approval_reparse",
+        status=SyncJobStatus.RUNNING.value,
+        started_by=audit_actor(current_user),
+        started_at=utc_now(),
+    )
+    session.add(job)
+    session.flush()
+
+    reparsed_count = 0
+    skipped_count = 0
+    before_ids = {
+        item.id
+        for item in session.scalars(
+            select(ExpenseItem).where(ExpenseItem.source == "dingtalk", ExpenseItem.source_document_id.is_not(None))
+        )
+    }
+    for instance in instances:
+        if not instance.raw_payload:
+            skipped_count += 1
+            continue
+        try:
+            raw_instance = json.loads(instance.raw_payload)
+        except ValueError:
+            skipped_count += 1
+            continue
+        template = templates.get(instance.template_id)
+        if template is None:
+            skipped_count += 1
+            continue
+        if sync_real_instance(session, template, job, raw_instance):
+            reparsed_count += 1
+        else:
+            skipped_count += 1
+
+    after_ids = {
+        item.id
+        for item in session.scalars(
+            select(ExpenseItem).where(ExpenseItem.source == "dingtalk", ExpenseItem.source_document_id.is_not(None))
+        )
+    }
+    created_expense_count = len(after_ids - before_ids)
+    job.status = SyncJobStatus.SUCCEEDED.value
+    job.finished_at = utc_now()
+    job.processed_count = len(instances)
+    job.success_count = reparsed_count
+    job.failed_count = skipped_count
+    job.raw_summary = json.dumps(
+        {"approval_nos": normalized, "created_expense_count": created_expense_count},
+        ensure_ascii=False,
+    )
+    write_audit_log(
+        session,
+        actor=audit_actor(current_user),
+        action="dingtalk.approval.reparse",
+        resource_type="sync_job",
+        resource_id=job.id,
+        summary=f"按审批号重解析审批：{reparsed_count} 条",
+        metadata={"count": len(normalized)},
+    )
+    session.commit()
+    session.refresh(job)
+    return ApiEnvelope(
+        data=ApprovalReparseResult(
+            processed_count=len(instances),
+            reparsed_count=reparsed_count,
+            skipped_count=skipped_count,
+            created_expense_count=created_expense_count,
+            job=SyncJobRead.model_validate(job),
+        )
+    )
+
+
+@router.post(
+    "/approvals/diagnose",
+    response_model=ApiEnvelope[ApprovalDiagnosisResult],
+)
+def diagnose_approval_numbers(
+    approval_nos: list[str] = Body(default_factory=list),
+    session: Session = Depends(get_session),
+    _: User = Depends(require_permission("dingtalk.view")),
+) -> ApiEnvelope[ApprovalDiagnosisResult]:
+    normalized = [item.strip() for item in approval_nos if item and item.strip()]
+    if not normalized:
+        return ApiEnvelope(data=ApprovalDiagnosisResult(items=[]))
+
+    rows = list(
+        session.execute(
+            select(ApprovalInstance, ApprovalTemplate)
+            .join(ApprovalTemplate, ApprovalInstance.template_id == ApprovalTemplate.id)
+            .where(ApprovalInstance.approval_no.in_(normalized))
+            .order_by(ApprovalInstance.updated_at.desc())
+        )
+    )
+    approval_ids = [instance.id for instance, _template in rows]
+    stats_by_id = approval_expense_stats_map(session, approval_ids)
+    found_map: dict[str, ApprovalDiagnosisItem] = {}
+    for instance, template in rows:
+        approval_no = instance.approval_no or ""
+        if approval_no in found_map:
+            continue
+        stats = stats_by_id.get(instance.id, approval_expense_stats([], []))
+        found_map[approval_no] = ApprovalDiagnosisItem(
+            approval_no=approval_no,
+            found=True,
+            approval_instance_id=instance.id,
+            dingtalk_instance_id=instance.dingtalk_instance_id,
+            template_id=instance.template_id,
+            template_name=template.name,
+            store_id=instance.store_id,
+            parse_status=instance.parse_status,
+            processing_status=instance.processing_status,
+            approval_status=instance.approval_status,
+            submit_at=instance.submit_at,
+            dingtalk_modified_at=instance.dingtalk_modified_at,
+            matched_expense_item_count=stats["matched_expense_item_count"],
+            pending_expense_item_count=stats["pending_expense_item_count"],
+            total_expense_amount=stats["total_expense_amount"],
+        )
+
+    return ApiEnvelope(
+        data=ApprovalDiagnosisResult(
+            items=[
+                found_map.get(approval_no, ApprovalDiagnosisItem(approval_no=approval_no, found=False))
+                for approval_no in normalized
+            ]
+        )
+    )
+
+
+@router.post(
     "/approval-resync-by-modified",
     response_model=ApiEnvelope[ApprovalModifiedResyncResult],
     status_code=201,
@@ -2463,6 +2637,36 @@ def pick_row_value(row: dict[str, Any], *names: str) -> Any:
     return None
 
 
+def resolve_expense_category_names(
+    session: Session,
+    category_l1: str | None,
+    category_l2: str | None,
+) -> tuple[str | None, str | None]:
+    category_l1 = parse_text(category_l1)
+    category_l2 = parse_text(category_l2)
+    if not category_l1:
+        return None, None
+    parent = session.scalar(
+        select(ExpenseCategory).where(
+            ExpenseCategory.name == category_l1,
+            ExpenseCategory.parent_id.is_(None),
+            ExpenseCategory.status == MasterDataStatus.ACTIVE.value,
+        )
+    )
+    if parent is None:
+        return None, None
+    if not category_l2:
+        return parent.name, None
+    child = session.scalar(
+        select(ExpenseCategory).where(
+            ExpenseCategory.name == category_l2,
+            ExpenseCategory.parent_id == parent.id,
+            ExpenseCategory.status == MasterDataStatus.ACTIVE.value,
+        )
+    )
+    return (parent.name, child.name) if child is not None else (None, None)
+
+
 def expense_rows_from_table(value: Any) -> list[dict[str, Any]]:
     rows = []
     for index, row in enumerate(decode_table_value(value), start=1):
@@ -2730,6 +2934,25 @@ def build_approval_parse_preview(
         missing_fields.append("amount")
     if expense_date is None:
         missing_fields.append("expense_date")
+    preview_rows = []
+    for row in rows:
+        raw_category_l1 = parse_text(row.get("category_l1")) or category_l1
+        raw_category_l2 = parse_text(row.get("category_l2")) or parse_text(mapped.get("category_l2"))
+        row_category_l1, row_category_l2 = resolve_expense_category_names(
+            session,
+            raw_category_l1,
+            raw_category_l2,
+        )
+        preview_rows.append(
+            {
+                "description": str(row["description"]),
+                "amount": Decimal(row["amount"]).quantize(Decimal("0.01")),
+                "category_l1": row_category_l1,
+                "category_l2": row_category_l2,
+                "supplier_name": parse_text(row.get("supplier_name")) or parse_text(mapped.get("supplier_name")),
+                "payee_account": payee_account,
+            }
+        )
     return ApprovalParsePreview(
         template_id=template.id,
         approval_instance_id=instance.id,
@@ -2742,17 +2965,7 @@ def build_approval_parse_preview(
         originator_dept_name=originator_dept_name,
         expense_date=expense_date,
         expense_row_count=len(rows),
-        rows=[
-            {
-                "description": str(row["description"]),
-                "amount": Decimal(row["amount"]).quantize(Decimal("0.01")),
-                "category_l1": parse_text(row.get("category_l1")) or category_l1,
-                "category_l2": parse_text(row.get("category_l2")) or parse_text(mapped.get("category_l2")),
-                "supplier_name": parse_text(row.get("supplier_name")) or parse_text(mapped.get("supplier_name")),
-                "payee_account": payee_account,
-            }
-            for row in rows
-        ],
+        rows=preview_rows,
         voucher_count=len(voucher_items),
         missing_fields=missing_fields,
         can_create_expense=not missing_fields,
@@ -3135,8 +3348,13 @@ def sync_real_instance(
             approval_line_key,
         )
         active_source_document_ids.add(source_document_id)
-        row_category_l1 = parse_text(row.get("category_l1")) or category_l1
-        row_category_l2 = parse_text(row.get("category_l2")) or parse_text(mapped.get("category_l2"))
+        raw_category_l1 = parse_text(row.get("category_l1")) or category_l1
+        raw_category_l2 = parse_text(row.get("category_l2")) or parse_text(mapped.get("category_l2"))
+        row_category_l1, row_category_l2 = resolve_expense_category_names(
+            session,
+            raw_category_l1,
+            raw_category_l2,
+        )
         row_supplier_name = parse_text(row.get("supplier_name")) or parse_text(mapped.get("supplier_name"))
         snapshot = expense_source_snapshot(
             store_id=store.id,
@@ -3248,9 +3466,7 @@ def validate_approval_sync_window(start_at: datetime, end_at: datetime) -> tuple
 
     检查项:
     1. 时间顺序：start_at 必须 < end_at
-    2. 时间跨度：不超过 APPROVAL_SYNC_MAX_WINDOW_DAYS (120 天)
-    3. 回溯限制：不超过 APPROVAL_SYNC_MAX_LOOKBACK_DAYS (365 天)
-    4. 未来限制：end_at 不能超过当前时间
+    2. 未来限制：end_at 不能超过当前时间
 
     Args:
         start_at: 同步开始时间 (UTC)
@@ -3273,27 +3489,16 @@ def validate_approval_sync_window(start_at: datetime, end_at: datetime) -> tuple
             detail=f"结束时间必须晚于开始时间。开始: {start_at.isoformat()}, 结束: {end_at.isoformat()}"
         )
 
-    # ✅ 检查 2: 时间跨度不超过 120 天
-    days_span = (end_at - start_at).days
-    if days_span > APPROVAL_SYNC_MAX_WINDOW_DAYS:
-        raise HTTPException(
-            status_code=422,
-            detail=f"单次审批同步时间范围不能超过 {APPROVAL_SYNC_MAX_WINDOW_DAYS} 天，您请求的范围为 {days_span} 天"
-        )
-
-    # ✅ 检查 3: 回溯限制（不超过 365 天前）
-    lookback_limit = now - timedelta(days=APPROVAL_SYNC_MAX_LOOKBACK_DAYS)
-    if start_at < lookback_limit:
-        raise HTTPException(
-            status_code=422,
-            detail=f"开始时间不能早于当前时间 {APPROVAL_SYNC_MAX_LOOKBACK_DAYS} 天。最早允许: {lookback_limit.isoformat()}"
-        )
-
-    # ✅ 检查 4: end_at 不能超过当前时间（调整而不是报错）
+    # ✅ 检查 2: end_at 不能超过当前时间（调整而不是报错）
     if end_at > now:
         end_at = now
 
     return start_at, end_at
+
+
+def default_approval_sync_start_at(end_at: datetime) -> datetime:
+    year = end_at.year if end_at.month >= 6 else end_at.year - 1
+    return datetime(year, 6, 1)
 
 
 def parse_auto_sync_resume_state(
@@ -3956,12 +4161,11 @@ def start_approval_sync(
 
     requested_end_at = normalize_sync_datetime(payload.end_at or utc_now())
     requested_start_at = normalize_sync_datetime(
-        payload.start_at or requested_end_at - timedelta(days=31)
+        payload.start_at or default_approval_sync_start_at(requested_end_at)
     )
-    requested_start_at, requested_end_at = validate_approval_sync_window(
-        requested_start_at,
-        requested_end_at,
-    )
+    if requested_start_at >= requested_end_at:
+        requested_start_at = requested_end_at - timedelta(days=1)
+    requested_start_at, requested_end_at = validate_approval_sync_window(requested_start_at, requested_end_at)
     actor = audit_actor(current_user, payload.started_by)
     job = SyncJob(
         job_type="dingtalk_approval_sync",
@@ -4104,7 +4308,7 @@ def start_store_approval_sync(
             job=job,
             templates=templates,
             page_size=AUTO_SYNC_APPROVAL_PAGE_SIZE,
-            max_pages=100,
+            max_pages=500,
             skip_existing=payload.skip_existing,
         )
         session.flush()
@@ -4359,8 +4563,6 @@ def list_approval_instances(
         )
     if processing_status:
         query = query.where(ApprovalInstance.processing_status == processing_status)
-    elif not include_matched:
-        query = query.where(ApprovalInstance.processing_status != "matched")
     items, total = paginate(session, query, page, page_size)
     stats_by_approval_id = approval_expense_stats_map(session, [item.id for item in items])
     return ApiEnvelope(

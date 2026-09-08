@@ -811,6 +811,28 @@ export interface ApprovalReparseResult {
   job: SyncJob;
 }
 
+export interface ApprovalDiagnosisItem {
+  approval_no: string;
+  found: boolean;
+  approval_instance_id?: string | null;
+  dingtalk_instance_id?: string | null;
+  template_id?: string | null;
+  template_name?: string | null;
+  store_id?: string | null;
+  parse_status?: string | null;
+  processing_status?: string | null;
+  approval_status?: string | null;
+  submit_at?: string | null;
+  dingtalk_modified_at?: string | null;
+  matched_expense_item_count: number;
+  pending_expense_item_count: number;
+  total_expense_amount: string;
+}
+
+export interface ApprovalDiagnosisResult {
+  items: ApprovalDiagnosisItem[];
+}
+
 export interface ApprovalModifiedResyncRequest {
   start_at?: string | null;
   end_at?: string | null;
@@ -1095,13 +1117,18 @@ export interface StoreLedgerWorkspaceMetrics {
   revenue_net_amount: string;
   income_amount: string;
   expense_amount: string;
+  food_cost_amount: string;
+  gross_profit_amount: string;
   net_income_amount: string;
   fee_amount: string;
   approval_amount: string;
   approval_accounting_amount: string;
   bank_transaction_count: number;
+  matched_bank_amount: string;
   unmatched_bank_transaction_count: number;
   approval_count: number;
+  matched_approval_count: number;
+  unmatched_approval_count: number;
   pending_approval_count: number;
   revenue_match_count: number;
   pending_revenue_match_count: number;
@@ -1122,6 +1149,14 @@ export interface StoreLedgerWorkspaceMetrics {
     record_count: number;
   }>;
   revenue_channel_monthly_summary: RevenueChannelMonthlyBreakdownItem[];
+  approval_template_summary: Array<{
+    template_id: string;
+    template_name: string;
+    approval_count: number;
+    matched_count: number;
+    unmatched_count: number;
+    total_amount: string;
+  }>;
 }
 
 export interface StoreLedgerWorkspace {

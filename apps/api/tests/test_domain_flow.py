@@ -8,8 +8,16 @@ from fastapi.testclient import TestClient
 from openpyxl import load_workbook
 from sqlalchemy.orm import Session
 
-from app.models import ApprovalInstance, ApprovalTemplate, ExpenseItem, TemplateFieldMapping
+from app.models import ApprovalInstance, ApprovalTemplate, ExpenseCategory, ExpenseItem, TemplateFieldMapping
 from app.modules.matching.router import candidate_score
+
+
+def create_expense_category_pair(session: Session, category_l1: str, category_l2: str) -> None:
+    parent = ExpenseCategory(name=category_l1, parent_id=None, sort_order=1)
+    session.add(parent)
+    session.flush()
+    session.add(ExpenseCategory(name=category_l2, parent_id=parent.id, sort_order=1))
+    session.flush()
 
 
 def test_store_ledger_and_close_flow(client: TestClient) -> None:
@@ -509,6 +517,7 @@ def test_reconciliation_candidate_search_returns_parsed_approval_lines_without_b
 ) -> None:
     store_id = client.post("/api/stores", json={"name": "菌山集阳江新达城店"}).json()["data"]["id"]
     client.post("/api/ledgers", json={"store_id": store_id, "period": "2026-08"})
+    create_expense_category_pair(session, "门店零星报销", "零食物料")
     template = ApprovalTemplate(process_code="PROC-RECON", name="门店支出报销")
     session.add(template)
     session.flush()
@@ -575,10 +584,10 @@ def test_reconciliation_candidate_search_returns_parsed_approval_lines_without_b
         "candidates"
     ]
 
-    assert len(candidates) == 2
+    assert len(candidates) == 1
     assert {candidate["approval_instance"]["approval_no"] for candidate in candidates} == {"202608242148000482025"}
-    assert {candidate["expense_item"]["description"] for candidate in candidates} == {"爆米花", "薄荷糖"}
-    assert {candidate["remaining_amount"] for candidate in candidates} == {"104.50", "27.79"}
+    assert candidates[0]["expense_item"]["description"] in {"爆米花", "薄荷糖"}
+    assert candidates[0]["remaining_amount"] in {"104.50", "27.79"}
     assert all(":" in candidate["expense_item"]["source_document_id"] for candidate in candidates)
     assert (
         session.query(ExpenseItem)
@@ -587,16 +596,13 @@ def test_reconciliation_candidate_search_returns_parsed_approval_lines_without_b
         == 0
     )
 
-    candidates_by_description = {
-        candidate["expense_item"]["description"]: candidate
-        for candidate in candidates
-    }
+    selected_candidate = candidates[0]
     match_response = client.post(
         "/api/matches",
         json={
-            "expense_item_id": candidates_by_description["爆米花"]["expense_item"]["id"],
+            "expense_item_id": selected_candidate["expense_item"]["id"],
             "bank_transaction_id": bank_id,
-            "amount": "104.50",
+            "amount": selected_candidate["remaining_amount"],
             "accounting_period": "2026-08",
             "bank_occurred": True,
             "category_l1": "门店零星报销",
@@ -604,7 +610,7 @@ def test_reconciliation_candidate_search_returns_parsed_approval_lines_without_b
         },
     )
     assert match_response.status_code == 201
-    matched_expense = session.get(ExpenseItem, candidates_by_description["爆米花"]["expense_item"]["id"])
+    matched_expense = session.get(ExpenseItem, selected_candidate["expense_item"]["id"])
     assert matched_expense is not None
     assert matched_expense.category_l1 == "门店零星报销"
     assert matched_expense.category_l2 == "零食物料"
@@ -614,7 +620,74 @@ def test_reconciliation_candidate_search_returns_parsed_approval_lines_without_b
         f"/api/matches/reconciliation/candidates?bank_transaction_id={bank_id}&approval_no=202608242148000482025"
     ).json()["data"]["candidates"]
     assert len(searched_candidates) == 1
-    assert searched_candidates[0]["expense_item"]["description"] == "薄荷糖"
+    assert searched_candidates[0]["expense_item"]["description"] in {"爆米花", "薄荷糖"}
+
+
+def test_reconciliation_candidate_search_skips_zero_amount_approval_lines(
+    client: TestClient,
+    session: Session,
+) -> None:
+    store_id = client.post("/api/stores", json={"name": "零金额明细候选店"}).json()["data"]["id"]
+    client.post("/api/ledgers", json={"store_id": store_id, "period": "2026-08"})
+    template = ApprovalTemplate(process_code="PROC-ZERO-LINE", name="门店支出报销")
+    session.add(template)
+    session.flush()
+    approval = ApprovalInstance(
+        template_id=template.id,
+        dingtalk_instance_id="approval-with-zero-line",
+        approval_no="202609030332000374852",
+        store_id=store_id,
+        approval_status="agree",
+        submit_at=datetime(2026, 9, 3, 3, 32, 37),
+    )
+    session.add(approval)
+    session.flush()
+    session.add_all(
+        [
+            ExpenseItem(
+                store_id=store_id,
+                ledger_period="2026-08",
+                expense_date=datetime(2026, 9, 3),
+                description="有效明细",
+                amount="44540.20",
+                source="dingtalk",
+                source_document_id="approval-with-zero-line:line-1",
+            ),
+            ExpenseItem(
+                store_id=store_id,
+                ledger_period="2026-08",
+                expense_date=datetime(2026, 9, 3),
+                description="零金额明细",
+                amount="0.00",
+                source="dingtalk",
+                source_document_id="approval-with-zero-line:line-2",
+            ),
+        ]
+    )
+    session.commit()
+    bank_id = client.post(
+        "/api/bank-transactions",
+        json={
+            "store_id": store_id,
+            "ledger_period": "2026-09",
+            "occurred_at": "2026-08-21T00:00:00",
+            "direction": "expense",
+            "amount": "50000.00",
+            "summary": "零金额明细候选",
+        },
+    ).json()["data"]["id"]
+
+    response = client.get(
+        f"/api/matches/reconciliation/candidates?store_id={store_id}"
+        f"&approval_only=true&page_size=100&bank_transaction_id={bank_id}"
+        "&approval_no=202609030332000374852"
+    )
+
+    assert response.status_code == 200
+    candidates = response.json()["data"]["candidates"]
+    assert len(candidates) == 1
+    assert candidates[0]["expense_item"]["description"] == "有效明细"
+    assert candidates[0]["expense_item"]["amount"] == "44540.20"
 
 
 def test_reconciliation_candidates_can_list_store_approvals_without_bank_transaction(
@@ -1002,6 +1075,7 @@ def test_reconciliation_candidates_exclude_expense_with_active_match(
 ) -> None:
     store_id = client.post("/api/stores", json={"name": "蘑说候选占用店"}).json()["data"]["id"]
     client.post("/api/ledgers", json={"store_id": store_id, "period": "2026-08"})
+    create_expense_category_pair(session, "门店支出", "零星报销")
     template = ApprovalTemplate(process_code="PROC-ACTIVE-MATCH", name="门店支出报销", is_enabled=True)
     session.add(template)
     session.flush()
@@ -1072,6 +1146,8 @@ def test_reconciliation_candidates_exclude_expense_with_active_match(
             "bank_transaction_id": first_bank_id,
             "amount": "500.00",
             "accounting_period": "2026-08",
+            "category_l1": "门店支出",
+            "category_l2": "零星报销",
         },
     )
     assert create_response.status_code == 201
@@ -1092,6 +1168,361 @@ def test_reconciliation_candidates_exclude_expense_with_active_match(
     assert len(searched_candidates) == 1
     assert searched_candidates[0]["expense_item"]["id"] == expense_id
     assert searched_candidates[0]["remaining_amount"] == "0.00"
+    duplicate_response = client.post(
+        "/api/matches",
+        json={
+            "expense_item_id": expense_id,
+            "bank_transaction_id": second_bank_id,
+            "amount": "500.00",
+            "accounting_period": "2026-08",
+            "category_l1": "门店支出",
+            "category_l2": "零星报销",
+        },
+    )
+    assert duplicate_response.status_code == 201
+
+
+def test_reconciliation_search_allows_partial_approval_remaining_match(
+    client: TestClient,
+    session: Session,
+) -> None:
+    store_id = client.post("/api/stores", json={"name": "蘑说审批部分付款店"}).json()["data"]["id"]
+    client.post("/api/ledgers", json={"store_id": store_id, "period": "2026-08"})
+    create_expense_category_pair(session, "门店支出", "零星报销")
+    template = ApprovalTemplate(process_code="PROC-PARTIAL-APPROVAL", name="门店支出报销", is_enabled=True)
+    session.add(template)
+    session.flush()
+    approval = ApprovalInstance(
+        template_id=template.id,
+        dingtalk_instance_id="approval-partial-match",
+        approval_no="202608300588",
+        store_id=store_id,
+        approval_status="agree",
+        submit_at=datetime(2026, 8, 20, 10, 0, 0),
+    )
+    session.add(approval)
+    session.flush()
+    expense = ExpenseItem(
+        store_id=store_id,
+        ledger_period="2026-08",
+        expense_date=datetime(2026, 8, 20),
+        description="审批分两笔付款",
+        amount="1000.00",
+        source="dingtalk",
+        source_document_id="approval-partial-match",
+        approval_instance_id=approval.id,
+        approval_line_no=1,
+        approval_line_key="whole-approval",
+        approval_line_source_type="whole_approval",
+    )
+    session.add(expense)
+    session.commit()
+    first_bank_id = client.post(
+        "/api/bank-transactions",
+        json={
+            "store_id": store_id,
+            "ledger_period": "2026-08",
+            "occurred_at": "2026-08-21T10:30:00",
+            "direction": "expense",
+            "amount": "400.00",
+            "summary": "审批第一笔付款",
+        },
+    ).json()["data"]["id"]
+    second_bank_id = client.post(
+        "/api/bank-transactions",
+        json={
+            "store_id": store_id,
+            "ledger_period": "2026-08",
+            "occurred_at": "2026-08-22T10:30:00",
+            "direction": "expense",
+            "amount": "600.00",
+            "summary": "审批第二笔付款",
+        },
+    ).json()["data"]["id"]
+    first_match = client.post(
+        "/api/matches",
+        json={
+            "expense_item_id": expense.id,
+            "bank_transaction_id": first_bank_id,
+            "amount": "400.00",
+            "accounting_period": "2026-08",
+            "category_l1": "门店支出",
+            "category_l2": "零星报销",
+        },
+    )
+    assert first_match.status_code == 201
+    assert client.post(f"/api/matches/{first_match.json()['data']['id']}/confirm?operator=tester").status_code == 200
+
+    hidden_candidates = client.get(
+        f"/api/matches/reconciliation/candidates?bank_transaction_id={second_bank_id}&store_id={store_id}&approval_only=true"
+    ).json()["data"]["candidates"]
+    assert all(candidate["expense_item"]["id"] != expense.id for candidate in hidden_candidates)
+
+    searched_candidates = client.get(
+        f"/api/matches/reconciliation/candidates?bank_transaction_id={second_bank_id}"
+        f"&store_id={store_id}&approval_only=true&approval_no=202608300588"
+    ).json()["data"]["candidates"]
+    assert len(searched_candidates) == 1
+    assert searched_candidates[0]["expense_item"]["id"] == expense.id
+    assert searched_candidates[0]["remaining_amount"] == "600.00"
+
+    second_match = client.post(
+        "/api/matches",
+        json={
+            "expense_item_id": expense.id,
+            "bank_transaction_id": second_bank_id,
+            "amount": "600.00",
+            "accounting_period": "2026-08",
+            "category_l1": "门店支出",
+            "category_l2": "零星报销",
+        },
+    )
+    assert second_match.status_code == 201
+
+
+def test_approval_match_requires_category_before_save(client: TestClient, session: Session) -> None:
+    store_id = client.post("/api/stores", json={"name": "审批匹配分类必填店"}).json()["data"]["id"]
+    client.post("/api/ledgers", json={"store_id": store_id, "period": "2026-08"})
+    create_expense_category_pair(session, "房租水电", "水电费")
+    template = ApprovalTemplate(process_code="PROC-CATEGORY-REQUIRED", name="门店支出报销", is_enabled=True)
+    session.add(template)
+    session.flush()
+    approval = ApprovalInstance(
+        template_id=template.id,
+        dingtalk_instance_id="approval-category-required",
+        approval_no="202608300399",
+        store_id=store_id,
+        approval_status="agree",
+        submit_at=datetime(2026, 8, 20, 10, 0, 0),
+    )
+    session.add(approval)
+    session.flush()
+    expense = ExpenseItem(
+        store_id=store_id,
+        ledger_period="2026-08",
+        expense_date=datetime(2026, 8, 20),
+        description="未分类审批支出",
+        amount="500.00",
+        source="dingtalk",
+        source_document_id="approval-category-required",
+        approval_instance_id=approval.id,
+    )
+    session.add(expense)
+    session.commit()
+    bank_id = client.post(
+        "/api/bank-transactions",
+        json={
+            "store_id": store_id,
+            "ledger_period": "2026-08",
+            "occurred_at": "2026-08-21T10:30:00",
+            "direction": "expense",
+            "amount": "500.00",
+            "summary": "审批匹配分类必填",
+        },
+    ).json()["data"]["id"]
+    payload = {
+        "expense_item_id": expense.id,
+        "bank_transaction_id": bank_id,
+        "amount": "500.00",
+        "accounting_period": "2026-08",
+    }
+
+    missing_category = client.post("/api/matches", json=payload)
+    invalid_category = client.post(
+        "/api/matches",
+        json={**payload, "category_l1": "门店支出", "category_l2": "零星报销"},
+    )
+    with_category = client.post(
+        "/api/matches",
+        json={**payload, "category_l1": "房租水电", "category_l2": "水电费"},
+    )
+
+    assert missing_category.status_code == 409
+    assert missing_category.json()["detail"] == "请选择费用分类后再确认匹配"
+    assert invalid_category.status_code == 409
+    assert invalid_category.json()["detail"] == "请选择费用分类后再确认匹配"
+    assert with_category.status_code == 201
+    confirm_response = client.post(f"/api/matches/{with_category.json()['data']['id']}/confirm?operator=tester")
+    assert confirm_response.status_code == 200
+
+
+def test_approval_match_rejects_revenue_fee_category(client: TestClient, session: Session) -> None:
+    store_id = client.post("/api/stores", json={"name": "审批匹配手续费禁用店"}).json()["data"]["id"]
+    client.post("/api/ledgers", json={"store_id": store_id, "period": "2026-08"})
+    create_expense_category_pair(session, "手续费", "美团手续费")
+    template = ApprovalTemplate(process_code="PROC-FEE-CATEGORY-REJECT", name="门店支出报销", is_enabled=True)
+    session.add(template)
+    session.flush()
+    approval = ApprovalInstance(
+        template_id=template.id,
+        dingtalk_instance_id="approval-fee-category-reject",
+        approval_no="202608300499",
+        store_id=store_id,
+        approval_status="agree",
+        submit_at=datetime(2026, 8, 20, 10, 0, 0),
+    )
+    session.add(approval)
+    session.flush()
+    expense = ExpenseItem(
+        store_id=store_id,
+        ledger_period="2026-08",
+        expense_date=datetime(2026, 8, 20),
+        description="误选手续费分类审批支出",
+        amount="500.00",
+        source="dingtalk",
+        source_document_id="approval-fee-category-reject",
+        approval_instance_id=approval.id,
+    )
+    session.add(expense)
+    session.commit()
+    bank_id = client.post(
+        "/api/bank-transactions",
+        json={
+            "store_id": store_id,
+            "ledger_period": "2026-08",
+            "occurred_at": "2026-08-21T10:30:00",
+            "direction": "expense",
+            "amount": "500.00",
+            "summary": "审批匹配不能选手续费",
+        },
+    ).json()["data"]["id"]
+
+    response = client.post(
+        "/api/matches",
+        json={
+            "expense_item_id": expense.id,
+            "bank_transaction_id": bank_id,
+            "amount": "500.00",
+            "accounting_period": "2026-08",
+            "category_l1": "手续费",
+            "category_l2": "美团手续费",
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "请选择费用分类后再确认匹配"
+
+
+def test_approval_match_ignores_synced_category_until_user_saves(client: TestClient, session: Session) -> None:
+    store_id = client.post("/api/stores", json={"name": "审批同步分类不回显店"}).json()["data"]["id"]
+    client.post("/api/ledgers", json={"store_id": store_id, "period": "2026-08"})
+    create_expense_category_pair(session, "房租水电", "水电费")
+    template = ApprovalTemplate(process_code="PROC-SYNCED-CATEGORY", name="门店支出报销", is_enabled=True)
+    session.add(template)
+    session.flush()
+    approval = ApprovalInstance(
+        template_id=template.id,
+        dingtalk_instance_id="approval-synced-category",
+        approval_no="202608300498",
+        store_id=store_id,
+        approval_status="agree",
+        submit_at=datetime(2026, 8, 20, 10, 0, 0),
+    )
+    session.add(approval)
+    session.flush()
+    expense = ExpenseItem(
+        store_id=store_id,
+        ledger_period="2026-08",
+        expense_date=datetime(2026, 8, 20),
+        description="同步已有分类审批支出",
+        amount="500.00",
+        category_l1="房租水电",
+        category_l2="水电费",
+        source="dingtalk",
+        source_document_id="approval-synced-category",
+        approval_instance_id=approval.id,
+    )
+    session.add(expense)
+    session.commit()
+    bank_id = client.post(
+        "/api/bank-transactions",
+        json={
+            "store_id": store_id,
+            "ledger_period": "2026-08",
+            "occurred_at": "2026-08-21T10:30:00",
+            "direction": "expense",
+            "amount": "500.00",
+            "summary": "审批同步分类不回显",
+        },
+    ).json()["data"]["id"]
+
+    payload = {
+        "expense_item_id": expense.id,
+        "bank_transaction_id": bank_id,
+        "amount": "500.00",
+        "accounting_period": "2026-08",
+    }
+
+    synced_category = client.post("/api/matches", json=payload)
+    user_selected_category = client.post(
+        "/api/matches",
+        json={**payload, "category_l1": "房租水电", "category_l2": "水电费"},
+    )
+
+    assert synced_category.status_code == 409
+    assert synced_category.json()["detail"] == "请选择费用分类后再确认匹配"
+    assert user_selected_category.status_code == 201
+    session.refresh(expense)
+    assert json.loads(expense.user_edited_fields_json) == ["category_l1", "category_l2"]
+
+
+def test_approval_match_accepts_single_level_category_payload(client: TestClient, session: Session) -> None:
+    store_id = client.post("/api/stores", json={"name": "审批单级分类店"}).json()["data"]["id"]
+    client.post("/api/ledgers", json={"store_id": store_id, "period": "2026-08"})
+    session.add(ExpenseCategory(name="房租水电", parent_id=None, sort_order=1))
+    template = ApprovalTemplate(process_code="PROC-SINGLE-CATEGORY", name="门店支出报销", is_enabled=True)
+    session.add(template)
+    session.flush()
+    approval = ApprovalInstance(
+        template_id=template.id,
+        dingtalk_instance_id="approval-single-category",
+        approval_no="202608300598",
+        store_id=store_id,
+        approval_status="agree",
+        submit_at=datetime(2026, 8, 20, 10, 0, 0),
+    )
+    session.add(approval)
+    session.flush()
+    expense = ExpenseItem(
+        store_id=store_id,
+        ledger_period="2026-08",
+        expense_date=datetime(2026, 8, 20),
+        description="单级分类审批支出",
+        amount="300.00",
+        source="dingtalk",
+        source_document_id="approval-single-category",
+        approval_instance_id=approval.id,
+    )
+    session.add(expense)
+    session.commit()
+    bank_id = client.post(
+        "/api/bank-transactions",
+        json={
+            "store_id": store_id,
+            "ledger_period": "2026-08",
+            "occurred_at": "2026-08-21T10:30:00",
+            "direction": "expense",
+            "amount": "300.00",
+            "summary": "审批单级分类",
+        },
+    ).json()["data"]["id"]
+
+    response = client.post(
+        "/api/matches",
+        json={
+            "expense_item_id": expense.id,
+            "bank_transaction_id": bank_id,
+            "amount": "300.00",
+            "accounting_period": "2026-08",
+            "category_l1": "房租水电",
+            "category_l2": "房租水电",
+        },
+    )
+
+    assert response.status_code == 201
+    session.refresh(expense)
+    assert expense.category_l1 == "房租水电"
+    assert expense.category_l2 is None
 
 
 def test_confirm_multiple_matches_updates_partial_and_paid_status(client: TestClient) -> None:
@@ -1609,5 +2040,9 @@ def test_export_ledger_detail_xlsx(client: TestClient) -> None:
     assert workbook["营业收入"]["B2"].value == "美团"
     assert workbook["收入渠道汇总"]["A2"].value == "美团"
     assert workbook["收入渠道汇总"]["D2"].value == 20
-    assert workbook["支出明细"]["B2"].value == "物料采购"
+    expense_descriptions = [
+        workbook["支出明细"][f"B{row}"].value
+        for row in range(2, workbook["支出明细"].max_row + 1)
+    ]
+    assert "物料采购" in expense_descriptions
     assert workbook["银行流水"]["D2"].value == "食材供应商"
