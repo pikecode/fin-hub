@@ -446,7 +446,7 @@ class AttachmentAccessUrl(BaseModel):
 
 
 class BankTransactionCreate(BaseModel):
-    store_id: str | None = None
+    store_id: str
     ledger_period: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}$")
     occurred_at: datetime
     direction: str = Field(pattern=r"^(income|expense)$")
@@ -481,6 +481,7 @@ class BankTransactionRead(BankTransactionCreate):
     model_config = ConfigDict(from_attributes=True)
 
     id: str
+    ledger_period: str
     matched_amount: Decimal
     import_job_id: str | None = None
     created_at: datetime

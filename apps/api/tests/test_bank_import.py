@@ -90,7 +90,7 @@ def test_download_bank_import_template(client: TestClient) -> None:
     assert "bank-import-template.csv" in response.headers["content-disposition"]
     assert response.content.startswith("\ufeff".encode("utf-8"))
     text = response.content.decode("utf-8-sig")
-    assert "发生时间,类型,金额,备注,流水号" in text
+    assert "发生时间,类型,金额,对方户名,对方账号,备注,流水号" in text
     assert "2026-08-20 10:00:00,收入,1200.00" in text
 
 
@@ -248,7 +248,7 @@ def test_rollback_bank_import_rejects_candidate_match_records(client: TestClient
     assert client.get("/api/bank-transactions?store_id=" + store_id).json()["data"]["total"] == 1
 
 
-def test_import_bank_transactions_without_store_assignment(client: TestClient) -> None:
+def test_import_bank_transactions_requires_store_assignment(client: TestClient) -> None:
     csv_content = "\n".join(
         [
             "日期,收入还是支出,金额,备注",
@@ -261,14 +261,13 @@ def test_import_bank_transactions_without_store_assignment(client: TestClient) -
         data={"started_by": "tester"},
         files={"file": ("bank.csv", csv_content.encode("utf-8"), "text/csv")},
     )
-    assert response.status_code == 201
-    data = response.json()["data"]
-    assert data["created_count"] == 1
+    assert response.status_code == 422
 
-    transactions = client.get("/api/bank-transactions?direction=expense").json()["data"]["items"]
-    assert transactions[0]["store_id"] is None
-    assert transactions[0]["ledger_period"] is None
-    assert transactions[0]["summary"] == "门店报销付款"
+    preview_response = client.post(
+        "/api/bank-transactions/import/preview",
+        files={"file": ("bank.csv", csv_content.encode("utf-8"), "text/csv")},
+    )
+    assert preview_response.status_code == 422
 
 
 def test_import_bank_transactions_for_store_derives_period_per_row(client: TestClient) -> None:

@@ -446,8 +446,8 @@ class BankTransaction(Base):
     )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
-    store_id: Mapped[str | None] = mapped_column(ForeignKey("stores.id"))
-    ledger_period: Mapped[str | None] = mapped_column(String(7))
+    store_id: Mapped[str] = mapped_column(ForeignKey("stores.id"), nullable=False)
+    ledger_period: Mapped[str] = mapped_column(String(7), nullable=False)
     occurred_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     direction: Mapped[str] = mapped_column(String(12), nullable=False)
     amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)

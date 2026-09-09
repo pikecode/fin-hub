@@ -446,8 +446,8 @@ export interface ExpenseItemUpdate {
 
 export interface BankTransaction {
   id: string;
-  store_id?: string | null;
-  ledger_period?: string | null;
+  store_id: string;
+  ledger_period: string;
   occurred_at: string;
   direction: MoneyDirection;
   amount: string;
@@ -462,7 +462,7 @@ export interface BankTransaction {
 }
 
 export interface BankTransactionCreate {
-  store_id?: string | null;
+  store_id: string;
   ledger_period?: string | null;
   occurred_at: string;
   direction: MoneyDirection;

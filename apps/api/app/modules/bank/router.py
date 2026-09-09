@@ -50,10 +50,10 @@ from app.schemas import (
 
 router = APIRouter(prefix="/bank-transactions", tags=["bank"])
 
-BANK_IMPORT_TEMPLATE_HEADERS = ["发生时间", "收入", "支出", "对方户名", "对方账号", "备注"]
+BANK_IMPORT_TEMPLATE_HEADERS = ["发生时间", "类型", "金额", "对方户名", "对方账号", "备注", "流水号"]
 BANK_IMPORT_TEMPLATE_ROWS = [
-    ["2026-08-20", "1200.00", "", "营业款", "BANK-EXAMPLE-001", "营业款收入"],
-    ["2026-08-21", "", "300.00", "物料款", "BANK-EXAMPLE-002", "采购支出"],
+    ["2026-08-20 10:00:00", "收入", "1200.00", "营业款", "BANK-EXAMPLE-001", "营业款收入", "BANK-EXAMPLE-SN-001"],
+    ["2026-08-21 11:30:00", "支出", "300.00", "物料款", "BANK-EXAMPLE-002", "采购支出", "BANK-EXAMPLE-SN-002"],
 ]
 
 
@@ -77,13 +77,13 @@ def ensure_open_or_create_ledger(session: Session, store_id: str, period: str) -
 
 def normalize_bank_assignment(session: Session, payload: BankTransactionCreate) -> dict:
     data = payload.model_dump()
-    if data["store_id"] and not data["ledger_period"]:
+    if not data["store_id"]:
+        raise HTTPException(status_code=422, detail="Store is required")
+    if not data["ledger_period"]:
         data["ledger_period"] = data["occurred_at"].strftime("%Y-%m")
         ensure_open_or_create_ledger(session, data["store_id"], data["ledger_period"])
-    elif data["store_id"] and data["ledger_period"]:
+    else:
         ensure_open_or_create_ledger(session, data["store_id"], data["ledger_period"])
-    elif data["ledger_period"]:
-        raise HTTPException(status_code=422, detail="Store is required when ledger period is provided")
     return data
 
 
@@ -107,6 +107,7 @@ def list_bank_transactions(
         query = query.where(BankTransaction.store_id == store_id)
     else:
         query = query.where(scoped_store_condition(session, current_user, BankTransaction.store_id))
+    query = query.where(BankTransaction.store_id.is_not(None), BankTransaction.ledger_period.is_not(None))
     if ledger_period:
         query = query.where(BankTransaction.ledger_period == ledger_period)
     if direction:
@@ -234,6 +235,10 @@ def update_bank_transaction(
         raise HTTPException(status_code=409, detail="Bank transaction already matched and cannot be edited")
 
     updates = payload.model_dump(exclude_unset=True)
+    if "store_id" in updates and not updates["store_id"]:
+        raise HTTPException(status_code=422, detail="Store is required")
+    if "ledger_period" in updates and not updates["ledger_period"]:
+        raise HTTPException(status_code=422, detail="Ledger period is required")
     target_store_id = updates.get("store_id", transaction.store_id)
     ensure_store_access(session, current_user, target_store_id)
     target_ledger_period = updates.get("ledger_period", transaction.ledger_period)
@@ -409,25 +414,36 @@ def transaction_exists(session: Session, payload: dict) -> bool:
     return exists is not None
 
 
-def parse_import_payload(row: dict[str, str | None], store_id: str | None, ledger_period: str | None) -> dict:
+def parse_import_payload(row: dict[str, str | None], store_id: str, ledger_period: str | None) -> dict:
     income_text = pick(row, "income_amount", "收入", "入账金额", "收入金额")
     expense_text = pick(row, "expense_amount", "支出", "出账金额", "支出金额")
+    direction_text = pick(row, "direction", "方向", "类型", "收入还是支出")
+    common_amount_text = pick(row, "amount", "金额", "交易金额")
     occurred_at = parse_datetime(pick(row, "occurred_at", "发生时间", "交易时间", "日期"))
     counterparty_name = pick(row, "counterparty_name", "对方户名", "交易对方") or None
     counterparty_account = pick(row, "counterparty_account", "对方账号") or None
     summary = pick(row, "summary", "摘要", "备注") or None
     has_income = bool(income_text and income_text.strip())
     has_expense = bool(expense_text and expense_text.strip())
-    if has_income and has_expense:
-        raise ValueError("Each row can only have income or expense amount")
-    if not has_income and not has_expense:
-        raise ValueError("Amount is required")
-    amount_text = income_text if has_income else expense_text
+    if common_amount_text:
+        if has_income or has_expense:
+            raise ValueError("Use either direction + amount or income/expense amount columns, not both")
+        if not direction_text:
+            raise ValueError("Direction is required when amount column is used")
+        direction = parse_direction(direction_text)
+        amount_text = common_amount_text
+    else:
+        if has_income and has_expense:
+            raise ValueError("Each row can only have income or expense amount")
+        if not has_income and not has_expense:
+            raise ValueError("Amount is required")
+        direction = "income" if has_income else "expense"
+        amount_text = income_text if has_income else expense_text
     return {
         "store_id": store_id,
-        "ledger_period": ledger_period or (occurred_at.strftime("%Y-%m") if store_id else None),
+        "ledger_period": ledger_period or occurred_at.strftime("%Y-%m"),
         "occurred_at": occurred_at,
-        "direction": "income" if has_income else "expense",
+        "direction": direction,
         "amount": Decimal(amount_text.replace(",", "")),
         "counterparty_name": counterparty_name,
         "counterparty_account": counterparty_account,
@@ -467,7 +483,7 @@ def read_import_rows(file_name: str | None, content: bytes) -> Iterable[tuple[in
 
 
 async def preview_bank_transactions_file(
-    store_id: str | None = Form(None),
+    store_id: str = Form(...),
     ledger_period: str | None = Form(None),
     file: UploadFile = File(...),
     session: Session = Depends(get_session),
@@ -475,9 +491,7 @@ async def preview_bank_transactions_file(
 ) -> ApiEnvelope[BankImportPreviewResult]:
     ensure_permission(session, current_user, "reconciliation.manage")
     ensure_store_access(session, current_user, store_id)
-    if ledger_period and not store_id:
-        raise HTTPException(status_code=422, detail="Store is required when ledger period is provided")
-    if store_id and ledger_period:
+    if ledger_period:
         ensure_open_or_create_ledger(session, store_id, ledger_period)
     content = await file.read()
 
@@ -518,7 +532,7 @@ async def preview_bank_transactions_file(
 
 
 async def import_bank_transactions_file(
-    store_id: str | None = Form(None),
+    store_id: str = Form(...),
     ledger_period: str | None = Form(None),
     started_by: str = Form("admin"),
     file: UploadFile = File(...),
@@ -527,9 +541,7 @@ async def import_bank_transactions_file(
 ) -> ApiEnvelope[BankImportResult]:
     ensure_permission(session, current_user, "reconciliation.manage")
     ensure_store_access(session, current_user, store_id)
-    if ledger_period and not store_id:
-        raise HTTPException(status_code=422, detail="Store is required when ledger period is provided")
-    if store_id and ledger_period:
+    if ledger_period:
         ensure_open_or_create_ledger(session, store_id, ledger_period)
     content = await file.read()
 
@@ -550,7 +562,7 @@ async def import_bank_transactions_file(
             job.processed_count += 1
             try:
                 payload = parse_import_payload(row, store_id, ledger_period)
-                if payload["store_id"] and payload["ledger_period"] and not ledger_period:
+                if payload["ledger_period"] and not ledger_period:
                     ensure_open_or_create_ledger(session, payload["store_id"], payload["ledger_period"])
                 if transaction_exists(session, payload):
                     skipped_count += 1

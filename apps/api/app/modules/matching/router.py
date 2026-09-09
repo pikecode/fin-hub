@@ -664,6 +664,8 @@ def create_revenue_match_candidate(
     bank_transaction = session.get(BankTransaction, payload.bank_transaction_id)
     if bank_transaction is None:
         raise HTTPException(status_code=404, detail="Bank transaction not found")
+    if not bank_transaction.store_id:
+        raise HTTPException(status_code=409, detail="Bank transaction must belong to a store")
     ensure_store_access(session, current_user, bank_transaction.store_id)
     if bank_transaction.direction != "income":
         raise HTTPException(status_code=409, detail="Bank transaction is not income")
@@ -1083,7 +1085,7 @@ def create_match_candidate(
         )
         if ledger is not None and ledger.status == LedgerStatus.CLOSED.value:
             raise HTTPException(status_code=409, detail="Ledger is closed")
-    if bank_transaction.store_id and expense_item.store_id != bank_transaction.store_id:
+    if expense_item.store_id != bank_transaction.store_id:
         raise HTTPException(status_code=409, detail="Store mismatch")
     existing_match = session.scalar(
         select(ExpenseBankMatch).where(
@@ -1302,10 +1304,14 @@ def list_reconciliation_candidates(
     if bank_transaction_id and bank_transaction is None:
         raise HTTPException(status_code=404, detail="Bank transaction not found")
     if bank_transaction is not None:
+        if not bank_transaction.store_id:
+            raise HTTPException(status_code=409, detail="Bank transaction must belong to a store")
         ensure_store_access(session, current_user, bank_transaction.store_id)
     ensure_store_access(session, current_user, store_id)
     if bank_transaction is not None and bank_transaction.direction != "expense":
         raise HTTPException(status_code=409, detail="Only expense bank transactions can match approvals")
+    if bank_transaction is not None and store_id and bank_transaction.store_id != store_id:
+        raise HTTPException(status_code=409, detail="Bank transaction belongs to another store")
 
     excluded_match = session.get(ExpenseBankMatch, exclude_match_id) if exclude_match_id else None
     if excluded_match and bank_transaction is None:
@@ -1351,8 +1357,9 @@ def list_reconciliation_candidates(
         query = query.where(ApprovalInstance.template_id == template_id)
     if approval_only:
         query = query.where(*real_approval_candidate_filter())
-    if store_id:
-        query = query.where(ExpenseItem.store_id == store_id)
+    target_store_id = store_id or (bank_transaction.store_id if bank_transaction is not None else None)
+    if target_store_id:
+        query = query.where(ExpenseItem.store_id == target_store_id)
     else:
         query = query.where(scoped_store_condition(session, current_user, ExpenseItem.store_id))
     if ledger_period and not approval_search:
@@ -1403,7 +1410,7 @@ def list_reconciliation_candidates(
     }
     matched_approval_ids, matched_document_ids = matched_approval_keys(
         session,
-        store_id=store_id,
+        store_id=target_store_id,
         ledger_period=None,
         exclude_match_id=exclude_match_id,
     )
@@ -1727,8 +1734,12 @@ def confirm_match(
     bank_transaction = session.get(BankTransaction, match.bank_transaction_id)
     if expense_item is None or bank_transaction is None:
         raise HTTPException(status_code=409, detail="Matched source record is missing")
+    if not bank_transaction.store_id:
+        raise HTTPException(status_code=409, detail="Bank transaction must belong to a store")
     ensure_store_access(session, current_user, expense_item.store_id)
     ensure_store_access(session, current_user, bank_transaction.store_id)
+    if expense_item.store_id != bank_transaction.store_id:
+        raise HTTPException(status_code=409, detail="Store mismatch")
     if match.status == MatchStatus.CONFIRMED.value:
         return ApiEnvelope(data=match)
     if match.status == MatchStatus.REJECTED.value:
@@ -1749,9 +1760,6 @@ def confirm_match(
     match.status = MatchStatus.CONFIRMED.value
     match.confirmed_by = operator
     match.confirmed_at = utc_now()
-    if not bank_transaction.store_id and not bank_transaction.ledger_period:
-        bank_transaction.store_id = expense_item.store_id
-        bank_transaction.ledger_period = match.accounting_period or expense_item.ledger_period
     if not match.accounting_period:
         match.accounting_period = bank_transaction.ledger_period or expense_item.ledger_period
     bank_transaction.matched_amount = confirmed_bank_match_amount(session, bank_transaction.id, exclude_match_id=match.id) + match.amount

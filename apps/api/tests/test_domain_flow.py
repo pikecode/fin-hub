@@ -889,7 +889,7 @@ def test_reconciliation_candidates_ignore_disabled_approval_templates(
     assert candidates == []
 
 
-def test_reconciliation_candidates_are_not_limited_by_bank_assignment(client: TestClient) -> None:
+def test_reconciliation_candidates_are_limited_by_bank_store(client: TestClient) -> None:
     bank_store_id = client.post("/api/stores", json={"name": "流水归属店"}).json()["data"]["id"]
     approval_store_id = client.post("/api/stores", json={"name": "审批归属店"}).json()["data"]["id"]
     client.post("/api/ledgers", json={"store_id": bank_store_id, "period": "2026-08"})
@@ -919,12 +919,24 @@ def test_reconciliation_candidates_are_not_limited_by_bank_assignment(client: Te
     candidates = client.get(f"/api/matches/reconciliation/candidates?bank_transaction_id={bank_id}").json()["data"][
         "candidates"
     ]
-    assert any(candidate["expense_item"]["id"] == expense_id for candidate in candidates)
+    assert all(candidate["expense_item"]["store_id"] == bank_store_id for candidate in candidates)
+    assert all(candidate["expense_item"]["id"] != expense_id for candidate in candidates)
 
     filtered_candidates = client.get(
         f"/api/matches/reconciliation/candidates?bank_transaction_id={bank_id}&store_id={bank_store_id}"
     ).json()["data"]["candidates"]
     assert all(candidate["expense_item"]["store_id"] == bank_store_id for candidate in filtered_candidates)
+
+    mismatch_response = client.post(
+        "/api/matches",
+        json={
+            "expense_item_id": expense_id,
+            "bank_transaction_id": bank_id,
+            "amount": "888.00",
+        },
+    )
+    assert mismatch_response.status_code == 409
+    assert mismatch_response.json()["detail"] == "Store mismatch"
 
 
 def test_reconciliation_candidates_can_filter_by_ledger_period(client: TestClient) -> None:
