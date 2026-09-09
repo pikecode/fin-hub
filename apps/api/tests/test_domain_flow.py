@@ -271,6 +271,71 @@ def test_reconciliation_records_include_cross_period_match(client: TestClient) -
     assert records["items"][0]["match"]["accounting_period"] == "2026-08"
 
 
+def test_unmatch_keeps_bank_transaction_owned_period_with_remaining_match(client: TestClient) -> None:
+    store_id = client.post("/api/stores", json={"name": "蘑说跨账期解除匹配店"}).json()["data"]["id"]
+    client.post("/api/ledgers", json={"store_id": store_id, "period": "2026-08"})
+    client.post("/api/ledgers", json={"store_id": store_id, "period": "2026-09"})
+    first_expense_id = client.post(
+        "/api/expense-items",
+        json={
+            "store_id": store_id,
+            "ledger_period": "2026-08",
+            "expense_date": "2026-08-20",
+            "description": "八月费用",
+            "amount": "100.00",
+        },
+    ).json()["data"]["id"]
+    second_expense_id = client.post(
+        "/api/expense-items",
+        json={
+            "store_id": store_id,
+            "ledger_period": "2026-09",
+            "expense_date": "2026-09-02",
+            "description": "九月费用",
+            "amount": "200.00",
+        },
+    ).json()["data"]["id"]
+    bank_id = client.post(
+        "/api/bank-transactions",
+        json={
+            "store_id": store_id,
+            "ledger_period": "2026-09",
+            "occurred_at": "2026-08-31T23:30:00",
+            "direction": "expense",
+            "amount": "300.00",
+        },
+    ).json()["data"]["id"]
+    first_match_id = client.post(
+        "/api/matches",
+        json={
+            "expense_item_id": first_expense_id,
+            "bank_transaction_id": bank_id,
+            "amount": "100.00",
+            "accounting_period": "2026-08",
+        },
+    ).json()["data"]["id"]
+    second_match_id = client.post(
+        "/api/matches",
+        json={
+            "expense_item_id": second_expense_id,
+            "bank_transaction_id": bank_id,
+            "amount": "200.00",
+            "accounting_period": "2026-09",
+        },
+    ).json()["data"]["id"]
+    assert client.post(f"/api/matches/{first_match_id}/confirm").status_code == 200
+    assert client.post(f"/api/matches/{second_match_id}/confirm").status_code == 200
+
+    unmatch = client.post(f"/api/matches/reconciliation/records/{first_match_id}/unmatch")
+
+    assert unmatch.status_code == 200
+    bank_transaction = client.get(f"/api/bank-transactions?store_id={store_id}&page_size=10").json()["data"]["items"][0]
+    assert bank_transaction["id"] == bank_id
+    assert bank_transaction["store_id"] == store_id
+    assert bank_transaction["ledger_period"] == "2026-09"
+    assert bank_transaction["matched_amount"] == "200.00"
+
+
 def test_candidate_score_only_uses_bank_and_approval_amounts() -> None:
     bank_transaction = SimpleNamespace(amount=Decimal("10000.00"), matched_amount=Decimal("0.00"))
     expense = SimpleNamespace(amount=Decimal("10000.00"))
@@ -424,7 +489,7 @@ def test_create_match_candidate_reuses_rejected_existing_match(client: TestClien
     assert retry.json()["data"]["reason"] == "重新匹配"
 
 
-def test_bank_transaction_cannot_match_multiple_expense_items(client: TestClient) -> None:
+def test_bank_transaction_can_match_multiple_expense_items(client: TestClient) -> None:
     store_id = client.post("/api/stores", json={"name": "蘑说流水拆分匹配店"}).json()["data"]["id"]
     client.post("/api/ledgers", json={"store_id": store_id, "period": "2026-08"})
     first_expense_id = client.post(
@@ -479,14 +544,15 @@ def test_bank_transaction_cannot_match_multiple_expense_items(client: TestClient
     )
 
     assert first.status_code == 201
-    assert second.status_code == 409
-    assert second.json()["detail"] == "This bank transaction is already matched to an approval"
+    assert second.status_code == 201
 
     first_confirm = client.post(f"/api/matches/{first.json()['data']['id']}/confirm?operator=tester")
     assert first_confirm.status_code == 200
+    second_confirm = client.post(f"/api/matches/{second.json()['data']['id']}/confirm?operator=tester")
+    assert second_confirm.status_code == 200
 
     bank_transaction = client.get(f"/api/bank-transactions?store_id={store_id}&page_size=20").json()["data"]["items"][0]
-    assert bank_transaction["matched_amount"] == "400.00"
+    assert bank_transaction["matched_amount"] == "1000.00"
 
     third_expense_id = client.post(
         "/api/expense-items",
@@ -507,8 +573,7 @@ def test_bank_transaction_cannot_match_multiple_expense_items(client: TestClient
             "accounting_period": "2026-08",
         },
     )
-    assert over_match.status_code == 409
-    assert over_match.json()["detail"] == "This bank transaction is already matched to an approval"
+    assert over_match.status_code == 201
 
 
 def test_reconciliation_candidate_search_returns_parsed_approval_lines_without_backfill(

@@ -283,24 +283,6 @@ def refresh_bank_matched_amount(session: Session, bank_transaction: BankTransact
     bank_transaction.matched_amount = Decimal(total or 0)
 
 
-def refresh_bank_assignment(session: Session, bank_transaction: BankTransaction) -> None:
-    matched_expense = session.execute(
-        select(ExpenseBankMatch, ExpenseItem)
-        .join(ExpenseItem, ExpenseBankMatch.expense_item_id == ExpenseItem.id)
-        .where(
-            ExpenseBankMatch.bank_transaction_id == bank_transaction.id,
-            ExpenseBankMatch.status == MatchStatus.CONFIRMED.value,
-        )
-        .order_by(ExpenseBankMatch.confirmed_at.desc().nullslast(), ExpenseBankMatch.created_at.desc())
-        .limit(1)
-    ).first()
-    if matched_expense is None:
-        return
-    match, expense = matched_expense
-    bank_transaction.store_id = expense.store_id
-    bank_transaction.ledger_period = match.accounting_period or expense.ledger_period
-
-
 def approval_expense_join_condition():
     return or_(
         ExpenseItem.source_document_id == ApprovalInstance.dingtalk_instance_id,
@@ -1126,19 +1108,8 @@ def create_match_candidate(
         session.refresh(existing_match)
         return ApiEnvelope(data=existing_match)
 
-    active_bank_match = session.scalar(
-        select(ExpenseBankMatch)
-        .where(
-            ExpenseBankMatch.bank_transaction_id == bank_transaction.id,
-            ExpenseBankMatch.status != MatchStatus.REJECTED.value,
-        )
-        .limit(1)
-    )
-    if active_bank_match is not None:
-        raise HTTPException(status_code=409, detail="This bank transaction is already matched to an approval")
-
-    # ✅ 允许入账月份与银行流水账期不一致（用户的会计判断）
-    # 原始的银行流水账期仍保留在 bank_transaction.ledger_period 字段中，可追溯
+    # ✅ 允许入账账期与银行流水归属账期不一致（用户的会计判断）
+    # 银行流水归属账期仍保留在 bank_transaction.ledger_period 字段中，可追溯
     # if payload.accounting_period and bank_transaction.ledger_period and payload.accounting_period != bank_transaction.ledger_period:
     #     raise HTTPException(status_code=409, detail="Accounting period does not match bank transaction period")
     payload_data = payload.model_dump(exclude={"category_l1", "category_l2"})
@@ -1325,14 +1296,6 @@ def list_reconciliation_candidates(
             bank_transaction.id,
             exclude_match_id=exclude_match_id,
         )
-        if remaining_bank_amount <= 0:
-            return ApiEnvelope(
-                data=ReconciliationCandidateResult(
-                    bank_transaction=bank_transaction,
-                    remaining_amount=Decimal("0.00"),
-                    candidates=[],
-                )
-            )
 
     query = (
         select(ExpenseItem, ApprovalInstance, ApprovalTemplate)
@@ -1696,7 +1659,6 @@ def unmatch_reconciliation_record(
 
     session.flush()
     refresh_bank_matched_amount(session, bank_transaction)
-    refresh_bank_assignment(session, bank_transaction)
     refresh_expense_payment_status(session, expense_item)
     refresh_approval_processing_status(session, expense_item.approval_instance_id)
 
@@ -1744,25 +1706,15 @@ def confirm_match(
         return ApiEnvelope(data=match)
     if match.status == MatchStatus.REJECTED.value:
         raise HTTPException(status_code=409, detail="Rejected match cannot be confirmed")
-    active_bank_match = session.scalar(
-        select(ExpenseBankMatch)
-        .where(
-            ExpenseBankMatch.bank_transaction_id == bank_transaction.id,
-            ExpenseBankMatch.status == MatchStatus.CONFIRMED.value,
-            ExpenseBankMatch.id != match.id,
-        )
-        .limit(1)
-    )
-    if active_bank_match is not None:
-        raise HTTPException(status_code=409, detail="This bank transaction is already matched to an approval")
     confirmed_expense_amount = confirmed_expense_match_amount(session, expense_item.id, exclude_match_id=match.id)
+    confirmed_bank_amount = confirmed_bank_match_amount(session, bank_transaction.id, exclude_match_id=match.id)
     ensure_approval_expense_category_selected(session, expense_item)
     match.status = MatchStatus.CONFIRMED.value
     match.confirmed_by = operator
     match.confirmed_at = utc_now()
     if not match.accounting_period:
         match.accounting_period = bank_transaction.ledger_period or expense_item.ledger_period
-    bank_transaction.matched_amount = confirmed_bank_match_amount(session, bank_transaction.id, exclude_match_id=match.id) + match.amount
+    bank_transaction.matched_amount = confirmed_bank_amount + match.amount
     if confirmed_expense_amount + match.amount >= Decimal(expense_item.amount):
         expense_item.payment_status = ExpensePaymentStatus.PAID.value
     else:

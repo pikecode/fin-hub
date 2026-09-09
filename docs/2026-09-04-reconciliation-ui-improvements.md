@@ -68,15 +68,14 @@ confirmForm.setFieldsValue({
 **修改后**:
 ```tsx
 <Form.Item name="amount" label="匹配金额" rules={[{ required: true, message: "请输入匹配金额" }]}>
-  <Input disabled />
+  <Input />
 </Form.Item>
 ```
 
 **原因**:
-- 匹配金额由系统自动计算，确保数据一致性
-- 计算逻辑：`Math.min(bankRemaining, expenseRemaining)`
-  - 取银行流水剩余金额和审批单剩余金额的较小值
-- 避免用户手动输入导致金额错误
+- 匹配金额默认按候选关系带出，财务可根据实际付款关系确认
+- 银行流水已匹配金额按确认记录累计
+- 支持拆分付款、合并付款和人工差异确认场景
 
 **计算逻辑** (第 287-288 行):
 ```tsx
@@ -208,25 +207,25 @@ const defaultMatchAmount = selectedCandidate
 
 ```
 情况:
-- 银行流水剩余金额: 3000.00
+- 银行流水金额: 3000.00
 - 审批单剩余金额: 1000.00
 
 操作:
 1. 选择银行流水
 2. 选择审批单
 3. 打开对话框
-4. 匹配金额自动显示 1000.00（取较小值）
-5. 用户无法修改为 3000.00（禁止修改）
+4. 匹配金额默认显示候选金额
+5. 财务按实际付款关系确认或调整金额
 6. 选择入账月份
 7. 确认匹配
 
 结果:
-- 匹配金额: 1000.00（正确）
-- 银行流水剩余: 2000.00（可继续匹配其他审批单）
+- 匹配金额按确认记录保存
+- 银行流水已匹配金额累计更新，可继续匹配其他审批单
 
 优点:
-- 避免用户误输入 3000.00
-- 确保金额计算正确
+- 保留财务人工判断空间
+- 支持一条流水拆分到多条审批明细
 ```
 
 ---
@@ -236,32 +235,16 @@ const defaultMatchAmount = selectedCandidate
 ### 匹配金额计算规则
 
 ```typescript
-// 银行流水剩余金额
-const bankRemaining = Number(transaction.amount) - Number(transaction.matched_amount || 0);
-
 // 审批单剩余金额
 const expenseRemaining = Number(candidate.remaining_amount || 0);
 
-// 匹配金额 = 取较小值
-const matchAmount = Math.min(bankRemaining, expenseRemaining);
+// 匹配金额默认带出，允许财务确认调整
+const matchAmount = Number(candidate.recommended_amount || expenseRemaining);
 ```
 
 **保障机制**:
-1. **前端验证** - 禁止修改输入框
-2. **后端验证** - `validate_expense_bank_match_amount` 函数
-   ```python
-   # apps/api/app/modules/matching/router.py
-   def validate_expense_bank_match_amount(
-       session,
-       expense_item,
-       bank_transaction,
-       amount,
-       exclude_match_id=None,
-       include_candidates=False,
-   ):
-       # 验证金额不超过双方剩余金额
-       # 验证不会导致重复匹配
-   ```
+1. **前端验证** - 要求填写匹配金额和入账月份
+2. **后端验证** - 校验门店一致、方向一致、分类完整和匹配状态流转合法
 
 ---
 
@@ -413,16 +396,16 @@ rules={[{ required: true, message: "请选择入账月份" }]}  // 明确提示
 **操作建议**:
 - 大部分情况下，选择与银行流水相同的月份
 - 跨月费用（如月初扣款的上月费用）需要选择正确的会计月份
-- 延迟入账的费用按实际发生月份选择
+- 延迟入账的费用按实际业务归属月份选择
 
-**变化 2: 匹配金额不能修改**
+**变化 2: 匹配金额由财务确认**
 
-> "匹配金额由系统自动计算，确保不会超过银行流水或审批单的剩余金额。您不再需要（也不能）手动输入匹配金额。"
+> "匹配金额由财务确认，系统按确认记录累计银行流水已匹配金额，并更新审批明细付款状态。"
 
 **计算规则**:
-- 取银行流水剩余金额和审批单剩余金额的较小值
-- 确保一对一或一对多匹配时金额正确
-- 避免超额匹配
+- 默认带出候选金额
+- 确认后按匹配记录累计银行流水已匹配金额
+- 支持一对一、一对多、多对一和人工差异确认
 
 ---
 
