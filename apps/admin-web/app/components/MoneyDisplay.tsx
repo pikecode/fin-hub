@@ -44,7 +44,6 @@ export function MoneyDisplay({
       style={{
         fontVariantNumeric: "tabular-nums",
         fontWeight: 600,
-        fontFamily: "var(--font-number)",
         ...sizeStyles[size],
         ...colorStyle,
       }}

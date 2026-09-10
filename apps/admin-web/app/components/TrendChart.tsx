@@ -125,7 +125,7 @@ export function TrendChart({ title, data, height = 350, loading }: TrendChartPro
           result += `<div style="display: flex; align-items: center; gap: 8px; margin: 4px 0;">
             <span style="display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: ${item.color};"></span>
             <span style="flex: 1;">${item.seriesName}</span>
-            <span style="font-weight: 600; font-family: monospace;">¥${value}</span>
+            <span style="font-weight: 600;">¥${value}</span>
           </div>`;
         });
         return result;

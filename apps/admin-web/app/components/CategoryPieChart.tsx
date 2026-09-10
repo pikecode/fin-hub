@@ -61,7 +61,7 @@ export function CategoryPieChart({
                 <div style="display: flex; align-items: center; gap: 8px;">
                   <span style="display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: ${params.color};"></span>
                   <span style="flex: 1;">金额</span>
-                  <span style="font-weight: 600; font-family: monospace;">¥${value}</span>
+                  <span style="font-weight: 600;">¥${value}</span>
                 </div>
                 <div style="display: flex; align-items: center; gap: 8px; margin-top: 4px;">
                   <span style="display: inline-block; width: 10px;"></span>
