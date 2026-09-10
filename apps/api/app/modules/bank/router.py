@@ -50,10 +50,10 @@ from app.schemas import (
 
 router = APIRouter(prefix="/bank-transactions", tags=["bank"])
 
-BANK_IMPORT_TEMPLATE_HEADERS = ["发生时间", "类型", "金额", "对方户名", "对方账号", "备注", "流水号"]
+BANK_IMPORT_TEMPLATE_HEADERS = ["发生日期", "收入", "支出", "对方户名", "对方账号", "备注", "流水号"]
 BANK_IMPORT_TEMPLATE_ROWS = [
-    ["2026-08-20 10:00:00", "收入", "1200.00", "营业款", "BANK-EXAMPLE-001", "营业款收入", "BANK-EXAMPLE-SN-001"],
-    ["2026-08-21 11:30:00", "支出", "300.00", "物料款", "BANK-EXAMPLE-002", "采购支出", "BANK-EXAMPLE-SN-002"],
+    ["2026-08-20 10:00:00", "1200.00", "", "营业款", "BANK-EXAMPLE-001", "营业款收入", "BANK-EXAMPLE-SN-001"],
+    ["2026-08-21 11:30:00", "", "300.00", "物料款", "BANK-EXAMPLE-002", "采购支出", "BANK-EXAMPLE-SN-002"],
 ]
 
 
@@ -419,7 +419,7 @@ def parse_import_payload(row: dict[str, str | None], store_id: str, ledger_perio
     expense_text = pick(row, "expense_amount", "支出", "出账金额", "支出金额")
     direction_text = pick(row, "direction", "方向", "类型", "收入还是支出")
     common_amount_text = pick(row, "amount", "金额", "交易金额")
-    occurred_at = parse_datetime(pick(row, "occurred_at", "发生时间", "交易时间", "日期"))
+    occurred_at = parse_datetime(pick(row, "occurred_at", "发生日期", "发生时间", "交易时间", "日期"))
     counterparty_name = pick(row, "counterparty_name", "对方户名", "交易对方") or None
     counterparty_account = pick(row, "counterparty_account", "对方账号") or None
     summary = pick(row, "summary", "摘要", "备注") or None

@@ -90,8 +90,9 @@ def test_download_bank_import_template(client: TestClient) -> None:
     assert "bank-import-template.csv" in response.headers["content-disposition"]
     assert response.content.startswith("\ufeff".encode("utf-8"))
     text = response.content.decode("utf-8-sig")
-    assert "发生时间,类型,金额,对方户名,对方账号,备注,流水号" in text
-    assert "2026-08-20 10:00:00,收入,1200.00" in text
+    assert "发生日期,收入,支出,对方户名,对方账号,备注,流水号" in text
+    assert "2026-08-20 10:00:00,1200.00,,营业款" in text
+    assert "2026-08-21 11:30:00,,300.00,物料款" in text
 
 
 def test_import_bank_transactions_csv_and_skip_duplicates(client: TestClient) -> None:
@@ -142,6 +143,32 @@ def test_import_bank_transactions_csv_and_skip_duplicates(client: TestClient) ->
     assert {
         item["job_type"] for item in filtered_jobs_response.json()["data"]["items"]
     } == {"bank_transaction_import"}
+
+
+def test_import_bank_transactions_with_download_template_columns(client: TestClient) -> None:
+    store_id = client.post("/api/stores", json={"name": "蘑说模板导入店"}).json()["data"]["id"]
+    client.post("/api/ledgers", json={"store_id": store_id, "period": "2026-08"})
+
+    csv_content = "\n".join(
+        [
+            "发生日期,收入,支出,对方户名,对方账号,备注,流水号",
+            "2026-08-20 10:00:00,1200.00,,门店营业款,1001,营业款,BANK-TEMPLATE-001",
+            "2026-08-21 11:30:00,,300.00,物料供应商,2002,物料款,BANK-TEMPLATE-002",
+        ]
+    )
+
+    response = client.post(
+        "/api/bank-transactions/import",
+        data={"store_id": store_id, "ledger_period": "2026-08", "started_by": "tester"},
+        files={"file": ("bank-template.csv", csv_content.encode("utf-8"), "text/csv")},
+    )
+
+    assert response.status_code == 201
+    data = response.json()["data"]
+    assert data["created_count"] == 2
+    transactions = client.get(f"/api/bank-transactions?store_id={store_id}&page_size=10").json()["data"]["items"]
+    assert {item["direction"] for item in transactions} == {"income", "expense"}
+    assert {item["bank_serial_no"] for item in transactions} == {"BANK-TEMPLATE-001", "BANK-TEMPLATE-002"}
 
 
 def test_rollback_bank_import_deletes_unmatched_imported_transactions(client: TestClient) -> None:

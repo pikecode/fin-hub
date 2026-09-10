@@ -1159,7 +1159,7 @@ export default function BankPage() {
               columns={entryColumns}
               scroll={{ x: 1200, y: 480 }}
             />
-            <Typography.Text type="secondary">可以从 Excel 复制整块数据后粘贴。格式：发生日期 | 收入 | 支出 | 对方户名 | 对方账号 | 备注，导入模板同样保持这个顺序。</Typography.Text>
+            <Typography.Text type="secondary">可以从 Excel 复制整块数据后粘贴。格式：发生日期 | 收入 | 支出 | 对方户名 | 对方账号 | 备注 | 流水号（可选），导入模板同样保持这个顺序。</Typography.Text>
           </Space>
         </Form>
       </Modal>
