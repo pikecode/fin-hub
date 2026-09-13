@@ -266,7 +266,7 @@ select,
 }
 
 .sidebar-menu.ant-menu-light .ant-menu-item .ant-menu-item-icon {
-  font-size: 16px;
+  font-size: 20px;
   min-width: 16px;
 }
 
@@ -2351,6 +2351,17 @@ select,
   gap: 6px;
 }
 
+.bank-transaction-card__meta > .ant-typography:first-child {
+  padding: 2px 7px;
+  color: #9a3412;
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  border-radius: 5px;
+  font-size: 20px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
 .bank-transaction-card__summary {
   max-width: 100%;
   font-size: 14px;
@@ -2373,8 +2384,8 @@ select,
 
 .bank-transaction-card__amount {
   color: #991b1b;
-  font-size: 15px;
-  font-weight: 700;
+  font-size: 36px;
+  font-weight: 800;
   font-variant-numeric: tabular-nums;
 }
 
@@ -2526,8 +2537,8 @@ select,
 
 .approval-candidate-card__amount {
   color: #0f766e;
-  font-size: 16px;
-  font-weight: 750;
+  font-size: 36px;
+  font-weight: 800;
   font-variant-numeric: tabular-nums;
 }
 
@@ -2776,6 +2787,21 @@ select,
   max-width: 100%;
 }
 
+.reconciliation-confirm-summary__amount.ant-typography {
+  color: #b42318 !important;
+  font-size: 36px !important;
+  font-weight: 800;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+}
+
+.reconciliation-confirm-summary__date {
+  color: #c2410c !important;
+  font-size: 24px;
+  line-height: 1.4;
+  font-weight: 700;
+}
+
 .reconciliation-confirm-modal .ant-modal-content {
   padding: 20px 22px 18px;
 }
@@ -2828,6 +2854,41 @@ select,
   background: #ffffff;
   color: #475569;
   font-size: 12px;
+}
+
+.reconciliation-confirm-detail-amount {
+  color: #b42318;
+  font-size: 24px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.reconciliation-confirm-modal .ant-cascader {
+  width: 100%;
+}
+
+.reconciliation-confirm-modal .ant-cascader .ant-select-selector {
+  min-height: 46px;
+  padding: 6px 12px !important;
+  font-size: 18px;
+}
+
+.reconciliation-confirm-modal .ant-cascader .ant-select-selection-placeholder,
+.reconciliation-confirm-modal .ant-cascader .ant-select-selection-item {
+  font-size: 18px;
+  line-height: 32px;
+}
+
+.reconciliation-confirm-category-popup .ant-cascader-menu {
+  min-width: 210px;
+  min-height: 48px;
+}
+
+.reconciliation-confirm-category-popup .ant-cascader-menu-item {
+  min-height: 44px;
+  padding: 9px 16px;
+  font-size: 18px;
+  line-height: 26px;
 }
 
 .reconciliation-confirm-fields {

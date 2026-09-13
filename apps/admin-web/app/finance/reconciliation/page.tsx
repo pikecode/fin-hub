@@ -1809,32 +1809,29 @@ export default function FinanceReconciliationPage() {
         width={980}
       >
         <Form form={confirmForm} layout="vertical" onFinish={submitConfirm}>
-          <Alert
-            className="reconciliation-confirm-modal__alert"
-            type="info"
-            showIcon
-            message={`参考匹配金额 ${formatMoney(defaultMatchAmount)}`}
-            description="匹配金额由你确认，系统不校验银行流水金额与审批单金额是否一致。"
-          />
-          {sortedConfirmExpenseItems.some(confirmCategoryMissing) ? (
-            <Alert
-              className="reconciliation-confirm-modal__alert"
-              type="warning"
-              showIcon
-              message="请先选择费用分类"
-              description="审批单同步带来的原始分类不会自动采用，必须在这里选择系统分类后才能确认匹配。"
-            />
-          ) : null}
           <div className="reconciliation-confirm-summary">
             <div className="reconciliation-confirm-summary__item">
               <Typography.Text type="secondary">银行流水</Typography.Text>
               <Typography.Text strong>{selectedTransaction?.summary || "-"}</Typography.Text>
-              <Typography.Text>{selectedTransaction ? `${dayjs(selectedTransaction.occurred_at).format("YYYY-MM-DD")} · ${formatMoney(selectedTransaction.amount)}` : "-"}</Typography.Text>
+              <Typography.Text className="reconciliation-confirm-summary__amount">
+                {selectedTransaction ? formatMoney(selectedTransaction.amount) : "-"}
+              </Typography.Text>
+              <Typography.Text className="reconciliation-confirm-summary__date">
+                发生日期：{selectedTransaction ? dayjs(selectedTransaction.occurred_at).format("YYYY-MM-DD") : "-"}
+              </Typography.Text>
             </div>
             <div className="reconciliation-confirm-summary__item">
               <Typography.Text type="secondary">当前审批单</Typography.Text>
               <Typography.Text strong>{selectedCandidate ? approvalNoText(selectedCandidate) : "-"}</Typography.Text>
-              <Typography.Text>{selectedCandidate ? `审批单总额 · ${formatMoney(approvalTotalAmount(selectedCandidate))}` : "-"}</Typography.Text>
+              <Typography.Text className="reconciliation-confirm-summary__amount">
+                {selectedCandidate ? formatMoney(approvalTotalAmount(selectedCandidate)) : "-"}
+              </Typography.Text>
+              <Typography.Text>
+                申请日期：{selectedCandidate?.approval_instance?.submit_at ? dayjs(selectedCandidate.approval_instance.submit_at).format("YYYY-MM-DD") : "-"}
+              </Typography.Text>
+              <Typography.Text className="reconciliation-confirm-summary__date">
+                完成日期：{selectedCandidate?.approval_instance?.approved_at ? dayjs(selectedCandidate.approval_instance.approved_at).format("YYYY-MM-DD") : "-"}
+              </Typography.Text>
             </div>
           </div>
           <div className="reconciliation-confirm-detail-panel">
@@ -1873,7 +1870,7 @@ export default function FinanceReconciliationPage() {
                     dataIndex: "amount",
                     width: 110,
                     align: "right",
-                    render: (value) => formatMoney(value),
+                    render: (value) => <Typography.Text className="reconciliation-confirm-detail-amount">{formatMoney(value)}</Typography.Text>,
                   },
                   {
                     title: "分类",
@@ -1883,6 +1880,8 @@ export default function FinanceReconciliationPage() {
                         value={confirmCategoryPathForExpenseItem(record)}
                         options={categoryOptions}
                         placeholder="选择分类"
+                        size="large"
+                        popupClassName="reconciliation-confirm-category-popup"
                         status={confirmCategoryMissing(record) ? "error" : undefined}
                         showSearch
                         changeOnSelect={false}
