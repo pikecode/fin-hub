@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import case, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -57,7 +57,11 @@ def list_categories(
     current_user: User = Depends(get_current_user),
 ) -> ApiEnvelope[Page[ExpenseCategoryRead]]:
     ensure_permission(session, current_user, "categories.view")
-    query = select(ExpenseCategory).order_by(ExpenseCategory.sort_order.asc(), ExpenseCategory.created_at.asc())
+    query = select(ExpenseCategory).order_by(
+        case((ExpenseCategory.status == "inactive", 1), else_=0),
+        ExpenseCategory.sort_order.asc(),
+        ExpenseCategory.created_at.asc(),
+    )
     if parent_id is not None:
         query = query.where(ExpenseCategory.parent_id == parent_id)
     items, total = paginate(session, query, page, page_size)
@@ -79,11 +83,10 @@ def create_category(
     exists = session.scalar(
         select(ExpenseCategory).where(
             ExpenseCategory.name == payload.name,
-            ExpenseCategory.parent_id == payload.parent_id,
         )
     )
     if exists is not None:
-        raise HTTPException(status_code=409, detail="Category already exists")
+        raise HTTPException(status_code=409, detail="分类名称已存在")
 
     category = ExpenseCategory(**payload.model_dump())
     session.add(category)
@@ -101,7 +104,7 @@ def create_category(
         session.commit()
     except IntegrityError as exc:
         session.rollback()
-        raise HTTPException(status_code=409, detail="Category already exists") from exc
+        raise HTTPException(status_code=409, detail="分类名称已存在") from exc
     session.refresh(category)
     return ApiEnvelope(data=category)
 
@@ -134,11 +137,10 @@ def update_category(
         select(ExpenseCategory).where(
             ExpenseCategory.id != category.id,
             ExpenseCategory.name == name,
-            ExpenseCategory.parent_id == parent_id,
         )
     )
     if exists is not None:
-        raise HTTPException(status_code=409, detail="Category already exists")
+        raise HTTPException(status_code=409, detail="分类名称已存在")
 
     for field, value in changes.items():
         setattr(category, field, value)

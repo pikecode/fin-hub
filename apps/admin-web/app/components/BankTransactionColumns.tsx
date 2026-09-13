@@ -74,6 +74,15 @@ export function getBankTransactionViewColumns(): BankTransactionViewColumn[] {
       sorter: (left, right) => Number(left.amount) - Number(right.amount),
     },
     {
+      key: "payment_status",
+      title: "付款情况",
+      dataIndex: "payment_status",
+      width: 96,
+      render: (value: string | null | undefined) => (
+        <Tag color={value === "unpaid" ? "warning" : "success"}>{value === "unpaid" ? "未实付" : "已实付"}</Tag>
+      ),
+    },
+    {
       key: "match_status",
       title: "匹配状态",
       width: 96,

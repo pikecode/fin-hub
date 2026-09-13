@@ -53,6 +53,7 @@ interface BankFilterValues {
 }
 
 type BankEntryField = "occurred_at" | "income_amount" | "expense_amount" | "counterparty_name" | "counterparty_account" | "summary";
+type BankPaymentStatus = "paid" | "unpaid";
 
 interface BankEntryRow {
   key: string;
@@ -62,6 +63,7 @@ interface BankEntryRow {
   counterparty_name: string;
   counterparty_account: string;
   summary: string;
+  payment_status: BankPaymentStatus;
 }
 
 const bankEntryHeaders: Record<BankEntryField, string> = {
@@ -82,6 +84,11 @@ const bankEntryFields: BankEntryField[] = [
   "summary",
 ];
 
+const bankPaymentStatusOptions: Array<{ label: string; value: BankPaymentStatus }> = [
+  { label: "已实付", value: "paid" },
+  { label: "未实付", value: "unpaid" },
+];
+
 function createBankEntryRows(count: number): BankEntryRow[] {
   return Array.from({ length: count }, (_, index) => ({
     key: `bank-entry-${Date.now()}-${index}`,
@@ -91,6 +98,7 @@ function createBankEntryRows(count: number): BankEntryRow[] {
     counterparty_name: "",
     counterparty_account: "",
     summary: "",
+    payment_status: "paid",
   }));
 }
 
@@ -108,6 +116,28 @@ function isBankEntryRowEmpty(row: BankEntryRow) {
     !row.counterparty_account.trim() &&
     !row.summary.trim()
   );
+}
+
+function getBankEntryValidationErrors(rows: BankEntryRow[], period?: string) {
+  const errors: string[] = [];
+  rows.forEach((row, index) => {
+    if (isBankEntryRowEmpty(row)) return;
+    const rowNumber = index + 1;
+    const occurredAt = parseEntryOccurredAt(row.occurred_at);
+    const incomeAmount = normalizePastedAmount(row.income_amount);
+    const expenseAmount = normalizePastedAmount(row.expense_amount);
+    const hasIncome = Boolean(incomeAmount);
+    const hasExpense = Boolean(expenseAmount);
+    if (!occurredAt) errors.push(`第 ${rowNumber} 行：发生日期格式无效`);
+    if (period && occurredAt && occurredAt.format("YYYY-MM") !== period) errors.push(`第 ${rowNumber} 行：发生日期不属于账期 ${period}`);
+    if (!normalizePastedCell(row.counterparty_name)) errors.push(`第 ${rowNumber} 行：请填写对方户名`);
+    if (hasIncome && hasExpense) errors.push(`第 ${rowNumber} 行：收入和支出只能填写一个`);
+    if (!hasIncome && !hasExpense) errors.push(`第 ${rowNumber} 行：请填写收入或支出金额`);
+    for (const [label, value] of [["收入", incomeAmount], ["支出", expenseAmount]] as const) {
+      if (value && (!Number.isFinite(Number(value)) || Number(value) <= 0)) errors.push(`第 ${rowNumber} 行：${label}金额必须大于 0`);
+    }
+  });
+  return errors;
 }
 
 function bankDirectionCell(direction: "income" | "expense", target: "income" | "expense") {
@@ -294,6 +324,7 @@ export default function BankPage() {
   const [ledgers, setLedgers] = useState<Ledger[]>([]);
   const [transactions, setTransactions] = useState<BankTransaction[]>([]);
   const [entryRows, setEntryRows] = useState<BankEntryRow[]>(() => createBankEntryRows(10));
+  const [entryValidationErrors, setEntryValidationErrors] = useState<string[]>([]);
   const [uploadFileList, setUploadFileList] = useState<UploadFile[]>([]);
   const [importPreview, setImportPreview] = useState<BankImportPreviewResult | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -319,8 +350,23 @@ export default function BankPage() {
       label: `${storesById.get(ledger.store_id)?.name ?? "未知"} / ${ledger.period}`,
       value: `${ledger.store_id}|${ledger.period}`,
     }));
+  const entryLedgerOptions = openLedgerOptions.filter((option) => !queryStoreId || option.value.startsWith(`${queryStoreId}|`));
   const currentStore = queryStoreId ? storesById.get(queryStoreId) : undefined;
   const currentStoreLedgerLabel = queryStoreId ? `${currentStore?.name ?? "当前门店"}` : "";
+
+  const entryBatchTotals = useMemo(() => {
+    return entryRows.reduce(
+      (totals, row) => {
+        const incomeAmount = Number(normalizePastedAmount(row.income_amount) || 0);
+        const expenseAmount = Number(normalizePastedAmount(row.expense_amount) || 0);
+        return {
+          income: totals.income + (Number.isFinite(incomeAmount) ? incomeAmount : 0),
+          expense: totals.expense + (Number.isFinite(expenseAmount) ? expenseAmount : 0),
+        };
+      },
+      { income: 0, expense: 0 },
+    );
+  }, [entryRows]);
 
   function buildFilterParams(values?: BankFilterValues) {
     const params = new URLSearchParams({ page_size: "500" });
@@ -380,6 +426,7 @@ export default function BankPage() {
       occurred_at: dayjs(),
       counterparty_name: "",
       counterparty_account: "",
+      payment_status: "paid",
     });
     setIsModalOpen(true);
   }
@@ -394,6 +441,7 @@ export default function BankPage() {
       counterparty_name: transaction.counterparty_name ?? "",
       counterparty_account: transaction.counterparty_account ?? "",
       summary: transaction.summary ?? undefined,
+      payment_status: transaction.payment_status ?? "paid",
     });
     setIsModalOpen(true);
   }
@@ -430,9 +478,14 @@ export default function BankPage() {
         counterparty_name: normalizePastedCell(values.counterparty_name) || null,
         counterparty_account: normalizePastedCell(values.counterparty_account) || null,
         summary: normalizePastedCell(values.summary) || null,
+        payment_status: values.payment_status || "paid",
       };
       if (editingTransaction) {
-        await apiClient.bankTransactions.update(editingTransaction.id, payload);
+        const isMatched = Number(editingTransaction.matched_amount || 0) > 0;
+        await apiClient.bankTransactions.update(
+          editingTransaction.id,
+          isMatched ? { payment_status: payload.payment_status } : payload,
+        );
         message.success("更新成功");
       } else {
         await apiClient.bankTransactions.create(payload);
@@ -451,6 +504,7 @@ export default function BankPage() {
   function openEntryModal() {
     entryForm.resetFields();
     setEntryRows(createBankEntryRows(10));
+    setEntryValidationErrors([]);
     if (queryStoreId && queryLedgerPeriod) {
       entryForm.setFieldValue("ledger_key", `${queryStoreId}|${queryLedgerPeriod}`);
     }
@@ -465,16 +519,21 @@ export default function BankPage() {
   }
 
   async function submitEntryBatch(values: { ledger_key?: string }) {
-    const [formStoreId, formPeriod] = (values.ledger_key ?? "").split("|");
+    const [formStoreId] = (values.ledger_key ?? "").split("|");
     const storeId = formStoreId || queryStoreId;
-    const period = formPeriod || queryLedgerPeriod;
-    if (!storeId || !period) {
-      message.warning("请选择账套");
+    if (!storeId) {
+      message.warning("请先选择门店");
       return;
     }
     const nonEmptyRows = entryRows.filter((row) => !isBankEntryRowEmpty(row));
     if (!nonEmptyRows.length) {
       message.warning("请至少填写一行流水");
+      return;
+    }
+    const validationErrors = getBankEntryValidationErrors(entryRows);
+    setEntryValidationErrors(validationErrors);
+    if (validationErrors.length) {
+      message.error(validationErrors[0]);
       return;
     }
     setIsLoading(true);
@@ -488,30 +547,27 @@ export default function BankPage() {
       const hasIncome = Boolean(incomeAmount);
       const hasExpense = Boolean(expenseAmount);
       if (!occurredAt) {
-        message.warning("批量录入中存在无效的发生时间");
-        return;
+        throw new Error("批量录入中存在无效的发生时间");
       }
       if (!counterpartyName) {
-        message.warning("批量录入中存在未填写对方户名的行");
-        return;
+        throw new Error("批量录入中存在未填写对方户名的行");
       }
       if (hasIncome && hasExpense) {
-        message.warning("批量录入中存在同时填写收入和支出的行");
-        return;
+        throw new Error("批量录入中存在同时填写收入和支出的行");
       }
       if (!hasIncome && !hasExpense) {
-        message.warning("批量录入中存在未填写金额的行");
-        return;
+        throw new Error("批量录入中存在未填写金额的行");
       }
       batch.push({
         store_id: storeId,
-        ledger_period: period,
+        ledger_period: occurredAt.format("YYYY-MM"),
         occurred_at: toBankOccurredAt(occurredAt),
         direction: hasIncome ? "income" : "expense",
         amount: hasIncome ? incomeAmount : expenseAmount,
         counterparty_name: counterpartyName,
         counterparty_account: normalizePastedCell(row.counterparty_account) || null,
         summary: normalizePastedCell(row.summary) || null,
+        payment_status: row.payment_status || "paid",
         });
       }
       const result = await apiClient.bankTransactions.createBatch({ items: batch });
@@ -529,8 +585,9 @@ export default function BankPage() {
     try {
       const values = await entryForm.validateFields();
       await submitEntryBatch(values);
-    } catch {
-      // keep modal open and let form display validation errors
+    } catch (error) {
+      if (error && typeof error === "object" && "errorFields" in error) return;
+      message.error(error instanceof Error ? error.message : "批量录入失败");
     }
   }
 
@@ -702,8 +759,8 @@ export default function BankPage() {
         const isMatched = Number(record.matched_amount || 0) > 0;
         return (
           <Space size="small">
-            <Button type="link" size="small" disabled={isClosed || isMatched} onClick={() => openEditModal(record)}>
-              编辑
+            <Button type="link" size="small" disabled={isClosed} onClick={() => openEditModal(record)}>
+              {isMatched ? "付款情况" : "编辑"}
             </Button>
             <Popconfirm
               title="删除银行流水？"
@@ -908,6 +965,23 @@ export default function BankPage() {
       ),
     },
     {
+      title: "付款情况",
+      dataIndex: "payment_status",
+      width: 110,
+      render: (value, _, index) => (
+        <Select
+          value={value || "paid"}
+          size="small"
+          options={bankPaymentStatusOptions}
+          onChange={(nextValue) => {
+            const updated = [...entryRows];
+            updated[index].payment_status = nextValue;
+            setEntryRows(updated);
+          }}
+        />
+      ),
+    },
+    {
       title: "操作",
       dataIndex: "key",
       width: 72,
@@ -1091,24 +1165,29 @@ export default function BankPage() {
             </Form.Item>
           )}
           <Form.Item name="occurred_at" label="发生日期" rules={[{ required: true }]}>
-            <DatePicker style={{ width: "100%" }} />
+            <DatePicker style={{ width: "100%" }} disabled={Boolean(editingTransaction && Number(editingTransaction.matched_amount || 0) > 0)} />
           </Form.Item>
           <Form.Item name="direction" label="类型" rules={[{ required: true }]}>
             <Select
+              disabled={Boolean(editingTransaction && Number(editingTransaction.matched_amount || 0) > 0)}
               options={[
                 { label: "收入", value: "income" },
                 { label: "支出", value: "expense" },
               ]}
               />
           </Form.Item>
+          <Form.Item name="payment_status" label="付款情况" rules={[{ required: true }]}>
+            <Select options={bankPaymentStatusOptions} />
+          </Form.Item>
           <Form.Item name="counterparty_name" label="对方户名" rules={[{ required: true, message: "请填写对方户名" }]}>
-            <Input />
+            <Input disabled={Boolean(editingTransaction && Number(editingTransaction.matched_amount || 0) > 0)} />
           </Form.Item>
           <Form.Item name="counterparty_account" label="对方账号">
-            <Input />
+            <Input disabled={Boolean(editingTransaction && Number(editingTransaction.matched_amount || 0) > 0)} />
           </Form.Item>
           <Form.Item name="amount" label="金额" rules={[{ required: true }]}>
             <Input
+              disabled={Boolean(editingTransaction && Number(editingTransaction.matched_amount || 0) > 0)}
               onPaste={(event) => {
                 const text = event.clipboardData.getData("text");
                 if (!handleSingleAmountPaste(text, (amount) => form.setFieldValue("amount", amount))) return;
@@ -1117,7 +1196,7 @@ export default function BankPage() {
             />
           </Form.Item>
           <Form.Item name="summary" label="备注">
-            <Input />
+            <Input disabled={Boolean(editingTransaction && Number(editingTransaction.matched_amount || 0) > 0)} />
           </Form.Item>
         </Form>
       </Modal>
@@ -1131,6 +1210,7 @@ export default function BankPage() {
         onCancel={() => {
           setIsEntryModalOpen(false);
           setEntryRows(createBankEntryRows(10));
+          setEntryValidationErrors([]);
         }}
         onOk={() => void confirmEntryBatch()}
         confirmLoading={isLoading}
@@ -1139,10 +1219,10 @@ export default function BankPage() {
       >
         <Form form={entryForm} layout="vertical" onFinish={submitEntryBatch}>
           {queryStoreId ? (
-            <Alert type="info" showIcon message={`流水归属门店：${currentStoreLedgerLabel}`} style={{ marginBottom: 16 }} />
+            <Alert type="info" showIcon message={`流水归属门店：${currentStoreLedgerLabel}，账期按每行发生日期自动确定`} style={{ marginBottom: 16 }} />
           ) : (
             <Form.Item name="ledger_key" label="账套" rules={[{ required: true }]}>
-              <Select options={openLedgerOptions} />
+              <Select options={entryLedgerOptions} placeholder="请选择门店" />
             </Form.Item>
           )}
           <Space direction="vertical" style={{ width: "100%" }} size={12}>
@@ -1158,7 +1238,43 @@ export default function BankPage() {
               dataSource={entryRows}
               columns={entryColumns}
               scroll={{ x: 1200, y: 480 }}
+              summary={() => (
+                <Table.Summary fixed>
+                  <Table.Summary.Row>
+                    <Table.Summary.Cell index={0}>
+                      <Typography.Text strong>合计</Typography.Text>
+                    </Table.Summary.Cell>
+                    <Table.Summary.Cell index={1}>
+                      <div style={{ textAlign: "right" }}>
+                        <MoneyDisplay value={entryBatchTotals.income} />
+                      </div>
+                    </Table.Summary.Cell>
+                    <Table.Summary.Cell index={2}>
+                      <div style={{ textAlign: "right" }}>
+                        <MoneyDisplay value={entryBatchTotals.expense} />
+                      </div>
+                    </Table.Summary.Cell>
+                    <Table.Summary.Cell index={3} />
+                    <Table.Summary.Cell index={4} />
+                    <Table.Summary.Cell index={5} />
+                    <Table.Summary.Cell index={6} />
+                    <Table.Summary.Cell index={7} />
+                  </Table.Summary.Row>
+                </Table.Summary>
+              )}
             />
+            {entryValidationErrors.length > 0 && (
+              <Alert
+                type="error"
+                showIcon
+                message="请先修正以下流水"
+                description={
+                  <Space direction="vertical" size={2}>
+                    {entryValidationErrors.map((error) => <Typography.Text key={error}>{error}</Typography.Text>)}
+                  </Space>
+                }
+              />
+            )}
             <Typography.Text type="secondary">可以从 Excel 复制整块数据后粘贴。格式：发生日期 | 收入 | 支出 | 对方户名 | 对方账号 | 备注 | 流水号（可选），导入模板同样保持这个顺序。</Typography.Text>
           </Space>
         </Form>

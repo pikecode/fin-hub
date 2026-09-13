@@ -44,6 +44,9 @@ import type {
   ExpenseItem,
   ExpenseItemCreate,
   ExpenseItemUpdate,
+  KuailvPurchase,
+  KuailvPurchaseCreate,
+  KuailvPurchaseUpdate,
   FinancialAnalyticsReport,
   FinancialAnalyticsDetailReport,
   Ledger,
@@ -361,6 +364,23 @@ export function createApiClient(options: ApiClientOptions) {
           method: "PATCH",
           body: JSON.stringify(payload),
         }),
+      kuailvPurchases: {
+        list: (params = "") => request<KuailvPurchase[]>(`/api/expense-items/kuailv-purchases${params}`),
+        create: (payload: KuailvPurchaseCreate) =>
+          request<KuailvPurchase>("/api/expense-items/kuailv-purchases", {
+            method: "POST",
+          body: JSON.stringify(payload),
+        }),
+        update: (id: string, payload: KuailvPurchaseUpdate) =>
+          request<KuailvPurchase>(`/api/expense-items/kuailv-purchases/${id}`, {
+            method: "PATCH",
+            body: JSON.stringify(payload),
+          }),
+        delete: (id: string) =>
+          request<{ ok: boolean }>(`/api/expense-items/kuailv-purchases/${id}`, {
+            method: "DELETE",
+          }),
+      },
     },
     revenueChannels: {
       list: (params = "") => request<Page<RevenueChannel>>(`/api/revenue-channels${params}`),

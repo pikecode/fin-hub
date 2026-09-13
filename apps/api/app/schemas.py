@@ -395,6 +395,21 @@ class ExpenseItemUpdate(BaseModel):
     remark: str | None = None
 
 
+class KuailvPurchaseCreate(BaseModel):
+    store_id: str
+    ledger_period: str = Field(pattern=r"^\d{4}-\d{2}$")
+    purchase_date: date
+    amount: Decimal = Field(gt=0)
+    remark: str | None = None
+
+
+class KuailvPurchaseUpdate(BaseModel):
+    ledger_period: str = Field(pattern=r"^\d{4}-\d{2}$")
+    purchase_date: date
+    amount: Decimal = Field(gt=0)
+    remark: str | None = None
+
+
 class ExpenseItemRead(ExpenseItemCreate):
     model_config = ConfigDict(from_attributes=True)
 
@@ -418,6 +433,18 @@ class ExpenseItemRead(ExpenseItemCreate):
     payment_status: ExpensePaymentStatus
     source: str
     source_document_id: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class KuailvPurchaseRead(BaseModel):
+    id: str
+    store_id: str
+    ledger_period: str
+    purchase_date: date | None
+    amount: Decimal
+    remark: str | None = None
+    attachment_count: int = 0
     created_at: datetime
     updated_at: datetime
 
@@ -455,6 +482,7 @@ class BankTransactionCreate(BaseModel):
     counterparty_account: str | None = None
     summary: str | None = None
     bank_serial_no: str | None = None
+    payment_status: str = Field(default="paid", pattern=r"^(paid|unpaid)$")
 
 
 class BankTransactionBatchCreateRequest(BaseModel):
@@ -475,6 +503,7 @@ class BankTransactionUpdate(BaseModel):
     counterparty_account: str | None = None
     summary: str | None = None
     bank_serial_no: str | None = None
+    payment_status: str | None = Field(default=None, pattern=r"^(paid|unpaid)$")
 
 
 class BankTransactionRead(BankTransactionCreate):

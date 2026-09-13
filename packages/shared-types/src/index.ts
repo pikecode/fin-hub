@@ -444,6 +444,30 @@ export interface ExpenseItemUpdate {
   remark?: string | null;
 }
 
+export interface KuailvPurchase {
+  id: string;
+  store_id: string;
+  ledger_period: string;
+  purchase_date?: string | null;
+  amount: string;
+  remark?: string | null;
+  attachment_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface KuailvPurchaseCreate {
+  store_id: string;
+  ledger_period: string;
+  purchase_date: string;
+  amount: string;
+  remark?: string | null;
+}
+
+export type KuailvPurchaseUpdate = Omit<KuailvPurchaseCreate, "store_id">;
+
+export type BankPaymentStatus = "paid" | "unpaid";
+
 export interface BankTransaction {
   id: string;
   store_id: string;
@@ -455,6 +479,7 @@ export interface BankTransaction {
   counterparty_account?: string | null;
   summary?: string | null;
   bank_serial_no?: string | null;
+  payment_status: BankPaymentStatus;
   matched_amount: string;
   import_job_id?: string | null;
   created_at: string;
@@ -471,6 +496,7 @@ export interface BankTransactionCreate {
   counterparty_account?: string | null;
   summary?: string | null;
   bank_serial_no?: string | null;
+  payment_status?: BankPaymentStatus;
 }
 
 export interface BankTransactionBatchCreateRequest {
@@ -491,6 +517,7 @@ export interface BankTransactionUpdate {
   counterparty_account?: string | null;
   summary?: string | null;
   bank_serial_no?: string | null;
+  payment_status?: BankPaymentStatus;
 }
 
 export interface BankTransactionBatchDeleteResult {

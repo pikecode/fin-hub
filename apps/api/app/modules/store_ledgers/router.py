@@ -36,8 +36,10 @@ from app.schemas import ApiEnvelope, StoreLedgerWorkspaceMetrics, StoreLedgerWor
 
 router = APIRouter(prefix="/store-ledgers", tags=["store-ledgers"])
 REVENUE_FEE_SOURCE = "revenue_fee"
+KUAILV_PURCHASE_SOURCE = "kuailv_purchase"
 FOOD_COST_CATEGORY_L1 = "食材成本"
 PREPAID_FOOD_COST_CATEGORY_L2 = "快驴充值"
+STORE_PREPAID_CATEGORY_L1 = "门店预充值"
 
 
 def decimal_sum(value: Decimal | None) -> Decimal:
@@ -70,7 +72,9 @@ def previous_period(period: str) -> str:
 
 
 def is_prepaid_food_cost(category_l1: str | None, category_l2: str | None) -> bool:
-    return category_l1 == FOOD_COST_CATEGORY_L1 and category_l2 == PREPAID_FOOD_COST_CATEGORY_L2
+    return category_l1 == STORE_PREPAID_CATEGORY_L1 or (
+        category_l1 == FOOD_COST_CATEGORY_L1 and category_l2 == PREPAID_FOOD_COST_CATEGORY_L2
+    )
 
 
 def latest_period(ledgers: list[Ledger], requested_period: str | None) -> str:
@@ -206,13 +210,34 @@ def read_store_ledger_workspace(
             ExpenseItem.source == REVENUE_FEE_SOURCE,
         )
     ).all()
+    kuailv_purchase_rows = session.execute(
+        select(
+            ExpenseItem.category_l1,
+            ExpenseItem.category_l2,
+            ExpenseItem.amount,
+        )
+        .where(
+            ExpenseItem.store_id == store_id,
+            ExpenseItem.ledger_period == selected_period,
+            ExpenseItem.source == KUAILV_PURCHASE_SOURCE,
+        )
+    ).all()
     expense_amount = sum(
         (decimal_sum(row[2]) for row in confirmed_expense_rows), Decimal("0.00")
-    ) + sum((decimal_sum(row[2]) for row in revenue_fee_rows), Decimal("0.00"))
+    ) + sum((decimal_sum(row[2]) for row in revenue_fee_rows), Decimal("0.00")) + sum(
+        (decimal_sum(row[2]) for row in kuailv_purchase_rows), Decimal("0.00")
+    )
     food_cost_amount = sum(
         (
             decimal_sum(row[2])
             for row in confirmed_expense_rows
+            if row[0] == FOOD_COST_CATEGORY_L1
+        ),
+        Decimal("0.00"),
+    ) + sum(
+        (
+            decimal_sum(row[2])
+            for row in kuailv_purchase_rows
             if row[0] == FOOD_COST_CATEGORY_L1
         ),
         Decimal("0.00"),
@@ -354,7 +379,7 @@ def read_store_ledger_workspace(
         for parent_name in [str(parent["name"])]
     }
     category_map: dict[tuple[str, str | None], dict[str, Decimal | int | str | None]] = {}
-    for category_l1, category_l2, amount in [*confirmed_expense_rows, *revenue_fee_rows]:
+    for category_l1, category_l2, amount in [*confirmed_expense_rows, *revenue_fee_rows, *kuailv_purchase_rows]:
         if not category_l1 or category_l1 not in active_root_names:
             continue
         if category_l2 and (category_l1, category_l2) not in active_child_pairs:

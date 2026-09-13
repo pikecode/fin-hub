@@ -231,10 +231,11 @@ def update_bank_transaction(
     has_revenue_match = session.scalar(
         select(RevenueBankMatch).where(RevenueBankMatch.bank_transaction_id == transaction_id).limit(1)
     )
-    if Decimal(transaction.matched_amount or 0) > 0 or has_expense_match or has_revenue_match:
-        raise HTTPException(status_code=409, detail="Bank transaction already matched and cannot be edited")
+    is_matched = Decimal(transaction.matched_amount or 0) > 0 or has_expense_match or has_revenue_match
 
     updates = payload.model_dump(exclude_unset=True)
+    if is_matched and set(updates.keys()) - {"payment_status"}:
+        raise HTTPException(status_code=409, detail="Bank transaction already matched and cannot be edited")
     if "store_id" in updates and not updates["store_id"]:
         raise HTTPException(status_code=422, detail="Store is required")
     if "ledger_period" in updates and not updates["ledger_period"]:

@@ -14,7 +14,7 @@ import type { Store } from "@fin-hub/shared-types";
 import { getMyStores } from "../lib/referenceData";
 import { confirmLeaveIfNeeded } from "./navigationGuard";
 
-type StoreLedgerTabKey = "overview" | "bank" | "approvals" | "revenue" | "revenueMatching" | "matching";
+type StoreLedgerTabKey = "overview" | "bank" | "approvals" | "revenue" | "revenueMatching" | "matching" | "kuailvPurchase";
 
 interface StoreLedgerWorkspaceNavProps {
   storeId: string;
@@ -35,6 +35,7 @@ const tabItems: Array<{ key: StoreLedgerTabKey; label: string; icon: any }> = [
   { key: "revenue", label: "营业收入", icon: <WalletOutlined /> },
   { key: "revenueMatching", label: "收入对账", icon: <ReconciliationOutlined /> },
   { key: "matching", label: "审批单对账", icon: <ReconciliationOutlined /> },
+  { key: "kuailvPurchase", label: "快驴采购录入", icon: <FileTextOutlined /> },
 ];
 
 function modulePath(storeId: string, key: StoreLedgerTabKey, period?: string) {
@@ -52,9 +53,10 @@ function modulePath(storeId: string, key: StoreLedgerTabKey, period?: string) {
     if (period) query.set("ledger_period", period);
     return `/revenue?${query.toString()}`;
   }
-  if (key === "matching") {
+  if (key === "matching" || key === "kuailvPurchase") {
     const query = new URLSearchParams({ store_id: storeId });
     if (period) query.set("ledger_period", period);
+    if (key === "kuailvPurchase") query.set("module", "kuailv");
     return `/finance/reconciliation?${query.toString()}`;
   }
   if (key === "revenueMatching") {

@@ -51,7 +51,12 @@ export default function CategoriesPage() {
       }
     });
     const sortNodes = (nodes: CategoryTreeNode[]) => {
-      nodes.sort((left, right) => left.sort_order - right.sort_order || left.created_at.localeCompare(right.created_at));
+      nodes.sort(
+        (left, right) =>
+          (left.status === "inactive" ? 1 : 0) - (right.status === "inactive" ? 1 : 0) ||
+          left.sort_order - right.sort_order ||
+          left.created_at.localeCompare(right.created_at),
+      );
       nodes.forEach((node) => {
         if (node.children?.length) sortNodes(node.children);
       });

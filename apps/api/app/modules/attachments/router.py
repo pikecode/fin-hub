@@ -28,6 +28,7 @@ from app.modules.dingtalk.client import DingTalkClient, DingTalkClientError, Din
 from app.schemas import ApiEnvelope, AttachmentAccessUrl, AttachmentRead, Page
 
 router = APIRouter(prefix="/attachments", tags=["attachments"])
+MAX_MANUAL_ATTACHMENT_SIZE = 500 * 1024
 
 
 def storage_root() -> Path:
@@ -138,6 +139,8 @@ async def upload_attachment(
     content = await file.read()
     if not content:
         raise HTTPException(status_code=422, detail="Attachment file is empty")
+    if len(content) > MAX_MANUAL_ATTACHMENT_SIZE:
+        raise HTTPException(status_code=413, detail="Attachment file must be 500KB or smaller")
     digest = hashlib.sha256(content).hexdigest()
     file_name = ensure_safe_file_name(file.filename)
     relative_path = Path(resource_type) / resource_id / f"{digest[:16]}-{file_name}"

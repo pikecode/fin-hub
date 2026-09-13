@@ -450,12 +450,12 @@ def test_store_ledger_workspace_excludes_prepaid_kuailv_food_cost(
     session.add(ApprovalTemplate(id="template-kuailv-prepaid", process_code="PROC-KUAILV", name="快驴充值测试模板"))
     session.flush()
     food_category = ExpenseCategory(name="食材成本", parent_id=None, sort_order=1)
-    session.add(food_category)
+    prepaid_category = ExpenseCategory(name="门店预充值", parent_id=None, sort_order=2)
+    session.add_all([food_category, prepaid_category])
     session.flush()
     session.add_all(
         [
             ExpenseCategory(name="肉类", parent_id=food_category.id, sort_order=1),
-            ExpenseCategory(name="快驴充值", parent_id=food_category.id, sort_order=2),
         ]
     )
     approval = ApprovalInstance(
@@ -482,7 +482,7 @@ def test_store_ledger_workspace_excludes_prepaid_kuailv_food_cost(
         ledger_period="2026-08",
         description="快驴预充值",
         amount=Decimal("500.00"),
-        category_l1="食材成本",
+        category_l1="门店预充值",
         category_l2="快驴充值",
         source="dingtalk",
         source_document_id="kuailv-prepaid-approval:prepaid",
@@ -534,7 +534,56 @@ def test_store_ledger_workspace_excludes_prepaid_kuailv_food_cost(
     assert workspace["metrics"]["gross_profit_amount"] == "700.00"
     category_names = [item["name"] for item in workspace["metrics"]["expense_category_summary"]]
     assert "食材成本 / 肉类" in category_names
-    assert "食材成本 / 快驴充值" not in category_names
+    assert "门店预充值 / 快驴充值" not in category_names
+
+
+def test_kuailv_purchase_entry_counts_as_food_cost_expense(
+    client: TestClient,
+) -> None:
+    store_id = client.post("/api/stores", json={"name": "蘑说快驴采购店"}).json()["data"]["id"]
+    client.post("/api/ledgers", json={"store_id": store_id, "period": "2026-08"})
+    client.post("/api/revenue-channels", json={"name": "堂食", "sort_order": 10})
+    client.post(
+        "/api/revenue-records",
+        json={
+            "store_id": store_id,
+            "ledger_period": "2026-08",
+            "revenue_date": "2026-08-20",
+            "channel": "堂食",
+            "gross_amount": "1000.00",
+            "net_amount": "1000.00",
+            "fee_amount": "0.00",
+        },
+    )
+
+    create_response = client.post(
+        "/api/expense-items/kuailv-purchases",
+        json={
+            "store_id": store_id,
+            "ledger_period": "2026-08",
+            "purchase_date": "2026-08-15",
+            "amount": "260.00",
+            "remark": "快驴采购",
+        },
+    )
+    assert create_response.status_code == 201
+    purchase = create_response.json()["data"]
+    assert purchase["amount"] == "260.00"
+
+    list_response = client.get(
+        f"/api/expense-items/kuailv-purchases?store_id={store_id}&ledger_period=2026-08"
+    )
+    assert list_response.status_code == 200
+    assert len(list_response.json()["data"]) == 1
+
+    workspace = client.get(f"/api/store-ledgers/{store_id}/workspace?period=2026-08").json()["data"]
+
+    assert workspace["metrics"]["expense_amount"] == "260.00"
+    assert workspace["metrics"]["food_cost_amount"] == "260.00"
+    assert workspace["metrics"]["gross_profit_amount"] == "740.00"
+    category_summary = workspace["metrics"]["expense_category_summary"]
+    assert category_summary[0]["name"] == "食材成本 / 快驴采购"
+    assert category_summary[0]["amount"] == "260.00"
 
 
 def test_bank_transaction_create_auto_creates_ledger(client: TestClient) -> None:
@@ -556,3 +605,67 @@ def test_bank_transaction_create_auto_creates_ledger(client: TestClient) -> None
     data = response.json()["data"]
     assert data["store_id"] == store_id
     assert data["ledger_period"] == "2026-08"
+
+
+def test_kuailv_purchase_create_auto_creates_ledger(client: TestClient) -> None:
+    store_id = client.post("/api/stores", json={"name": "蘑说快驴自动建账店"}).json()["data"]["id"]
+
+    response = client.post(
+        "/api/expense-items/kuailv-purchases",
+        json={
+            "store_id": store_id,
+            "ledger_period": "2026-08",
+            "purchase_date": "2026-08-16",
+            "amount": "88.80",
+        },
+    )
+
+    assert response.status_code == 201
+    data = response.json()["data"]
+    assert data["store_id"] == store_id
+    assert data["ledger_period"] == "2026-08"
+    assert data["amount"] == "88.80"
+
+    ledgers = client.get(f"/api/ledgers?store_id={store_id}&period=2026-08").json()["data"]["items"]
+    assert len(ledgers) == 1
+    assert ledgers[0]["status"] == "open"
+
+
+def test_kuailv_purchase_can_edit_and_delete_with_independent_entry_period(client: TestClient) -> None:
+    store_id = client.post("/api/stores", json={"name": "蘑说快驴采购编辑店"}).json()["data"]["id"]
+    response = client.post(
+        "/api/expense-items/kuailv-purchases",
+        json={
+            "store_id": store_id,
+            "ledger_period": "2026-08",
+            "purchase_date": "2026-01-16",
+            "amount": "88.80",
+            "remark": "原备注",
+        },
+    )
+    assert response.status_code == 201
+    purchase_id = response.json()["data"]["id"]
+
+    update_response = client.patch(
+        f"/api/expense-items/kuailv-purchases/{purchase_id}",
+        json={
+            "ledger_period": "2026-09",
+            "purchase_date": "2025-12-20",
+            "amount": "99.90",
+            "remark": "已修改",
+        },
+    )
+    assert update_response.status_code == 200
+    updated = update_response.json()["data"]
+    assert updated["ledger_period"] == "2026-09"
+    assert updated["purchase_date"] == "2025-12-20"
+    assert updated["amount"] == "99.90"
+    assert updated["remark"] == "已修改"
+
+    delete_response = client.delete(f"/api/expense-items/kuailv-purchases/{purchase_id}")
+    assert delete_response.status_code == 200
+    assert delete_response.json()["data"] == {"ok": True}
+    list_response = client.get(
+        f"/api/expense-items/kuailv-purchases?store_id={store_id}&ledger_period=2026-09"
+    )
+    assert list_response.json()["data"] == []

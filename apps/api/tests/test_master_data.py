@@ -19,6 +19,18 @@ def test_category_and_supplier_master_data(client: TestClient) -> None:
     duplicate_response = client.post("/api/categories", json={"name": "房租水电", "sort_order": 10})
     assert duplicate_response.status_code == 409
 
+    duplicate_child_name_response = client.post(
+        "/api/categories",
+        json={"name": "水电费", "parent_id": category["id"]},
+    )
+    assert duplicate_child_name_response.status_code == 409
+
+    duplicate_under_other_parent_response = client.post(
+        "/api/categories",
+        json={"name": "水电费"},
+    )
+    assert duplicate_under_other_parent_response.status_code == 409
+
     supplier_response = client.post(
         "/api/suppliers",
         json={

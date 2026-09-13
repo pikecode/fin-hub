@@ -458,3 +458,83 @@ def test_import_bank_transactions_returns_row_errors(client: TestClient) -> None
     assert data["row_errors"][0]["row_number"] == 3
     assert "Unsupported direction" in data["row_errors"][0]["message"]
     assert data["job"]["status"] == "failed"
+
+
+def test_bank_transaction_payment_status_defaults_and_batch_unpaid(client: TestClient) -> None:
+    store_id = client.post("/api/stores", json={"name": "流水付款状态店"}).json()["data"]["id"]
+
+    created = client.post(
+        "/api/bank-transactions",
+        json={
+            "store_id": store_id,
+            "ledger_period": "2026-08",
+            "occurred_at": "2026-08-20T10:00:00",
+            "direction": "expense",
+            "amount": "100.00",
+            "counterparty_name": "默认已实付供应商",
+        },
+    )
+    assert created.status_code == 201
+    assert created.json()["data"]["payment_status"] == "paid"
+
+    batch = client.post(
+        "/api/bank-transactions/batch",
+        json={
+            "items": [
+                {
+                    "store_id": store_id,
+                    "ledger_period": "2026-08",
+                    "occurred_at": "2026-08-21T10:00:00",
+                    "direction": "expense",
+                    "amount": "200.00",
+                    "counterparty_name": "未实付供应商",
+                    "payment_status": "unpaid",
+                }
+            ]
+        },
+    )
+    assert batch.status_code == 201
+
+    response = client.get(f"/api/bank-transactions?store_id={store_id}&ledger_period=2026-08")
+    assert response.status_code == 200
+    statuses = {item["counterparty_name"]: item["payment_status"] for item in response.json()["data"]["items"]}
+    assert statuses["默认已实付供应商"] == "paid"
+    assert statuses["未实付供应商"] == "unpaid"
+
+
+def test_matched_bank_transaction_allows_payment_status_update_only(client: TestClient) -> None:
+    store_id = client.post("/api/stores", json={"name": "已匹配付款状态店"}).json()["data"]["id"]
+    client.post("/api/ledgers", json={"store_id": store_id, "period": "2026-08"})
+    expense_id = client.post(
+        "/api/expense-items",
+        json={
+            "store_id": store_id,
+            "ledger_period": "2026-08",
+            "description": "已提交未付款审批单",
+            "amount": "100.00",
+        },
+    ).json()["data"]["id"]
+    bank = client.post(
+        "/api/bank-transactions",
+        json={
+            "store_id": store_id,
+            "ledger_period": "2026-08",
+            "occurred_at": "2026-08-20T10:00:00",
+            "direction": "expense",
+            "amount": "100.00",
+            "counterparty_name": "未实付供应商",
+            "payment_status": "unpaid",
+        },
+    ).json()["data"]
+    match_id = client.post(
+        "/api/matches",
+        json={"expense_item_id": expense_id, "bank_transaction_id": bank["id"], "amount": "100.00"},
+    ).json()["data"]["id"]
+    client.post(f"/api/matches/{match_id}/confirm?operator=tester")
+
+    status_update = client.patch(f"/api/bank-transactions/{bank['id']}", json={"payment_status": "paid"})
+    assert status_update.status_code == 200
+    assert status_update.json()["data"]["payment_status"] == "paid"
+
+    amount_update = client.patch(f"/api/bank-transactions/{bank['id']}", json={"amount": "101.00"})
+    assert amount_update.status_code == 409

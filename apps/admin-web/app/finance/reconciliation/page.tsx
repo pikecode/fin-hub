@@ -26,11 +26,13 @@ import {
   Tag,
   Tooltip,
   Typography,
+  Upload,
   message,
 } from "antd";
 import zhCN from "antd/locale/zh_CN";
 import type { ColumnsType } from "antd/es/table";
-import { FileSearchOutlined } from "@ant-design/icons";
+import type { UploadFile } from "antd/es/upload/interface";
+import { DeleteOutlined, EditOutlined, EyeOutlined, FileSearchOutlined, PaperClipOutlined, UploadOutlined } from "@ant-design/icons";
 import dayjs from "dayjs";
 import "dayjs/locale/zh-cn";
 import { useEffect, useMemo, useState } from "react";
@@ -41,6 +43,8 @@ import type {
   BankTransaction,
   ExpenseCategory,
   ExpenseItem,
+  KuailvPurchase,
+  Ledger,
   ReconciliationExpenseCandidate,
   ReconciliationRecord,
   Store,
@@ -49,7 +53,7 @@ import { formatMoney } from "@fin-hub/shared-utils";
 import { AppShell } from "../../components/AppShell";
 import { StoreLedgerWorkspaceNav } from "../../components/StoreLedgerWorkspaceNav";
 import { apiClient } from "../../lib/api";
-import { getApprovalTemplates, getExpenseCategories, getStores } from "../../lib/referenceData";
+import { getApprovalTemplates, getExpenseCategories, getLedgers, getStores } from "../../lib/referenceData";
 import { useClientSearchParams } from "../../lib/searchParams";
 
 dayjs.locale("zh-cn");
@@ -74,6 +78,14 @@ interface ConfirmValues {
 
 interface DetailCategoryDraft {
   category_path?: string[];
+}
+
+interface KuailvPurchaseValues {
+  purchase_date?: dayjs.Dayjs;
+  ledger_period?: dayjs.Dayjs;
+  amount?: string;
+  voucher?: UploadFile[];
+  remark?: string;
 }
 
 interface ApprovalAttachmentState {
@@ -282,11 +294,15 @@ export default function FinanceReconciliationPage() {
   const initialLedgerPeriod = searchParams.get("ledger_period") ?? undefined;
   const initialApprovalNo = searchParams.get("approval_no") ?? undefined;
   const [stores, setStores] = useState<Store[]>([]);
+  const [ledgers, setLedgers] = useState<Ledger[]>([]);
   const [templates, setTemplates] = useState<ApprovalTemplate[]>([]);
   const [categories, setCategories] = useState<ExpenseCategory[]>([]);
   const [transactions, setTransactions] = useState<BankTransaction[]>([]);
   const [candidates, setCandidates] = useState<ReconciliationExpenseCandidate[]>([]);
   const [records, setRecords] = useState<ReconciliationRecord[]>([]);
+  const [kuailvPurchases, setKuailvPurchases] = useState<KuailvPurchase[]>([]);
+  const [kuailvVoucherRecord, setKuailvVoucherRecord] = useState<KuailvPurchase | null>(null);
+  const [editingKuailvPurchase, setEditingKuailvPurchase] = useState<KuailvPurchase | null>(null);
   const [selectedStoreId, setSelectedStoreId] = useState<string>();
   const [activeTabKey, setActiveTabKey] = useState("workbench");
   const [transactionPage, setTransactionPage] = useState(1);
@@ -312,17 +328,23 @@ export default function FinanceReconciliationPage() {
   const [isConfirmOpen, setIsConfirmOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [isCandidateLoading, setIsCandidateLoading] = useState(false);
+  const [isKuailvLoading, setIsKuailvLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [filterForm] = Form.useForm<CandidateFilters>();
   const [confirmForm] = Form.useForm<ConfirmValues>();
   const [editForm] = Form.useForm<EditValues>();
+  const [kuailvForm] = Form.useForm<KuailvPurchaseValues>();
   // 预加载缓存：transactionId -> candidates
   const [candidatesCache, setCandidatesCache] = useState<Map<string, ReconciliationExpenseCandidate[]>>(new Map());
   const [preloadingTransactionIds, setPreloadingTransactionIds] = useState<Set<string>>(new Set());
 
   const storesById = useMemo(() => new Map(stores.map((store) => [store.id, store])), [stores]);
   const currentStore = selectedStoreId ? storesById.get(selectedStoreId) : undefined;
+  const ledgersByKey = useMemo(
+    () => new Map(ledgers.map((ledger) => [`${ledger.store_id}|${ledger.period}`, ledger])),
+    [ledgers],
+  );
   const activeCategories = useMemo(() => categories.filter((category) => category.status === "active"), [categories]);
   const categoriesById = useMemo(() => new Map(activeCategories.map((category) => [category.id, category])), [activeCategories]);
   const categoryOptions = useMemo(
@@ -356,6 +378,22 @@ export default function FinanceReconciliationPage() {
   const defaultMatchAmount = bankRemaining;
   const fallbackLedgerPeriod = useMemo(() => defaultLedgerPeriod(), []);
   const selectedLedgerPeriod = initialLedgerPeriod ?? fallbackLedgerPeriod;
+  const selectedLedger = selectedStoreId ? ledgersByKey.get(`${selectedStoreId}|${selectedLedgerPeriod}`) : undefined;
+  const ledgerPeriodOptions = useMemo(() => {
+    const periods = new Set(ledgers.map((ledger) => ledger.period));
+    if (selectedLedgerPeriod) periods.add(selectedLedgerPeriod);
+    return Array.from(periods)
+      .sort()
+      .reverse()
+      .map((period) => ({ label: period, value: period }));
+  }, [ledgers, selectedLedgerPeriod]);
+  const activeModuleKey = searchParams.get("module") === "kuailv" ? "kuailvPurchase" : "matching";
+  const isKuailvPurchaseModule = activeModuleKey === "kuailvPurchase";
+  const pageTitle = isKuailvPurchaseModule ? "快驴采购录入" : "审批单对账";
+  const kuailvTotalAmount = useMemo(
+    () => kuailvPurchases.reduce((total, item) => total + Number(item.amount || 0), 0),
+    [kuailvPurchases],
+  );
   const detailPayload = useMemo(() => parseApprovalPayload(detailRecord?.approval_instance), [detailRecord]);
   const detailFields = useMemo<DingTalkField[]>(() => {
     const fields = detailPayload?.form_component_values ?? detailPayload?.formComponentValues;
@@ -456,8 +494,9 @@ export default function FinanceReconciliationPage() {
     setIsLoading(true);
     setErrorMessage(null);
     try {
-      const stores = await getStores();
+      const [stores, ledgers] = await Promise.all([getStores(), getLedgers()]);
       setStores(stores);
+      setLedgers(ledgers);
       if (!selectedStoreId) {
         const defaultStoreId = initialStoreId && stores.some((store) => store.id === initialStoreId)
           ? initialStoreId
@@ -575,6 +614,89 @@ export default function FinanceReconciliationPage() {
     }
   }
 
+  async function loadKuailvPurchases(storeId: string) {
+    setIsKuailvLoading(true);
+    try {
+      const params = new URLSearchParams({ store_id: storeId, ledger_period: selectedLedgerPeriod });
+      const items = await apiClient.expenseItems.kuailvPurchases.list(`?${params.toString()}`);
+      setKuailvPurchases(items);
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "无法加载快驴采购记录");
+    } finally {
+      setIsKuailvLoading(false);
+    }
+  }
+
+  async function submitKuailvPurchase(values: KuailvPurchaseValues) {
+    if (!selectedStoreId) {
+      message.warning("请先选择门店");
+      return;
+    }
+    if (!values.purchase_date || !values.amount) {
+      message.warning("请填写采购日期和采购金额");
+      return;
+    }
+    if (!values.ledger_period) {
+      message.warning("请选择入账月份");
+      return;
+    }
+    const ledgerPeriod = values.ledger_period.format("YYYY-MM");
+    setIsKuailvLoading(true);
+    try {
+      const payload = {
+        ledger_period: ledgerPeriod,
+        purchase_date: values.purchase_date.format("YYYY-MM-DD"),
+        amount: values.amount,
+        remark: values.remark || null,
+      };
+      const purchase = editingKuailvPurchase
+        ? await apiClient.expenseItems.kuailvPurchases.update(editingKuailvPurchase.id, payload)
+        : await apiClient.expenseItems.kuailvPurchases.create({ store_id: selectedStoreId, ...payload });
+      const files = values.voucher?.flatMap((item) => (item.originFileObj ? [item.originFileObj] : [])) ?? [];
+      await Promise.all(
+        files.map((file) => {
+          const payload = new FormData();
+          payload.append("file", file);
+          return apiClient.attachments.upload("expense_item", purchase.id, payload);
+        }),
+      );
+      message.success(editingKuailvPurchase ? "快驴采购已更新" : "快驴采购已录入");
+      kuailvForm.resetFields();
+      setEditingKuailvPurchase(null);
+      await loadKuailvPurchases(selectedStoreId);
+      await loadStoreWorkspace(selectedStoreId);
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "快驴采购录入失败");
+    } finally {
+      setIsKuailvLoading(false);
+    }
+  }
+
+  function openEditKuailvPurchase(record: KuailvPurchase) {
+    setEditingKuailvPurchase(record);
+    kuailvForm.setFieldsValue({
+      purchase_date: record.purchase_date ? dayjs(record.purchase_date) : undefined,
+      ledger_period: dayjs(`${record.ledger_period}-01`),
+      amount: record.amount,
+      remark: record.remark ?? undefined,
+      voucher: [],
+    });
+  }
+
+  async function deleteKuailvPurchase(record: KuailvPurchase) {
+    setIsKuailvLoading(true);
+    try {
+      await apiClient.expenseItems.kuailvPurchases.delete(record.id);
+      message.success("快驴采购已删除");
+      await loadKuailvPurchases(selectedStoreId!);
+      await loadStoreWorkspace(selectedStoreId!);
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "快驴采购删除失败");
+    } finally {
+      setIsKuailvLoading(false);
+    }
+  }
+
   useEffect(() => {
     void loadBaseData();
   }, []);
@@ -590,8 +712,20 @@ export default function FinanceReconciliationPage() {
   }, [filterForm, initialApprovalNo]);
 
   useEffect(() => {
-    if (selectedStoreId) void loadStoreWorkspace(selectedStoreId);
-  }, [selectedStoreId]);
+    if (!editingKuailvPurchase) {
+      kuailvForm.setFieldsValue({
+        purchase_date: dayjs(`${selectedLedgerPeriod}-01`),
+        ledger_period: dayjs(`${selectedLedgerPeriod}-01`),
+      });
+    }
+  }, [editingKuailvPurchase, kuailvForm, selectedLedgerPeriod]);
+
+  useEffect(() => {
+    if (selectedStoreId) {
+      void loadStoreWorkspace(selectedStoreId);
+      void loadKuailvPurchases(selectedStoreId);
+    }
+  }, [selectedStoreId, selectedLedgerPeriod]);
 
   useEffect(() => {
     let ignore = false;
@@ -736,6 +870,31 @@ export default function FinanceReconciliationPage() {
         [expenseItemId]: { loading: false, attachments: [], accessUrls: {} },
       }));
       message.error(error instanceof Error ? error.message : "无法加载报销凭证");
+    }
+  }
+
+  function openKuailvVoucherModal(record: KuailvPurchase) {
+    setKuailvVoucherRecord(record);
+    void loadExpenseAttachments(record.id);
+  }
+
+  async function openStoredAttachment(attachment: Attachment) {
+    try {
+      const blob = await apiClient.attachments.download(attachment.id);
+      const url = window.URL.createObjectURL(blob);
+      const canOpenInBrowser = (blob.type || attachment.content_type || "").startsWith("image/") || (blob.type || attachment.content_type) === "application/pdf";
+      if (canOpenInBrowser) {
+        window.open(url, "_blank", "noopener,noreferrer");
+        window.setTimeout(() => window.URL.revokeObjectURL(url), 60_000);
+        return;
+      }
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = attachment.file_name || "凭证文件";
+      link.click();
+      window.URL.revokeObjectURL(url);
+    } catch {
+      message.error("凭证打开失败");
     }
   }
 
@@ -1072,9 +1231,9 @@ export default function FinanceReconciliationPage() {
                     {attachment.file_name || "报销凭证"}
                   </Button>
                 ) : (
-                  <Typography.Text key={attachment.id} type="secondary">
+                  <Button key={attachment.id} size="small" onClick={() => void openStoredAttachment(attachment)}>
                     {attachment.file_name || "报销凭证"}
-                  </Typography.Text>
+                  </Button>
                 );
               })}
             </Space>
@@ -1085,6 +1244,81 @@ export default function FinanceReconciliationPage() {
       </div>
     );
   }
+
+  const kuailvPurchaseColumns: ColumnsType<KuailvPurchase> = [
+    {
+      title: "采购日期",
+      dataIndex: "purchase_date",
+      width: 140,
+      render: (value) => (value ? dayjs(value).format("YYYY-MM-DD") : "-"),
+    },
+    {
+      title: "采购金额",
+      dataIndex: "amount",
+      width: 140,
+      align: "right",
+      render: (value) => formatMoney(value),
+    },
+    {
+      title: "入账月份",
+      dataIndex: "ledger_period",
+      width: 110,
+    },
+    {
+      title: "凭证",
+      dataIndex: "attachment_count",
+      width: 180,
+      render: (value, record) => {
+        const attachmentState = approvalAttachmentsByExpenseItemId[record.id];
+        const count = attachmentState?.attachments?.length ?? Number(value || 0);
+        if (!count) return <Tag>未上传</Tag>;
+        return (
+          <Space size={6}>
+            <Tag color="blue" icon={<PaperClipOutlined />}>
+              {count} 个
+            </Tag>
+            <Button
+              type="link"
+              size="small"
+              icon={<EyeOutlined />}
+              loading={attachmentState?.loading}
+              onClick={() => openKuailvVoucherModal(record)}
+            >
+              查看
+            </Button>
+          </Space>
+        );
+      },
+    },
+    {
+      title: "备注",
+      dataIndex: "remark",
+      ellipsis: true,
+      render: (value) => value || "-",
+    },
+    {
+      title: "录入时间",
+      dataIndex: "created_at",
+      width: 170,
+      render: (value) => formatDateTime(value),
+    },
+    {
+      title: "操作",
+      width: 130,
+      render: (_, record) => (
+        <Space size={4}>
+          <Button type="link" size="small" icon={<EditOutlined />} onClick={() => openEditKuailvPurchase(record)}>
+            编辑
+          </Button>
+          <Popconfirm title="确定删除这条采购记录？" okText="删除" cancelText="取消" onConfirm={() => void deleteKuailvPurchase(record)}>
+            <Button type="link" danger size="small" icon={<DeleteOutlined />}>
+              删除
+            </Button>
+          </Popconfirm>
+        </Space>
+      ),
+    },
+  ];
 
   useEffect(() => {
     if (!isConfirmOpen) return;
@@ -1097,14 +1331,16 @@ export default function FinanceReconciliationPage() {
   }, [editingRecord, sortedEditExpenseItems]);
 
   return (
-    <AppShell title={currentStore?.name ? `${currentStore.name} · 审批单对账` : "审批单对账"} kicker={`账期：${selectedLedgerPeriod}`}>
+    <AppShell title={currentStore?.name ? `${currentStore.name} · ${pageTitle}` : pageTitle} kicker={`账期：${selectedLedgerPeriod}`}>
       {initialStoreId ? (
         <StoreLedgerWorkspaceNav
           storeId={selectedStoreId ?? initialStoreId}
           storeName={currentStore?.name}
           period={selectedLedgerPeriod}
+          periodOptions={ledgerPeriodOptions}
           statusLabel={currentStore?.status === "active" ? "启用门店" : currentStore ? "停用门店" : undefined}
-          activeKey="matching"
+          ledgerStatusLabel={selectedLedger?.status === "closed" ? "已封账" : selectedLedger ? "进行中" : undefined}
+          activeKey={activeModuleKey}
         />
       ) : null}
       {errorMessage ? <Alert className="dashboard-alert" type="warning" showIcon message={errorMessage} closable onClose={() => setErrorMessage(null)} /> : null}
@@ -1135,6 +1371,103 @@ export default function FinanceReconciliationPage() {
         </Card>
       ) : null}
 
+      {isKuailvPurchaseModule ? (
+              <Space direction="vertical" size={12} style={{ width: "100%", display: "flex" }}>
+                <Card size="small" className="reconciliation-summary-card">
+                  <div className="reconciliation-summary-card__main">
+                    <div className="reconciliation-summary-card__store">
+                      <Typography.Text className="reconciliation-summary-card__label">归属账期</Typography.Text>
+                      <Typography.Title level={4} style={{ margin: 0 }}>{selectedLedgerPeriod}</Typography.Title>
+                    </div>
+                    <div className="reconciliation-summary-card__metrics">
+                      <Statistic title="当月累计采购金额" value={kuailvTotalAmount} precision={2} prefix="¥" />
+                      <Statistic title="采购记录" value={kuailvPurchases.length} />
+                    </div>
+                  </div>
+                </Card>
+
+                <Card size="small" title={editingKuailvPurchase ? "编辑快驴采购" : "录入快驴采购"} className="data-table-card">
+                  <Form
+                    form={kuailvForm}
+                    layout="inline"
+                    onFinish={(values) => void submitKuailvPurchase(values)}
+                    initialValues={{
+                      purchase_date: dayjs(`${selectedLedgerPeriod}-01`),
+                      ledger_period: dayjs(`${selectedLedgerPeriod}-01`),
+                    }}
+                  >
+                    <Form.Item
+                      label="采购日期"
+                      name="purchase_date"
+                      rules={[{ required: true, message: "请选择采购日期" }]}
+                    >
+                      <DatePicker allowClear={false} />
+                    </Form.Item>
+                    <Form.Item
+                      label="入账月份"
+                      name="ledger_period"
+                      rules={[{ required: true, message: "请选择入账月份" }]}
+                    >
+                      <DatePicker picker="month" allowClear={false} />
+                    </Form.Item>
+                    <Form.Item
+                      label="采购金额"
+                      name="amount"
+                      rules={[{ required: true, message: "请输入采购金额" }]}
+                    >
+                      <Input placeholder="0.00" style={{ width: 140 }} />
+                    </Form.Item>
+                    <Form.Item
+                      label="凭证上传"
+                      name="voucher"
+                      valuePropName="fileList"
+                      getValueFromEvent={(event) => event?.fileList}
+                      extra="支持图片、PDF、Office、表格、文本、压缩包等常见凭证文件"
+                    >
+                      <Upload
+                        beforeUpload={(file) => {
+                          if (file.size > 500 * 1024) {
+                            message.error(`${file.name} 超过 500KB 限制`);
+                            return Upload.LIST_IGNORE;
+                          }
+                          return false;
+                        }}
+                        multiple
+                      >
+                        <Button icon={<UploadOutlined />}>选择凭证文件</Button>
+                      </Upload>
+                    </Form.Item>
+                    <Form.Item label="备注" name="remark">
+                      <Input placeholder="可选" style={{ width: 220 }} />
+                    </Form.Item>
+                    <Button type="primary" htmlType="submit" loading={isKuailvLoading} disabled={!selectedStoreId}>
+                      {editingKuailvPurchase ? "保存修改" : "保存"}
+                    </Button>
+                    {editingKuailvPurchase ? (
+                      <Button
+                        onClick={() => {
+                          setEditingKuailvPurchase(null);
+                          kuailvForm.resetFields();
+                        }}
+                      >
+                        取消编辑
+                      </Button>
+                    ) : null}
+                  </Form>
+                </Card>
+
+                <Card size="small" title="快驴采购记录" className="data-table-card">
+                  <Table
+                    rowKey="id"
+                    size="small"
+                    loading={isKuailvLoading}
+                    columns={kuailvPurchaseColumns}
+                    dataSource={kuailvPurchases}
+                    pagination={false}
+                  />
+                </Card>
+              </Space>
+      ) : (
       <Tabs
         className="reconciliation-tabs"
         activeKey={activeTabKey}
@@ -1346,11 +1679,11 @@ export default function FinanceReconciliationPage() {
                     </Spin>
                   </Card>
                 </Splitter.Panel>
-              </Splitter>
-            ) : null,
-          },
-          {
-            key: "records",
+	              </Splitter>
+	            ) : null,
+	          },
+	          {
+	            key: "records",
             label: `已对账记录 (${records.length})`,
             children: activeTabKey === "records" ? (
               <Card title="已对账记录" className="data-table-card reconciliation-record-card">
@@ -1377,6 +1710,85 @@ export default function FinanceReconciliationPage() {
           },
         ]}
       />
+      )}
+
+      <Modal
+        title={
+          <Space direction="vertical" size={2}>
+            <Typography.Text strong>快驴采购凭证</Typography.Text>
+            {kuailvVoucherRecord ? (
+              <Typography.Text type="secondary" className="reconciliation-confirm-modal__subtitle">
+                {kuailvVoucherRecord.purchase_date ? dayjs(kuailvVoucherRecord.purchase_date).format("YYYY-MM-DD") : "-"}
+                {' · '}
+                {formatMoney(kuailvVoucherRecord.amount)}
+              </Typography.Text>
+            ) : null}
+          </Space>
+        }
+        open={Boolean(kuailvVoucherRecord)}
+        destroyOnHidden
+        footer={null}
+        onCancel={() => setKuailvVoucherRecord(null)}
+        width={720}
+      >
+        {(() => {
+          const attachmentState = kuailvVoucherRecord ? approvalAttachmentsByExpenseItemId[kuailvVoucherRecord.id] : undefined;
+          const attachments = attachmentState?.attachments ?? [];
+          if (attachmentState?.loading) return <Spin />;
+          if (!attachments.length) return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无凭证" />;
+          return (
+            <Table
+              rowKey="id"
+              size="small"
+              pagination={false}
+              dataSource={attachments}
+              columns={[
+                {
+                  title: "文件",
+                  render: (_, attachment) => {
+                    const sourceUrl = externalAttachmentUrl(attachment) || attachmentState?.accessUrls[attachment.id];
+                    return (
+                      <Space size={10}>
+                        {sourceUrl && isImageAttachment(attachment) ? (
+                          <Image
+                            src={sourceUrl}
+                            alt={attachment.file_name || "凭证"}
+                            width={40}
+                            height={40}
+                            style={{ objectFit: "cover", borderRadius: 4 }}
+                          />
+                        ) : (
+                          <PaperClipOutlined />
+                        )}
+                        <Space direction="vertical" size={0}>
+                          <Typography.Text>{attachment.file_name || "凭证文件"}</Typography.Text>
+                          {attachment.content_type ? <Typography.Text type="secondary">{attachment.content_type}</Typography.Text> : null}
+                        </Space>
+                      </Space>
+                    );
+                  },
+                },
+                {
+                  title: "操作",
+                  width: 120,
+                  render: (_, attachment) => {
+                    const sourceUrl = externalAttachmentUrl(attachment) || attachmentState?.accessUrls[attachment.id];
+                    return sourceUrl ? (
+                      <Button type="link" size="small" href={sourceUrl} target="_blank" rel="noreferrer">
+                        打开
+                      </Button>
+                    ) : (
+                      <Button type="link" size="small" onClick={() => void openStoredAttachment(attachment)}>
+                        打开/下载
+                      </Button>
+                    );
+                  },
+                },
+              ]}
+            />
+          );
+        })()}
+      </Modal>
 
       <Modal
         title={
