@@ -483,6 +483,7 @@ class BankTransactionCreate(BaseModel):
     summary: str | None = None
     bank_serial_no: str | None = None
     payment_status: str = Field(default="paid", pattern=r"^(paid|unpaid)$")
+    special_type: str | None = Field(default=None, pattern=r"^(current_account|shareholder_dividend)$")
 
 
 class BankTransactionBatchCreateRequest(BaseModel):
@@ -504,6 +505,7 @@ class BankTransactionUpdate(BaseModel):
     summary: str | None = None
     bank_serial_no: str | None = None
     payment_status: str | None = Field(default=None, pattern=r"^(paid|unpaid)$")
+    special_type: str | None = Field(default=None, pattern=r"^(current_account|shareholder_dividend)$")
 
 
 class BankTransactionRead(BankTransactionCreate):

@@ -538,3 +538,62 @@ def test_matched_bank_transaction_allows_payment_status_update_only(client: Test
 
     amount_update = client.patch(f"/api/bank-transactions/{bank['id']}", json={"amount": "101.00"})
     assert amount_update.status_code == 409
+
+
+def test_special_bank_transactions_are_excluded_from_matching_queue_and_filterable_by_date(client: TestClient) -> None:
+    store_id = client.post("/api/stores", json={"name": "特殊流水筛选店"}).json()["data"]["id"]
+    for payload in [
+        {
+            "occurred_at": "2026-09-05T10:00:00",
+            "amount": "100.00",
+            "counterparty_name": "往来款",
+            "special_type": "current_account",
+        },
+        {
+            "occurred_at": "2026-09-15T10:00:00",
+            "amount": "200.00",
+            "counterparty_name": "普通支出",
+        },
+    ]:
+        response = client.post(
+            "/api/bank-transactions",
+            json={
+                "store_id": store_id,
+                "ledger_period": "2026-09",
+                "direction": "expense",
+                **payload,
+            },
+        )
+        assert response.status_code == 201
+
+    filtered = client.get(
+        f"/api/bank-transactions?store_id={store_id}&occurred_from=2026-09-10T00:00:00&occurred_to=2026-09-20T00:00:00"
+    )
+    assert filtered.status_code == 200
+    assert [item["counterparty_name"] for item in filtered.json()["data"]["items"]] == ["普通支出"]
+
+    matching_queue = client.post(
+        f"/api/matches/auto-suggest?store_id={store_id}&ledger_period=2026-09",
+    )
+    assert matching_queue.status_code in {200, 201}
+
+    unmatched = client.get(f"/api/bank-transactions?store_id={store_id}&match_status=unmatched")
+    assert [item["counterparty_name"] for item in unmatched.json()["data"]["items"]] == ["普通支出"]
+    matched = client.get(f"/api/bank-transactions?store_id={store_id}&match_status=matched")
+    assert [item["counterparty_name"] for item in matched.json()["data"]["items"]] == ["往来款"]
+
+    dividend = client.post(
+        "/api/bank-transactions",
+        json={
+            "store_id": store_id,
+            "ledger_period": "2026-09",
+            "occurred_at": "2026-09-25T10:00:00",
+            "direction": "income",
+            "amount": "300.00",
+            "counterparty_name": "股东分红",
+            "special_type": "shareholder_dividend",
+        },
+    )
+    assert dividend.status_code == 201
+    special = client.get(f"/api/bank-transactions?store_id={store_id}&special_type=shareholder_dividend")
+    assert [item["counterparty_name"] for item in special.json()["data"]["items"]] == ["股东分红"]

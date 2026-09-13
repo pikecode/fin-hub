@@ -227,7 +227,7 @@ export default function RevenueReconciliationPage() {
       setErrorMessage(null);
       setIsMatchDataReady(false);
     try {
-      const bankParams = new URLSearchParams({ store_id: storeId, direction: "income", page_size: "500" });
+      const bankParams = new URLSearchParams({ store_id: storeId, direction: "income", exclude_special: "true", page_size: "500" });
       const revenueParams = new URLSearchParams({ store_id: storeId, page_size: "500" });
       const matchParams = new URLSearchParams({ store_id: storeId, page_size: "500" });
       const results = await Promise.allSettled([

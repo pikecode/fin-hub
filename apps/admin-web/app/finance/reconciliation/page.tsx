@@ -539,7 +539,7 @@ export default function FinanceReconciliationPage() {
     setCandidatesCache(new Map());
     setPreloadingTransactionIds(new Set());
     try {
-      const bankParams = new URLSearchParams({ store_id: storeId, direction: "expense", page_size: "200" });
+      const bankParams = new URLSearchParams({ store_id: storeId, direction: "expense", exclude_special: "true", page_size: "200" });
       const recordParams = new URLSearchParams({ store_id: storeId, page_size: "100" });
       const [bankPage, recordPage] = await Promise.all([
         apiClient.bankTransactions.list(`?${bankParams.toString()}`),

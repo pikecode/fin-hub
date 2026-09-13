@@ -1,6 +1,6 @@
 "use client";
 
-import { Alert, Button, Card, DatePicker, Form, Input, Modal, Popconfirm, Select, Space, Table, Tabs, Upload, Typography, message } from "antd";
+import { Alert, Button, Card, Checkbox, DatePicker, Form, Input, Modal, Popconfirm, Select, Space, Statistic, Table, Tabs, Upload, Typography, message } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import type { UploadFile } from "antd/es/upload/interface";
 import customParseFormat from "dayjs/plugin/customParseFormat";
@@ -45,11 +45,14 @@ interface BankFormValues extends Omit<BankTransactionCreate, "occurred_at"> {
 interface BankFilterValues {
   store_id?: string;
   ledger_period?: string;
+  month?: dayjs.Dayjs;
   direction?: "income" | "expense";
+  special_type?: "normal" | "current_account" | "shareholder_dividend";
   unmatched_only?: boolean;
   match_status?: "unmatched" | "matched";
   counterparty_name?: string;
   counterparty_account?: string;
+  occurred_range?: [dayjs.Dayjs, dayjs.Dayjs];
 }
 
 type BankEntryField = "occurred_at" | "income_amount" | "expense_amount" | "counterparty_name" | "counterparty_account" | "summary";
@@ -316,6 +319,8 @@ export default function BankPage() {
   const initialFilters = useMemo<BankFilterValues>(
     () => ({
       store_id: queryStoreId,
+      ledger_period: queryLedgerPeriod ?? dayjs().format("YYYY-MM"),
+      month: dayjs(`${queryLedgerPeriod ?? dayjs().format("YYYY-MM")}-01`),
     }),
     [queryStoreId],
   );
@@ -332,6 +337,7 @@ export default function BankPage() {
   const [isEntryModalOpen, setIsEntryModalOpen] = useState(false);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [editingTransaction, setEditingTransaction] = useState<BankTransaction | null>(null);
+  const [pendingSpecialTransaction, setPendingSpecialTransaction] = useState<BankFormValues | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [form] = Form.useForm<BankFormValues>();
   const [entryForm] = Form.useForm<{ ledger_key: string }>();
@@ -368,14 +374,31 @@ export default function BankPage() {
     );
   }, [entryRows]);
 
+  const transactionTotals = useMemo(
+    () => transactions.reduce(
+      (totals, transaction) => ({
+        income: totals.income + (transaction.direction === "income" ? Number(transaction.amount) : 0),
+        expense: totals.expense + (transaction.direction === "expense" ? Number(transaction.amount) : 0),
+      }),
+      { income: 0, expense: 0 },
+    ),
+    [transactions],
+  );
+
   function buildFilterParams(values?: BankFilterValues) {
     const params = new URLSearchParams({ page_size: "500" });
-    if (values?.store_id) params.set("store_id", values.store_id);
+    const storeId = values?.store_id || queryStoreId;
+    if (storeId) params.set("store_id", storeId);
+    if (values?.month) params.set("ledger_period", values.month.format("YYYY-MM"));
+    else if (values?.ledger_period) params.set("ledger_period", values.ledger_period);
     if (values?.direction) params.set("direction", values.direction);
+    if (values?.special_type) params.set("special_type", values.special_type);
     if (values?.unmatched_only) params.set("unmatched_only", "true");
     if (values?.match_status) params.set("match_status", values.match_status);
     if (values?.counterparty_name?.trim()) params.set("counterparty_name", values.counterparty_name.trim());
     if (values?.counterparty_account?.trim()) params.set("counterparty_account", values.counterparty_account.trim());
+    if (values?.occurred_range?.[0]) params.set("occurred_from", values.occurred_range[0].startOf("day").format("YYYY-MM-DD HH:mm:ss"));
+    if (values?.occurred_range?.[1]) params.set("occurred_to", values.occurred_range[1].add(1, "day").startOf("day").format("YYYY-MM-DD HH:mm:ss"));
     return `?${params.toString()}`;
   }
 
@@ -441,12 +464,13 @@ export default function BankPage() {
       counterparty_name: transaction.counterparty_name ?? "",
       counterparty_account: transaction.counterparty_account ?? "",
       summary: transaction.summary ?? undefined,
+      special_type: transaction.special_type ?? null,
       payment_status: transaction.payment_status ?? "paid",
     });
     setIsModalOpen(true);
   }
 
-  async function submitTransaction(values: BankFormValues) {
+  async function submitTransaction(values: BankFormValues, specialConfirmed = false) {
     if (!values.occurred_at) {
       message.warning("请选择发生时间");
       return;
@@ -467,7 +491,6 @@ export default function BankPage() {
       message.warning("缺少门店，无法保存流水");
       return;
     }
-    setIsLoading(true);
     try {
       const payload: BankTransactionCreate = {
         store_id: storeId,
@@ -478,8 +501,14 @@ export default function BankPage() {
         counterparty_name: normalizePastedCell(values.counterparty_name) || null,
         counterparty_account: normalizePastedCell(values.counterparty_account) || null,
         summary: normalizePastedCell(values.summary) || null,
+        special_type: values.special_type || null,
         payment_status: values.payment_status || "paid",
       };
+      if (values.special_type && !specialConfirmed) {
+        setPendingSpecialTransaction(values);
+        return;
+      }
+      setIsLoading(true);
       if (editingTransaction) {
         const isMatched = Number(editingTransaction.matched_amount || 0) > 0;
         await apiClient.bankTransactions.update(
@@ -493,11 +522,32 @@ export default function BankPage() {
       }
       setIsModalOpen(false);
       setEditingTransaction(null);
-      await loadData(initialFilters);
+      const refreshed = await apiClient.bankTransactions.list(buildFilterParams(filterForm.getFieldsValue()));
+      setTransactions(refreshed.items);
     } catch (error) {
       message.error(error instanceof Error ? error.message : "操作失败");
     } finally {
       setIsLoading(false);
+    }
+  }
+
+  async function confirmPendingSpecialTransaction() {
+    if (!pendingSpecialTransaction) return;
+    const values = pendingSpecialTransaction;
+    setPendingSpecialTransaction(null);
+    await submitTransaction(values, true);
+  }
+
+  async function confirmTransactionSubmit() {
+    try {
+      const values = await form.validateFields();
+      await submitTransaction(values);
+    } catch (error) {
+      if (error && typeof error === "object" && "errorFields" in error) {
+        message.warning("请先完善流水信息");
+        return;
+      }
+      message.error(error instanceof Error ? error.message : "操作失败");
     }
   }
 
@@ -706,7 +756,7 @@ export default function BankPage() {
   }
 
   async function deleteTransaction(record: BankTransaction) {
-    if (Number(record.matched_amount || 0) > 0) {
+    if (Number(record.matched_amount || 0) > 0 || record.special_type) {
       message.warning("这条银行流水已经做过匹配，不能删除");
       return;
     }
@@ -728,7 +778,7 @@ export default function BankPage() {
       message.warning("请先选择要删除的银行流水");
       return;
     }
-    const matchedCount = selectedRows.filter((record) => Number(record.matched_amount || 0) > 0).length;
+    const matchedCount = selectedRows.filter((record) => Number(record.matched_amount || 0) > 0 || record.special_type).length;
     if (matchedCount > 0) {
       message.warning(`已匹配的 ${matchedCount} 条银行流水不能删除，请取消选择后重试`);
       return;
@@ -1070,13 +1120,23 @@ export default function BankPage() {
               </Button>
             </Space>
           }
-        >
+          >
+          <Space size={32} style={{ marginBottom: 16 }}>
+            <Statistic title="本月收入累计" value={transactionTotals.income} precision={2} prefix="¥" />
+            <Statistic title="本月支出累计" value={transactionTotals.expense} precision={2} prefix="¥" />
+          </Space>
           <Form
             form={filterForm}
             layout="inline"
             onFinish={(values) => void loadData(values)}
             style={{ marginBottom: 16 }}
           >
+            <Form.Item name="month">
+              <DatePicker picker="month" allowClear={false} placeholder="账期月份" />
+            </Form.Item>
+            <Form.Item name="occurred_range">
+              <DatePicker.RangePicker allowClear placeholder={["发生日期开始", "发生日期结束"]} />
+            </Form.Item>
             <Form.Item name="direction">
               <Select
                 allowClear
@@ -1085,6 +1145,18 @@ export default function BankPage() {
                 options={[
                   { label: "收入", value: "income" },
                   { label: "支出", value: "expense" },
+                ]}
+              />
+            </Form.Item>
+            <Form.Item name="special_type">
+              <Select
+                allowClear
+                placeholder="流水属性"
+                style={{ width: 128 }}
+                options={[
+                  { label: "普通流水", value: "normal" },
+                  { label: "往来款", value: "current_account" },
+                  { label: "股东分红", value: "shareholder_dividend" },
                 ]}
               />
             </Form.Item>
@@ -1122,8 +1194,8 @@ export default function BankPage() {
             loading={isLoading}
             rowSelection={{
               getCheckboxProps: (record) => ({
-                disabled: Number(record.matched_amount || 0) > 0,
-                name: Number(record.matched_amount || 0) > 0 ? "已匹配，不能删除" : undefined,
+                disabled: Number(record.matched_amount || 0) > 0 || Boolean(record.special_type),
+                name: Number(record.matched_amount || 0) > 0 || record.special_type ? "已匹配，不能删除" : undefined,
               }),
             }}
             exportFileName="银行流水"
@@ -1152,8 +1224,9 @@ export default function BankPage() {
         onCancel={() => {
           setIsModalOpen(false);
           setEditingTransaction(null);
+          setPendingSpecialTransaction(null);
         }}
-        onOk={() => form.submit()}
+        onOk={() => void confirmTransactionSubmit()}
         confirmLoading={isLoading}
       >
         <Form form={form} layout="vertical" onFinish={submitTransaction}>
@@ -1179,6 +1252,32 @@ export default function BankPage() {
           <Form.Item name="payment_status" label="付款情况" rules={[{ required: true }]}>
             <Select options={bankPaymentStatusOptions} />
           </Form.Item>
+          <Form.Item name="special_type" label="流水属性">
+            <Form.Item noStyle shouldUpdate={(previous, current) => previous.special_type !== current.special_type}>
+              {({ getFieldValue, setFieldsValue }) => {
+                const specialType = getFieldValue("special_type");
+                const disabled = Boolean(editingTransaction && Number(editingTransaction.matched_amount || 0) > 0);
+                return (
+                  <Space>
+                    <Checkbox
+                      checked={specialType === "current_account"}
+                      disabled={disabled}
+                      onChange={(event) => setFieldsValue({ special_type: event.target.checked ? "current_account" : null })}
+                    >
+                      往来款
+                    </Checkbox>
+                    <Checkbox
+                      checked={specialType === "shareholder_dividend"}
+                      disabled={disabled}
+                      onChange={(event) => setFieldsValue({ special_type: event.target.checked ? "shareholder_dividend" : null })}
+                    >
+                      股东分红
+                    </Checkbox>
+                  </Space>
+                );
+              }}
+            </Form.Item>
+          </Form.Item>
           <Form.Item name="counterparty_name" label="对方户名" rules={[{ required: true, message: "请填写对方户名" }]}>
             <Input disabled={Boolean(editingTransaction && Number(editingTransaction.matched_amount || 0) > 0)} />
           </Form.Item>
@@ -1199,6 +1298,21 @@ export default function BankPage() {
             <Input disabled={Boolean(editingTransaction && Number(editingTransaction.matched_amount || 0) > 0)} />
           </Form.Item>
         </Form>
+      </Modal>
+
+      <Modal
+        title="确认流水属性"
+        open={Boolean(pendingSpecialTransaction)}
+        onCancel={() => setPendingSpecialTransaction(null)}
+        onOk={() => void confirmPendingSpecialTransaction()}
+        confirmLoading={isLoading}
+        okText="确认保存"
+        cancelText="取消"
+      >
+        <Typography.Paragraph>
+          该笔流水将标记为{pendingSpecialTransaction?.special_type === "current_account" ? "往来款" : "股东分红"}，保存后不会进入审批单对账或收入对账。
+        </Typography.Paragraph>
+        <Typography.Text>是否继续保存？</Typography.Text>
       </Modal>
 
       <Modal

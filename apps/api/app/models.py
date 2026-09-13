@@ -50,6 +50,11 @@ class BankPaymentStatus(StrEnum):
     UNPAID = "unpaid"
 
 
+class BankSpecialType(StrEnum):
+    CURRENT_ACCOUNT = "current_account"
+    SHAREHOLDER_DIVIDEND = "shareholder_dividend"
+
+
 class MatchStatus(StrEnum):
     CANDIDATE = "candidate"
     CONFIRMED = "confirmed"
@@ -461,6 +466,7 @@ class BankTransaction(Base):
     summary: Mapped[str | None] = mapped_column(String(240))
     bank_serial_no: Mapped[str | None] = mapped_column(String(120))
     payment_status: Mapped[str] = mapped_column(String(24), default=BankPaymentStatus.PAID.value, nullable=False)
+    special_type: Mapped[str | None] = mapped_column(String(32))
     matched_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=0, nullable=False)
     import_job_id: Mapped[str | None] = mapped_column(ForeignKey("sync_jobs.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)

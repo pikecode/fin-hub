@@ -651,6 +651,8 @@ def create_revenue_match_candidate(
     ensure_store_access(session, current_user, bank_transaction.store_id)
     if bank_transaction.direction != "income":
         raise HTTPException(status_code=409, detail="Bank transaction is not income")
+    if bank_transaction.special_type is not None:
+        raise HTTPException(status_code=409, detail="Special bank transactions cannot be matched")
     if bank_transaction.ledger_period:
         ledger = session.scalar(
             select(Ledger).where(
@@ -741,6 +743,8 @@ def create_revenue_match_batch(
     ensure_store_access(session, current_user, bank_transaction.store_id)
     if bank_transaction.direction != "income":
         raise HTTPException(status_code=409, detail="Bank transaction is not income")
+    if bank_transaction.special_type is not None:
+        raise HTTPException(status_code=409, detail="Special bank transactions cannot be matched")
     if bank_transaction.ledger_period:
         ledger = session.scalar(
             select(Ledger).where(
@@ -1058,6 +1062,8 @@ def create_match_candidate(
     ensure_store_access(session, current_user, bank_transaction.store_id)
     if bank_transaction.direction != "expense":
         raise HTTPException(status_code=409, detail="Bank transaction is not expense")
+    if bank_transaction.special_type is not None:
+        raise HTTPException(status_code=409, detail="Special bank transactions cannot be matched")
     if bank_transaction.ledger_period:
         ledger = session.scalar(
             select(Ledger).where(
@@ -1168,7 +1174,10 @@ def auto_suggest_matches(
             [ExpensePaymentStatus.UNPAID.value, ExpensePaymentStatus.PARTIAL_PAID.value]
         )
     )
-    bank_query = select(BankTransaction).where(BankTransaction.direction == "expense")
+    bank_query = select(BankTransaction).where(
+        BankTransaction.direction == "expense",
+        BankTransaction.special_type.is_(None),
+    )
     if store_id:
         ensure_store_access(session, current_user, store_id)
         expense_query = expense_query.where(ExpenseItem.store_id == store_id)

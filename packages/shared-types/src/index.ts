@@ -467,6 +467,7 @@ export interface KuailvPurchaseCreate {
 export type KuailvPurchaseUpdate = Omit<KuailvPurchaseCreate, "store_id">;
 
 export type BankPaymentStatus = "paid" | "unpaid";
+export type BankSpecialType = "current_account" | "shareholder_dividend";
 
 export interface BankTransaction {
   id: string;
@@ -480,6 +481,7 @@ export interface BankTransaction {
   summary?: string | null;
   bank_serial_no?: string | null;
   payment_status: BankPaymentStatus;
+  special_type?: BankSpecialType | null;
   matched_amount: string;
   import_job_id?: string | null;
   created_at: string;
@@ -497,6 +499,7 @@ export interface BankTransactionCreate {
   summary?: string | null;
   bank_serial_no?: string | null;
   payment_status?: BankPaymentStatus;
+  special_type?: BankSpecialType | null;
 }
 
 export interface BankTransactionBatchCreateRequest {
@@ -518,6 +521,7 @@ export interface BankTransactionUpdate {
   summary?: string | null;
   bank_serial_no?: string | null;
   payment_status?: BankPaymentStatus;
+  special_type?: BankSpecialType | null;
 }
 
 export interface BankTransactionBatchDeleteResult {

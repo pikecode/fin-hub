@@ -7,6 +7,7 @@ import { StatusBadge } from "./StatusBadge";
 export type BankTransactionViewColumn = ColumnsType<BankTransaction>[number] & { key: string };
 
 function bankMatchStatus(transaction: BankTransaction) {
+  if (transaction.special_type) return { label: "已匹配", color: "success" as const };
   const matchedAmount = Number(transaction.matched_amount || 0);
   if (matchedAmount <= 0) return { label: "未匹配", color: "default" as const };
   return { label: "已匹配", color: "success" as const };
@@ -81,6 +82,14 @@ export function getBankTransactionViewColumns(): BankTransactionViewColumn[] {
       render: (value: string | null | undefined) => (
         <Tag color={value === "unpaid" ? "warning" : "success"}>{value === "unpaid" ? "未实付" : "已实付"}</Tag>
       ),
+    },
+    {
+      key: "special_type",
+      title: "流水属性",
+      dataIndex: "special_type",
+      width: 110,
+      render: (value: string | null | undefined) =>
+        value ? <Tag color="purple">{value === "current_account" ? "往来款" : "股东分红"}</Tag> : <Tag>普通</Tag>,
     },
     {
       key: "match_status",

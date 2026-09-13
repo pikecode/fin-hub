@@ -92,9 +92,13 @@ def list_bank_transactions(
     store_id: str | None = None,
     ledger_period: str | None = None,
     direction: str | None = None,
+    special_type: Literal["normal", "current_account", "shareholder_dividend"] | None = None,
     match_status: Literal["unmatched", "matched"] | None = None,
     counterparty_name: str | None = None,
     counterparty_account: str | None = None,
+    occurred_from: datetime | None = None,
+    occurred_to: datetime | None = None,
+    exclude_special: bool = False,
     page: int = 1,
     page_size: int = 50,
     session: Session = Depends(get_session),
@@ -112,14 +116,30 @@ def list_bank_transactions(
         query = query.where(BankTransaction.ledger_period == ledger_period)
     if direction:
         query = query.where(BankTransaction.direction == direction)
+    if special_type == "normal":
+        query = query.where(BankTransaction.special_type.is_(None))
+    elif special_type:
+        query = query.where(BankTransaction.special_type == special_type)
     if match_status == "unmatched":
-        query = query.where(BankTransaction.matched_amount <= Decimal("0"))
+        query = query.where(
+            BankTransaction.matched_amount <= Decimal("0"),
+            BankTransaction.special_type.is_(None),
+        )
     elif match_status == "matched":
-        query = query.where(BankTransaction.matched_amount > Decimal("0"))
+        query = query.where(
+            (BankTransaction.matched_amount > Decimal("0"))
+            | BankTransaction.special_type.is_not(None)
+        )
     if counterparty_name and counterparty_name.strip():
         query = query.where(BankTransaction.counterparty_name.ilike(f"%{counterparty_name.strip()}%"))
     if counterparty_account and counterparty_account.strip():
         query = query.where(BankTransaction.counterparty_account.ilike(f"%{counterparty_account.strip()}%"))
+    if occurred_from:
+        query = query.where(BankTransaction.occurred_at >= occurred_from)
+    if occurred_to:
+        query = query.where(BankTransaction.occurred_at < occurred_to)
+    if exclude_special:
+        query = query.where(BankTransaction.special_type.is_(None))
     items, total = paginate(session, query, page, page_size)
     return ApiEnvelope(data=Page(items=items, total=total, page=page, page_size=page_size))
 
@@ -299,7 +319,7 @@ def delete_bank_transactions_batch(
 
     for transaction in transactions:
         ensure_store_access(session, current_user, transaction.store_id)
-        if Decimal(transaction.matched_amount or 0) > 0:
+        if Decimal(transaction.matched_amount or 0) > 0 or transaction.special_type is not None:
             raise HTTPException(status_code=409, detail="选中的银行流水中包含已匹配流水，不能批量删除")
         has_expense_match = session.scalar(
             select(ExpenseBankMatch).where(ExpenseBankMatch.bank_transaction_id == transaction.id).limit(1)
@@ -341,7 +361,7 @@ def delete_bank_transaction(
     if transaction is None:
         raise HTTPException(status_code=404, detail="Bank transaction not found")
     ensure_store_access(session, current_user, transaction.store_id)
-    if Decimal(transaction.matched_amount or 0) > 0:
+    if Decimal(transaction.matched_amount or 0) > 0 or transaction.special_type is not None:
         raise HTTPException(status_code=409, detail="Bank transaction already matched")
     has_expense_match = session.scalar(
         select(ExpenseBankMatch).where(ExpenseBankMatch.bank_transaction_id == transaction_id).limit(1)
