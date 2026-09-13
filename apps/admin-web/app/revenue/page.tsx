@@ -1,6 +1,6 @@
 "use client";
 
-import { Button, Card, Checkbox, Form, Input, Modal, Select, Space, Table, Tag, Typography, message } from "antd";
+import { Button, Card, Checkbox, Form, Input, Modal, Select, Space, Statistic, Table, Tag, Typography, message } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import customParseFormat from "dayjs/plugin/customParseFormat";
 import dayjs from "dayjs";
@@ -750,9 +750,7 @@ export default function RevenuePage() {
 
         <div className="revenue-channel-section">
           <div className="revenue-channel-section__header">
-            <Typography.Title level={5} style={{ margin: 0 }}>
-              收入渠道
-            </Typography.Title>
+            <Typography.Title level={5} style={{ margin: 0 }}>收入渠道</Typography.Title>
             <Button icon={<PlusOutlined />} onClick={openChannelModal}>
               添加渠道
             </Button>
@@ -804,6 +802,15 @@ export default function RevenuePage() {
                   <div className="revenue-channel-card__amount">
                     <MoneyDisplay value={summary.grossAmount} size="large" />
                   </div>
+                  <Space size={20} style={{ marginTop: 10 }}>
+                    <Statistic title="手续费" value={summary.feeAmount} precision={2} prefix="¥" />
+                    <Statistic
+                      title="手续费率"
+                      value={summary.grossAmount > 0 ? (summary.feeAmount / summary.grossAmount) * 100 : 0}
+                      precision={2}
+                      suffix="%"
+                    />
+                  </Space>
                 </Card>
               );
             })}
