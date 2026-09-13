@@ -38,6 +38,14 @@ function metricCard(title: string, value: string, subtitle: string, icon: React.
   );
 }
 
+interface ExpenseCategoryTreeRow {
+  key: string;
+  name: string;
+  amount: string;
+  item_count: number;
+  children?: ExpenseCategoryTreeRow[];
+}
+
 export default function StoreLedgerWorkspacePage() {
   const params = useParams();
   const searchParams = useClientSearchParams();
@@ -88,6 +96,38 @@ export default function StoreLedgerWorkspacePage() {
       netProfit: profit,
       profitRate: grossIncome > 0 ? profit / grossIncome : 0,
     };
+  }, [data]);
+
+  const categoryTreeData = useMemo<ExpenseCategoryTreeRow[]>(() => {
+    if (!data) return [];
+    const roots = new Map<string, ExpenseCategoryTreeRow>();
+    data.metrics.expense_category_summary.forEach((item) => {
+      const [rootName, childName] = item.name.split(" / ");
+      const root = roots.get(rootName) ?? {
+        key: rootName,
+        name: rootName,
+        amount: "0",
+        item_count: 0,
+        children: [],
+      };
+      root.amount = String(Number(root.amount) + Number(item.amount || 0));
+      root.item_count += item.item_count;
+      if (childName) {
+        root.children!.push({
+          key: item.name,
+          name: childName,
+          amount: item.amount,
+          item_count: item.item_count,
+        });
+      }
+      roots.set(rootName, root);
+    });
+    return [...roots.values()]
+      .map((root) => ({
+        ...root,
+        children: root.children?.sort((left, right) => Number(right.amount) - Number(left.amount)),
+      }))
+      .sort((left, right) => Number(right.amount) - Number(left.amount));
   }, [data]);
 
   const categoryColumns = [
@@ -167,7 +207,7 @@ export default function StoreLedgerWorkspacePage() {
                 <Table
                   rowKey={(item) => item.name}
                   columns={categoryColumns}
-                  dataSource={data.metrics.expense_category_summary}
+                  dataSource={categoryTreeData}
                   pagination={false}
                   size="small"
                 />
