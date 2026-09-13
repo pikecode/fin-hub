@@ -236,6 +236,11 @@ def test_store_ledger_workspace_counts_confirmed_approval_match_by_accounting_pe
     client.post("/api/ledgers", json={"store_id": store_id, "period": "2026-09"})
     session.add(ApprovalTemplate(id="template-legacy-match", process_code="PROC-LEGACY", name="历史审批模板"))
     session.flush()
+    operation_category = ExpenseCategory(name="运营支出", parent_id=None, sort_order=1)
+    session.add(operation_category)
+    session.flush()
+    session.add(ExpenseCategory(name="物料采购", parent_id=operation_category.id, sort_order=1))
+    session.flush()
     approval = ApprovalInstance(
         template_id="template-legacy-match",
         dingtalk_instance_id="legacy-approval-001",
@@ -421,6 +426,115 @@ def test_store_ledger_workspace_calculates_gross_profit_from_food_cost(
     assert "食材成本 / 肉类" in category_names
     assert "运营支出 / 物料采购" in category_names
     assert "未分类" not in category_names
+
+
+def test_store_ledger_workspace_excludes_prepaid_kuailv_food_cost(
+    client: TestClient,
+    session: Session,
+) -> None:
+    store_id = client.post("/api/stores", json={"name": "蘑说快驴充值店"}).json()["data"]["id"]
+    client.post("/api/ledgers", json={"store_id": store_id, "period": "2026-08"})
+    client.post("/api/revenue-channels", json={"name": "堂食", "sort_order": 10})
+    client.post(
+        "/api/revenue-records",
+        json={
+            "store_id": store_id,
+            "ledger_period": "2026-08",
+            "revenue_date": "2026-08-20",
+            "channel": "堂食",
+            "gross_amount": "1000.00",
+            "net_amount": "1000.00",
+            "fee_amount": "0.00",
+        },
+    )
+    session.add(ApprovalTemplate(id="template-kuailv-prepaid", process_code="PROC-KUAILV", name="快驴充值测试模板"))
+    session.flush()
+    food_category = ExpenseCategory(name="食材成本", parent_id=None, sort_order=1)
+    session.add(food_category)
+    session.flush()
+    session.add_all(
+        [
+            ExpenseCategory(name="肉类", parent_id=food_category.id, sort_order=1),
+            ExpenseCategory(name="快驴充值", parent_id=food_category.id, sort_order=2),
+        ]
+    )
+    approval = ApprovalInstance(
+        template_id="template-kuailv-prepaid",
+        dingtalk_instance_id="kuailv-prepaid-approval",
+        approval_no="KUAILV-001",
+        store_id=store_id,
+        approval_status="agree",
+        submit_at=datetime(2026, 8, 21, 9, 0, 0),
+    )
+    session.add(approval)
+    normal_food_expense = ExpenseItem(
+        store_id=store_id,
+        ledger_period="2026-08",
+        description="牛肉采购",
+        amount=Decimal("300.00"),
+        category_l1="食材成本",
+        category_l2="肉类",
+        source="dingtalk",
+        source_document_id="kuailv-prepaid-approval:food",
+    )
+    prepaid_expense = ExpenseItem(
+        store_id=store_id,
+        ledger_period="2026-08",
+        description="快驴预充值",
+        amount=Decimal("500.00"),
+        category_l1="食材成本",
+        category_l2="快驴充值",
+        source="dingtalk",
+        source_document_id="kuailv-prepaid-approval:prepaid",
+    )
+    normal_food_bank = BankTransaction(
+        store_id=store_id,
+        ledger_period="2026-08",
+        occurred_at=datetime(2026, 8, 22, 10, 30, 0),
+        direction="expense",
+        amount=Decimal("300.00"),
+        matched_amount=Decimal("300.00"),
+        summary="牛肉采购付款",
+    )
+    prepaid_bank = BankTransaction(
+        store_id=store_id,
+        ledger_period="2026-08",
+        occurred_at=datetime(2026, 8, 23, 10, 30, 0),
+        direction="expense",
+        amount=Decimal("500.00"),
+        matched_amount=Decimal("500.00"),
+        summary="快驴预充值付款",
+    )
+    session.add_all([normal_food_expense, prepaid_expense, normal_food_bank, prepaid_bank])
+    session.flush()
+    session.add_all(
+        [
+            ExpenseBankMatch(
+                expense_item_id=normal_food_expense.id,
+                bank_transaction_id=normal_food_bank.id,
+                amount=Decimal("300.00"),
+                accounting_period="2026-08",
+                status=MatchStatus.CONFIRMED.value,
+            ),
+            ExpenseBankMatch(
+                expense_item_id=prepaid_expense.id,
+                bank_transaction_id=prepaid_bank.id,
+                amount=Decimal("500.00"),
+                accounting_period="2026-08",
+                status=MatchStatus.CONFIRMED.value,
+            ),
+        ]
+    )
+    session.commit()
+
+    workspace = client.get(f"/api/store-ledgers/{store_id}/workspace?period=2026-08").json()["data"]
+
+    assert workspace["metrics"]["expense_amount"] == "300.00"
+    assert workspace["metrics"]["food_cost_amount"] == "300.00"
+    assert workspace["metrics"]["gross_profit_amount"] == "700.00"
+    category_names = [item["name"] for item in workspace["metrics"]["expense_category_summary"]]
+    assert "食材成本 / 肉类" in category_names
+    assert "食材成本 / 快驴充值" not in category_names
 
 
 def test_bank_transaction_create_auto_creates_ledger(client: TestClient) -> None:

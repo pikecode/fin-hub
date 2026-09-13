@@ -37,6 +37,7 @@ from app.schemas import ApiEnvelope, StoreLedgerWorkspaceMetrics, StoreLedgerWor
 router = APIRouter(prefix="/store-ledgers", tags=["store-ledgers"])
 REVENUE_FEE_SOURCE = "revenue_fee"
 FOOD_COST_CATEGORY_L1 = "食材成本"
+PREPAID_FOOD_COST_CATEGORY_L2 = "快驴充值"
 
 
 def decimal_sum(value: Decimal | None) -> Decimal:
@@ -66,6 +67,10 @@ def previous_period(period: str) -> str:
     if start.month == 1:
         return f"{start.year - 1}-12"
     return f"{start.year}-{start.month - 1:02d}"
+
+
+def is_prepaid_food_cost(category_l1: str | None, category_l2: str | None) -> bool:
+    return category_l1 == FOOD_COST_CATEGORY_L1 and category_l2 == PREPAID_FOOD_COST_CATEGORY_L2
 
 
 def latest_period(ledgers: list[Ledger], requested_period: str | None) -> str:
@@ -184,6 +189,11 @@ def read_store_ledger_workspace(
             ExpenseItem.source != REVENUE_FEE_SOURCE,
         )
     ).all()
+    confirmed_expense_rows = [
+        row
+        for row in confirmed_expense_rows
+        if not is_prepaid_food_cost(row[0], row[1])
+    ]
     revenue_fee_rows = session.execute(
         select(
             ExpenseItem.category_l1,
