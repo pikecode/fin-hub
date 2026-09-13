@@ -7,6 +7,7 @@
     "build:packages": "pnpm --filter @fin-hub/shared-types build && pnpm --filter @fin-hub/shared-utils build && pnpm --filter @fin-hub/shared-api-client build",
     "dev": "scripts/dev.sh",
     "dev:api": "scripts/dev-api-postgres.sh",
+    "dev:api:production": "scripts/dev-api-production.sh",
     "dev:admin": "pnpm --filter @fin-hub/admin-web dev",
     "dev:miniapp": "pnpm --filter @fin-hub/shareholder-miniapp dev:weapp",
     "build": "pnpm -r build",

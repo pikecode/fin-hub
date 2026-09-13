@@ -180,5 +180,5 @@ API 支撑：
 
 ## 9. 验收参考
 
-- 人工验收清单：`docs/store-ledger-e2e-acceptance-checklist.md`
+- 人工验收清单：[门店套帐端到端验收清单](store-ledger-e2e-acceptance-checklist.md)
 - API 主流程回归：`apps/api/tests/test_store_ledger_acceptance.py`

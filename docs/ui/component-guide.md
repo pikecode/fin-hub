@@ -581,8 +581,8 @@ A: 编辑 `components/StatusBadge.tsx`，在 `statusConfig` 中添加。
 ## 📚 更多资源
 
 - [设计系统文档](./design-system.md)
-- [UI 优化方案](./2026-08-29-ui-ux-optimization-proposal.md)
-- [实施进度](./ui-optimization-progress.md)
+- [UI 优化方案](../archive/ui/2026-08-29-ui-ux-optimization-proposal.md)
+- [实施进度](../archive/ui/ui-optimization-progress.md)
 
 ---
 

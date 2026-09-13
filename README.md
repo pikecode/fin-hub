@@ -13,7 +13,7 @@ packages/
   shared-types/           # 三端共享类型和枚举
   shared-api-client/      # 后台共享 API 客户端
   shared-utils/           # 共享格式化工具
-docs/                     # PRD、旧系统分析、架构、交互、实现说明
+docs/                     # 项目文档入口、操作手册、设计说明和历史归档
 infra/                    # Docker Compose、Nginx 配置
 scripts/                  # 本地启动和后续运维脚本
 ```
@@ -71,7 +71,7 @@ docker compose -f infra/docker/docker-compose.yml up --build
 
 Compose 会启动 PostgreSQL、Redis、API 和后台管理端。API 容器启动时执行数据库迁移，并在 `SEED_DEV_DATA=true` 时写入开发样例数据。
 
-生产环境部署统一参考 [部署指南](docs/2026-09-06-deployment-guide.md)。
+生产环境部署统一参考 [部署指南](docs/operations/production-deployment.md)。
 
 API 启动时只允许 PostgreSQL。生产环境还会拒绝弱 `SECRET_KEY`、空 `CORS_ORIGINS` 或包含 localhost 的跨域配置。
 
@@ -185,14 +185,15 @@ scripts/preflight.sh
 
 ## 参考文档
 
-- [技术选型与三项目规划](docs/technical-stack-decision.md)
-- [架构与交互规划](docs/fin-hub-architecture-interaction-plan.md)
-- [PRD 分析总结](docs/moshuo-prd-analysis.md)
-- [旧系统 API 汇总](docs/moshuo-api-usage-summary.md)
-- [旧系统交互汇总](docs/moshuo-interaction-summary.md)
-- [API 第一阶段实现说明](docs/api-first-implementation-notes.md)
-- [后台管理第一阶段实现说明](docs/admin-first-implementation-notes.md)
-- [小程序第一阶段实现说明](docs/miniapp-first-implementation-notes.md)
-- [系统设置与数据库备份实现说明](docs/system-settings-and-backup-implementation-notes.md)
-- [交付验收与发布检查](docs/preflight-and-release-checklist.md)
-- [生产部署指南](docs/2026-09-06-deployment-guide.md)
+- [文档总目录](docs/README.md)
+- [技术选型与三项目规划](docs/architecture/technical-stack-decision.md)
+- [架构与交互规划](docs/architecture/fin-hub-architecture-interaction-plan.md)
+- [PRD 分析总结](docs/product/moshuo-prd-analysis.md)
+- [旧系统 API 汇总](docs/product/moshuo-api-usage-summary.md)
+- [旧系统交互汇总](docs/product/moshuo-interaction-summary.md)
+- [API 第一阶段实现说明](docs/features/api-first-implementation-notes.md)
+- [后台管理第一阶段实现说明](docs/features/admin-first-implementation-notes.md)
+- [小程序第一阶段实现说明](docs/features/miniapp-first-implementation-notes.md)
+- [系统设置与数据库备份实现说明](docs/features/system-settings-and-backup-implementation-notes.md)
+- [交付验收与发布检查](docs/operations/preflight-and-release-checklist.md)
+- [生产部署指南](docs/operations/production-deployment.md)

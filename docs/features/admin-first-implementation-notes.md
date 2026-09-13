@@ -110,7 +110,7 @@
 
 验收参考：
 
-- `docs/store-ledger-e2e-acceptance-checklist.md`
+- [门店套帐端到端验收清单](store-ledger-e2e-acceptance-checklist.md)
 
 ### 2.4 账套管理
 

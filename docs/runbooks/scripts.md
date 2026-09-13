@@ -18,8 +18,8 @@ pnpm dev
 
 脚本会执行：
 
-- 启动 API 到 `http://localhost:8000`。
-- 启动后台到 `http://localhost:3000`。
+- 启动 API 到 `http://localhost:8057`。
+- 启动后台到 `http://localhost:3077`。
 - 输出日志到 `/tmp/fin-hub-api.log` 和 `/tmp/fin-hub-admin-web.log`。
 
 ### `dev-api-postgres.sh`
@@ -32,12 +32,12 @@ scripts/dev-api-postgres.sh
 
 脚本会执行：
 
-- 通过 Docker Compose 启动 PostgreSQL 和 Redis，除非设置 `START_DOCKER_INFRA=false`。
+- 连接本机 PostgreSQL 和 Redis。
 - 创建 `apps/api/.venv`，如果尚不存在。
 - 安装 API 依赖。
 - 执行 Alembic 迁移。
 - 写入开发样例数据。
-- 启动 `uvicorn` 到 `http://localhost:8000`。
+- 启动 `uvicorn` 到 `http://localhost:8057`。
 
 默认数据库连接：
 
@@ -47,11 +47,29 @@ postgresql+psycopg://finhub:finhub@localhost:5432/finhub
 
 可通过 `DATABASE_URL` 覆盖。
 
+### `dev-api-production.sh`
+
+启动本地后台和连接生产数据的 API：
+
+```bash
+npm run dev:api:production
+```
+
+脚本会执行：
+
+- 通过 SSH 隧道连接服务器 PostgreSQL 和 Redis。
+- 启动 API 到 `http://localhost:8057`。
+- 启动后台到 `http://localhost:3077`。
+- 输出后台日志到 `/tmp/fin-hub-admin-web.log`。
+- 启动前清理当前项目占用的 API 和后台端口。
+
+可通过 `API_PORT` 和 `ADMIN_PORT` 覆盖本地端口。
+
 ## 生产部署
 
 ### 生产部署
 
-生产部署统一参考 [docs/2026-09-06-deployment-guide.md](../docs/2026-09-06-deployment-guide.md)。
+生产部署统一参考 [生产部署指南](../operations/production-deployment.md)。
 
 推荐入口是：
 

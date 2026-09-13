@@ -1,6 +1,6 @@
 # 🚀 fin-hub 部署指南 - 优化版
 
-> 这份文档保留作历史参考。当前主流程请看 [docs/2026-09-06-deployment-guide.md](docs/2026-09-06-deployment-guide.md)。
+> 这份文档保留作历史参考。当前主流程请看 [生产部署指南](../../operations/production-deployment.md)。
 
 ## 快速开始（3 步）
 
@@ -318,9 +318,9 @@ cat scripts/fast-deploy.sh   # 完整版（高级）
 
 ### 查看 Docker 相关文档
 
-- [预构建镜像部署方案](docs/prebuilt-image-deployment.md)
-- [技术栈决策](docs/technical-stack-decision.md)
-- [Dockerfile 优化](apps/admin-web/Dockerfile)
+- [预构建镜像部署方案](../../operations/prebuilt-image-deployment.md)
+- [技术栈决策](../../architecture/technical-stack-decision.md)
+- [Dockerfile 优化](../../../apps/admin-web/Dockerfile)
 
 ---
 

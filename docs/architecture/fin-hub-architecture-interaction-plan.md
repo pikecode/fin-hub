@@ -4,9 +4,9 @@
 
 依据：
 
-- `docs/moshuo-prd-analysis.md`
-- `docs/moshuo-api-usage-summary.md`
-- `docs/moshuo-interaction-summary.md`
+- [PRD 分析总结](../product/moshuo-prd-analysis.md)
+- [旧系统 API 汇总](../product/moshuo-api-usage-summary.md)
+- [旧系统交互汇总](../product/moshuo-interaction-summary.md)
 - 原始 PRD：`/Users/ompeak/Downloads/蘑说财务管理系统-产品需求文档.pdf`
 
 > 本文档是面向新版 Web 后台和后续小程序的系统设计建议。目标是把 PRD 转化为可开发、可演进、可迁移的架构和交互蓝图。
