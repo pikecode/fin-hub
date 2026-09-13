@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "build:deps": "pnpm --filter @fin-hub/shared-types build && pnpm --filter @fin-hub/shared-utils build && pnpm --filter @fin-hub/shared-api-client build",
-    "dev": "next dev --port 3000",
+    "dev": "next dev --port 3077",
     "build": "pnpm run build:deps && next build",
     "start": "next start --port 3000",
     "lint": "pnpm run build:deps && tsc --noEmit",

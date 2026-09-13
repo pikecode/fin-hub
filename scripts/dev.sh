@@ -23,8 +23,8 @@ API_PID=$!
 pnpm dev:admin >"$ADMIN_LOG" 2>&1 &
 ADMIN_PID=$!
 
-echo "API:   http://localhost:8000  log: $API_LOG"
-echo "Admin: http://localhost:3000  log: $ADMIN_LOG"
+echo "API:   http://localhost:8057  log: $API_LOG"
+echo "Admin: http://localhost:3077  log: $ADMIN_LOG"
 echo "Press Ctrl+C to stop both services."
 
 while kill -0 "$API_PID" 2>/dev/null && kill -0 "$ADMIN_PID" 2>/dev/null; do

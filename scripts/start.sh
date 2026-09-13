@@ -28,8 +28,8 @@ show_help() {
 使用方法: ./scripts/start.sh [选项]
 
 选项:
-  --api-only       仅启动 API 服务 (http://localhost:8000)
-  --admin-only     仅启动后台管理 (http://localhost:3000)
+  --api-only       仅启动 API 服务 (http://localhost:8057)
+  --admin-only     仅启动后台管理 (http://localhost:3077)
   --help           显示此帮助信息
 
 示例:
@@ -38,10 +38,10 @@ show_help() {
   ./scripts/start.sh --admin-only # 仅启动后台管理
 
 默认访问地址:
-  后台管理: http://localhost:3000 (admin / admin123456)
-  API:     http://localhost:8000
-  API文档:  http://localhost:8000/docs
-  钉钉同步: http://localhost:3000/dingtalk
+  后台管理: http://localhost:3077 (admin / admin123456)
+  API:     http://localhost:8057
+  API文档:  http://localhost:8057/docs
+  钉钉同步: http://localhost:3077/dingtalk
 
 日志文件:
   API 日志:   $API_LOG
@@ -144,18 +144,18 @@ echo ""
 # 显示访问地址
 if [ "$START_API" = true ]; then
   echo -e "${BLUE}API 服务:${NC}"
-  echo -e "  主页:      ${GREEN}http://localhost:8000${NC}"
-  echo -e "  API 文档:  ${GREEN}http://localhost:8000/docs${NC}"
+  echo -e "  主页:      ${GREEN}http://localhost:8057${NC}"
+  echo -e "  API 文档:  ${GREEN}http://localhost:8057/docs${NC}"
   echo -e "  日志:      ${YELLOW}$API_LOG${NC}"
   echo ""
 fi
 
 if [ "$START_ADMIN" = true ]; then
   echo -e "${BLUE}后台管理:${NC}"
-  echo -e "  地址:      ${GREEN}http://localhost:3000${NC}"
+  echo -e "  地址:      ${GREEN}http://localhost:3077${NC}"
   echo -e "  用户名:    ${GREEN}admin${NC}"
   echo -e "  密码:      ${GREEN}admin123456${NC}"
-  echo -e "  钉钉同步:  ${GREEN}http://localhost:3000/dingtalk${NC}"
+  echo -e "  钉钉同步:  ${GREEN}http://localhost:3077/dingtalk${NC}"
   echo -e "  日志:      ${YELLOW}$ADMIN_LOG${NC}"
   echo ""
 fi

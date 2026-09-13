@@ -5,11 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 API_DIR="$ROOT_DIR/apps/api"
 DATABASE_URL_VALUE="${DATABASE_URL:-postgresql+psycopg://finhub:finhub@localhost:5432/finhub}"
 DINGTALK_SYNC_MODE_VALUE="${DINGTALK_SYNC_MODE:-real}"
-START_DOCKER_INFRA="${START_DOCKER_INFRA:-true}"
-
-if [ "$START_DOCKER_INFRA" = "true" ] && command -v docker >/dev/null 2>&1; then
-  docker compose -f "$ROOT_DIR/infra/docker/docker-compose.yml" up -d postgres redis
-fi
+API_PORT="${API_PORT:-8057}"
 
 cd "$API_DIR"
 
@@ -20,4 +16,11 @@ fi
 uv pip install --python .venv/bin/python -e ".[dev]"
 DATABASE_URL="$DATABASE_URL_VALUE" .venv/bin/alembic upgrade head
 DATABASE_URL="$DATABASE_URL_VALUE" .venv/bin/python -m app.dev_seed
-DINGTALK_SYNC_MODE="$DINGTALK_SYNC_MODE_VALUE" DATABASE_URL="$DATABASE_URL_VALUE" .venv/bin/uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+
+for pid in $(lsof -tiTCP:"$API_PORT" -sTCP:LISTEN 2>/dev/null || true); do
+  process_cwd="$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')"
+  [ "$process_cwd" = "$API_DIR" ] && kill "$pid" 2>/dev/null || true
+done
+sleep 1
+
+DINGTALK_SYNC_MODE="$DINGTALK_SYNC_MODE_VALUE" DATABASE_URL="$DATABASE_URL_VALUE" .venv/bin/uvicorn app.main:app --reload --host 0.0.0.0 --port "$API_PORT"

@@ -8,6 +8,8 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:15432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-finhub} -d ${POSTGRES_DB:-finhub}"]
       interval: 10s
@@ -17,6 +19,8 @@ services:
   redis:
     image: redis:7
     restart: unless-stopped
+    ports:
+      - "127.0.0.1:16379:6379"
     volumes:
       - redis-data:/data
 

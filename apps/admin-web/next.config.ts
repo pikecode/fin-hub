@@ -7,7 +7,7 @@ const nextConfig: NextConfig = {
   async rewrites() {
     const apiProxyTarget =
       process.env.ADMIN_WEB_API_PROXY_TARGET ||
-      (process.env.NODE_ENV !== "production" ? "http://localhost:8000" : "");
+      (process.env.NODE_ENV !== "production" ? "http://localhost:8057" : "");
     if (!apiProxyTarget) {
       return [];
     }
