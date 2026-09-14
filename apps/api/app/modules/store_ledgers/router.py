@@ -10,9 +10,9 @@ from app.models import (
     ApprovalInstance,
     ApprovalTemplate,
     BankTransaction,
+    ExpenseBankMatch,
     ExpenseCategory,
     ExpenseItem,
-    ExpenseBankMatch,
     Ledger,
     MatchStatus,
     RevenueBankMatch,
@@ -222,6 +222,9 @@ def read_store_ledger_workspace(
             ExpenseItem.source == KUAILV_PURCHASE_SOURCE,
         )
     ).all()
+    kuailv_purchase_rows = [
+        row for row in kuailv_purchase_rows if not is_prepaid_food_cost(row[0], row[1])
+    ]
     expense_amount = sum(
         (decimal_sum(row[2]) for row in confirmed_expense_rows), Decimal("0.00")
     ) + sum((decimal_sum(row[2]) for row in revenue_fee_rows), Decimal("0.00")) + sum(
@@ -243,6 +246,49 @@ def read_store_ledger_workspace(
         Decimal("0.00"),
     )
     gross_profit_amount = income_amount - food_cost_amount
+    labor_cost_amount = sum(
+        (decimal_sum(row[2]) for row in confirmed_expense_rows if row[0] == "人力成本"),
+        Decimal("0.00"),
+    )
+    rent_cost_amount = sum(
+        (decimal_sum(row[2]) for row in confirmed_expense_rows if row[0] == "门店租管费用"),
+        Decimal("0.00"),
+    )
+    operation_expense_amount = expense_amount - food_cost_amount
+    chicken_cost_amount = sum(
+        (
+            decimal_sum(row[2])
+            for row in [*confirmed_expense_rows, *kuailv_purchase_rows]
+            if row[0] == FOOD_COST_CATEGORY_L1 and row[1] == "鸡"
+        ),
+        Decimal("0.00"),
+    )
+    mushroom_cost_amount = sum(
+        (
+            decimal_sum(row[2])
+            for row in [*confirmed_expense_rows, *kuailv_purchase_rows]
+            if row[0] == FOOD_COST_CATEGORY_L1 and row[1] == "菌子"
+        ),
+        Decimal("0.00"),
+    )
+    previous_income = decimal_sum(
+        session.scalar(
+            select(func.sum(RevenueRecord.gross_amount)).where(
+                RevenueRecord.store_id == store_id,
+                RevenueRecord.ledger_period == previous_period(selected_period),
+            )
+        )
+    )
+    selected_year, selected_month = (int(part) for part in selected_period.split("-"))
+    same_period_last_year = f"{selected_year - 1:04d}-{selected_month:02d}"
+    last_year_income = decimal_sum(
+        session.scalar(
+            select(func.sum(RevenueRecord.gross_amount)).where(
+                RevenueRecord.store_id == store_id,
+                RevenueRecord.ledger_period == same_period_last_year,
+            )
+        )
+    )
     fee_amount = decimal_sum(
         session.scalar(
             select(func.sum(RevenueRecord.fee_amount)).where(
@@ -513,8 +559,21 @@ def read_store_ledger_workspace(
                 gross_profit_amount=gross_profit_amount,
                 net_income_amount=net_income_amount,
                 fee_amount=fee_amount,
+                income_year_over_year=decimal_rate(income_amount, last_year_income) if last_year_income > 0 else None,
+                income_month_over_month=decimal_rate(income_amount, previous_income) if previous_income > 0 else None,
                 approval_amount=approval_amount,
                 approval_accounting_amount=approval_accounting_amount,
+                labor_cost_amount=labor_cost_amount,
+                rent_cost_amount=rent_cost_amount,
+                operation_expense_amount=operation_expense_amount,
+                food_cost_rate=decimal_rate(food_cost_amount, income_amount) if income_amount > 0 else None,
+                labor_cost_rate=decimal_rate(labor_cost_amount, income_amount) if income_amount > 0 else None,
+                rent_cost_rate=decimal_rate(rent_cost_amount, income_amount) if income_amount > 0 else None,
+                operation_expense_rate=decimal_rate(operation_expense_amount, income_amount) if income_amount > 0 else None,
+                chicken_cost_amount=chicken_cost_amount,
+                mushroom_cost_amount=mushroom_cost_amount,
+                chicken_cost_rate=decimal_rate(chicken_cost_amount, income_amount) if income_amount > 0 else None,
+                mushroom_cost_rate=decimal_rate(mushroom_cost_amount, income_amount) if income_amount > 0 else None,
                 bank_transaction_count=bank_transaction_count or 0,
                 matched_bank_amount=matched_bank_amount,
                 unmatched_bank_transaction_count=unmatched_bank_transaction_count or 0,

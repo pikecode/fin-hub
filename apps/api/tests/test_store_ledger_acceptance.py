@@ -94,8 +94,8 @@ def test_store_ledger_end_to_end_close_and_report_flow(client: TestClient) -> No
 
     report = client.get(f"/api/reports/ledger-detail?store_id={store_id}&period=2026-08").json()["data"]
     assert report["summary"]["income_amount"] == "1000.00"
-    assert report["summary"]["expense_amount"] == "300.00"
-    assert report["summary"]["profit_amount"] == "700.00"
+    assert report["summary"]["expense_amount"] == "330.00"
+    assert report["summary"]["profit_amount"] == "670.00"
     assert report["revenue_channel_breakdown"][0]["reconciliation_rate"] == "100.00"
 
     assert (

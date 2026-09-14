@@ -13,6 +13,7 @@ from app.core.database import get_session
 from app.models import (
     ApprovalInstance,
     ApprovalTemplate,
+    Attachment,
     BankTransaction,
     ExpenseBankMatch,
     ExpenseItem,
@@ -41,6 +42,7 @@ from app.schemas import (
     FinancialAnalyticsStoreItem,
     FinancialAnalyticsTemplateItem,
     FinancialAnalyticsTrendItem,
+    ExpenseItemRead,
     RevenueChannelMonthlyBreakdownItem,
     LedgerPeriodOption,
     LedgerReportDetail,
@@ -146,19 +148,22 @@ def build_report_summary(session: Session, ledger: Ledger, store: Store) -> Ledg
         )
     )
     income_amount = revenue_amount if revenue_amount > 0 else bank_income_amount
-    expense_amount = decimal_sum(
-        session.scalar(
-            select(func.sum(ExpenseItem.amount)).where(
+    expense_rows = list(
+        session.scalars(
+            select(ExpenseItem).where(
                 ExpenseItem.store_id == ledger.store_id,
                 ExpenseItem.ledger_period == ledger.period,
             )
         )
     )
+    expense_rows = [item for item in expense_rows if item.category_l1 != "门店预充值"]
+    expense_amount = sum((Decimal(item.amount) for item in expense_rows), Decimal("0.00"))
     pending_expense_count = session.scalar(
         select(func.count()).select_from(ExpenseItem).where(
             ExpenseItem.store_id == ledger.store_id,
             ExpenseItem.ledger_period == ledger.period,
             ExpenseItem.payment_status.in_(["unpaid", "partial_paid"]),
+            ExpenseItem.category_l1 != "门店预充值",
         )
     )
     pending_bank_count = session.scalar(
@@ -384,7 +389,10 @@ def read_financial_analytics(
 
     revenue_query = select(RevenueRecord).where(RevenueRecord.store_id.in_(store_ids))
     revenue_query = apply_period_range(revenue_query, RevenueRecord.ledger_period, period_start, period_end)
-    expense_query = select(ExpenseItem).where(ExpenseItem.store_id.in_(store_ids))
+    expense_query = select(ExpenseItem).where(
+        ExpenseItem.store_id.in_(store_ids),
+        ExpenseItem.category_l1 != "门店预充值",
+    )
     expense_query = apply_period_range(expense_query, ExpenseItem.ledger_period, period_start, period_end)
     bank_query = select(BankTransaction).where(BankTransaction.store_id.in_(store_ids))
     bank_query = apply_period_range(bank_query, BankTransaction.ledger_period, period_start, period_end)
@@ -855,10 +863,28 @@ def read_financial_analytics_details(
     else:
         raise HTTPException(status_code=422, detail="Unknown detail type")
 
+    expense_ids = [item.id for item in expense_items]
+    voucher_counts = {
+        resource_id: count
+        for resource_id, count in session.execute(
+            select(Attachment.resource_id, func.count())
+            .where(
+                Attachment.resource_type == "expense_item",
+                Attachment.resource_id.in_(expense_ids),
+            )
+            .group_by(Attachment.resource_id)
+        ).all()
+    } if expense_ids else {}
+    expense_reads = []
+    for item in expense_items:
+        read_item = ExpenseItemRead.model_validate(item)
+        read_item.voucher_count = voucher_counts.get(item.id, 0)
+        expense_reads.append(read_item)
+
     return ApiEnvelope(
         data=FinancialAnalyticsDetailReport(
             title=title,
-            expense_items=expense_items,
+            expense_items=expense_reads,
             bank_transactions=bank_transactions,
             approval_instances=approval_instances,
             reconciliation_records=reconciliation_records,
@@ -1039,28 +1065,35 @@ def read_ledger_detail(
 ) -> ApiEnvelope[LedgerReportDetail]:
     store, ledger = read_ledger_for_report(session, store_id, period, shareholder_grant, current_user)
 
-    category_name = func.coalesce(ExpenseItem.category_l1, "未分类")
-    supplier_name = func.coalesce(ExpenseItem.supplier_name, "未关联供应商")
-    category_rows = session.execute(
-        select(
-            category_name,
-            func.sum(ExpenseItem.amount),
-            func.count(),
+    detail_expenses = list(
+        session.scalars(
+            select(ExpenseItem)
+            .where(ExpenseItem.store_id == store_id, ExpenseItem.ledger_period == period)
         )
-        .where(ExpenseItem.store_id == store_id, ExpenseItem.ledger_period == period)
-        .group_by(category_name)
-        .order_by(func.sum(ExpenseItem.amount).desc())
-    ).all()
-    supplier_rows = session.execute(
-        select(
-            supplier_name,
-            func.sum(ExpenseItem.amount),
-            func.count(),
-        )
-        .where(ExpenseItem.store_id == store_id, ExpenseItem.ledger_period == period)
-        .group_by(supplier_name)
-        .order_by(func.sum(ExpenseItem.amount).desc())
-    ).all()
+    )
+    detail_expenses = [item for item in detail_expenses if item.category_l1 != "门店预充值"]
+    category_buckets: dict[tuple[str, str | None], tuple[Decimal, int]] = {}
+    supplier_buckets: dict[str, tuple[Decimal, int]] = {}
+    for item in detail_expenses:
+        category_key = (item.category_l1 or "未分类", item.category_l2)
+        category_amount, category_count = category_buckets.get(category_key, (Decimal("0.00"), 0))
+        category_buckets[category_key] = (category_amount + Decimal(item.amount), category_count + 1)
+        supplier_key = item.supplier_name or "未关联供应商"
+        supplier_amount, supplier_count = supplier_buckets.get(supplier_key, (Decimal("0.00"), 0))
+        supplier_buckets[supplier_key] = (supplier_amount + Decimal(item.amount), supplier_count + 1)
+    category_rows = sorted(
+        [
+            (" / ".join(part for part in key if part), amount, count)
+            for key, (amount, count) in category_buckets.items()
+        ],
+        key=lambda row: row[1],
+        reverse=True,
+    )
+    supplier_rows = sorted(
+        [(name, amount, count) for name, (amount, count) in supplier_buckets.items()],
+        key=lambda row: row[1],
+        reverse=True,
+    )
     pending_expense_items = session.scalars(
         select(ExpenseItem)
         .where(

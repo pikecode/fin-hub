@@ -423,6 +423,7 @@ class ExpenseItemRead(ExpenseItemCreate):
     source_snapshot_json: str | None
     user_edited_fields_json: str | None
     sync_conflict_status: str | None
+    voucher_count: int = 0
     payee_name: str | None
     payee_bank_name: str | None
     payee_bank_branch: str | None
@@ -910,8 +911,21 @@ class StoreLedgerWorkspaceMetrics(BaseModel):
     gross_profit_amount: Decimal = Decimal("0.00")
     net_income_amount: Decimal
     fee_amount: Decimal
+    income_year_over_year: Decimal | None = None
+    income_month_over_month: Decimal | None = None
     approval_amount: Decimal = Decimal("0.00")
     approval_accounting_amount: Decimal = Decimal("0.00")
+    labor_cost_amount: Decimal = Decimal("0.00")
+    rent_cost_amount: Decimal = Decimal("0.00")
+    operation_expense_amount: Decimal = Decimal("0.00")
+    food_cost_rate: Decimal | None = None
+    labor_cost_rate: Decimal | None = None
+    rent_cost_rate: Decimal | None = None
+    operation_expense_rate: Decimal | None = None
+    chicken_cost_amount: Decimal = Decimal("0.00")
+    mushroom_cost_amount: Decimal = Decimal("0.00")
+    chicken_cost_rate: Decimal | None = None
+    mushroom_cost_rate: Decimal | None = None
     bank_transaction_count: int
     matched_bank_amount: Decimal = Decimal("0.00")
     unmatched_bank_transaction_count: int

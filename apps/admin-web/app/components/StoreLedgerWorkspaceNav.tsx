@@ -14,7 +14,7 @@ import type { Store } from "@fin-hub/shared-types";
 import { getMyStores } from "../lib/referenceData";
 import { confirmLeaveIfNeeded } from "./navigationGuard";
 
-type StoreLedgerTabKey = "overview" | "bank" | "approvals" | "revenue" | "revenueMatching" | "matching" | "kuailvPurchase";
+type StoreLedgerTabKey = "overview" | "report" | "bank" | "approvals" | "revenue" | "revenueMatching" | "matching" | "kuailvPurchase";
 
 interface StoreLedgerWorkspaceNavProps {
   storeId: string;
@@ -30,6 +30,7 @@ interface StoreLedgerWorkspaceNavProps {
 
 const tabItems: Array<{ key: StoreLedgerTabKey; label: string; icon: any }> = [
   { key: "overview", label: "总览", icon: <DashboardOutlined /> },
+  { key: "report", label: "财务报表", icon: <FileTextOutlined /> },
   { key: "bank", label: "银行流水", icon: <BankOutlined /> },
   { key: "approvals", label: "审批单", icon: <FileTextOutlined /> },
   { key: "revenue", label: "营业收入", icon: <WalletOutlined /> },
@@ -42,6 +43,11 @@ function modulePath(storeId: string, key: StoreLedgerTabKey, period?: string) {
   if (key === "overview") {
     const params = period ? `?period=${encodeURIComponent(period)}` : "";
     return `/store-ledgers/${storeId}${params}`;
+  }
+  if (key === "report") {
+    const query = new URLSearchParams({ store_id: storeId });
+    if (period) query.set("period", period);
+    return `/reports?${query.toString()}`;
   }
   if (key === "bank") {
     const query = new URLSearchParams({ store_id: storeId });
