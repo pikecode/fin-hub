@@ -2905,6 +2905,34 @@ select,
   margin-bottom: 0;
 }
 
+.kuailv-purchase-form-card.is-editing {
+  border-color: #1677ff;
+  box-shadow: 0 0 0 2px rgba(22, 119, 255, 0.08);
+}
+
+.kuailv-purchase-list-card .ant-card-extra {
+  font-size: 13px;
+}
+
+.kuailv-purchase-voucher-cell {
+  max-width: 240px;
+}
+
+.kuailv-purchase-voucher-cell .ant-image {
+  display: block;
+  overflow: hidden;
+  border: 1px solid #d9e2ec;
+  background: #f8fafc;
+}
+
+.kuailv-purchase-row-editing > td {
+  background: #e6f4ff !important;
+}
+
+.kuailv-purchase-row-editing .ant-btn-primary {
+  font-weight: 700;
+}
+
 .bank-entry-grid-toolbar {
   display: flex;
   align-items: center;

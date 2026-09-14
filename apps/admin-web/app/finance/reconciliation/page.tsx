@@ -84,7 +84,8 @@ interface KuailvPurchaseValues {
   purchase_date?: dayjs.Dayjs;
   ledger_period?: dayjs.Dayjs;
   amount?: string;
-  voucher?: UploadFile[];
+  voucher_images?: UploadFile[];
+  voucher_files?: UploadFile[];
   remark?: string;
 }
 
@@ -318,6 +319,7 @@ export default function FinanceReconciliationPage() {
   const [editExpenseItems, setEditExpenseItems] = useState<ExpenseItem[]>([]);
   const [approvalExpenseItemsById, setApprovalExpenseItemsById] = useState<Record<string, ExpenseItem[]>>({});
   const [approvalAttachmentsByExpenseItemId, setApprovalAttachmentsByExpenseItemId] = useState<Record<string, ApprovalAttachmentState>>({});
+  const [attachmentPreviewUrls, setAttachmentPreviewUrls] = useState<Record<string, string>>({});
   const [confirmDetailCategoryDrafts, setConfirmDetailCategoryDrafts] = useState<Record<string, DetailCategoryDraft>>({});
   const [editingDetailCategoryDrafts, setEditingDetailCategoryDrafts] = useState<Record<string, DetailCategoryDraft>>({});
   const [selectedConfirmExpenseItemIds, setSelectedConfirmExpenseItemIds] = useState<string[]>([]);
@@ -652,7 +654,8 @@ export default function FinanceReconciliationPage() {
       const purchase = editingKuailvPurchase
         ? await apiClient.expenseItems.kuailvPurchases.update(editingKuailvPurchase.id, payload)
         : await apiClient.expenseItems.kuailvPurchases.create({ store_id: selectedStoreId, ...payload });
-      const files = values.voucher?.flatMap((item) => (item.originFileObj ? [item.originFileObj] : [])) ?? [];
+      const files = [...(values.voucher_images ?? []), ...(values.voucher_files ?? [])]
+        .flatMap((item) => (item.originFileObj ? [item.originFileObj] : []));
       await Promise.all(
         files.map((file) => {
           const payload = new FormData();
@@ -679,7 +682,8 @@ export default function FinanceReconciliationPage() {
       ledger_period: dayjs(`${record.ledger_period}-01`),
       amount: record.amount,
       remark: record.remark ?? undefined,
-      voucher: [],
+      voucher_images: [],
+      voucher_files: [],
     });
   }
 
@@ -898,7 +902,19 @@ export default function FinanceReconciliationPage() {
     }
   }
 
-  async function preloadExpenseAttachments(expenseItems: ExpenseItem[]) {
+  async function loadAttachmentPreview(attachment: Attachment) {
+    if (!isImageAttachment(attachment) || attachmentPreviewUrls[attachment.id]) return;
+    try {
+      const blob = await apiClient.attachments.download(attachment.id);
+      if (!(blob.type || attachment.content_type || "").startsWith("image/")) return;
+      const url = window.URL.createObjectURL(blob);
+      setAttachmentPreviewUrls((current) => ({ ...current, [attachment.id]: url }));
+    } catch {
+      // The file can still be opened through the existing download action.
+    }
+  }
+
+  async function preloadExpenseAttachments(expenseItems: Array<Pick<ExpenseItem, "id">>) {
     const pendingIds = expenseItems
       .map((item) => item.id)
       .filter((expenseItemId) => !approvalAttachmentsByExpenseItemId[expenseItemId]?.attachments && !approvalAttachmentsByExpenseItemId[expenseItemId]?.loading);
@@ -1270,13 +1286,35 @@ export default function FinanceReconciliationPage() {
       width: 180,
       render: (value, record) => {
         const attachmentState = approvalAttachmentsByExpenseItemId[record.id];
+        const attachments = attachmentState?.attachments ?? [];
+        const imageAttachments = attachments.filter(isImageAttachment);
+        const fileAttachments = attachments.filter((attachment) => !isImageAttachment(attachment));
         const count = attachmentState?.attachments?.length ?? Number(value || 0);
         if (!count) return <Tag>未上传</Tag>;
         return (
-          <Space size={6}>
-            <Tag color="blue" icon={<PaperClipOutlined />}>
-              {count} 个
-            </Tag>
+          <Space size={6} wrap className="kuailv-purchase-voucher-cell">
+            {imageAttachments.length ? (
+              <Image.PreviewGroup>
+                <Space size={4}>
+                  {imageAttachments.slice(0, 3).map((attachment) => {
+                    const sourceUrl = externalAttachmentUrl(attachment) || attachmentState?.accessUrls[attachment.id] || attachmentPreviewUrls[attachment.id];
+                    return sourceUrl ? (
+                      <div key={attachment.id}>
+                        <Image
+                          src={sourceUrl}
+                          alt={attachment.file_name || "采购凭证"}
+                          width={42}
+                          height={42}
+                          preview={{ mask: <EyeOutlined /> }}
+                          style={{ objectFit: "cover", borderRadius: 4 }}
+                        />
+                      </div>
+                    ) : null;
+                  })}
+                </Space>
+              </Image.PreviewGroup>
+            ) : null}
+            {fileAttachments.length ? <Tag color="blue" icon={<PaperClipOutlined />}>{fileAttachments.length} 个文件</Tag> : null}
             <Button
               type="link"
               size="small"
@@ -1304,11 +1342,16 @@ export default function FinanceReconciliationPage() {
     },
     {
       title: "操作",
-      width: 130,
+      width: 150,
       render: (_, record) => (
         <Space size={4}>
-          <Button type="link" size="small" icon={<EditOutlined />} onClick={() => openEditKuailvPurchase(record)}>
-            编辑
+          <Button
+            type={editingKuailvPurchase?.id === record.id ? "primary" : "default"}
+            size="small"
+            icon={<EditOutlined />}
+            onClick={() => openEditKuailvPurchase(record)}
+          >
+            {editingKuailvPurchase?.id === record.id ? "编辑中" : "编辑记录"}
           </Button>
           <Popconfirm title="确定删除这条采购记录？" okText="删除" cancelText="取消" onConfirm={() => void deleteKuailvPurchase(record)}>
             <Button type="link" danger size="small" icon={<DeleteOutlined />}>
@@ -1324,6 +1367,20 @@ export default function FinanceReconciliationPage() {
     if (!isConfirmOpen) return;
     void preloadExpenseAttachments(sortedConfirmExpenseItems);
   }, [isConfirmOpen, sortedConfirmExpenseItems]);
+
+  useEffect(() => {
+    if (!isKuailvPurchaseModule || !kuailvPurchases.length) return;
+    void preloadExpenseAttachments(kuailvPurchases);
+  }, [isKuailvPurchaseModule, kuailvPurchases]);
+
+  useEffect(() => {
+    const attachmentIds = new Set(kuailvPurchases.map((purchase) => purchase.id));
+    if (kuailvVoucherRecord) attachmentIds.add(kuailvVoucherRecord.id);
+    const images = Array.from(attachmentIds)
+      .flatMap((expenseItemId) => approvalAttachmentsByExpenseItemId[expenseItemId]?.attachments ?? [])
+      .filter(isImageAttachment);
+    if (images.length) void Promise.all(images.map(loadAttachmentPreview));
+  }, [kuailvPurchases, kuailvVoucherRecord, approvalAttachmentsByExpenseItemId]);
 
   useEffect(() => {
     if (!editingRecord) return;
@@ -1386,7 +1443,8 @@ export default function FinanceReconciliationPage() {
                   </div>
                 </Card>
 
-                <Card size="small" title={editingKuailvPurchase ? "编辑快驴采购" : "录入快驴采购"} className="data-table-card">
+                {!editingKuailvPurchase ? (
+                  <Card size="small" title="录入快驴采购" className="data-table-card kuailv-purchase-form-card">
                   <Form
                     form={kuailvForm}
                     layout="inline"
@@ -1418,13 +1476,15 @@ export default function FinanceReconciliationPage() {
                       <Input placeholder="0.00" style={{ width: 140 }} />
                     </Form.Item>
                     <Form.Item
-                      label="凭证上传"
-                      name="voucher"
+                      label="图片凭证"
+                      name="voucher_images"
                       valuePropName="fileList"
                       getValueFromEvent={(event) => event?.fileList}
-                      extra="支持图片、PDF、Office、表格、文本、压缩包等常见凭证文件"
+                      extra="支持 JPG、PNG、WEBP 等图片，单个文件不超过 500KB"
                     >
                       <Upload
+                        accept="image/*"
+                        listType="picture"
                         beforeUpload={(file) => {
                           if (file.size > 500 * 1024) {
                             message.error(`${file.name} 超过 500KB 限制`);
@@ -1434,35 +1494,138 @@ export default function FinanceReconciliationPage() {
                         }}
                         multiple
                       >
-                        <Button icon={<UploadOutlined />}>选择凭证文件</Button>
+                        <Button icon={<UploadOutlined />}>选择图片</Button>
+                      </Upload>
+                    </Form.Item>
+                    <Form.Item
+                      label="文件凭证"
+                      name="voucher_files"
+                      valuePropName="fileList"
+                      getValueFromEvent={(event) => event?.fileList}
+                      extra="支持 PDF、Office、表格、文本、压缩包等文件，单个文件不超过 500KB"
+                    >
+                      <Upload
+                        accept=".pdf,.doc,.docx,.xls,.xlsx,.csv,.txt,.zip,.rar"
+                        beforeUpload={(file) => {
+                          if (file.size > 500 * 1024) {
+                            message.error(`${file.name} 超过 500KB 限制`);
+                            return Upload.LIST_IGNORE;
+                          }
+                          return false;
+                        }}
+                        multiple
+                      >
+                        <Button icon={<UploadOutlined />}>选择文件</Button>
                       </Upload>
                     </Form.Item>
                     <Form.Item label="备注" name="remark">
                       <Input placeholder="可选" style={{ width: 220 }} />
                     </Form.Item>
                     <Button type="primary" htmlType="submit" loading={isKuailvLoading} disabled={!selectedStoreId}>
-                      {editingKuailvPurchase ? "保存修改" : "保存"}
+                      保存
                     </Button>
-                    {editingKuailvPurchase ? (
-                      <Button
-                        onClick={() => {
-                          setEditingKuailvPurchase(null);
-                          kuailvForm.resetFields();
-                        }}
-                      >
-                        取消编辑
-                      </Button>
-                    ) : null}
                   </Form>
-                </Card>
+                  </Card>
+                ) : null}
 
-                <Card size="small" title="快驴采购记录" className="data-table-card">
+                <Modal
+                  title="编辑快驴采购"
+                  open={Boolean(editingKuailvPurchase)}
+                  destroyOnHidden
+                  onCancel={() => {
+                    setEditingKuailvPurchase(null);
+                    kuailvForm.resetFields();
+                  }}
+                  onOk={() => kuailvForm.submit()}
+                  okText="保存修改"
+                  cancelText="取消"
+                  confirmLoading={isKuailvLoading}
+                  width={720}
+                >
+                  <Form form={kuailvForm} layout="vertical" onFinish={(values) => void submitKuailvPurchase(values)}>
+                    <Space size={16} style={{ display: "flex" }}>
+                      <Form.Item
+                        label="采购日期"
+                        name="purchase_date"
+                        rules={[{ required: true, message: "请选择采购日期" }]}
+                        style={{ flex: 1 }}
+                      >
+                        <DatePicker allowClear={false} style={{ width: "100%" }} />
+                      </Form.Item>
+                      <Form.Item
+                        label="入账月份"
+                        name="ledger_period"
+                        rules={[{ required: true, message: "请选择入账月份" }]}
+                        style={{ flex: 1 }}
+                      >
+                        <DatePicker picker="month" allowClear={false} style={{ width: "100%" }} />
+                      </Form.Item>
+                    </Space>
+                    <Form.Item label="采购金额" name="amount" rules={[{ required: true, message: "请输入采购金额" }] }>
+                      <Input placeholder="0.00" />
+                    </Form.Item>
+                    <Form.Item
+                      label="图片凭证"
+                      name="voucher_images"
+                      valuePropName="fileList"
+                      getValueFromEvent={(event) => event?.fileList}
+                      extra="支持 JPG、PNG、WEBP 等图片，单个文件不超过 500KB"
+                    >
+                      <Upload
+                        accept="image/*"
+                        listType="picture"
+                        beforeUpload={(file) => {
+                          if (file.size > 500 * 1024) {
+                            message.error(`${file.name} 超过 500KB 限制`);
+                            return Upload.LIST_IGNORE;
+                          }
+                          return false;
+                        }}
+                        multiple
+                      >
+                        <Button icon={<UploadOutlined />}>选择图片</Button>
+                      </Upload>
+                    </Form.Item>
+                    <Form.Item
+                      label="文件凭证"
+                      name="voucher_files"
+                      valuePropName="fileList"
+                      getValueFromEvent={(event) => event?.fileList}
+                      extra="支持 PDF、Office、表格、文本、压缩包等文件，单个文件不超过 500KB"
+                    >
+                      <Upload
+                        accept=".pdf,.doc,.docx,.xls,.xlsx,.csv,.txt,.zip,.rar"
+                        beforeUpload={(file) => {
+                          if (file.size > 500 * 1024) {
+                            message.error(`${file.name} 超过 500KB 限制`);
+                            return Upload.LIST_IGNORE;
+                          }
+                          return false;
+                        }}
+                        multiple
+                      >
+                        <Button icon={<UploadOutlined />}>选择文件</Button>
+                      </Upload>
+                    </Form.Item>
+                    <Form.Item label="备注" name="remark">
+                      <Input.TextArea rows={3} placeholder="可选" />
+                    </Form.Item>
+                  </Form>
+                </Modal>
+
+                <Card
+                  size="small"
+                  title="快驴采购记录"
+                  extra={<Typography.Text type="secondary">点击右侧“编辑记录”修改</Typography.Text>}
+                  className="data-table-card kuailv-purchase-list-card"
+                >
                   <Table
                     rowKey="id"
                     size="small"
                     loading={isKuailvLoading}
                     columns={kuailvPurchaseColumns}
                     dataSource={kuailvPurchases}
+                    rowClassName={(record) => (record.id === editingKuailvPurchase?.id ? "kuailv-purchase-row-editing" : "")}
                     pagination={false}
                   />
                 </Card>
@@ -1746,24 +1909,27 @@ export default function FinanceReconciliationPage() {
                 {
                   title: "文件",
                   render: (_, attachment) => {
-                    const sourceUrl = externalAttachmentUrl(attachment) || attachmentState?.accessUrls[attachment.id];
+                    const sourceUrl = externalAttachmentUrl(attachment) || attachmentState?.accessUrls[attachment.id] || attachmentPreviewUrls[attachment.id];
                     return (
                       <Space size={10}>
                         {sourceUrl && isImageAttachment(attachment) ? (
                           <Image
                             src={sourceUrl}
                             alt={attachment.file_name || "凭证"}
-                            width={40}
-                            height={40}
-                            style={{ objectFit: "cover", borderRadius: 4 }}
+                            width={88}
+                            height={112}
+                            preview
+                            style={{ objectFit: "cover", borderRadius: 6, border: "1px solid #d9e2ec" }}
                           />
                         ) : (
                           <PaperClipOutlined />
                         )}
-                        <Space direction="vertical" size={0}>
-                          <Typography.Text>{attachment.file_name || "凭证文件"}</Typography.Text>
-                          {attachment.content_type ? <Typography.Text type="secondary">{attachment.content_type}</Typography.Text> : null}
-                        </Space>
+                        {!isImageAttachment(attachment) ? (
+                          <Space direction="vertical" size={0}>
+                            <Typography.Text>{attachment.file_name || "凭证文件"}</Typography.Text>
+                            {attachment.content_type ? <Typography.Text type="secondary">{attachment.content_type}</Typography.Text> : null}
+                          </Space>
+                        ) : null}
                       </Space>
                     );
                   },
