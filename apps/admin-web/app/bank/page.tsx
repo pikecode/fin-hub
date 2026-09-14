@@ -47,12 +47,23 @@ interface BankFilterValues {
   ledger_period?: string;
   month?: dayjs.Dayjs;
   direction?: "income" | "expense";
-  special_type?: "normal" | "current_account" | "shareholder_dividend";
+  special_type?: "normal" | "current_account" | "shareholder_dividend" | "shareholder_capital" | "other_income_expense";
   unmatched_only?: boolean;
   match_status?: "unmatched" | "matched";
   counterparty_name?: string;
   counterparty_account?: string;
   occurred_range?: [dayjs.Dayjs, dayjs.Dayjs];
+}
+
+const bankSpecialTypeLabels: Record<Exclude<NonNullable<BankTransactionCreate["special_type"]>, "normal">, string> = {
+  current_account: "往来款",
+  shareholder_dividend: "股东分红",
+  shareholder_capital: "股东注资",
+  other_income_expense: "其他收支",
+};
+
+function bankSpecialTypeLabel(value?: string | null) {
+  return value ? bankSpecialTypeLabels[value as keyof typeof bankSpecialTypeLabels] ?? value : "普通流水";
 }
 
 type BankEntryField = "occurred_at" | "income_amount" | "expense_amount" | "counterparty_name" | "counterparty_account" | "summary";
@@ -1157,6 +1168,8 @@ export default function BankPage() {
                   { label: "普通流水", value: "normal" },
                   { label: "往来款", value: "current_account" },
                   { label: "股东分红", value: "shareholder_dividend" },
+                  { label: "股东注资", value: "shareholder_capital" },
+                  { label: "其他收支", value: "other_income_expense" },
                 ]}
               />
             </Form.Item>
@@ -1273,6 +1286,20 @@ export default function BankPage() {
                     >
                       股东分红
                     </Checkbox>
+                    <Checkbox
+                      checked={specialType === "shareholder_capital"}
+                      disabled={disabled}
+                      onChange={(event) => setFieldsValue({ special_type: event.target.checked ? "shareholder_capital" : null })}
+                    >
+                      股东注资
+                    </Checkbox>
+                    <Checkbox
+                      checked={specialType === "other_income_expense"}
+                      disabled={disabled}
+                      onChange={(event) => setFieldsValue({ special_type: event.target.checked ? "other_income_expense" : null })}
+                    >
+                      其他收支
+                    </Checkbox>
                   </Space>
                 );
               }}
@@ -1310,7 +1337,7 @@ export default function BankPage() {
         cancelText="取消"
       >
         <Typography.Paragraph>
-          该笔流水将标记为{pendingSpecialTransaction?.special_type === "current_account" ? "往来款" : "股东分红"}，保存后不会进入审批单对账或收入对账。
+          该笔流水将标记为{bankSpecialTypeLabel(pendingSpecialTransaction?.special_type)}，保存后不会进入审批单对账或收入对账。
         </Typography.Paragraph>
         <Typography.Text>是否继续保存？</Typography.Text>
       </Modal>

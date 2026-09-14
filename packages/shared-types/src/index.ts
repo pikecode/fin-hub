@@ -467,7 +467,7 @@ export interface KuailvPurchaseCreate {
 export type KuailvPurchaseUpdate = Omit<KuailvPurchaseCreate, "store_id">;
 
 export type BankPaymentStatus = "paid" | "unpaid";
-export type BankSpecialType = "current_account" | "shareholder_dividend";
+export type BankSpecialType = "current_account" | "shareholder_dividend" | "shareholder_capital" | "other_income_expense";
 
 export interface BankTransaction {
   id: string;

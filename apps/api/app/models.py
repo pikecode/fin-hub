@@ -53,6 +53,8 @@ class BankPaymentStatus(StrEnum):
 class BankSpecialType(StrEnum):
     CURRENT_ACCOUNT = "current_account"
     SHAREHOLDER_DIVIDEND = "shareholder_dividend"
+    SHAREHOLDER_CAPITAL = "shareholder_capital"
+    OTHER_INCOME_EXPENSE = "other_income_expense"
 
 
 class MatchStatus(StrEnum):

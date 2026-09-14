@@ -92,7 +92,7 @@ def list_bank_transactions(
     store_id: str | None = None,
     ledger_period: str | None = None,
     direction: str | None = None,
-    special_type: Literal["normal", "current_account", "shareholder_dividend"] | None = None,
+    special_type: Literal["normal", "current_account", "shareholder_dividend", "shareholder_capital", "other_income_expense"] | None = None,
     match_status: Literal["unmatched", "matched"] | None = None,
     counterparty_name: str | None = None,
     counterparty_account: str | None = None,

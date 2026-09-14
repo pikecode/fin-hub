@@ -89,7 +89,12 @@ export function getBankTransactionViewColumns(): BankTransactionViewColumn[] {
       dataIndex: "special_type",
       width: 110,
       render: (value: string | null | undefined) =>
-        value ? <Tag color="purple">{value === "current_account" ? "往来款" : "股东分红"}</Tag> : <Tag>普通</Tag>,
+        value ? <Tag color="purple">{({
+          current_account: "往来款",
+          shareholder_dividend: "股东分红",
+          shareholder_capital: "股东注资",
+          other_income_expense: "其他收支",
+        } as Record<string, string>)[value] ?? value}</Tag> : <Tag>普通</Tag>,
     },
     {
       key: "match_status",
