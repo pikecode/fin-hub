@@ -373,6 +373,15 @@ def read_financial_analytics(
     if not store_ids:
         return ApiEnvelope(data=empty_financial_analytics_report())
 
+    # The dashboard loads analytics without filters on its first request. Keep
+    # that request within the web proxy timeout while allowing users to select
+    # a wider historical range explicitly in the report filters.
+    if period_start is None and period_end is None:
+        latest_period = session.scalar(select(func.max(Ledger.period)).where(Ledger.store_id.in_(store_ids)))
+        if latest_period:
+            period_start = latest_period
+            period_end = latest_period
+
     revenue_query = select(RevenueRecord).where(RevenueRecord.store_id.in_(store_ids))
     revenue_query = apply_period_range(revenue_query, RevenueRecord.ledger_period, period_start, period_end)
     expense_query = select(ExpenseItem).where(ExpenseItem.store_id.in_(store_ids))
