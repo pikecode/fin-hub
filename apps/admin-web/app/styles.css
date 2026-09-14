@@ -3639,6 +3639,87 @@ select,
   border-top: 1px solid #eef2f7;
 }
 
+.bank-overview {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 16px;
+  margin: 16px;
+  padding: 16px;
+  border: 1px solid #e7edf3;
+  border-radius: 10px;
+  background: #fbfcfe;
+}
+
+.bank-overview__metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.bank-overview__metric {
+  min-width: 0;
+  padding: 14px 16px;
+  border: 1px solid #e6ebf1;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.bank-overview__metric--income {
+  border-top: 3px solid #14b8a6;
+}
+
+.bank-overview__metric--expense {
+  border-top: 3px solid #f97316;
+}
+
+.bank-overview__metric--balance {
+  border-top: 3px solid #2563eb;
+}
+
+.bank-overview__metric .ant-statistic-title {
+  margin-bottom: 8px;
+  color: #64748b;
+  font-size: 13px;
+}
+
+.bank-overview__metric .ant-statistic-content {
+  color: #0f172a;
+  font-size: 23px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.bank-overview__metric .ant-typography {
+  display: block;
+  margin-top: 8px;
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bank-overview__actions {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  justify-content: center;
+  gap: 8px;
+  padding: 4px 4px 4px 20px;
+  border-left: 1px solid #e2e8f0;
+}
+
+.bank-overview__actions-title {
+  color: #0f172a;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.bank-overview__actions-description {
+  margin-bottom: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .revenue-entry-table .ant-table-thead > tr > th {
   padding: 8px 10px;
   font-size: 12px;
@@ -3838,6 +3919,20 @@ select,
 
   .maintenance-table-card .ant-card-extra .ant-space {
     justify-content: flex-start;
+  }
+
+  .bank-overview {
+    grid-template-columns: 1fr;
+  }
+
+  .bank-overview__metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .bank-overview__actions {
+    padding: 16px 0 0;
+    border-top: 1px solid #e2e8f0;
+    border-left: 0;
   }
 }
 

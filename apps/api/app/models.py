@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from enum import StrEnum
 from uuid import uuid4
@@ -12,8 +12,8 @@ from sqlalchemy import (
     Numeric,
     String,
     Text,
-    text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -471,6 +471,24 @@ class BankTransaction(Base):
     special_type: Mapped[str | None] = mapped_column(String(32))
     matched_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=0, nullable=False)
     import_job_id: Mapped[str | None] = mapped_column(ForeignKey("sync_jobs.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+
+class BankBalanceCorrection(Base):
+    __tablename__ = "bank_balance_corrections"
+    __table_args__ = (
+        Index("ix_bank_balance_corrections_store_date", "store_id", "correction_date"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    store_id: Mapped[str] = mapped_column(ForeignKey("stores.id"), nullable=False)
+    correction_date: Mapped[date] = mapped_column(Date, nullable=False)
+    balance_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    remark: Mapped[str] = mapped_column(String(500), nullable=False)
+    created_by: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=utc_now, onupdate=utc_now, nullable=False

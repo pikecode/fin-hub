@@ -519,6 +519,36 @@ class BankTransactionRead(BankTransactionCreate):
     updated_at: datetime
 
 
+class BankBalanceCorrectionCreate(BaseModel):
+    store_id: str
+    correction_date: date
+    balance_amount: Decimal = Field(ge=0)
+    remark: str = Field(min_length=1, max_length=500)
+    password: str = Field(min_length=1)
+
+
+class BankBalanceCorrectionRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    store_id: str
+    correction_date: date
+    balance_amount: Decimal
+    remark: str
+    created_by: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class BankBalanceRead(BaseModel):
+    balance_amount: Decimal | None = None
+    base_balance_amount: Decimal | None = None
+    base_correction_date: date | None = None
+    income_after_base: Decimal = Decimal("0.00")
+    expense_after_base: Decimal = Decimal("0.00")
+    has_correction: bool = False
+
+
 class BankTransactionBatchDeleteRequest(BaseModel):
     ids: list[str] = Field(min_length=1)
 

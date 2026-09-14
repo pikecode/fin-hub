@@ -19,6 +19,9 @@ import type {
   BankImportPreviewRow,
   BankImportPreviewResult,
   BankImportRowError,
+  BankBalance,
+  BankBalanceCorrection,
+  BankBalanceCorrectionCreate,
   BankTransaction,
   BankTransactionCreate,
   Ledger,
@@ -53,6 +56,12 @@ interface BankFilterValues {
   counterparty_name?: string;
   counterparty_account?: string;
   occurred_range?: [dayjs.Dayjs, dayjs.Dayjs];
+}
+
+interface BankBalanceCorrectionFormValues {
+  correction_date?: dayjs.Dayjs;
+  balance_amount?: string;
+  remark?: string;
 }
 
 const bankSpecialTypeLabels: Record<Exclude<NonNullable<BankTransactionCreate["special_type"]>, "normal">, string> = {
@@ -347,6 +356,15 @@ export default function BankPage() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isEntryModalOpen, setIsEntryModalOpen] = useState(false);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+  const [isBalanceCorrectionModalOpen, setIsBalanceCorrectionModalOpen] = useState(false);
+  const [isBalanceConfirmModalOpen, setIsBalanceConfirmModalOpen] = useState(false);
+  const [isBalancePasswordModalOpen, setIsBalancePasswordModalOpen] = useState(false);
+  const [isBalanceHistoryModalOpen, setIsBalanceHistoryModalOpen] = useState(false);
+  const [bankBalance, setBankBalance] = useState<BankBalance | null>(null);
+  const [balanceCorrections, setBalanceCorrections] = useState<BankBalanceCorrection[]>([]);
+  const [pendingBalanceCorrection, setPendingBalanceCorrection] = useState<BankBalanceCorrectionFormValues | null>(null);
+  const [balancePassword, setBalancePassword] = useState("");
+  const [isBalanceSaving, setIsBalanceSaving] = useState(false);
   const [editingTransaction, setEditingTransaction] = useState<BankTransaction | null>(null);
   const [pendingSpecialTransaction, setPendingSpecialTransaction] = useState<BankFormValues | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -354,6 +372,7 @@ export default function BankPage() {
   const [entryForm] = Form.useForm<{ ledger_key: string }>();
   const [importForm] = Form.useForm<{ ledger_key: string }>();
   const [filterForm] = Form.useForm<BankFilterValues>();
+  const [balanceForm] = Form.useForm<BankBalanceCorrectionFormValues>();
   const loadRequestIdRef = useRef(0);
 
   const storesById = useMemo(() => new Map(stores.map((store) => [store.id, store])), [stores]);
@@ -428,6 +447,12 @@ export default function BankPage() {
         setLedgers(ledgerPage);
         setTransactions(transactionPage.items);
       }
+      if (queryStoreId) {
+        const balance = await apiClient.bankBalance.get(queryStoreId);
+        if (requestId === loadRequestIdRef.current) setBankBalance(balance);
+      } else {
+        setBankBalance(null);
+      }
     } catch (error) {
       if (requestId === loadRequestIdRef.current) {
         setErrorMessage(error instanceof Error ? error.message : "加载失败");
@@ -436,6 +461,71 @@ export default function BankPage() {
       if (requestId === loadRequestIdRef.current) {
         setIsLoading(false);
       }
+    }
+  }
+
+  async function loadBalanceHistory() {
+    if (!queryStoreId) {
+      message.warning("请先选择门店");
+      return;
+    }
+    try {
+      setBalanceCorrections(await apiClient.bankBalance.corrections(queryStoreId));
+      setIsBalanceHistoryModalOpen(true);
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "加载余额校正记录失败");
+    }
+  }
+
+  function openBalanceCorrectionModal() {
+    if (!queryStoreId) {
+      message.warning("请先选择门店");
+      return;
+    }
+    balanceForm.resetFields();
+    balanceForm.setFieldValue("correction_date", dayjs());
+    setIsBalanceCorrectionModalOpen(true);
+  }
+
+  function submitBalanceCorrection(values: BankBalanceCorrectionFormValues) {
+    if (!queryStoreId || !values.correction_date || !values.balance_amount || !values.remark?.trim()) return;
+    const amount = normalizePastedAmount(values.balance_amount);
+    if (!amount || Number(amount) < 0) {
+      message.warning("请输入有效的银行余额");
+      return;
+    }
+    setPendingBalanceCorrection({ ...values, balance_amount: amount, remark: values.remark.trim() });
+    setIsBalanceCorrectionModalOpen(false);
+    setIsBalanceConfirmModalOpen(true);
+  }
+
+  function confirmBalanceCorrection() {
+    setIsBalanceConfirmModalOpen(false);
+    setBalancePassword("");
+    setIsBalancePasswordModalOpen(true);
+  }
+
+  async function saveBalanceCorrection() {
+    if (!queryStoreId || !pendingBalanceCorrection || !balancePassword.trim()) return;
+    const payload: BankBalanceCorrectionCreate = {
+      store_id: queryStoreId,
+      correction_date: pendingBalanceCorrection.correction_date!.format("YYYY-MM-DD"),
+      balance_amount: pendingBalanceCorrection.balance_amount!,
+      remark: pendingBalanceCorrection.remark!,
+      password: balancePassword,
+    };
+    setIsBalanceSaving(true);
+    try {
+      await apiClient.bankBalance.createCorrection(payload);
+      message.success("银行余额校正已记录");
+      setIsBalancePasswordModalOpen(false);
+      setPendingBalanceCorrection(null);
+      setBalancePassword("");
+      await loadData(initialFilters);
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "保存银行余额校正失败");
+    } finally {
+      setIsBalanceSaving(false);
     }
   }
 
@@ -533,8 +623,7 @@ export default function BankPage() {
       }
       setIsModalOpen(false);
       setEditingTransaction(null);
-      const refreshed = await apiClient.bankTransactions.list(buildFilterParams(filterForm.getFieldsValue()));
-      setTransactions(refreshed.items);
+      await loadData(initialFilters);
     } catch (error) {
       message.error(error instanceof Error ? error.message : "操作失败");
     } finally {
@@ -1132,10 +1221,50 @@ export default function BankPage() {
             </Space>
           }
           >
-          <Space size={32} style={{ marginBottom: 16 }}>
-            <Statistic title="本月收入累计" value={transactionTotals.income} precision={2} prefix="¥" />
-            <Statistic title="本月支出累计" value={transactionTotals.expense} precision={2} prefix="¥" />
-          </Space>
+          <div className="bank-overview">
+            <div className="bank-overview__metrics">
+              <div className="bank-overview__metric bank-overview__metric--income">
+                <Statistic title="本月收入累计" value={transactionTotals.income} precision={2} prefix="¥" />
+              </div>
+              <div className="bank-overview__metric bank-overview__metric--expense">
+                <Statistic title="本月支出累计" value={transactionTotals.expense} precision={2} prefix="¥" />
+              </div>
+              <div className="bank-overview__metric">
+                <Statistic
+                  title="银行余额录入基准"
+                  value={bankBalance?.has_correction ? Number(bankBalance.base_balance_amount) : 0}
+                  precision={2}
+                  prefix="¥"
+                  suffix={bankBalance?.has_correction ? undefined : "暂无基准"}
+                />
+                {bankBalance?.has_correction && <Typography.Text type="secondary">录入日期：{bankBalance.base_correction_date}</Typography.Text>}
+              </div>
+              <div className="bank-overview__metric bank-overview__metric--balance">
+                <Statistic
+                  title="录入日期之后计算余额"
+                  value={bankBalance?.has_correction ? Number(bankBalance.balance_amount) : 0}
+                  precision={2}
+                  prefix="¥"
+                  suffix={bankBalance?.has_correction ? undefined : "暂无基准"}
+                />
+                {bankBalance?.has_correction && (
+                  <Typography.Text type="secondary">
+                    后续收入 ¥{bankBalance.income_after_base} · 支出 ¥{bankBalance.expense_after_base}
+                  </Typography.Text>
+                )}
+              </div>
+            </div>
+            <div className="bank-overview__actions">
+              <Typography.Text className="bank-overview__actions-title">余额校正</Typography.Text>
+              <Typography.Text type="secondary" className="bank-overview__actions-description">
+                通过录入日期之后的银行流水计算实时余额
+              </Typography.Text>
+              <Space wrap>
+                <Button type="primary" onClick={openBalanceCorrectionModal}>录入银行余额</Button>
+                <Button onClick={() => void loadBalanceHistory()}>查看校正记录</Button>
+              </Space>
+            </div>
+          </div>
           <Form
             form={filterForm}
             layout="inline"
@@ -1325,6 +1454,99 @@ export default function BankPage() {
             <Input disabled={Boolean(editingTransaction && Number(editingTransaction.matched_amount || 0) > 0)} />
           </Form.Item>
         </Form>
+      </Modal>
+
+      <Modal
+        title="录入银行余额"
+        open={isBalanceCorrectionModalOpen}
+        onCancel={() => setIsBalanceCorrectionModalOpen(false)}
+        onOk={() => void balanceForm.submit()}
+        okText="下一步"
+        destroyOnClose
+      >
+        <Form form={balanceForm} layout="vertical" onFinish={submitBalanceCorrection}>
+          <Form.Item label="校正日期" name="correction_date" rules={[{ required: true, message: "请选择校正日期" }]}>
+            <DatePicker style={{ width: "100%" }} allowClear={false} />
+          </Form.Item>
+          <Form.Item
+            label="银行余额"
+            name="balance_amount"
+            rules={[{ required: true, message: "请输入银行余额" }]}
+            extra="校正日期当天的流水不参与计算，从次日开始累计收入和支出。"
+          >
+            <Input
+              prefix="¥"
+              onPaste={(event) => {
+                const text = event.clipboardData.getData("text");
+                if (!handleSingleAmountPaste(text, (amount) => balanceForm.setFieldValue("balance_amount", amount))) return;
+                event.preventDefault();
+              }}
+            />
+          </Form.Item>
+          <Form.Item label="备注" name="remark" rules={[{ required: true, whitespace: true, message: "请填写备注" }]}>
+            <Input.TextArea rows={4} maxLength={500} showCount placeholder="请说明本次余额校正原因" />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal
+        title="再次确认金额"
+        open={isBalanceConfirmModalOpen}
+        onCancel={() => {
+          setIsBalanceConfirmModalOpen(false);
+          setPendingBalanceCorrection(null);
+        }}
+        onOk={() => void confirmBalanceCorrection()}
+        okText="确认金额"
+      >
+        <Typography.Paragraph>
+          将以 <Typography.Text strong>{pendingBalanceCorrection?.correction_date?.format("YYYY-MM-DD")}</Typography.Text> 的银行余额 <Typography.Text strong>¥{pendingBalanceCorrection?.balance_amount}</Typography.Text> 作为新的计算基准。
+        </Typography.Paragraph>
+        <Typography.Text type="secondary">保存后会保留本次校正记录，历史记录不能删除。</Typography.Text>
+      </Modal>
+
+      <Modal
+        title="输入密码保存"
+        open={isBalancePasswordModalOpen}
+        onCancel={() => {
+          setIsBalancePasswordModalOpen(false);
+          setPendingBalanceCorrection(null);
+          setBalancePassword("");
+        }}
+        onOk={() => void saveBalanceCorrection()}
+        okText="确认保存"
+        confirmLoading={isBalanceSaving}
+        okButtonProps={{ disabled: !balancePassword.trim() }}
+      >
+        <Input.Password
+          autoFocus
+          value={balancePassword}
+          placeholder="请输入当前用户密码"
+          onChange={(event) => setBalancePassword(event.target.value)}
+          onPressEnter={() => void saveBalanceCorrection()}
+        />
+      </Modal>
+
+      <Modal
+        title="银行余额校正记录"
+        open={isBalanceHistoryModalOpen}
+        onCancel={() => setIsBalanceHistoryModalOpen(false)}
+        footer={null}
+        width={800}
+      >
+        <Table
+          rowKey="id"
+          size="small"
+          pagination={{ pageSize: 10 }}
+          dataSource={balanceCorrections}
+          columns={[
+            { title: "校正日期", dataIndex: "correction_date", width: 130 },
+            { title: "银行余额", dataIndex: "balance_amount", width: 150, render: (value: string) => <MoneyDisplay value={Number(value)} /> },
+            { title: "备注", dataIndex: "remark", ellipsis: true },
+            { title: "录入人", dataIndex: "created_by", width: 140 },
+            { title: "录入时间", dataIndex: "created_at", width: 180, render: (value: string) => dayjs(value).format("YYYY-MM-DD HH:mm") },
+          ]}
+        />
       </Modal>
 
       <Modal

@@ -36,6 +36,10 @@ fi
 
 DB_PASSWORD="$(ssh fin-hub-server "sed -n 's/^POSTGRES_PASSWORD=//p' /opt/fin-hub/.env.production")"
 DB_PASSWORD_URLENCODED="$(.venv/bin/python -c 'import sys; from urllib.parse import quote; print(quote(sys.argv[1], safe=""))' "$DB_PASSWORD")"
+DATABASE_URL="postgresql+psycopg://finhub:${DB_PASSWORD_URLENCODED}@127.0.0.1:${DB_PORT}/finhub"
+
+echo "Running database migrations..."
+DATABASE_URL="$DATABASE_URL" .venv/bin/alembic upgrade head
 
 for pid in $(lsof -tiTCP:"$API_PORT" -sTCP:LISTEN 2>/dev/null || true); do
   process_cwd="$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')"

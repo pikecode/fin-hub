@@ -528,6 +528,34 @@ export interface BankTransactionBatchDeleteResult {
   deleted_count: number;
 }
 
+export interface BankBalanceCorrection {
+  id: string;
+  store_id: string;
+  correction_date: string;
+  balance_amount: string;
+  remark: string;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface BankBalanceCorrectionCreate {
+  store_id: string;
+  correction_date: string;
+  balance_amount: string;
+  remark: string;
+  password: string;
+}
+
+export interface BankBalance {
+  balance_amount?: string | null;
+  base_balance_amount?: string | null;
+  base_correction_date?: string | null;
+  income_after_base: string;
+  expense_after_base: string;
+  has_correction: boolean;
+}
+
 export interface ExpenseBankMatch {
   id: string;
   expense_item_id: string;

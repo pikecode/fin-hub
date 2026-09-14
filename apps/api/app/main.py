@@ -17,6 +17,7 @@ from app.modules.attachments.router import router as attachments_router
 from app.modules.audit.router import router as audit_router
 from app.modules.auth.router import router as auth_router
 from app.modules.bank.router import router as bank_router
+from app.modules.bank_balance.router import router as bank_balance_router
 from app.modules.categories.router import router as categories_router
 from app.modules.dingtalk.router import router as dingtalk_router
 from app.modules.dingtalk.router import run_due_auto_sync_jobs
@@ -109,6 +110,7 @@ def create_app() -> FastAPI:
     app.include_router(revenue_channels_router, prefix="/api")
     app.include_router(revenue_router, prefix="/api")
     app.include_router(bank_router, prefix="/api")
+    app.include_router(bank_balance_router, prefix="/api")
     app.include_router(matching_router, prefix="/api")
     app.include_router(dingtalk_router, prefix="/api")
     app.include_router(reports_router, prefix="/api")

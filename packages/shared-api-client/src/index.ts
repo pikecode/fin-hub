@@ -26,6 +26,9 @@ import type {
   BankTransactionCreate,
   BankTransactionBatchDeleteResult,
   BankTransactionUpdate,
+  BankBalance,
+  BankBalanceCorrection,
+  BankBalanceCorrectionCreate,
   CurrentUser,
   DatabaseBackupStatus,
   DingTalkAutoSyncRunResult,
@@ -482,6 +485,15 @@ export function createApiClient(options: ApiClientOptions) {
           method: "POST",
           body: payload,
           headers: {},
+        }),
+    },
+    bankBalance: {
+      get: (storeId: string) => request<BankBalance>(`/api/bank-balance?store_id=${encodeURIComponent(storeId)}`),
+      corrections: (storeId: string) => request<BankBalanceCorrection[]>(`/api/bank-balance/corrections?store_id=${encodeURIComponent(storeId)}`),
+      createCorrection: (payload: BankBalanceCorrectionCreate) =>
+        request<BankBalanceCorrection>("/api/bank-balance/corrections", {
+          method: "POST",
+          body: JSON.stringify(payload),
         }),
     },
     matches: {
