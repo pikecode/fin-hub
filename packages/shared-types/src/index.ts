@@ -1336,6 +1336,56 @@ export interface FinancialAnalyticsDetailReport {
   reconciliation_records: ReconciliationRecord[];
 }
 
+export interface DividendShareholder {
+  id: string;
+  store_id: string;
+  name: string;
+  holding_ratio: string;
+  status: MasterDataStatus;
+  remark?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DividendEntry {
+  id: string;
+  entry_type: "distribution" | "capital";
+  shareholder_id?: string | null;
+  shareholder_name: string;
+  holding_ratio: string;
+  amount: string;
+  remark?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DividendMonth {
+  id: string;
+  store_id: string;
+  period: string;
+  net_profit: string;
+  distribution_amount: string;
+  capital_amount: string;
+  historical_profit: string;
+  historical_distribution: string;
+  remaining_undistributed: string;
+  cumulative_capital: string;
+  reference_ratio: string;
+  suggested_distribution: string;
+  no_distribution: boolean;
+  no_capital: boolean;
+  locked: boolean;
+  entries: DividendEntry[];
+}
+
+export interface DividendWorkspace {
+  store: Store;
+  period: string;
+  shareholders: DividendShareholder[];
+  current: DividendMonth;
+  history: DividendMonth[];
+}
+
 export interface LedgerSummary {
   id: string;
   storeId: string;

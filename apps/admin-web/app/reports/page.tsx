@@ -50,6 +50,13 @@ export default function ReportsPage() {
   }, []);
 
   useEffect(() => {
+    if (!isLoading && stores.length > 0 && !queryStoreId) {
+      const query = new URLSearchParams({ store_id: stores[0].id, period: queryPeriod });
+      router.replace(`/reports?${query.toString()}`);
+    }
+  }, [isLoading, queryPeriod, queryStoreId, router, stores]);
+
+  useEffect(() => {
     form.setFieldsValue({
       store_id: queryStoreId,
       period: dayjs(`${queryPeriod}-01`),
@@ -98,11 +105,13 @@ export default function ReportsPage() {
         </Form>
       </Card>
 
-      {selectedStore ? (
+      {isLoading ? (
+        <Card loading style={{ marginTop: 16, minHeight: 220 }} />
+      ) : selectedStore ? (
         <StoreFinancialReportView storeId={selectedStore.id} period={queryPeriod} />
       ) : (
         <Card style={{ marginTop: 16 }}>
-          <Empty description={queryStoreId ? "未找到可查看的门店" : "请选择门店和账期查看报表"} />
+          <Empty description="暂无可查看的门店" />
         </Card>
       )}
     </AppShell>

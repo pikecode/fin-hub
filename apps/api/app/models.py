@@ -238,6 +238,56 @@ class Ledger(Base):
     store: Mapped[Store] = relationship(back_populates="ledgers")
 
 
+class DividendShareholder(Base):
+    __tablename__ = "dividend_shareholders"
+    __table_args__ = (
+        UniqueConstraint("store_id", "name", name="uq_dividend_shareholders_store_name"),
+        Index("ix_dividend_shareholders_store", "store_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    store_id: Mapped[str] = mapped_column(ForeignKey("stores.id", ondelete="CASCADE"), nullable=False)
+    name: Mapped[str] = mapped_column(String(80), nullable=False)
+    holding_ratio: Mapped[Decimal] = mapped_column(Numeric(7, 4), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), default=MasterDataStatus.ACTIVE.value, nullable=False)
+    remark: Mapped[str | None] = mapped_column(String(240))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
+
+
+class DividendMonth(Base):
+    __tablename__ = "dividend_months"
+    __table_args__ = (UniqueConstraint("store_id", "period", name="uq_dividend_months_store_period"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    store_id: Mapped[str] = mapped_column(ForeignKey("stores.id", ondelete="CASCADE"), nullable=False)
+    period: Mapped[str] = mapped_column(String(7), nullable=False)
+    reference_ratio: Mapped[Decimal] = mapped_column(Numeric(7, 4), default=60, nullable=False)
+    no_distribution: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    no_capital: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    locked: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    locked_at: Mapped[datetime | None] = mapped_column(DateTime)
+    locked_by: Mapped[str | None] = mapped_column(String(80))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
+
+
+class DividendEntry(Base):
+    __tablename__ = "dividend_entries"
+    __table_args__ = (Index("ix_dividend_entries_month_type", "month_id", "entry_type"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    month_id: Mapped[str] = mapped_column(ForeignKey("dividend_months.id", ondelete="CASCADE"), nullable=False)
+    entry_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    shareholder_id: Mapped[str | None] = mapped_column(ForeignKey("dividend_shareholders.id", ondelete="SET NULL"))
+    shareholder_name: Mapped[str] = mapped_column(String(80), nullable=False)
+    holding_ratio: Mapped[Decimal] = mapped_column(Numeric(7, 4), nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    remark: Mapped[str | None] = mapped_column(String(240))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
+
+
 class RevenueChannel(Base):
     __tablename__ = "revenue_channels"
     __table_args__ = (UniqueConstraint("name", name="uq_revenue_channels_name"),)

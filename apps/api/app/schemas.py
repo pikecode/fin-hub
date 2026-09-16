@@ -228,6 +228,82 @@ class LedgerCloseCheck(BaseModel):
     unmatched_revenue_record_count: int = 0
     unmatched_revenue_amount: Decimal = Decimal("0.00")
     issues: list[str]
+
+
+class DividendShareholderCreate(BaseModel):
+    store_id: str
+    name: str = Field(min_length=1, max_length=80)
+    holding_ratio: Decimal = Field(ge=0, le=100)
+    remark: str | None = Field(default=None, max_length=240)
+
+
+class DividendShareholderUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=80)
+    holding_ratio: Decimal | None = Field(default=None, ge=0, le=100)
+    status: MasterDataStatus | None = None
+    remark: str | None = Field(default=None, max_length=240)
+
+
+class DividendShareholderRead(DividendShareholderCreate):
+    model_config = ConfigDict(from_attributes=True)
+    id: str
+    status: MasterDataStatus
+    created_at: datetime
+    updated_at: datetime
+
+
+class DividendEntryInput(BaseModel):
+    shareholder_id: str | None = None
+    amount: Decimal = Field(ge=0)
+    remark: str | None = Field(default=None, max_length=240)
+
+
+class DividendEntryRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: str
+    entry_type: str
+    shareholder_id: str | None
+    shareholder_name: str
+    holding_ratio: Decimal
+    amount: Decimal
+    remark: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class DividendMonthUpdate(BaseModel):
+    reference_ratio: Decimal | None = Field(default=None, ge=0, le=100)
+    distribution: list[DividendEntryInput] | None = None
+    capital: list[DividendEntryInput] | None = None
+    no_distribution: bool | None = None
+    no_capital: bool | None = None
+
+
+class DividendMonthRead(BaseModel):
+    id: str
+    store_id: str
+    period: str
+    net_profit: Decimal
+    distribution_amount: Decimal
+    capital_amount: Decimal
+    historical_profit: Decimal
+    historical_distribution: Decimal
+    remaining_undistributed: Decimal
+    cumulative_capital: Decimal
+    reference_ratio: Decimal
+    suggested_distribution: Decimal
+    no_distribution: bool
+    no_capital: bool
+    locked: bool
+    entries: list[DividendEntryRead]
+
+
+class DividendWorkspaceRead(BaseModel):
+    store: StoreRead
+    period: str
+    shareholders: list[DividendShareholderRead]
+    current: DividendMonthRead
+    history: list[DividendMonthRead]
     warnings: list[str] = Field(default_factory=list)
 
 

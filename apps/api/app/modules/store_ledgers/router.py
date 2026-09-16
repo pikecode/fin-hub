@@ -77,6 +77,37 @@ def is_prepaid_food_cost(category_l1: str | None, category_l2: str | None) -> bo
     )
 
 
+def calculate_store_ledger_profit(session: Session, store_id: str, period: str) -> Decimal:
+    """Return the same net profit shown by the store-ledger report."""
+    income_amount = decimal_sum(session.scalar(select(func.sum(RevenueRecord.gross_amount)).where(
+        RevenueRecord.store_id == store_id, RevenueRecord.ledger_period == period,
+    )))
+    confirmed_expense_rows = session.execute(
+        select(ExpenseItem.category_l1, ExpenseItem.category_l2, ExpenseBankMatch.amount)
+        .join(ExpenseBankMatch, ExpenseBankMatch.expense_item_id == ExpenseItem.id)
+        .join(ApprovalInstance, approval_expense_join_condition())
+        .where(
+            ExpenseItem.store_id == store_id,
+            ApprovalInstance.store_id == store_id,
+            ExpenseBankMatch.status == MatchStatus.CONFIRMED.value,
+            ExpenseBankMatch.accounting_period == period,
+            ExpenseItem.source != REVENUE_FEE_SOURCE,
+        )
+    ).all()
+    confirmed_expense_rows = [row for row in confirmed_expense_rows if not is_prepaid_food_cost(row[0], row[1])]
+    revenue_fee_rows = session.execute(select(ExpenseItem.amount).where(
+        ExpenseItem.store_id == store_id, ExpenseItem.ledger_period == period, ExpenseItem.source == REVENUE_FEE_SOURCE,
+    )).all()
+    kuailv_purchase_rows = session.execute(select(ExpenseItem.category_l1, ExpenseItem.category_l2, ExpenseItem.amount).where(
+        ExpenseItem.store_id == store_id, ExpenseItem.ledger_period == period, ExpenseItem.source == KUAILV_PURCHASE_SOURCE,
+    )).all()
+    kuailv_purchase_rows = [row for row in kuailv_purchase_rows if not is_prepaid_food_cost(row[0], row[1])]
+    expense_amount = sum((decimal_sum(row[2]) for row in confirmed_expense_rows), Decimal("0.00"))
+    expense_amount += sum((decimal_sum(row[0]) for row in revenue_fee_rows), Decimal("0.00"))
+    expense_amount += sum((decimal_sum(row[2]) for row in kuailv_purchase_rows), Decimal("0.00"))
+    return income_amount - expense_amount
+
+
 def latest_period(ledgers: list[Ledger], requested_period: str | None) -> str:
     if requested_period:
         return requested_period

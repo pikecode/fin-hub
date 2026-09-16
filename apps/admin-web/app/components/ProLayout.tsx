@@ -20,6 +20,7 @@ import {
   MenuUnfoldOutlined,
   FolderOpenOutlined,
   WalletOutlined,
+  GiftOutlined,
 } from "@ant-design/icons";
 import type { CurrentUser, PermissionKey } from "@fin-hub/shared-types";
 import { apiClient } from "../lib/api";
@@ -120,6 +121,12 @@ const navigationTree: NavItem[] = [
         key: "/reports",
         icon: <BarChartOutlined />,
         label: "财务报表",
+        permission: "reports.view",
+      },
+      {
+        key: "/dividend",
+        icon: <GiftOutlined />,
+        label: "分红管理",
         permission: "reports.view",
       },
       {
