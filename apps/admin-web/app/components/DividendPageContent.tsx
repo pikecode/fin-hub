@@ -97,6 +97,7 @@ export function DividendPageContent({ embeddedStoreId }: { embeddedStoreId?: str
   const formValues = useMemo(() => ({ store_id: storeId || undefined, period: dayjs(`${period}-01`) }), [period, storeId]);
 
   useEffect(() => {
+    if (isEmbedded) return;
     let ignore = false;
     getStores().then((items) => {
       if (!ignore) setStores(items);
@@ -104,7 +105,7 @@ export function DividendPageContent({ embeddedStoreId }: { embeddedStoreId?: str
       if (!ignore) setError(reason instanceof Error ? reason.message : "无法加载门店");
     });
     return () => { ignore = true; };
-  }, []);
+  }, [isEmbedded]);
 
   useEffect(() => {
     if (!storeId && stores.length > 0) {
@@ -325,13 +326,13 @@ export function DividendPageContent({ embeddedStoreId }: { embeddedStoreId?: str
   const chartMax = Math.max(1, ...chartRows.flatMap((row) => [Math.abs(Number(row.net_profit)), Number(row.distribution_amount)]));
 
   return <AppShell title="分红管理" kicker="按门店和月份管理利润分配、股东注资与未分配利润">
-    {isEmbedded && workspace ? <StoreLedgerWorkspaceNav storeId={storeId} storeName={workspace.store.name} period={period} periodOptions={workspace.history.map((row) => ({ label: row.period, value: row.period }))} activeKey="dividend" hideStoreSelector /> : null}
+    {isEmbedded && workspace ? <StoreLedgerWorkspaceNav storeId={storeId} storeName={workspace.store.name} period={period} periodOptions={workspace.history.map((row) => ({ label: row.period, value: row.period }))} activeKey="dividend" /> : null}
     <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 12 }}><Button onClick={openArchive} disabled={isAllStores}>♙ 股东档案</Button></div>
     {error ? <Alert type="error" showIcon message="分红数据加载失败" description={error} /> : null}
     <Card style={{ marginBottom: 16 }}>
       <Form layout="inline" initialValues={formValues} key={`${storeId}-${period}`}>
         {!isEmbedded ? <Form.Item label="门店范围"><Select showSearch optionFilterProp="label" value={storeId || undefined} placeholder="选择门店" style={{ width: 280 }} options={[{ label: "全公司合并", value: ALL_STORES }, ...stores.map((store) => ({ label: store.name, value: store.id }))]} onChange={(value) => changeRange(value, dayjs(`${period}-01`))} /></Form.Item> : null}
-        <Form.Item label="查看月份"><DatePicker picker="month" locale={zhCN.DatePicker} format="YYYY年MM月" value={dayjs(`${period}-01`)} allowClear={false} onChange={(value) => value && changeRange(storeId, value)} /></Form.Item>
+        {!isEmbedded ? <Form.Item label="查看月份"><DatePicker picker="month" locale={zhCN.DatePicker} format="YYYY年MM月" value={dayjs(`${period}-01`)} allowClear={false} onChange={(value) => value && changeRange(storeId, value)} /></Form.Item> : null}
         <Form.Item><Button type="primary" onClick={() => openEntryModal("distribution")} disabled={isAllStores || !current || current.locked}>✎ 录入本月分配</Button></Form.Item>
         <Form.Item><Button onClick={() => openEntryModal("capital")} disabled={isAllStores || !current || current.locked}>＋ 录入本月注资</Button></Form.Item>
       </Form>
@@ -369,4 +370,3 @@ export function DividendPageContent({ embeddedStoreId }: { embeddedStoreId?: str
     <Modal title="分红管理操作留痕" open={auditOpen} onCancel={() => setAuditOpen(false)} footer={null} width={800}><Table rowKey="id" loading={auditLoading} pagination={{ pageSize: 10 }} dataSource={auditLogs} columns={[{ title: "时间", dataIndex: "created_at" }, { title: "操作人", dataIndex: "actor" }, { title: "动作", dataIndex: "action" }, { title: "说明", dataIndex: "summary" }]} locale={{ emptyText: "暂无操作留痕" }} /></Modal>
   </AppShell>;
 }
-
