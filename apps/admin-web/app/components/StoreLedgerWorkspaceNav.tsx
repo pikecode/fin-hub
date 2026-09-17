@@ -5,6 +5,7 @@ import {
   BankOutlined,
   DashboardOutlined,
   FileTextOutlined,
+  GiftOutlined,
   ReconciliationOutlined,
   WalletOutlined,
 } from "@ant-design/icons";
@@ -14,7 +15,7 @@ import type { Store } from "@fin-hub/shared-types";
 import { getMyStores } from "../lib/referenceData";
 import { confirmLeaveIfNeeded } from "./navigationGuard";
 
-type StoreLedgerTabKey = "overview" | "report" | "bank" | "approvals" | "revenue" | "revenueMatching" | "matching" | "kuailvPurchase";
+type StoreLedgerTabKey = "overview" | "report" | "dividend" | "bank" | "approvals" | "revenue" | "revenueMatching" | "matching" | "kuailvPurchase";
 
 interface StoreLedgerWorkspaceNavProps {
   storeId: string;
@@ -23,6 +24,7 @@ interface StoreLedgerWorkspaceNavProps {
   periodOptions?: Array<{ label: string; value: string }>;
   statusLabel?: string;
   ledgerStatusLabel?: string;
+  hideStoreSelector?: boolean;
   activeKey: StoreLedgerTabKey;
   onPeriodChange?: (period: string) => void;
   extra?: any;
@@ -31,6 +33,7 @@ interface StoreLedgerWorkspaceNavProps {
 const tabItems: Array<{ key: StoreLedgerTabKey; label: string; icon: any }> = [
   { key: "overview", label: "总览", icon: <DashboardOutlined /> },
   { key: "report", label: "财务报表", icon: <FileTextOutlined /> },
+  { key: "dividend", label: "分红管理", icon: <GiftOutlined /> },
   { key: "bank", label: "银行流水", icon: <BankOutlined /> },
   { key: "approvals", label: "审批单", icon: <FileTextOutlined /> },
   { key: "revenue", label: "营业收入", icon: <WalletOutlined /> },
@@ -45,9 +48,12 @@ function modulePath(storeId: string, key: StoreLedgerTabKey, period?: string) {
     return `/store-ledgers/${storeId}${params}`;
   }
   if (key === "report") {
-    const query = new URLSearchParams({ store_id: storeId });
-    if (period) query.set("period", period);
-    return `/reports?${query.toString()}`;
+    const query = period ? `?period=${encodeURIComponent(period)}` : "";
+    return `/store-ledgers/${storeId}/report${query}`;
+  }
+  if (key === "dividend") {
+    const query = period ? `?period=${encodeURIComponent(period)}` : "";
+    return `/store-ledgers/${storeId}/dividend${query}`;
   }
   if (key === "bank") {
     const query = new URLSearchParams({ store_id: storeId });
@@ -81,6 +87,7 @@ export function StoreLedgerWorkspaceNav({
   periodOptions = [],
   statusLabel,
   ledgerStatusLabel,
+  hideStoreSelector = false,
   activeKey,
   onPeriodChange,
   extra,
@@ -166,15 +173,17 @@ export function StoreLedgerWorkspaceNav({
               className="store-ledger-period-select"
             />
           ) : null}
-          <Select
-            showSearch
-            optionFilterProp="label"
-            value={storeId}
-            loading={isStoreLoading}
-            options={storeOptions.length ? storeOptions : [{ label: storeName || "当前门店", value: storeId }]}
-            onChange={changeStore}
-            className="store-ledger-store-select"
-          />
+          {!hideStoreSelector ? (
+            <Select
+              showSearch
+              optionFilterProp="label"
+              value={storeId}
+              loading={isStoreLoading}
+              options={storeOptions.length ? storeOptions : [{ label: storeName || "当前门店", value: storeId }]}
+              onChange={changeStore}
+              className="store-ledger-store-select"
+            />
+          ) : null}
           <Button onClick={() => {
             if (!confirmLeaveIfNeeded()) return;
             router.push("/store-ledgers");
