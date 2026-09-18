@@ -62,7 +62,9 @@ def month_row(session: Session, store: Store, period: str) -> DividendMonth:
     return month
 
 
-def net_profit(session: Session, store: Store, period: str) -> Decimal:
+def net_profit(session: Session, store: Store, period: str, month: DividendMonth | None = None) -> Decimal:
+    if month is not None and month.manual_net_profit is not None:
+        return Decimal(month.manual_net_profit).quantize(MONEY)
     return calculate_store_ledger_profit(session, store.id, period).quantize(MONEY)
 
 
@@ -70,12 +72,14 @@ def month_read(session: Session, store: Store, month: DividendMonth, historical_
     entries = list(session.scalars(select(DividendEntry).where(DividendEntry.month_id == month.id).order_by(DividendEntry.created_at.asc())))
     distribution = sum((Decimal(item.amount) for item in entries if item.entry_type == "distribution"), Decimal("0.00"))
     capital = sum((Decimal(item.amount) for item in entries if item.entry_type == "capital"), Decimal("0.00"))
-    profit = net_profit(session, store, month.period)
+    profit = net_profit(session, store, month.period, month)
     total_profit = historical_profit + profit
     total_distribution = historical_distribution + distribution
     total_capital = cumulative_capital + capital
     return DividendMonthRead(
         id=month.id, store_id=store.id, period=month.period, net_profit=profit,
+        manual_net_profit=month.manual_net_profit,
+        profit_source="manual" if month.manual_net_profit is not None else "report",
         distribution_amount=distribution, capital_amount=capital,
         historical_profit=total_profit, historical_distribution=total_distribution,
         remaining_undistributed=total_profit - total_distribution,
@@ -107,9 +111,14 @@ def history_rows(session: Session, store: Store, selected_period: str) -> list[D
         total_capital = row.cumulative_capital
         result.append(row)
     selected_index = next((index for index, row in enumerate(result) if row.period == selected_period), len(result) - 1)
-    # 展示期初连续 12 个月，再加当前查看月份；累计值仍基于完整历史计算。
+    # 展示期初连续 12 个月，再加当前查看月份；手工补录的历史月份始终保留，累计值仍基于完整历史计算。
     start_index = max(0, selected_index - 12)
-    return result[start_index:selected_index + 1][::-1]
+    visible = set(range(start_index, selected_index + 1))
+    visible.update(
+        index for index, row in enumerate(result)
+        if index <= selected_index and row.manual_net_profit is not None
+    )
+    return [result[index] for index in sorted(visible, reverse=True)]
 
 
 @router.get("/workspace", response_model=ApiEnvelope[DividendWorkspaceRead])
@@ -173,10 +182,31 @@ def update_shareholder(shareholder_id: str, payload: DividendShareholderUpdate, 
 @router.put("/months/{store_id}/{period}", response_model=ApiEnvelope[DividendWorkspaceRead])
 def update_month(store_id: str, period: str, payload: DividendMonthUpdate, session: Session = Depends(get_session), current_user: User = Depends(require_admin)) -> ApiEnvelope[DividendWorkspaceRead]:
     store = ensure_store(session, store_id, current_user)
+    existing_month = session.scalar(
+        select(DividendMonth).where(DividendMonth.store_id == store.id, DividendMonth.period == period)
+    )
+    if payload.manual_net_profit is not None and existing_month is not None and existing_month.manual_net_profit is not None:
+        raise HTTPException(status_code=409, detail="该历史月份已存在，不能重复录入")
     month = month_row(session, store, period)
     if month.locked:
         raise HTTPException(status_code=409, detail="月份已锁定，请先解锁")
     changes = payload.model_dump(exclude_unset=True)
+    if "manual_net_profit" in changes:
+        has_ledger = session.scalar(
+            select(Ledger.id).where(Ledger.store_id == store.id, Ledger.period == period)
+        ) is not None
+        if has_ledger:
+            raise HTTPException(status_code=422, detail="已有账期，净利润必须来自财务报表，不能手工补录")
+        month.manual_net_profit = changes.pop("manual_net_profit")
+        write_audit_log(
+            session,
+            actor=audit_actor(current_user),
+            action="dividend_month.manual_profit",
+            resource_type="dividend_month",
+            resource_id=month.id,
+            summary=f"补录历史月份净利润：{period}",
+            metadata={"manual_net_profit": str(month.manual_net_profit)},
+        )
     for field in ("reference_ratio", "no_distribution", "no_capital"):
         if field in changes:
             setattr(month, field, changes[field])

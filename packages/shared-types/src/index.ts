@@ -1364,6 +1364,8 @@ export interface DividendMonth {
   store_id: string;
   period: string;
   net_profit: string;
+  manual_net_profit?: string | null;
+  profit_source: "report" | "manual";
   distribution_amount: string;
   capital_amount: string;
   historical_profit: string;

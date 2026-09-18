@@ -726,7 +726,7 @@ export function createApiClient(options: ApiClientOptions) {
         request<DividendShareholder>("/api/dividends/shareholders", { method: "POST", body: JSON.stringify(payload) }),
       updateShareholder: (id: string, payload: Partial<Pick<DividendShareholder, "name" | "holding_ratio" | "status" | "remark">>) =>
         request<DividendShareholder>(`/api/dividends/shareholders/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
-      updateMonth: (storeId: string, period: string, payload: { reference_ratio?: string; distribution?: Array<{ shareholder_id: string; amount: string; remark?: string }>; capital?: Array<{ shareholder_id: string; amount: string; remark?: string }>; no_distribution?: boolean; no_capital?: boolean }) =>
+      updateMonth: (storeId: string, period: string, payload: { manual_net_profit?: string; reference_ratio?: string; distribution?: Array<{ shareholder_id: string; amount: string; remark?: string }>; capital?: Array<{ shareholder_id: string; amount: string; remark?: string }>; no_distribution?: boolean; no_capital?: boolean }) =>
         request<DividendWorkspace>(`/api/dividends/months/${encodeURIComponent(storeId)}/${encodeURIComponent(period)}`, { method: "PUT", body: JSON.stringify(payload) }),
       lockMonth: (storeId: string, period: string) =>
         request<DividendWorkspace>(`/api/dividends/months/${encodeURIComponent(storeId)}/${encodeURIComponent(period)}/lock`, { method: "POST" }),
