@@ -38,6 +38,20 @@ DB_PASSWORD="$(ssh fin-hub-server "sed -n 's/^POSTGRES_PASSWORD=//p' /opt/fin-hu
 DB_PASSWORD_URLENCODED="$(.venv/bin/python -c 'import sys; from urllib.parse import quote; print(quote(sys.argv[1], safe=""))' "$DB_PASSWORD")"
 DATABASE_URL="postgresql+psycopg://finhub:${DB_PASSWORD_URLENCODED}@127.0.0.1:${DB_PORT}/finhub"
 
+echo "Waiting for production database to accept connections..."
+database_ready=false
+for _ in {1..60}; do
+  if DATABASE_URL="$DATABASE_URL" .venv/bin/python -c 'import os; import psycopg; url = os.environ["DATABASE_URL"].replace("postgresql+psycopg://", "postgresql://", 1); connection = psycopg.connect(url, connect_timeout=2); connection.close()' >/dev/null 2>&1; then
+    database_ready=true
+    break
+  fi
+  sleep 2
+done
+if [ "$database_ready" != "true" ]; then
+  echo "Production database did not become ready within 120 seconds" >&2
+  exit 1
+fi
+
 echo "Running database migrations..."
 DATABASE_URL="$DATABASE_URL" .venv/bin/alembic upgrade head
 
