@@ -1,7 +1,14 @@
+x-default-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   postgres:
     image: postgres:16
     restart: unless-stopped
+    logging: *default-logging
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-finhub}
       POSTGRES_USER: ${POSTGRES_USER:-finhub}
@@ -19,6 +26,7 @@ services:
   redis:
     image: redis:7
     restart: unless-stopped
+    logging: *default-logging
     ports:
       - "127.0.0.1:16379:6379"
     volumes:
@@ -27,6 +35,7 @@ services:
   api:
     image: ${API_IMAGE:-fin-hub-api:${IMAGE_TAG:-latest}}
     restart: unless-stopped
+    logging: *default-logging
     environment:
       APP_ENV: production
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-finhub}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-finhub}
@@ -48,6 +57,7 @@ services:
   admin-web:
     image: ${ADMIN_WEB_IMAGE:-fin-hub-admin-web:${IMAGE_TAG:-latest}}
     restart: unless-stopped
+    logging: *default-logging
     environment:
       NODE_ENV: production
       NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL}
@@ -57,6 +67,7 @@ services:
   nginx:
     image: nginx:1.27-alpine
     restart: unless-stopped
+    logging: *default-logging
     ports:
       - "80:80"
     volumes:

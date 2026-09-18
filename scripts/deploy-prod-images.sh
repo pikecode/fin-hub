@@ -7,6 +7,8 @@ COMPOSE_FILE="${COMPOSE_FILE:-$ROOT_DIR/infra/docker/docker-compose.prod.images.
 IMAGE_ENV_FILE="${IMAGE_ENV_FILE:-}"
 IMAGE_TAR="${IMAGE_TAR:-}"
 SKIP_PULL="${SKIP_PULL:-false}"
+PRUNE_OLD_IMAGES="${PRUNE_OLD_IMAGES:-true}"
+IMAGE_PRUNE_UNTIL="${IMAGE_PRUNE_UNTIL:-168h}"
 
 usage() {
   cat <<'USAGE'
@@ -95,6 +97,16 @@ done
 if [ -n "$IMAGE_TAR" ]; then
   echo "Loading images from $IMAGE_TAR"
   docker load -i "$IMAGE_TAR"
+  rm -f "$IMAGE_TAR"
+fi
+if [ -n "$IMAGE_ENV_FILE" ]; then
+  rm -f "$IMAGE_ENV_FILE"
+fi
+
+# Deployment uploads can be resumed in chunks. Remove stale chunks after the
+# new image is available; database and application volumes are not touched.
+if [ -d "$ROOT_DIR/upload-slices" ]; then
+  find "$ROOT_DIR/upload-slices" -type f -mmin +180 -delete
 fi
 
 echo "Using images:"
@@ -108,6 +120,11 @@ fi
 
 echo "Starting production services with prebuilt images..."
 docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d
+
+if [ "$PRUNE_OLD_IMAGES" = "true" ]; then
+  echo "Removing unused Docker images older than $IMAGE_PRUNE_UNTIL..."
+  docker image prune -af --filter "until=$IMAGE_PRUNE_UNTIL"
+fi
 
 echo "Service status:"
 docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" ps
