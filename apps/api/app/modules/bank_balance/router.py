@@ -46,12 +46,12 @@ def calculate_bank_balance(session: Session, store_id: str) -> BankBalanceRead:
     if correction is None:
         return BankBalanceRead()
 
-    after = datetime.combine(correction.correction_date, time.max)
+    start = datetime.combine(correction.correction_date, time.min)
     transactions = list(
         session.scalars(
             select(BankTransaction).where(
                 BankTransaction.store_id == store_id,
-                BankTransaction.occurred_at > after,
+                BankTransaction.occurred_at >= start,
             )
         )
     )

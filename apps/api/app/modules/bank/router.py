@@ -94,6 +94,7 @@ def list_bank_transactions(
     direction: str | None = None,
     special_type: Literal["normal", "current_account", "shareholder_dividend", "shareholder_capital", "other_income_expense"] | None = None,
     match_status: Literal["unmatched", "matched"] | None = None,
+    amount: Decimal | None = None,
     counterparty_name: str | None = None,
     counterparty_account: str | None = None,
     occurred_from: datetime | None = None,
@@ -130,6 +131,8 @@ def list_bank_transactions(
             (BankTransaction.matched_amount > Decimal("0"))
             | BankTransaction.special_type.is_not(None)
         )
+    if amount is not None:
+        query = query.where(BankTransaction.amount == amount)
     if counterparty_name and counterparty_name.strip():
         query = query.where(BankTransaction.counterparty_name.ilike(f"%{counterparty_name.strip()}%"))
     if counterparty_account and counterparty_account.strip():

@@ -1,10 +1,12 @@
 "use client";
 
-import { Alert, Button, Card, Checkbox, DatePicker, Form, Input, Modal, Popconfirm, Select, Space, Statistic, Table, Tabs, Upload, Typography, message } from "antd";
+import { Alert, Button, Card, Checkbox, DatePicker, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Statistic, Table, Tabs, Upload, Typography, message } from "antd";
+import zhCN from "antd/locale/zh_CN";
 import type { ColumnsType } from "antd/es/table";
 import type { UploadFile } from "antd/es/upload/interface";
 import customParseFormat from "dayjs/plugin/customParseFormat";
 import dayjs from "dayjs";
+import "dayjs/locale/zh-cn";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Key } from "react";
 import {
@@ -39,6 +41,7 @@ import { getLedgers, getStores } from "../lib/referenceData";
 import { useClientSearchParams } from "../lib/searchParams";
 
 dayjs.extend(customParseFormat);
+dayjs.locale("zh-cn");
 
 interface BankFormValues extends Omit<BankTransactionCreate, "occurred_at"> {
   ledger_key?: string;
@@ -47,12 +50,12 @@ interface BankFormValues extends Omit<BankTransactionCreate, "occurred_at"> {
 
 interface BankFilterValues {
   store_id?: string;
-  ledger_period?: string;
   month?: dayjs.Dayjs;
   direction?: "income" | "expense";
   special_type?: "normal" | "current_account" | "shareholder_dividend" | "shareholder_capital" | "other_income_expense";
   unmatched_only?: boolean;
   match_status?: "unmatched" | "matched";
+  amount?: number;
   counterparty_name?: string;
   counterparty_account?: string;
   occurred_range?: [dayjs.Dayjs, dayjs.Dayjs];
@@ -339,8 +342,6 @@ export default function BankPage() {
   const initialFilters = useMemo<BankFilterValues>(
     () => ({
       store_id: queryStoreId,
-      ledger_period: queryLedgerPeriod ?? dayjs().format("YYYY-MM"),
-      month: dayjs(`${queryLedgerPeriod ?? dayjs().format("YYYY-MM")}-01`),
     }),
     [queryStoreId],
   );
@@ -419,12 +420,15 @@ export default function BankPage() {
     const params = new URLSearchParams({ page_size: "500" });
     const storeId = values?.store_id || queryStoreId;
     if (storeId) params.set("store_id", storeId);
-    if (values?.month) params.set("ledger_period", values.month.format("YYYY-MM"));
-    else if (values?.ledger_period) params.set("ledger_period", values.ledger_period);
+    if (values?.month) {
+      params.set("occurred_from", values.month.startOf("month").format("YYYY-MM-DD HH:mm:ss"));
+      params.set("occurred_to", values.month.add(1, "month").startOf("month").format("YYYY-MM-DD HH:mm:ss"));
+    }
     if (values?.direction) params.set("direction", values.direction);
     if (values?.special_type) params.set("special_type", values.special_type);
     if (values?.unmatched_only) params.set("unmatched_only", "true");
     if (values?.match_status) params.set("match_status", values.match_status);
+    if (values?.amount !== undefined && values.amount !== null) params.set("amount", String(values.amount));
     if (values?.counterparty_name?.trim()) params.set("counterparty_name", values.counterparty_name.trim());
     if (values?.counterparty_account?.trim()) params.set("counterparty_account", values.counterparty_account.trim());
     if (values?.occurred_range?.[0]) params.set("occurred_from", values.occurred_range[0].startOf("day").format("YYYY-MM-DD HH:mm:ss"));
@@ -1272,10 +1276,10 @@ export default function BankPage() {
             style={{ marginBottom: 16 }}
           >
             <Form.Item name="month">
-              <DatePicker picker="month" allowClear={false} placeholder="账期月份" />
+              <DatePicker picker="month" locale={zhCN.DatePicker} allowClear placeholder="发生月份" />
             </Form.Item>
             <Form.Item name="occurred_range">
-              <DatePicker.RangePicker allowClear placeholder={["发生日期开始", "发生日期结束"]} />
+              <DatePicker.RangePicker locale={zhCN.DatePicker} allowClear placeholder={["发生日期开始", "发生日期结束"]} />
             </Form.Item>
             <Form.Item name="direction">
               <Select
@@ -1312,6 +1316,9 @@ export default function BankPage() {
                   { label: "已匹配", value: "matched" },
                 ]}
               />
+            </Form.Item>
+            <Form.Item name="amount">
+              <InputNumber min={0} precision={2} placeholder="金额" style={{ width: 140 }} />
             </Form.Item>
             <Form.Item name="counterparty_name">
               <Input allowClear placeholder="对方户名" style={{ width: 180 }} />

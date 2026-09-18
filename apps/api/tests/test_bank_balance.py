@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from app.models import BankTransaction
 
 
-def test_bank_balance_uses_latest_correction_and_transactions_after_date(
+def test_bank_balance_uses_latest_correction_and_transactions_on_or_after_date(
     client: TestClient, session: Session
 ) -> None:
     store_id = client.post("/api/stores", json={"name": "余额校正测试店"}).json()["data"]["id"]
@@ -57,10 +57,10 @@ def test_bank_balance_uses_latest_correction_and_transactions_after_date(
     balance = client.get(f"/api/bank-balance?store_id={store_id}")
     assert balance.status_code == 200
     assert balance.json()["data"] == {
-        "balance_amount": "1020.00",
+        "balance_amount": "1120.00",
         "base_balance_amount": "1000.00",
         "base_correction_date": "2026-08-10",
-        "income_after_base": "30.00",
+        "income_after_base": "130.00",
         "expense_after_base": "10.00",
         "has_correction": True,
     }
@@ -77,9 +77,9 @@ def test_bank_balance_uses_latest_correction_and_transactions_after_date(
     )
     assert second.status_code == 201
     latest_balance = client.get(f"/api/bank-balance?store_id={store_id}").json()["data"]
-    assert latest_balance["balance_amount"] == "2000.00"
+    assert latest_balance["balance_amount"] == "1990.00"
     assert latest_balance["income_after_base"] == "0.00"
-    assert latest_balance["expense_after_base"] == "0.00"
+    assert latest_balance["expense_after_base"] == "10.00"
 
     history = client.get(f"/api/bank-balance/corrections?store_id={store_id}")
     assert history.status_code == 200

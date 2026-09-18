@@ -227,7 +227,7 @@ def test_store_ledger_workspace_excludes_whole_approval_summary_when_line_items_
     assert approval_read["total_expense_amount"] == "100.00"
 
 
-def test_store_ledger_workspace_counts_confirmed_approval_match_by_accounting_period(
+def test_store_ledger_workspace_deduplicates_multiple_matches_for_one_expense_detail(
     client: TestClient,
     session: Session,
 ) -> None:
@@ -269,7 +269,16 @@ def test_store_ledger_workspace_counts_confirmed_approval_match_by_accounting_pe
         matched_amount=Decimal("320.00"),
         summary="历史导入审批付款",
     )
-    session.add_all([expense, bank_transaction])
+    second_bank_transaction = BankTransaction(
+        store_id=store_id,
+        ledger_period="2026-09",
+        occurred_at=datetime(2026, 9, 7, 10, 30, 0),
+        direction="expense",
+        amount=Decimal("180.00"),
+        matched_amount=Decimal("180.00"),
+        summary="历史导入审批补充付款",
+    )
+    session.add_all([expense, bank_transaction, second_bank_transaction])
     session.flush()
     session.add(
         ExpenseBankMatch(
@@ -278,16 +287,23 @@ def test_store_ledger_workspace_counts_confirmed_approval_match_by_accounting_pe
             amount=Decimal("320.00"),
             accounting_period="2026-08",
             status=MatchStatus.CONFIRMED.value,
-        )
+        ),
+        ExpenseBankMatch(
+            expense_item_id=expense.id,
+            bank_transaction_id=second_bank_transaction.id,
+            amount=Decimal("180.00"),
+            accounting_period="2026-08",
+            status=MatchStatus.CONFIRMED.value,
+        ),
     )
     session.commit()
 
     august_workspace = client.get(f"/api/store-ledgers/{store_id}/workspace?period=2026-08").json()["data"]
     september_workspace = client.get(f"/api/store-ledgers/{store_id}/workspace?period=2026-09").json()["data"]
 
-    assert august_workspace["metrics"]["expense_amount"] == "320.00"
-    assert august_workspace["metrics"]["approval_accounting_amount"] == "320.00"
-    assert august_workspace["metrics"]["expense_category_summary"][0]["amount"] == "320.00"
+    assert august_workspace["metrics"]["expense_amount"] == "500.00"
+    assert august_workspace["metrics"]["approval_accounting_amount"] == "500.00"
+    assert august_workspace["metrics"]["expense_category_summary"][0]["amount"] == "500.00"
     assert september_workspace["metrics"]["expense_amount"] == "0.00"
 
 

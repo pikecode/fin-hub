@@ -77,13 +77,26 @@ def is_prepaid_food_cost(category_l1: str | None, category_l2: str | None) -> bo
     )
 
 
+def dedupe_expense_rows(rows):
+    """Keep one confirmed accounting row per approval expense detail."""
+    seen: set[str] = set()
+    unique_rows = []
+    for row in rows:
+        expense_id = row[0]
+        if expense_id in seen:
+            continue
+        seen.add(expense_id)
+        unique_rows.append(row)
+    return unique_rows
+
+
 def calculate_store_ledger_profit(session: Session, store_id: str, period: str) -> Decimal:
     """Return the same net profit shown by the store-ledger report."""
     income_amount = decimal_sum(session.scalar(select(func.sum(RevenueRecord.gross_amount)).where(
         RevenueRecord.store_id == store_id, RevenueRecord.ledger_period == period,
     )))
     confirmed_expense_rows = session.execute(
-        select(ExpenseItem.category_l1, ExpenseItem.category_l2, ExpenseBankMatch.amount)
+        select(ExpenseItem.id, ExpenseItem.category_l1, ExpenseItem.category_l2, ExpenseItem.amount)
         .join(ExpenseBankMatch, ExpenseBankMatch.expense_item_id == ExpenseItem.id)
         .join(ApprovalInstance, approval_expense_join_condition())
         .where(
@@ -94,7 +107,8 @@ def calculate_store_ledger_profit(session: Session, store_id: str, period: str) 
             ExpenseItem.source != REVENUE_FEE_SOURCE,
         )
     ).all()
-    confirmed_expense_rows = [row for row in confirmed_expense_rows if not is_prepaid_food_cost(row[0], row[1])]
+    confirmed_expense_rows = dedupe_expense_rows(confirmed_expense_rows)
+    confirmed_expense_rows = [row for row in confirmed_expense_rows if not is_prepaid_food_cost(row[1], row[2])]
     revenue_fee_rows = session.execute(select(ExpenseItem.amount).where(
         ExpenseItem.store_id == store_id, ExpenseItem.ledger_period == period, ExpenseItem.source == REVENUE_FEE_SOURCE,
     )).all()
@@ -102,7 +116,7 @@ def calculate_store_ledger_profit(session: Session, store_id: str, period: str) 
         ExpenseItem.store_id == store_id, ExpenseItem.ledger_period == period, ExpenseItem.source == KUAILV_PURCHASE_SOURCE,
     )).all()
     kuailv_purchase_rows = [row for row in kuailv_purchase_rows if not is_prepaid_food_cost(row[0], row[1])]
-    expense_amount = sum((decimal_sum(row[2]) for row in confirmed_expense_rows), Decimal("0.00"))
+    expense_amount = sum((decimal_sum(row[3]) for row in confirmed_expense_rows), Decimal("0.00"))
     expense_amount += sum((decimal_sum(row[0]) for row in revenue_fee_rows), Decimal("0.00"))
     expense_amount += sum((decimal_sum(row[2]) for row in kuailv_purchase_rows), Decimal("0.00"))
     return income_amount - expense_amount
@@ -210,9 +224,10 @@ def read_store_ledger_workspace(
     )
     confirmed_expense_rows = session.execute(
         select(
+            ExpenseItem.id,
             ExpenseItem.category_l1,
             ExpenseItem.category_l2,
-            ExpenseBankMatch.amount,
+            ExpenseItem.amount,
         )
         .join(ExpenseBankMatch, ExpenseBankMatch.expense_item_id == ExpenseItem.id)
         .join(ApprovalInstance, approval_expense_join_condition())
@@ -224,11 +239,8 @@ def read_store_ledger_workspace(
             ExpenseItem.source != REVENUE_FEE_SOURCE,
         )
     ).all()
-    confirmed_expense_rows = [
-        row
-        for row in confirmed_expense_rows
-        if not is_prepaid_food_cost(row[0], row[1])
-    ]
+    confirmed_expense_rows = dedupe_expense_rows(confirmed_expense_rows)
+    confirmed_expense_rows = [row for row in confirmed_expense_rows if not is_prepaid_food_cost(row[1], row[2])]
     revenue_fee_rows = session.execute(
         select(
             ExpenseItem.category_l1,
@@ -257,15 +269,15 @@ def read_store_ledger_workspace(
         row for row in kuailv_purchase_rows if not is_prepaid_food_cost(row[0], row[1])
     ]
     expense_amount = sum(
-        (decimal_sum(row[2]) for row in confirmed_expense_rows), Decimal("0.00")
+        (decimal_sum(row[3]) for row in confirmed_expense_rows), Decimal("0.00")
     ) + sum((decimal_sum(row[2]) for row in revenue_fee_rows), Decimal("0.00")) + sum(
         (decimal_sum(row[2]) for row in kuailv_purchase_rows), Decimal("0.00")
     )
     food_cost_amount = sum(
         (
-            decimal_sum(row[2])
+            decimal_sum(row[3])
             for row in confirmed_expense_rows
-            if row[0] == FOOD_COST_CATEGORY_L1
+            if row[1] == FOOD_COST_CATEGORY_L1
         ),
         Decimal("0.00"),
     ) + sum(
@@ -278,28 +290,24 @@ def read_store_ledger_workspace(
     )
     gross_profit_amount = income_amount - food_cost_amount
     labor_cost_amount = sum(
-        (decimal_sum(row[2]) for row in confirmed_expense_rows if row[0] == "人力成本"),
+        (decimal_sum(row[3]) for row in confirmed_expense_rows if row[1] == "人力成本"),
         Decimal("0.00"),
     )
     rent_cost_amount = sum(
-        (decimal_sum(row[2]) for row in confirmed_expense_rows if row[0] == "门店租管费用"),
+        (decimal_sum(row[3]) for row in confirmed_expense_rows if row[1] == "门店租管费用"),
         Decimal("0.00"),
     )
     operation_expense_amount = expense_amount - food_cost_amount
+    categorized_expense_rows = [
+        *[(row[1], row[2], row[3]) for row in confirmed_expense_rows],
+        *kuailv_purchase_rows,
+    ]
     chicken_cost_amount = sum(
-        (
-            decimal_sum(row[2])
-            for row in [*confirmed_expense_rows, *kuailv_purchase_rows]
-            if row[0] == FOOD_COST_CATEGORY_L1 and row[1] == "鸡"
-        ),
+        (decimal_sum(row[2]) for row in categorized_expense_rows if row[0] == FOOD_COST_CATEGORY_L1 and row[1] == "鸡"),
         Decimal("0.00"),
     )
     mushroom_cost_amount = sum(
-        (
-            decimal_sum(row[2])
-            for row in [*confirmed_expense_rows, *kuailv_purchase_rows]
-            if row[0] == FOOD_COST_CATEGORY_L1 and row[1] == "菌子"
-        ),
+        (decimal_sum(row[2]) for row in categorized_expense_rows if row[0] == FOOD_COST_CATEGORY_L1 and row[1] == "菌子"),
         Decimal("0.00"),
     )
     previous_income = decimal_sum(
@@ -414,19 +422,9 @@ def read_store_ledger_workspace(
         )
         for item in approval_instances
     )
-    approval_accounting_amount = decimal_sum(
-        session.scalar(
-            select(func.sum(ExpenseBankMatch.amount))
-            .join(ExpenseItem, ExpenseBankMatch.expense_item_id == ExpenseItem.id)
-            .join(ApprovalInstance, approval_expense_join_condition())
-            .where(
-                ExpenseItem.store_id == store_id,
-                ApprovalInstance.store_id == store_id,
-                ExpenseBankMatch.status == MatchStatus.CONFIRMED.value,
-                ExpenseBankMatch.accounting_period == selected_period,
-                ExpenseItem.source != REVENUE_FEE_SOURCE,
-            )
-        )
+    approval_accounting_amount = sum(
+        (decimal_sum(row[3]) for row in confirmed_expense_rows),
+        Decimal("0.00"),
     )
     pending_approval_count = sum(
         1
@@ -456,7 +454,11 @@ def read_store_ledger_workspace(
         for parent_name in [str(parent["name"])]
     }
     category_map: dict[tuple[str, str | None], dict[str, Decimal | int | str | None]] = {}
-    for category_l1, category_l2, amount in [*confirmed_expense_rows, *revenue_fee_rows, *kuailv_purchase_rows]:
+    for category_l1, category_l2, amount in [
+        *[(row[1], row[2], row[3]) for row in confirmed_expense_rows],
+        *revenue_fee_rows,
+        *kuailv_purchase_rows,
+    ]:
         if not category_l1 or category_l1 not in active_root_names:
             continue
         if category_l2 and (category_l1, category_l2) not in active_child_pairs:

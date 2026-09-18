@@ -336,9 +336,13 @@ def test_unmatch_keeps_bank_transaction_owned_period_with_remaining_match(client
     assert bank_transaction["matched_amount"] == "200.00"
 
 
-def test_candidate_score_only_uses_bank_and_approval_amounts() -> None:
-    bank_transaction = SimpleNamespace(amount=Decimal("10000.00"), matched_amount=Decimal("0.00"))
-    expense = SimpleNamespace(amount=Decimal("10000.00"))
+def test_candidate_score_uses_bank_amount_and_expense_date() -> None:
+    bank_transaction = SimpleNamespace(
+        amount=Decimal("10000.00"),
+        matched_amount=Decimal("0.00"),
+        occurred_at=datetime(2026, 8, 20, 10, 30, 0),
+    )
+    expense = SimpleNamespace(amount=Decimal("10000.00"), expense_date=datetime(2026, 8, 20).date())
 
     exact_score, exact_reason = candidate_score(
         bank_transaction,
@@ -352,11 +356,19 @@ def test_candidate_score_only_uses_bank_and_approval_amounts() -> None:
         Decimal("9000.00"),
         approval_total_amount=Decimal("9000.00"),
     )
+    late_score, late_reason = candidate_score(
+        bank_transaction,
+        SimpleNamespace(amount=Decimal("10000.00"), expense_date=datetime(2026, 8, 25).date()),
+        Decimal("10000.00"),
+        approval_total_amount=Decimal("10000.00"),
+    )
 
     assert exact_score == Decimal("100.00")
-    assert close_score == Decimal("90.00")
-    assert "门店" not in exact_reason and "日期" not in exact_reason
-    assert "门店" not in close_reason and "日期" not in close_reason
+    assert close_score == Decimal("93.00")
+    assert late_score == Decimal("85.00")
+    assert "日期一致" in exact_reason
+    assert "日期一致" in close_reason
+    assert "相差 5 天" in late_reason
 
 
 def test_create_match_candidate_is_idempotent_for_existing_candidate(client: TestClient) -> None:

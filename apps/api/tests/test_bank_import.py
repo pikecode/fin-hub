@@ -77,6 +77,11 @@ def test_list_bank_transactions_filters_by_match_status_and_counterparty(client:
     assert matched_response.json()["data"]["total"] == 1
     assert matched_response.json()["data"]["items"][0]["id"] == matched_id
 
+    amount_response = client.get(f"/api/bank-transactions?store_id={store_id}&amount=100.00")
+    assert amount_response.status_code == 200
+    assert amount_response.json()["data"]["total"] == 1
+    assert amount_response.json()["data"]["items"][0]["id"] == matched_id
+
     unmatched_response = client.get(f"/api/bank-transactions?store_id={store_id}&match_status=unmatched&counterparty_account=0002")
     assert unmatched_response.status_code == 200
     assert unmatched_response.json()["data"]["total"] == 1

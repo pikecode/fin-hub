@@ -64,7 +64,14 @@ function mergeWorkspaces(items: DividendWorkspace[], period: string): DividendWo
     const previous = shareholders.get(item.name);
     shareholders.set(item.name, previous ? { ...previous, holding_ratio: addValues(previous.holding_ratio, item.holding_ratio) } : { ...item, id: `all:${item.name}` });
   });
-  return { store: { ...items[0].store, id: ALL_STORES, name: "全公司合并" }, period, shareholders: [...shareholders.values()], current, history };
+  return {
+    store: { ...items[0].store, id: ALL_STORES, name: "全公司合并" },
+    period,
+    available_periods: [...new Set(items.flatMap((item) => item.available_periods ?? []))].sort().reverse(),
+    shareholders: [...shareholders.values()],
+    current,
+    history,
+  };
 }
 
 export function DividendPageContent({ embeddedStoreId }: { embeddedStoreId?: string } = {}) {
@@ -326,7 +333,7 @@ export function DividendPageContent({ embeddedStoreId }: { embeddedStoreId?: str
   const chartMax = Math.max(1, ...chartRows.flatMap((row) => [Math.abs(Number(row.net_profit)), Number(row.distribution_amount)]));
 
   return <AppShell title="分红管理" kicker="按门店和月份管理利润分配、股东注资与未分配利润">
-    {isEmbedded && workspace ? <StoreLedgerWorkspaceNav storeId={storeId} storeName={workspace.store.name} period={period} periodOptions={workspace.history.map((row) => ({ label: row.period, value: row.period }))} activeKey="dividend" /> : null}
+    {isEmbedded && workspace ? <StoreLedgerWorkspaceNav storeId={storeId} storeName={workspace.store.name} period={period} periodOptions={(workspace.available_periods ?? workspace.history.map((row) => row.period)).map((value) => ({ label: value, value }))} activeKey="dividend" /> : null}
     <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 12 }}><Button onClick={openArchive} disabled={isAllStores}>♙ 股东档案</Button></div>
     {error ? <Alert type="error" showIcon message="分红数据加载失败" description={error} /> : null}
     <Card style={{ marginBottom: 16 }}>

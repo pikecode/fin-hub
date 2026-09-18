@@ -1381,6 +1381,7 @@ export interface DividendMonth {
 export interface DividendWorkspace {
   store: Store;
   period: string;
+  available_periods?: string[];
   shareholders: DividendShareholder[];
   current: DividendMonth;
   history: DividendMonth[];

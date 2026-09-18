@@ -236,16 +236,37 @@ def candidate_score(
 
     difference = abs(comparison_amount - remaining_bank_amount)
     denominator = max(comparison_amount, remaining_bank_amount)
-    score = max(
+    amount_score = max(
         Decimal("0.00"),
         min(Decimal("100.00"), (Decimal("1.00") - difference / denominator) * Decimal("100.00")),
-    ).quantize(Decimal("0.01"))
+    )
+    expense_date = getattr(expense, "expense_date", None)
+    if isinstance(expense_date, datetime):
+        expense_date = expense_date.date()
+    bank_date = getattr(bank_transaction, "occurred_at", None)
+    bank_date = bank_date.date() if isinstance(bank_date, datetime) else bank_date
+    date_score: Decimal | None = None
+    date_difference: int | None = None
+    if expense_date is not None and bank_date is not None:
+        date_difference = abs((bank_date - expense_date).days)
+        # A same-day transaction is strongest. Reduce the date component by
+        # 10 points per day, reaching zero after ten days.
+        date_score = max(Decimal("0.00"), Decimal("100.00") - Decimal(min(date_difference, 10) * 10))
+    score = amount_score if date_score is None else amount_score * Decimal("0.70") + date_score * Decimal("0.30")
+    score = score.quantize(Decimal("0.01"))
     amount_label = "审批单总额" if approval_total_amount is not None else "费用金额"
     if difference == 0:
         reason = f"{amount_label}与银行流水金额完全一致"
     else:
         difference_ratio = (difference / denominator * Decimal("100.00")).quantize(Decimal("0.01"))
         reason = f"{amount_label}与银行流水金额差异 {difference_ratio}%"
+    if date_difference is not None:
+        if date_difference == 0:
+            reason += "；银行流水日期与审批业务日期一致"
+        else:
+            reason += f"；银行流水日期与审批业务日期相差 {date_difference} 天"
+    else:
+        reason += "；缺少审批业务日期，未计入日期推荐度"
     return score, reason
 
 

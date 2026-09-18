@@ -301,6 +301,7 @@ class DividendMonthRead(BaseModel):
 class DividendWorkspaceRead(BaseModel):
     store: StoreRead
     period: str
+    available_periods: list[str] = Field(default_factory=list)
     shareholders: list[DividendShareholderRead]
     current: DividendMonthRead
     history: list[DividendMonthRead]

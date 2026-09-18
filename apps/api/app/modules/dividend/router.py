@@ -87,11 +87,15 @@ def month_read(session: Session, store: Store, month: DividendMonth, historical_
     )
 
 
-def history_rows(session: Session, store: Store, selected_period: str) -> list[DividendMonthRead]:
+def available_periods(session: Session, store: Store, selected_period: str) -> list[str]:
     periods = set(session.scalars(select(Ledger.period).where(Ledger.store_id == store.id)).all())
     periods.update(session.scalars(select(DividendMonth.period).where(DividendMonth.store_id == store.id)).all())
     periods.add(selected_period)
-    ordered = sorted(periods)
+    return sorted(periods, reverse=True)
+
+
+def history_rows(session: Session, store: Store, selected_period: str) -> list[DividendMonthRead]:
+    ordered = sorted(available_periods(session, store, selected_period))
     months = {month.period: month for month in session.scalars(select(DividendMonth).where(DividendMonth.store_id == store.id)).all()}
     result: list[DividendMonthRead] = []
     total_profit = total_distribution = total_capital = Decimal("0.00")
@@ -116,7 +120,14 @@ def read_workspace(store_id: str, period: str, session: Session = Depends(get_se
     history = history_rows(session, store, period)
     current = next(row for row in history if row.period == period)
     session.commit()
-    return ApiEnvelope(data=DividendWorkspaceRead(store=store, period=period, shareholders=[DividendShareholderRead.model_validate(item) for item in shareholders], current=current, history=history))
+    return ApiEnvelope(data=DividendWorkspaceRead(
+        store=store,
+        period=period,
+        shareholders=[DividendShareholderRead.model_validate(item) for item in shareholders],
+        current=current,
+        history=history,
+        available_periods=available_periods(session, store, period),
+    ))
 
 
 @router.get("/shareholders", response_model=ApiEnvelope[list[DividendShareholderRead]])
