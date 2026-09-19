@@ -295,6 +295,12 @@ def is_seed_process_code(process_code: str) -> bool:
     return process_code.startswith("seed-")
 
 
+def is_missing_dingtalk_approval_error(error: DingTalkClientError) -> bool:
+    """Return whether DingTalk says the approval flow or instance no longer exists."""
+    message = str(error)
+    return "审批流不存在" in message or "流程不存在" in message
+
+
 @router.get("/config", response_model=ApiEnvelope[DingTalkConfigRead])
 def read_config(session: Session = Depends(get_session)) -> ApiEnvelope[DingTalkConfigRead]:
     return ApiEnvelope(data=mask_config(get_or_create_config(session)))
@@ -3617,6 +3623,8 @@ def run_approval_sync(
     template_summaries: list[dict[str, Any]] = []
     incomplete_cursors: dict[str, int] = {}
     handled_instance_ids: set[str] = set()
+    skipped_missing_instance_ids: list[str] = []
+    skipped_missing_process_codes: list[str] = []
     resume_cursors = resume_cursors or {}
     for template in templates:
         ensure_sync_job_not_canceled(session, job)
@@ -3630,16 +3638,26 @@ def run_approval_sync(
             cursor = resume_cursors.get(template.process_code, 0)
             template_processed = 0
             template_skipped_existing = 0
+            template_skipped_missing = 0
+            template_missing_flow = False
             template_next_cursor: str | None = None
             for page_index in range(max_pages):
                 ensure_sync_job_not_canceled(session, job)
-                ids, next_cursor = client.list_process_instance_ids(
-                    template.process_code,
-                    int(start_at.timestamp() * 1000),
-                    int(end_at.timestamp() * 1000),
-                    cursor=cursor,
-                    size=page_size,
-                )
+                try:
+                    ids, next_cursor = client.list_process_instance_ids(
+                        template.process_code,
+                        int(start_at.timestamp() * 1000),
+                        int(end_at.timestamp() * 1000),
+                        cursor=cursor,
+                        size=page_size,
+                    )
+                except DingTalkClientError as exc:
+                    if not is_missing_dingtalk_approval_error(exc):
+                        raise
+                    template_missing_flow = True
+                    skipped_missing_process_codes.append(template.process_code)
+                    template_next_cursor = None
+                    break
                 template_next_cursor = str(next_cursor) if next_cursor is not None else None
                 for instance_id in ids:
                     ensure_sync_job_not_canceled(session, job)
@@ -3661,7 +3679,14 @@ def run_approval_sync(
                     ):
                         template_skipped_existing += 1
                         continue
-                    raw_instance = client.get_process_instance(instance_id)
+                    try:
+                        raw_instance = client.get_process_instance(instance_id)
+                    except DingTalkClientError as exc:
+                        if not is_missing_dingtalk_approval_error(exc):
+                            raise
+                        template_skipped_missing += 1
+                        skipped_missing_instance_ids.append(instance_id)
+                        continue
                     raw_instance.setdefault("process_instance_id", instance_id)
                     if sync_real_instance(session, template, job, raw_instance):
                         job.success_count += 1
@@ -3683,6 +3708,8 @@ def run_approval_sync(
                     "process_code": template.process_code,
                     "processed_count": template_processed,
                     "skipped_existing_count": template_skipped_existing,
+                    "skipped_missing_count": template_skipped_missing,
+                    "missing_flow": template_missing_flow,
                     "next_cursor": template_next_cursor,
                 }
             )
@@ -3707,6 +3734,7 @@ def run_approval_sync(
         template.last_sync_at = utc_now()
 
     retry_refreshed_count = 0
+    retry_skipped_missing = 0
     if should_use_real_dingtalk():
         templates_by_id = {template.id: template for template in templates}
         # ✅ 改进：批量加载待重试审批，避免一次性加载所有数据到内存
@@ -3741,7 +3769,14 @@ def run_approval_sync(
                 handled_instance_ids.add(instance.dingtalk_instance_id)
                 job.processed_count += 1
                 retry_refreshed_count += 1
-                raw_instance = client.get_process_instance(instance.dingtalk_instance_id)
+                try:
+                    raw_instance = client.get_process_instance(instance.dingtalk_instance_id)
+                except DingTalkClientError as exc:
+                    if not is_missing_dingtalk_approval_error(exc):
+                        raise
+                    retry_skipped_missing += 1
+                    skipped_missing_instance_ids.append(instance.dingtalk_instance_id)
+                    continue
                 raw_instance.setdefault("process_instance_id", instance.dingtalk_instance_id)
                 if sync_real_instance(session, templates_by_id[instance.template_id], job, raw_instance):
                     job.success_count += 1
@@ -3753,8 +3788,11 @@ def run_approval_sync(
 
             offset += BATCH_SIZE
 
-    if retry_refreshed_count:
-        template_summaries.append({"retry_refreshed_count": retry_refreshed_count})
+    if retry_refreshed_count or retry_skipped_missing:
+        template_summaries.append({
+            "retry_refreshed_count": retry_refreshed_count,
+            "retry_skipped_missing_count": retry_skipped_missing,
+        })
     ensure_sync_job_not_canceled(session, job)
     job.next_cursor = serialize_sync_cursors(incomplete_cursors)
     if incomplete_cursors:
@@ -3763,7 +3801,15 @@ def run_approval_sync(
     else:
         job.status = SyncJobStatus.SUCCEEDED.value if job.failed_count == 0 else SyncJobStatus.FAILED.value
     job.finished_at = utc_now()
-    job.raw_summary = json.dumps({"templates": template_summaries}, ensure_ascii=False)
+    job.raw_summary = json.dumps(
+        {
+            "templates": template_summaries,
+            "skipped_missing_approval_count": len(skipped_missing_instance_ids),
+            "skipped_missing_instance_ids": skipped_missing_instance_ids[:100],
+            "skipped_missing_process_codes": sorted(set(skipped_missing_process_codes)),
+        },
+        ensure_ascii=False,
+    )
     if job.status == SyncJobStatus.SUCCEEDED.value:
         config = get_or_create_config(session)
         config.last_instance_sync_at = utc_now()
