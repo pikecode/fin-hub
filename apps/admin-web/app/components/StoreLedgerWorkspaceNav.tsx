@@ -8,6 +8,7 @@ import {
   GiftOutlined,
   ReconciliationOutlined,
   WalletOutlined,
+  NodeIndexOutlined,
 } from "@ant-design/icons";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
@@ -15,7 +16,7 @@ import type { Store } from "@fin-hub/shared-types";
 import { getMyStores } from "../lib/referenceData";
 import { confirmLeaveIfNeeded } from "./navigationGuard";
 
-type StoreLedgerTabKey = "overview" | "report" | "dividend" | "bank" | "approvals" | "revenue" | "revenueMatching" | "matching" | "kuailvPurchase";
+type StoreLedgerTabKey = "overview" | "report" | "dividend" | "bank" | "bankDetails" | "approvals" | "revenue" | "revenueMatching" | "matching" | "kuailvPurchase";
 
 interface StoreLedgerWorkspaceNavProps {
   storeId: string;
@@ -35,6 +36,7 @@ const tabItems: Array<{ key: StoreLedgerTabKey; label: string; icon: any }> = [
   { key: "report", label: "财务报表", icon: <FileTextOutlined /> },
   { key: "dividend", label: "分红管理", icon: <GiftOutlined /> },
   { key: "bank", label: "银行流水", icon: <BankOutlined /> },
+  { key: "bankDetails", label: "流水业务详情", icon: <NodeIndexOutlined /> },
   { key: "approvals", label: "审批单", icon: <FileTextOutlined /> },
   { key: "revenue", label: "营业收入", icon: <WalletOutlined /> },
   { key: "revenueMatching", label: "收入对账", icon: <ReconciliationOutlined /> },
@@ -59,6 +61,11 @@ function modulePath(storeId: string, key: StoreLedgerTabKey, period?: string) {
     const query = new URLSearchParams({ store_id: storeId });
     if (period) query.set("ledger_period", period);
     return `/bank?${query.toString()}`;
+  }
+  if (key === "bankDetails") {
+    const query = new URLSearchParams({ store_id: storeId });
+    if (period) query.set("period", period);
+    return `/store-ledgers/${storeId}/bank-details?${query.toString()}`;
   }
   if (key === "revenue") {
     const query = new URLSearchParams({ store_id: storeId });

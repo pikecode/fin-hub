@@ -13,11 +13,17 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_session
 from app.models import (
+    ApprovalInstance,
+    ApprovalTemplate,
+    Attachment,
     BankTransaction,
     ExpenseBankMatch,
+    ExpenseItem,
     Ledger,
     LedgerStatus,
     RevenueBankMatch,
+    RevenueBankMatchRecord,
+    RevenueRecord,
     SyncJob,
     SyncJobStatus,
     User,
@@ -33,6 +39,9 @@ from app.modules.auth.router import audit_actor, get_current_user
 from app.modules.common import paginate
 from app.schemas import (
     ApiEnvelope,
+    BankBusinessExpenseRead,
+    BankBusinessRevenueRead,
+    BankBusinessRevenueRecordRead,
     BankImportPreviewResult,
     BankImportPreviewRow,
     BankImportResult,
@@ -42,9 +51,11 @@ from app.schemas import (
     BankTransactionBatchCreateResult,
     BankTransactionBatchDeleteRequest,
     BankTransactionBatchDeleteResult,
+    BankTransactionBusinessDetailRead,
     BankTransactionCreate,
     BankTransactionRead,
     BankTransactionUpdate,
+    AttachmentRead,
     Page,
 )
 
@@ -145,6 +156,102 @@ def list_bank_transactions(
         query = query.where(BankTransaction.special_type.is_(None))
     items, total = paginate(session, query, page, page_size)
     return ApiEnvelope(data=Page(items=items, total=total, page=page, page_size=page_size))
+
+
+SPECIAL_TYPE_LABELS = {
+    "current_account": "往来款",
+    "shareholder_dividend": "股东分红",
+    "shareholder_capital": "股东注资",
+    "other_income_expense": "其他收支",
+}
+
+
+@router.get("/{transaction_id}/business-detail", response_model=ApiEnvelope[BankTransactionBusinessDetailRead])
+def bank_transaction_business_detail(
+    transaction_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> ApiEnvelope[BankTransactionBusinessDetailRead]:
+    ensure_permission(session, current_user, "reconciliation.view")
+    transaction = session.get(BankTransaction, transaction_id)
+    if transaction is None:
+        raise HTTPException(status_code=404, detail="Bank transaction not found")
+    ensure_store_access(session, current_user, transaction.store_id)
+
+    expense_matches = list(session.scalars(select(ExpenseBankMatch).where(
+        ExpenseBankMatch.bank_transaction_id == transaction.id,
+        ExpenseBankMatch.status == "confirmed",
+    )))
+    expense_ids = [item.expense_item_id for item in expense_matches]
+    expenses = list(session.scalars(select(ExpenseItem).where(ExpenseItem.id.in_(expense_ids)))) if expense_ids else []
+    expense_by_id = {item.id: item for item in expenses}
+    approval_ids = {item.approval_instance_id for item in expenses if item.approval_instance_id}
+    approvals = list(session.scalars(select(ApprovalInstance).where(ApprovalInstance.id.in_(approval_ids)))) if approval_ids else []
+    approval_by_id = {item.id: item for item in approvals}
+    template_ids = {item.template_id for item in approvals}
+    templates = list(session.scalars(select(ApprovalTemplate).where(ApprovalTemplate.id.in_(template_ids)))) if template_ids else []
+    template_by_id = {item.id: item for item in templates}
+    approval_totals: dict[str, Decimal] = {}
+    for item in expenses:
+        if item.approval_instance_id:
+            approval_totals[item.approval_instance_id] = approval_totals.get(item.approval_instance_id, Decimal("0.00")) + Decimal(item.amount)
+    attachment_rows = list(session.scalars(select(Attachment).where(
+        Attachment.resource_type == "expense_item",
+        Attachment.resource_id.in_(expense_ids),
+    ))) if expense_ids else []
+    attachments_by_item: dict[str, list[Attachment]] = {}
+    for attachment in attachment_rows:
+        attachments_by_item.setdefault(attachment.resource_id, []).append(attachment)
+    expense_rows = []
+    for match in expense_matches:
+        item = expense_by_id.get(match.expense_item_id)
+        if item is None:
+            continue
+        approval = approval_by_id.get(item.approval_instance_id or "")
+        expense_rows.append(BankBusinessExpenseRead(
+            expense_item_id=item.id,
+            amount=item.amount,
+            approval_total_amount=approval_totals.get(item.approval_instance_id or "", item.amount),
+            expense_date=item.expense_date,
+            description=item.description,
+            category_l1=item.category_l1,
+            category_l2=item.category_l2,
+            supplier_name=item.supplier_name,
+            payee_name=item.payee_name,
+            payment_status=item.payment_status,
+            approval_no=approval.approval_no if approval else None,
+            applicant_name=approval.applicant_name if approval else None,
+            submit_at=approval.submit_at if approval else None,
+            approved_at=approval.approved_at if approval else None,
+            template_name=template_by_id.get(approval.template_id).name if approval and approval.template_id in template_by_id else None,
+            attachments=[AttachmentRead.model_validate(attachment) for attachment in attachments_by_item.get(item.id, [])],
+        ))
+
+    revenue_matches = list(session.scalars(select(RevenueBankMatch).where(
+        RevenueBankMatch.bank_transaction_id == transaction.id,
+        RevenueBankMatch.status == "confirmed",
+    )))
+    revenue_rows = []
+    for match in revenue_matches:
+        record_ids = session.scalars(select(RevenueBankMatchRecord.revenue_record_id).where(
+            RevenueBankMatchRecord.revenue_bank_match_id == match.id,
+        )).all()
+        records = list(session.scalars(select(RevenueRecord).where(RevenueRecord.id.in_(record_ids)).order_by(RevenueRecord.revenue_date.asc()))) if record_ids else []
+        revenue_rows.append(BankBusinessRevenueRead(
+            match_id=match.id,
+            channel=match.channel,
+            revenue_start_date=match.revenue_start_date,
+            revenue_end_date=match.revenue_end_date,
+            amount=match.amount,
+            records=[BankBusinessRevenueRecordRead.model_validate(record) for record in records],
+        ))
+    return ApiEnvelope(data=BankTransactionBusinessDetailRead(
+        transaction=BankTransactionRead.model_validate(transaction),
+        special_label=SPECIAL_TYPE_LABELS.get(transaction.special_type or ""),
+        remark=transaction.summary,
+        expenses=expense_rows,
+        revenues=revenue_rows,
+    ))
 
 
 @router.post("", response_model=ApiEnvelope[BankTransactionRead], status_code=201)

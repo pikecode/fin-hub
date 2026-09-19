@@ -488,6 +488,51 @@ export interface BankTransaction {
   updated_at: string;
 }
 
+export interface BankBusinessExpense {
+  expense_item_id: string;
+  amount: string;
+  approval_total_amount: string;
+  expense_date?: string | null;
+  description: string;
+  category_l1?: string | null;
+  category_l2?: string | null;
+  supplier_name?: string | null;
+  payee_name?: string | null;
+  payment_status: string;
+  approval_no?: string | null;
+  applicant_name?: string | null;
+  submit_at?: string | null;
+  approved_at?: string | null;
+  template_name?: string | null;
+  attachments: Attachment[];
+}
+
+export interface BankBusinessRevenueRecord {
+  id: string;
+  revenue_date: string;
+  channel: string;
+  gross_amount: string;
+  net_amount: string;
+  fee_amount: string;
+}
+
+export interface BankBusinessRevenue {
+  match_id: string;
+  channel: string;
+  revenue_start_date: string;
+  revenue_end_date: string;
+  amount: string;
+  records: BankBusinessRevenueRecord[];
+}
+
+export interface BankTransactionBusinessDetail {
+  transaction: BankTransaction;
+  special_label?: string | null;
+  remark?: string | null;
+  expenses: BankBusinessExpense[];
+  revenues: BankBusinessRevenue[];
+}
+
 export interface BankTransactionCreate {
   store_id: string;
   ledger_period?: string | null;

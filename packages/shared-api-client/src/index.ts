@@ -21,6 +21,7 @@ import type {
   BankImportResult,
   BankImportRollbackResult,
   BankTransaction,
+  BankTransactionBusinessDetail,
   BankTransactionBatchCreateRequest,
   BankTransactionBatchCreateResult,
   BankTransactionCreate,
@@ -440,6 +441,8 @@ export function createApiClient(options: ApiClientOptions) {
     },
     bankTransactions: {
       list: (params = "") => request<Page<BankTransaction>>(`/api/bank-transactions${params}`),
+      businessDetail: (id: string) =>
+        request<BankTransactionBusinessDetail>(`/api/bank-transactions/${encodeURIComponent(id)}/business-detail`),
       create: (payload: BankTransactionCreate) =>
         request<BankTransaction>("/api/bank-transactions", {
           method: "POST",

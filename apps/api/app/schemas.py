@@ -600,6 +600,53 @@ class BankTransactionRead(BankTransactionCreate):
     updated_at: datetime
 
 
+class BankBusinessExpenseRead(BaseModel):
+    expense_item_id: str
+    amount: Decimal
+    approval_total_amount: Decimal
+    expense_date: date | None
+    description: str
+    category_l1: str | None
+    category_l2: str | None
+    supplier_name: str | None
+    payee_name: str | None
+    payment_status: str
+    approval_no: str | None
+    applicant_name: str | None
+    submit_at: datetime | None
+    approved_at: datetime | None
+    template_name: str | None
+    attachments: list["AttachmentRead"] = Field(default_factory=list)
+
+
+class BankBusinessRevenueRecordRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    revenue_date: date
+    channel: str
+    gross_amount: Decimal
+    net_amount: Decimal
+    fee_amount: Decimal
+
+
+class BankBusinessRevenueRead(BaseModel):
+    match_id: str
+    channel: str
+    revenue_start_date: date
+    revenue_end_date: date
+    amount: Decimal
+    records: list[BankBusinessRevenueRecordRead] = Field(default_factory=list)
+
+
+class BankTransactionBusinessDetailRead(BaseModel):
+    transaction: BankTransactionRead
+    special_label: str | None = None
+    remark: str | None = None
+    expenses: list[BankBusinessExpenseRead] = Field(default_factory=list)
+    revenues: list[BankBusinessRevenueRead] = Field(default_factory=list)
+
+
 class BankBalanceCorrectionCreate(BaseModel):
     store_id: str
     correction_date: date
