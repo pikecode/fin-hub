@@ -494,6 +494,70 @@ def test_list_approval_instances_filters_by_store(client: TestClient, session) -
     assert [item["store_id"] for item in items] == [store_a]
 
 
+def test_payroll_store_name_can_resolve_salary_group_suffix(client: TestClient, session) -> None:
+    store_id = client.post("/api/stores", json={"name": "菌山集中山华丰汇店"}).json()["data"]["id"]
+    template = ApprovalTemplate(process_code="PROC-PAYROLL-STORE-NAME", name="发薪审批-薪酬", is_enabled=True)
+    session.add(template)
+    session.flush()
+    session.add_all(
+        [
+            TemplateFieldMapping(
+                template_id=template.id,
+                standard_field="store",
+                source_field_id="group",
+                source_field_name="发薪薪资组",
+                source_path="field:group",
+            ),
+            TemplateFieldMapping(
+                template_id=template.id,
+                standard_field="expense_date",
+                source_field_id="month",
+                source_field_name="发薪月",
+                source_path="field:month",
+            ),
+        ]
+    )
+    job = SyncJob(job_type="dingtalk_approval_reparse", status="running", started_at=utc_now())
+    session.add(job)
+    session.flush()
+
+    assert sync_real_instance(
+        session,
+        template,
+        job,
+        {
+            "process_instance_id": "payroll-approval-store-name",
+            "business_id": "202609040158000001",
+            "title": "胡可明提交的发薪审批-薪酬",
+            "result": "agree",
+            "create_time": "2026-09-04 01:58:48",
+            "form_component_values": [
+                {"id": "group", "name": "发薪薪资组", "value": "[\"菌山集中山华丰汇\"]"},
+                {"id": "month", "name": "发薪月", "value": "2026-08"},
+                {
+                    "id": "table",
+                    "name": "发薪审批表单信息",
+                    "value": json.dumps(
+                        [
+                            {
+                                "rowValue": [
+                                    {"key": "name", "label": "薪资项目", "value": "实发薪资"},
+                                    {"key": "value", "label": "合计值", "value": "45678.90"},
+                                ]
+                            }
+                        ],
+                        ensure_ascii=False,
+                    ),
+                },
+            ],
+        },
+    ) is True
+    session.flush()
+
+    approval = session.query(ApprovalInstance).filter_by(dingtalk_instance_id="payroll-approval-store-name").one()
+    assert approval.store_id == store_id
+
+
 def test_payroll_approval_reparse_uses_salary_group_and_month(client: TestClient, session) -> None:
     store_id = client.post("/api/stores", json={"name": "菌山集阳江新达城店"}).json()["data"]["id"]
     template = ApprovalTemplate(

@@ -1349,6 +1349,33 @@ def last_department_name(value: str | None) -> str | None:
     return parts[-1] if parts else value.strip()
 
 
+def store_name_candidates(value: str) -> list[str]:
+    candidates: list[str] = []
+
+    def add(candidate: str | None) -> None:
+        if not candidate:
+            return
+        normalized = candidate.strip()
+        if normalized and normalized not in candidates:
+            candidates.append(normalized)
+
+    add(value)
+    stripped = value.strip()
+    if stripped.endswith("薪资组"):
+        add(stripped.removesuffix("薪资组"))
+    for candidate in list(candidates):
+        add(candidate.replace("店店", "店"))
+    for candidate in list(candidates):
+        if candidate.endswith("店"):
+            add(candidate.removesuffix("店"))
+        else:
+            add(f"{candidate}店")
+    for candidate in list(candidates):
+        if "海南" in candidate:
+            add(candidate.replace("海南", "海口"))
+    return candidates
+
+
 def department_path(value: dict[str, Any], parent_path: str) -> str:
     name = str(value.get("name") or value.get("dept_name") or value.get("deptName") or "")
     return f"{parent_path}-{name}" if parent_path else name
@@ -2903,17 +2930,19 @@ def create_dingtalk_attachment_placeholders(
 def resolve_store(session: Session, value: str | None) -> Store | None:
     if value:
         stripped = value.strip()
-        store = session.scalar(select(Store).where(Store.name == value))
-        if store is not None:
-            return store
+        for candidate in store_name_candidates(stripped):
+            store = session.scalar(select(Store).where(Store.name == candidate))
+            if store is not None:
+                return store
         store = session.scalar(select(Store).where(Store.dingtalk_dept_id == stripped))
         if store is not None:
             return store
         last_name = last_department_name(stripped)
         if last_name:
-            store = session.scalar(select(Store).where(Store.name == last_name))
-            if store is not None:
-                return store
+            for candidate in store_name_candidates(last_name):
+                store = session.scalar(select(Store).where(Store.name == candidate))
+                if store is not None:
+                    return store
     return None
 
 
