@@ -562,6 +562,18 @@ def test_payroll_approval_reparse_uses_salary_group_and_month(client: TestClient
                                 {"key": "value", "label": "合计值", "value": "25930"},
                             ]
                         },
+                        {
+                            "rowValue": [
+                                {"key": "name", "label": "薪资项目", "value": "开户行"},
+                                {"key": "value", "label": "合计值", "value": "12345678910111214000"},
+                            ]
+                        },
+                        {
+                            "rowValue": [
+                                {"key": "name", "label": "薪资项目", "value": "实发薪资"},
+                                {"key": "value", "label": "合计值", "value": "60606.69"},
+                            ]
+                        },
                     ],
                     ensure_ascii=False,
                 ),
@@ -579,7 +591,7 @@ def test_payroll_approval_reparse_uses_salary_group_and_month(client: TestClient
     assert expense.store_id == store_id
     assert expense.ledger_period == "2026-08"
     assert expense.expense_date.isoformat() == "2026-08-01"
-    assert expense.amount == Decimal("58880.00")
+    assert expense.amount == Decimal("60606.69")
 
 
 def test_list_approval_instances_orders_by_submit_time_desc(client: TestClient, session) -> None:

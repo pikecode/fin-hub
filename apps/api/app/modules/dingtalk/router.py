@@ -2571,9 +2571,7 @@ def parse_decimal(value: Any) -> Decimal | None:
     if value in (None, ""):
         return None
     if isinstance(value, list):
-        values = [parse_decimal(item) for item in value]
-        values = [item for item in values if item is not None]
-        return sum(values, Decimal("0.00")) if values else None
+        value = value[0] if value else None
     if isinstance(value, dict):
         value = value.get("value") or value.get("amount")
     try:
@@ -2664,6 +2662,23 @@ def pick_row_value(row: dict[str, Any], *names: str) -> Any:
     for key, value in row.items():
         if normalize_label(key) in expected_names:
             return value
+    return None
+
+
+def payroll_amount_from_table(value: Any) -> Decimal | None:
+    rows = decode_table_value(value)
+    preferred_items = ("实发薪资", "实发工资", "应发薪资", "应发工资", "合计定薪")
+    row_by_item = {
+        parse_text(pick_row_value(row, "薪资项目", "项目", "名称")): row
+        for row in rows
+    }
+    for item_name in preferred_items:
+        row = row_by_item.get(item_name)
+        if row is None:
+            continue
+        amount = parse_decimal(pick_row_value(row, "合计值", "金额", "值"))
+        if amount is not None:
+            return amount
     return None
 
 
@@ -2924,14 +2939,26 @@ def build_approval_parse_preview(
         or resolve_store(session, originator_dept_id)
         or resolve_store(session, originator_dept_name)
     )
-    amount = parse_decimal(
-        mapped_or_form_value(mapped, raw_instance, "amount", "汇总金额（元）", "汇总金额", "金额", "报销金额")
-    )
     description = parse_text(
         mapped_or_form_value(mapped, raw_instance, "description", "支出详情", "费用说明", "其他备注信息", "备注")
     ) or template.name
     expense_date = approval_effective_date(raw_instance, mapped)
-    table_value = mapped_or_form_value(mapped, raw_instance, "expense_table", "表格", "费用明细", "支出明细")
+    table_value = mapped_or_form_value(
+        mapped,
+        raw_instance,
+        "expense_table",
+        "表格",
+        "费用明细",
+        "支出明细",
+        "发薪审批表单信息",
+    )
+    amount = (
+        payroll_amount_from_table(table_value)
+        if template.name == "发薪审批-薪酬"
+        else parse_decimal(
+            mapped_or_form_value(mapped, raw_instance, "amount", "汇总金额（元）", "汇总金额", "金额", "报销金额")
+        )
+    )
     expense_rows = expense_rows_from_table(table_value)
     payee_account = parse_text(
         mapped_or_form_value(mapped, raw_instance, "payee_account", "收款账户", "收款账号", "账户")
@@ -3253,14 +3280,26 @@ def sync_real_instance(
         or resolve_store(session, originator_dept_id)
         or resolve_store(session, originator_dept_name)
     )
-    amount = parse_decimal(
-        mapped_or_form_value(mapped, raw_instance, "amount", "汇总金额（元）", "汇总金额", "金额", "报销金额")
-    )
     description = parse_text(
         mapped_or_form_value(mapped, raw_instance, "description", "支出详情", "费用说明", "其他备注信息", "备注")
     ) or template.name
     expense_date = approval_effective_date(raw_instance, mapped)
-    table_value = mapped_or_form_value(mapped, raw_instance, "expense_table", "表格", "费用明细", "支出明细")
+    table_value = mapped_or_form_value(
+        mapped,
+        raw_instance,
+        "expense_table",
+        "表格",
+        "费用明细",
+        "支出明细",
+        "发薪审批表单信息",
+    )
+    amount = (
+        payroll_amount_from_table(table_value)
+        if template.name == "发薪审批-薪酬"
+        else parse_decimal(
+            mapped_or_form_value(mapped, raw_instance, "amount", "汇总金额（元）", "汇总金额", "金额", "报销金额")
+        )
+    )
     expense_rows = expense_rows_from_table(table_value)
     voucher_items = [
         *parse_voucher_items(
