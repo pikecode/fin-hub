@@ -2571,7 +2571,9 @@ def parse_decimal(value: Any) -> Decimal | None:
     if value in (None, ""):
         return None
     if isinstance(value, list):
-        value = value[0] if value else None
+        values = [parse_decimal(item) for item in value]
+        values = [item for item in values if item is not None]
+        return sum(values, Decimal("0.00")) if values else None
     if isinstance(value, dict):
         value = value.get("value") or value.get("amount")
     try:
@@ -2590,8 +2592,14 @@ def parse_date(value: Any) -> datetime | None:
     parsed = DingTalkClient.parse_time(value)
     if parsed is not None:
         return parsed
+    text = str(value).strip()
+    if len(text) == 7:
+        try:
+            return datetime.fromisoformat(f"{text}-01")
+        except ValueError:
+            return None
     try:
-        return datetime.fromisoformat(str(value)[:10])
+        return datetime.fromisoformat(text[:10])
     except ValueError:
         return None
 
@@ -2599,9 +2607,24 @@ def parse_date(value: Any) -> datetime | None:
 def parse_text(value: Any) -> str | None:
     if value in (None, ""):
         return None
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.startswith("[") or stripped.startswith("{"):
+            try:
+                decoded = json.loads(stripped)
+            except ValueError:
+                return value
+            parsed = parse_text(decoded)
+            return parsed if parsed not in (None, "") else value
+        return value
     if isinstance(value, list):
-        return "、".join(str(item) for item in value)
+        parsed_items = [parse_text(item) for item in value]
+        parsed_items = [item for item in parsed_items if item]
+        return "、".join(parsed_items) if parsed_items else None
     if isinstance(value, dict):
+        nested = value.get("value")
+        if nested not in (None, ""):
+            return parse_text(nested)
         return json.dumps(value, ensure_ascii=False)
     return str(value)
 
@@ -2793,11 +2816,16 @@ def parse_voucher_items(value: Any) -> list[dict[str, str | None]]:
     return []
 
 
-def approval_effective_date(raw_instance: dict[str, Any], fallback: datetime | None = None) -> datetime | None:
+def approval_effective_date(
+    raw_instance: dict[str, Any],
+    mapped: dict[str, Any] | None = None,
+    fallback: datetime | None = None,
+) -> datetime | None:
+    mapped_values = mapped or {}
     return (
         parse_date(
             mapped_or_form_value(
-                {},
+                mapped_values,
                 raw_instance,
                 "expense_date",
                 "报销日期",
@@ -2902,7 +2930,7 @@ def build_approval_parse_preview(
     description = parse_text(
         mapped_or_form_value(mapped, raw_instance, "description", "支出详情", "费用说明", "其他备注信息", "备注")
     ) or template.name
-    expense_date = approval_effective_date(raw_instance)
+    expense_date = approval_effective_date(raw_instance, mapped)
     table_value = mapped_or_form_value(mapped, raw_instance, "expense_table", "表格", "费用明细", "支出明细")
     expense_rows = expense_rows_from_table(table_value)
     payee_account = parse_text(
@@ -3231,7 +3259,7 @@ def sync_real_instance(
     description = parse_text(
         mapped_or_form_value(mapped, raw_instance, "description", "支出详情", "费用说明", "其他备注信息", "备注")
     ) or template.name
-    expense_date = approval_effective_date(raw_instance)
+    expense_date = approval_effective_date(raw_instance, mapped)
     table_value = mapped_or_form_value(mapped, raw_instance, "expense_table", "表格", "费用明细", "支出明细")
     expense_rows = expense_rows_from_table(table_value)
     voucher_items = [

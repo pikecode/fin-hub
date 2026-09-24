@@ -1,5 +1,6 @@
 import json
 from datetime import datetime, timedelta
+from decimal import Decimal
 
 from fastapi.testclient import TestClient
 from sqlalchemy import select
@@ -21,6 +22,7 @@ from app.models import (
     utc_now,
 )
 from app.modules.dingtalk.client import DingTalkClient, DingTalkClientError, DingTalkCredentials
+from app.modules.dingtalk.router import sync_real_instance
 
 
 def enable_synced_templates(client: TestClient) -> list[dict]:
@@ -490,6 +492,94 @@ def test_list_approval_instances_filters_by_store(client: TestClient, session) -
     assert response.status_code == 200
     items = response.json()["data"]["items"]
     assert [item["store_id"] for item in items] == [store_a]
+
+
+def test_payroll_approval_reparse_uses_salary_group_and_month(client: TestClient, session) -> None:
+    store_id = client.post("/api/stores", json={"name": "菌山集阳江新达城店"}).json()["data"]["id"]
+    template = ApprovalTemplate(
+        process_code="PROC-PAYROLL-PARSE",
+        name="发薪审批-薪酬",
+        is_enabled=True,
+    )
+    session.add(template)
+    session.flush()
+    session.add_all(
+        [
+            TemplateFieldMapping(
+                template_id=template.id,
+                standard_field="store",
+                display_label="门店/部门",
+                source_field_id="group",
+                source_field_name="发薪薪资组",
+                source_path="field:group",
+            ),
+            TemplateFieldMapping(
+                template_id=template.id,
+                standard_field="expense_date",
+                display_label="业务日期",
+                source_field_id="month",
+                source_field_name="发薪月",
+                source_path="field:month",
+            ),
+            TemplateFieldMapping(
+                template_id=template.id,
+                standard_field="amount",
+                display_label="单据总金额",
+                source_field_name="发薪审批表单信息.合计值",
+                source_path="table:table:value",
+            ),
+        ]
+    )
+    job = SyncJob(job_type="dingtalk_approval_reparse", status="running", started_at=utc_now())
+    session.add(job)
+    session.flush()
+
+    raw_instance = {
+        "process_instance_id": "payroll-approval-202608",
+        "business_id": "202609040147000001",
+        "title": "胡可明提交的发薪审批-薪酬",
+        "result": "agree",
+        "originator_dept_name": "深圳蘑说餐饮管理有限公司",
+        "create_time": "2026-09-04 01:47:57",
+        "finish_time": "2026-09-06 19:51:35",
+        "form_component_values": [
+            {"id": "group", "name": "发薪薪资组", "value": "[\"菌山集阳江新达城店\"]"},
+            {"id": "month", "name": "发薪月", "value": "2026-08"},
+            {
+                "id": "table",
+                "name": "发薪审批表单信息",
+                "value": json.dumps(
+                    [
+                        {
+                            "rowValue": [
+                                {"key": "name", "label": "薪资项目", "value": "基本工资"},
+                                {"key": "value", "label": "合计值", "value": "32950"},
+                            ]
+                        },
+                        {
+                            "rowValue": [
+                                {"key": "name", "label": "薪资项目", "value": "岗位工资"},
+                                {"key": "value", "label": "合计值", "value": "25930"},
+                            ]
+                        },
+                    ],
+                    ensure_ascii=False,
+                ),
+            },
+        ],
+    }
+
+    assert sync_real_instance(session, template, job, raw_instance) is True
+    session.flush()
+
+    approval = session.query(ApprovalInstance).filter_by(dingtalk_instance_id="payroll-approval-202608").one()
+    expense = session.query(ExpenseItem).filter_by(approval_instance_id=approval.id).one()
+    assert approval.store_id == store_id
+    assert approval.parse_status == "parsed"
+    assert expense.store_id == store_id
+    assert expense.ledger_period == "2026-08"
+    assert expense.expense_date.isoformat() == "2026-08-01"
+    assert expense.amount == Decimal("58880.00")
 
 
 def test_list_approval_instances_orders_by_submit_time_desc(client: TestClient, session) -> None:
