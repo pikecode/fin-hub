@@ -307,6 +307,117 @@ def test_store_ledger_workspace_deduplicates_multiple_matches_for_one_expense_de
     assert september_workspace["metrics"]["expense_amount"] == "0.00"
 
 
+def test_store_ledger_workspace_counts_all_approval_lines_when_whole_approval_is_matched(
+    client: TestClient,
+    session: Session,
+) -> None:
+    store_id = client.post("/api/stores", json={"name": "菌山集整单分类店"}).json()["data"]["id"]
+    client.post("/api/ledgers", json={"store_id": store_id, "period": "2026-08"})
+    food_category = ExpenseCategory(name="食材成本", parent_id=None, sort_order=1)
+    session.add(food_category)
+    session.flush()
+    session.add_all(
+        [
+            ExpenseCategory(name="肥牛", parent_id=food_category.id, sort_order=1),
+            ExpenseCategory(name="干货", parent_id=food_category.id, sort_order=2),
+            ExpenseCategory(name="豆腐、卤豆腐、午餐肉", parent_id=food_category.id, sort_order=3),
+            ExpenseCategory(name="甜品区", parent_id=food_category.id, sort_order=4),
+        ]
+    )
+    session.add(ApprovalTemplate(id="template-whole-match", process_code="PROC-WHOLE", name="整单匹配模板"))
+    session.flush()
+    approval = ApprovalInstance(
+        template_id="template-whole-match",
+        dingtalk_instance_id="whole-approval-001",
+        approval_no="WHOLE-001",
+        store_id=store_id,
+        approval_status="agree",
+        submit_at=datetime(2026, 8, 24, 11, 39, 0),
+    )
+    session.add(approval)
+    session.flush()
+    line_items = [
+        ExpenseItem(
+            store_id=store_id,
+            ledger_period="2026-08",
+            expense_date=datetime(2026, 8, 24).date(),
+            description="肥牛",
+            amount=Decimal("500.00"),
+            category_l1="食材成本",
+            category_l2="肥牛",
+            approval_instance_id=approval.id,
+            source="dingtalk",
+            source_document_id="whole-approval-001:line-1",
+        ),
+        ExpenseItem(
+            store_id=store_id,
+            ledger_period="2026-08",
+            expense_date=datetime(2026, 8, 24).date(),
+            description="干货",
+            amount=Decimal("2714.00"),
+            category_l1="食材成本",
+            category_l2="干货",
+            approval_instance_id=approval.id,
+            source="dingtalk",
+            source_document_id="whole-approval-001:line-2",
+        ),
+        ExpenseItem(
+            store_id=store_id,
+            ledger_period="2026-08",
+            expense_date=datetime(2026, 8, 24).date(),
+            description="豆腐",
+            amount=Decimal("78.00"),
+            category_l1="食材成本",
+            category_l2="豆腐、卤豆腐、午餐肉",
+            approval_instance_id=approval.id,
+            source="dingtalk",
+            source_document_id="whole-approval-001:line-3",
+        ),
+        ExpenseItem(
+            store_id=store_id,
+            ledger_period="2026-08",
+            expense_date=datetime(2026, 8, 24).date(),
+            description="甜品",
+            amount=Decimal("184.00"),
+            category_l1="食材成本",
+            category_l2="甜品区",
+            approval_instance_id=approval.id,
+            source="dingtalk",
+            source_document_id="whole-approval-001:line-4",
+        ),
+    ]
+    bank_transaction = BankTransaction(
+        store_id=store_id,
+        ledger_period="2026-08",
+        occurred_at=datetime(2026, 8, 25, 10, 30, 0),
+        direction="expense",
+        amount=Decimal("3476.00"),
+        matched_amount=Decimal("3476.00"),
+        summary="整单货款",
+    )
+    session.add_all([*line_items, bank_transaction])
+    session.flush()
+    session.add(
+        ExpenseBankMatch(
+            expense_item_id=line_items[-1].id,
+            bank_transaction_id=bank_transaction.id,
+            amount=Decimal("3476.00"),
+            accounting_period="2026-08",
+            status=MatchStatus.CONFIRMED.value,
+        )
+    )
+    session.commit()
+
+    workspace = client.get(f"/api/store-ledgers/{store_id}/workspace?period=2026-08").json()["data"]
+
+    assert workspace["metrics"]["expense_amount"] == "3476.00"
+    summary = {item["name"]: item for item in workspace["metrics"]["expense_category_summary"]}
+    assert summary["食材成本 / 肥牛"]["amount"] == "500.00"
+    assert summary["食材成本 / 干货"]["amount"] == "2714.00"
+    assert summary["食材成本 / 豆腐、卤豆腐、午餐肉"]["amount"] == "78.00"
+    assert summary["食材成本 / 甜品区"]["amount"] == "184.00"
+
+
 def test_store_ledger_workspace_calculates_gross_profit_from_food_cost(
     client: TestClient,
     session: Session,

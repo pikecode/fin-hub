@@ -90,24 +90,73 @@ def dedupe_expense_rows(rows):
     return unique_rows
 
 
-def calculate_store_ledger_profit(session: Session, store_id: str, period: str) -> Decimal:
-    """Return the same net profit shown by the store-ledger report."""
-    income_amount = decimal_sum(session.scalar(select(func.sum(RevenueRecord.gross_amount)).where(
-        RevenueRecord.store_id == store_id, RevenueRecord.ledger_period == period,
-    )))
-    confirmed_expense_rows = session.execute(
-        select(ExpenseItem.id, ExpenseItem.category_l1, ExpenseItem.category_l2, ExpenseItem.amount)
+def confirmed_accounting_expense_rows(session: Session, store_id: str, period: str):
+    """Return expense detail rows for approvals confirmed into the accounting period.
+
+    A bank transaction can be matched to a single line while representing the
+    whole approval amount. Reports should still classify all details under that
+    confirmed approval, otherwise category totals only reflect the line that
+    owns the match record.
+    """
+    confirmed_approval_ids = [
+        row[0]
+        for row in session.execute(
+            select(ApprovalInstance.id)
+            .join(ExpenseItem, approval_expense_join_condition())
+            .join(ExpenseBankMatch, ExpenseBankMatch.expense_item_id == ExpenseItem.id)
+            .where(
+                ExpenseItem.store_id == store_id,
+                ApprovalInstance.store_id == store_id,
+                ExpenseBankMatch.status == MatchStatus.CONFIRMED.value,
+                ExpenseBankMatch.accounting_period == period,
+                ExpenseItem.source != REVENUE_FEE_SOURCE,
+            )
+            .distinct()
+        ).all()
+    ]
+
+    approval_rows = []
+    if confirmed_approval_ids:
+        approval_rows = session.execute(
+            select(
+                ExpenseItem.id,
+                ExpenseItem.category_l1,
+                ExpenseItem.category_l2,
+                ExpenseItem.amount,
+            )
+            .join(ApprovalInstance, approval_expense_join_condition())
+            .where(
+                ApprovalInstance.id.in_(confirmed_approval_ids),
+                ExpenseItem.store_id == store_id,
+                ApprovalInstance.store_id == store_id,
+                ExpenseItem.source != REVENUE_FEE_SOURCE,
+            )
+        ).all()
+
+    direct_rows = session.execute(
+        select(
+            ExpenseItem.id,
+            ExpenseItem.category_l1,
+            ExpenseItem.category_l2,
+            ExpenseItem.amount,
+        )
         .join(ExpenseBankMatch, ExpenseBankMatch.expense_item_id == ExpenseItem.id)
-        .join(ApprovalInstance, approval_expense_join_condition())
         .where(
             ExpenseItem.store_id == store_id,
-            ApprovalInstance.store_id == store_id,
             ExpenseBankMatch.status == MatchStatus.CONFIRMED.value,
             ExpenseBankMatch.accounting_period == period,
             ExpenseItem.source != REVENUE_FEE_SOURCE,
         )
     ).all()
-    confirmed_expense_rows = dedupe_expense_rows(confirmed_expense_rows)
+    return dedupe_expense_rows([*approval_rows, *direct_rows])
+
+
+def calculate_store_ledger_profit(session: Session, store_id: str, period: str) -> Decimal:
+    """Return the same net profit shown by the store-ledger report."""
+    income_amount = decimal_sum(session.scalar(select(func.sum(RevenueRecord.gross_amount)).where(
+        RevenueRecord.store_id == store_id, RevenueRecord.ledger_period == period,
+    )))
+    confirmed_expense_rows = confirmed_accounting_expense_rows(session, store_id, period)
     confirmed_expense_rows = [row for row in confirmed_expense_rows if not is_prepaid_food_cost(row[1], row[2])]
     revenue_fee_rows = session.execute(select(ExpenseItem.amount).where(
         ExpenseItem.store_id == store_id, ExpenseItem.ledger_period == period, ExpenseItem.source == REVENUE_FEE_SOURCE,
@@ -222,24 +271,7 @@ def read_store_ledger_workspace(
             )
         )
     )
-    confirmed_expense_rows = session.execute(
-        select(
-            ExpenseItem.id,
-            ExpenseItem.category_l1,
-            ExpenseItem.category_l2,
-            ExpenseItem.amount,
-        )
-        .join(ExpenseBankMatch, ExpenseBankMatch.expense_item_id == ExpenseItem.id)
-        .join(ApprovalInstance, approval_expense_join_condition())
-        .where(
-            ExpenseItem.store_id == store_id,
-            ApprovalInstance.store_id == store_id,
-            ExpenseBankMatch.status == MatchStatus.CONFIRMED.value,
-            ExpenseBankMatch.accounting_period == selected_period,
-            ExpenseItem.source != REVENUE_FEE_SOURCE,
-        )
-    ).all()
-    confirmed_expense_rows = dedupe_expense_rows(confirmed_expense_rows)
+    confirmed_expense_rows = confirmed_accounting_expense_rows(session, store_id, selected_period)
     confirmed_expense_rows = [row for row in confirmed_expense_rows if not is_prepaid_food_cost(row[1], row[2])]
     revenue_fee_rows = session.execute(
         select(
