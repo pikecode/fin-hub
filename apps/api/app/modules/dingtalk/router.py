@@ -1378,6 +1378,24 @@ def store_name_candidates(value: str) -> list[str]:
     for candidate in list(candidates):
         if "海南" in candidate:
             add(candidate.replace("海南", "海口"))
+    for candidate in list(candidates):
+        if candidate.startswith("蘑说江宁"):
+            add(candidate.replace("蘑说江宁", "蘑说南京江宁", 1))
+        if candidate.startswith("蘑说六合"):
+            add(candidate.replace("蘑说六合", "蘑说南京六合", 1))
+        if candidate.startswith("蘑说沐阳"):
+            add(candidate.replace("蘑说沐阳", "蘑说宿迁沭阳", 1))
+            add(candidate.replace("沐阳", "沭阳"))
+        if candidate.startswith("蘑说沭阳"):
+            add(candidate.replace("蘑说沭阳", "蘑说宿迁沭阳", 1))
+        if "海口阳光城" in candidate:
+            add(candidate.replace("海口阳光城", "海口友谊阳光城"))
+        if candidate.startswith("蘑说南海"):
+            add(candidate.replace("蘑说南海", "蘑说佛山南海", 1))
+        if candidate.startswith("蘑说佛山金海"):
+            add(candidate.replace("蘑说", "菌山集", 1))
+        if candidate.startswith("菌山集万民汇"):
+            add(candidate.replace("菌山集万民汇", "菌山集中山万民汇", 1))
     return candidates
 
 

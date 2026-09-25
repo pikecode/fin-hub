@@ -905,6 +905,32 @@ def test_resolve_store_by_dingtalk_department_snapshot_when_store_name_is_old(
 
     assert resolve_store(session, "蘑说南京江宁万达店").id == store.id
     assert resolve_store(session, "门店运营部-江苏区-蘑说南京江宁万达店").id == store.id
+    assert resolve_store(session, "门店运营部-江苏区-蘑说江宁万达店").id == store.id
+
+
+def test_resolve_store_with_known_historical_dingtalk_store_names(
+    client: TestClient,
+    session,
+) -> None:
+    from app.modules.dingtalk.router import resolve_store
+
+    stores = [
+        Store(name="蘑说南京六合龙湖店", dingtalk_dept_id="dept-liuhe"),
+        Store(name="蘑说宿迁沭阳万达店", dingtalk_dept_id="dept-shuyang"),
+        Store(name="蘑说海口友谊阳光城店", dingtalk_dept_id="dept-yangguang"),
+        Store(name="蘑说佛山南海万达店", dingtalk_dept_id="dept-nanhai"),
+        Store(name="菌山集佛山金海店", dingtalk_dept_id="dept-jinhai"),
+        Store(name="菌山集中山万民汇店", dingtalk_dept_id="dept-wanminhui"),
+    ]
+    session.add_all(stores)
+    session.commit()
+
+    assert resolve_store(session, "蘑说六合龙湖店").name == "蘑说南京六合龙湖店"
+    assert resolve_store(session, "蘑说沐阳万达店").name == "蘑说宿迁沭阳万达店"
+    assert resolve_store(session, "蘑说海口阳光城店").name == "蘑说海口友谊阳光城店"
+    assert resolve_store(session, "蘑说南海万达店").name == "蘑说佛山南海万达店"
+    assert resolve_store(session, "蘑说佛山金海店店薪资组").name == "菌山集佛山金海店"
+    assert resolve_store(session, "菌山集万民汇").name == "菌山集中山万民汇店"
 
 
 def test_approval_instances_resolve_department_name_from_originator_dept_id(
