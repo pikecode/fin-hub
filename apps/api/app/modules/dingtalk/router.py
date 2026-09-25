@@ -7,7 +7,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -474,10 +474,15 @@ def sync_departments_to_stores_core(session: Session) -> DingTalkDepartmentSyncR
             session.add(store)
             created_count += 1
         else:
-            # ✅ 步骤 3: 已存在的门店，只更新 dept_id，不改名称
-            # （避免改变用户手动维护的门店名称）
+            changed = False
+            # ✅ 步骤 3: 已存在的门店以钉钉 dept_id 为唯一来源同步基础信息
             if store.dingtalk_dept_id != department.dept_id:
                 store.dingtalk_dept_id = department.dept_id
+                changed = True
+            if store.name != department.name:
+                store.name = department.name
+                changed = True
+            if changed:
                 updated_count += 1
             else:
                 skipped_count += 1
@@ -2927,6 +2932,35 @@ def create_dingtalk_attachment_placeholders(
         )
 
 
+def store_from_dingtalk_department(session: Session, value: str | None) -> Store | None:
+    if not value:
+        return None
+    stripped = value.strip()
+    if not stripped:
+        return None
+    department = session.scalar(
+        select(DingTalkDepartmentModel)
+        .where(
+            DingTalkDepartmentModel.is_active.is_(True),
+            DingTalkDepartmentModel.is_store_candidate.is_(True),
+            or_(
+                DingTalkDepartmentModel.dept_id == stripped,
+                DingTalkDepartmentModel.name == stripped,
+                DingTalkDepartmentModel.path == stripped,
+            ),
+        )
+        .order_by(DingTalkDepartmentModel.store_id.is_(None), DingTalkDepartmentModel.depth.desc())
+        .limit(1)
+    )
+    if department is None:
+        return None
+    if department.store_id:
+        store = session.get(Store, department.store_id)
+        if store is not None:
+            return store
+    return session.scalar(select(Store).where(Store.dingtalk_dept_id == department.dept_id))
+
+
 def resolve_store(session: Session, value: str | None) -> Store | None:
     if value:
         stripped = value.strip()
@@ -2934,13 +2968,22 @@ def resolve_store(session: Session, value: str | None) -> Store | None:
             store = session.scalar(select(Store).where(Store.name == candidate))
             if store is not None:
                 return store
+            store = store_from_dingtalk_department(session, candidate)
+            if store is not None:
+                return store
         store = session.scalar(select(Store).where(Store.dingtalk_dept_id == stripped))
+        if store is not None:
+            return store
+        store = store_from_dingtalk_department(session, stripped)
         if store is not None:
             return store
         last_name = last_department_name(stripped)
         if last_name:
             for candidate in store_name_candidates(last_name):
                 store = session.scalar(select(Store).where(Store.name == candidate))
+                if store is not None:
+                    return store
+                store = store_from_dingtalk_department(session, candidate)
                 if store is not None:
                     return store
     return None

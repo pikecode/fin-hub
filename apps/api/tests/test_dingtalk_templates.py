@@ -17,6 +17,7 @@ from app.models import (
     ExpenseBankMatch,
     ExpenseItem,
     MatchStatus,
+    Store,
     SyncJob,
     TemplateFieldMapping,
     utc_now,
@@ -877,6 +878,33 @@ def test_template_field_candidates_from_snapshot_and_instances(client: TestClien
     assert labels["表格.支出详情"]["sample_value"] == "灭火毯"
     assert labels["表格.小项金额"]["source_field_id"] == "field-line-amount"
     assert [item["source_field_name"] for item in candidates].count("金额") == 1
+
+
+def test_resolve_store_by_dingtalk_department_snapshot_when_store_name_is_old(
+    client: TestClient,
+    session,
+) -> None:
+    from app.modules.dingtalk.router import resolve_store
+
+    store = Store(name="蘑说江宁万达店", dingtalk_dept_id="1118435517")
+    session.add(store)
+    session.flush()
+    session.add(
+        DingTalkDepartment(
+            dept_id="1118435517",
+            parent_id="1",
+            name="蘑说南京江宁万达店",
+            path="门店运营部-江苏区-蘑说南京江宁万达店",
+            depth=3,
+            is_store_candidate=True,
+            is_active=True,
+            store_id=store.id,
+        )
+    )
+    session.commit()
+
+    assert resolve_store(session, "蘑说南京江宁万达店").id == store.id
+    assert resolve_store(session, "门店运营部-江苏区-蘑说南京江宁万达店").id == store.id
 
 
 def test_approval_instances_resolve_department_name_from_originator_dept_id(

@@ -120,6 +120,30 @@ class TestDepartmentSyncDeduplication:
         assert len(stores) == 1
         assert stores[0].dingtalk_dept_id == "dept-123"
 
+    def test_existing_store_name_should_follow_dingtalk_department_name(self, session):
+        existing_store = Store(name="蘑说江宁万达店", dingtalk_dept_id="1118435517")
+        session.add(existing_store)
+        session.commit()
+
+        dept = DingTalkDepartment(
+            dept_id="1118435517",
+            name="蘑说南京江宁万达店",
+            parent_id="1",
+            path="门店运营部-江苏区-蘑说南京江宁万达店",
+            depth=3,
+            is_store_candidate=True,
+            is_active=True,
+        )
+        session.add(dept)
+        session.commit()
+
+        result = sync_departments_to_stores_core(session)
+
+        session.refresh(existing_store)
+        assert result.created_count == 0
+        assert result.updated_count == 1
+        assert existing_store.name == "蘑说南京江宁万达店"
+
     def test_same_name_different_dept_id_should_generate_suffix(self, session):
         """✅ Test 2: Same name + different dept_id should add suffix"""
         # Create existing store with same name
