@@ -8,18 +8,19 @@ import zhCN from "antd/locale/zh_CN";
 import { useParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import type { BankTransaction, BankTransactionBusinessDetail, Store } from "@fin-hub/shared-types";
-import { formatMoney, formatPeriod } from "@fin-hub/shared-utils";
+import { formatMoney } from "@fin-hub/shared-utils";
 import { AppShell } from "../../../components/AppShell";
 import { StoreLedgerWorkspaceNav } from "../../../components/StoreLedgerWorkspaceNav";
 import { apiClient } from "../../../lib/api";
-import { getMyStores, getStoreLedgers } from "../../../lib/referenceData";
-import { useClientSearchParams } from "../../../lib/searchParams";
+import { getMyStores } from "../../../lib/referenceData";
 
 const specialLabels: Record<string, string> = {
   current_account: "往来款",
   shareholder_dividend: "股东分红",
   shareholder_capital: "股东注资",
   other_income_expense: "其他收支",
+  counter_refund: "对退款",
+  loan_repayment: "借还款",
 };
 
 function dateText(value?: string | null) {
@@ -35,11 +36,8 @@ function isImageAttachment(attachment: { content_type?: string | null; file_name
 
 export default function StoreLedgerBankDetailsPage() {
   const params = useParams<{ storeId: string }>();
-  const searchParams = useClientSearchParams();
   const storeId = params.storeId;
-  const period = searchParams.get("period") ?? dayjs().format("YYYY-MM");
   const [store, setStore] = useState<Store | null>(null);
-  const [periods, setPeriods] = useState<string[]>([]);
   const [transactions, setTransactions] = useState<BankTransaction[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -55,12 +53,10 @@ export default function StoreLedgerBankDetailsPage() {
     setError(null);
     Promise.all([
       getMyStores(),
-      getStoreLedgers(storeId),
-      apiClient.bankTransactions.list(buildListQuery(storeId, period, filters)),
-    ]).then(([stores, ledgers, result]) => {
+      apiClient.bankTransactions.list(buildListQuery(storeId, filters)),
+    ]).then(([stores, result]) => {
       if (ignore) return;
       setStore(stores.find((item) => item.id === storeId) ?? null);
-      setPeriods([...new Set([period, ...ledgers.map((item) => item.period)])].sort().reverse());
       setTransactions(result.items);
     }).catch((reason) => {
       if (!ignore) setError(reason instanceof Error ? reason.message : "流水加载失败");
@@ -68,10 +64,10 @@ export default function StoreLedgerBankDetailsPage() {
       if (!ignore) setLoading(false);
     });
     return () => { ignore = true; };
-  }, [filters, period, storeId]);
+  }, [filters, storeId]);
 
-  function buildListQuery(targetStoreId: string, targetPeriod: string, targetFilters: typeof filters) {
-    const query = new URLSearchParams({ store_id: targetStoreId, ledger_period: targetPeriod, page_size: "500" });
+  function buildListQuery(targetStoreId: string, targetFilters: typeof filters) {
+    const query = new URLSearchParams({ store_id: targetStoreId, page_size: "500" });
     if (targetFilters.occurred_from) query.set("occurred_from", targetFilters.occurred_from);
     if (targetFilters.occurred_to) query.set("occurred_to", targetFilters.occurred_to);
     if (targetFilters.direction) query.set("direction", targetFilters.direction);
@@ -140,9 +136,9 @@ export default function StoreLedgerBankDetailsPage() {
 
   const current = detail?.transaction;
   return <AppShell title="流水业务详情" kicker="查看银行流水对应的审批报销、营业收入和特殊业务">
-    {store ? <StoreLedgerWorkspaceNav storeId={storeId} storeName={store.name} period={period} periodOptions={periods.map((value) => ({ label: value, value }))} activeKey="bankDetails" /> : <Card loading />}
+    {store ? <StoreLedgerWorkspaceNav storeId={storeId} storeName={store.name} activeKey="bankDetails" /> : <Card loading />}
     {error ? <Alert type="error" showIcon message="流水加载失败" description={error} /> : null}
-    <Card title={`银行流水 · ${formatPeriod(period)}`} extra={<Typography.Text type="secondary">点击流水查看业务发生情况</Typography.Text>}>
+    <Card title="银行流水业务明细" extra={<Typography.Text type="secondary">点击流水查看业务发生情况</Typography.Text>}>
       <Form layout="inline" style={{ marginBottom: 16 }} onFinish={submitFilters}>
         <Form.Item label="发生日期"><DatePicker.RangePicker locale={zhCN.DatePicker} format="YYYY年MM月DD日" value={filterDraft.occurred_from ? [dayjs(filterDraft.occurred_from), dayjs(filterDraft.occurred_to).subtract(1, "day")] : null} onChange={(values) => setFilterDraft((current) => ({ ...current, occurred_from: values?.[0]?.format("YYYY-MM-DD") ?? "", occurred_to: values?.[1]?.add(1, "day").format("YYYY-MM-DD") ?? "" }))} /></Form.Item>
         <Form.Item label="类型"><Select allowClear placeholder="全部类型" value={filterDraft.direction || undefined} onChange={(value) => setFilterDraft((current) => ({ ...current, direction: value ?? "" }))} options={[{ label: "收入", value: "income" }, { label: "支出", value: "expense" }]} style={{ width: 110 }} /></Form.Item>
@@ -151,7 +147,7 @@ export default function StoreLedgerBankDetailsPage() {
         <Form.Item label="户名"><Input placeholder="对方户名" value={filterDraft.counterparty_name} onChange={(event) => setFilterDraft((current) => ({ ...current, counterparty_name: event.target.value }))} style={{ width: 150 }} /></Form.Item>
         <Form.Item><Space><Button type="primary" htmlType="submit">查询</Button><Button onClick={resetFilters}>重置</Button></Space></Form.Item>
       </Form>
-      <Table rowKey="id" loading={loading} columns={columns} dataSource={transactions} pagination={false} scroll={{ x: 1100 }} onRow={(record) => ({ onClick: () => void openDetail(record), style: { cursor: "pointer" } })} locale={{ emptyText: "当前账期暂无银行流水" }} />
+      <Table rowKey="id" loading={loading} columns={columns} dataSource={transactions} pagination={false} scroll={{ x: 1100 }} onRow={(record) => ({ onClick: () => void openDetail(record), style: { cursor: "pointer" } })} locale={{ emptyText: "暂无银行流水" }} />
     </Card>
     <Modal open={Boolean(detail)} onCancel={() => setDetail(null)} footer={null} width={980} title="银行流水业务详情">
       {detailLoading ? <Spin /> : null}
