@@ -1,8 +1,8 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { Alert, Button, Card, Empty, Modal, Table, Tag, Typography, message } from "antd";
-import { DownloadOutlined, FilePdfOutlined } from "@ant-design/icons";
+import { Alert, Button, Card, Empty, Image, Modal, Space, Table, Tag, Typography, message } from "antd";
+import { DownloadOutlined, EyeOutlined, FilePdfOutlined, PaperClipOutlined } from "@ant-design/icons";
 import dayjs from "dayjs";
 import { useEffect, useMemo, useState } from "react";
 import type { Attachment, ExpenseItem, StoreLedgerWorkspace } from "@fin-hub/shared-types";
@@ -29,12 +29,25 @@ interface CategoryRow {
   children?: CategoryRow[];
 }
 
+interface ExpenseVoucherState {
+  loading: boolean;
+  attachments: Attachment[];
+  previewUrls: Record<string, string>;
+}
+
 function ratio(value: number, denominator: number) {
   return denominator > 0 ? `${((value / denominator) * 100).toFixed(2)}%` : "/";
 }
 
 function escapeHtml(value: unknown) {
   return String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
+}
+
+function isImageAttachment(attachment: Pick<Attachment, "content_type" | "file_name">) {
+  return Boolean(
+    attachment.content_type?.startsWith("image/")
+      || attachment.file_name?.match(/\.(apng|avif|gif|jpe?g|png|webp)$/i),
+  );
 }
 
 export interface StoreFinancialReportViewProps {
@@ -50,7 +63,10 @@ export function StoreFinancialReportView({ storeId, period }: StoreFinancialRepo
   const [detailTitle, setDetailTitle] = useState("");
   const [isDetailOpen, setIsDetailOpen] = useState(false);
   const [isDetailLoading, setIsDetailLoading] = useState(false);
+  const [detailVoucherState, setDetailVoucherState] = useState<Record<string, ExpenseVoucherState>>({});
   const [voucherAttachments, setVoucherAttachments] = useState<Attachment[]>([]);
+  const [voucherPreviewUrls, setVoucherPreviewUrls] = useState<Record<string, string>>({});
+  const [voucherPreviewLoading, setVoucherPreviewLoading] = useState(false);
   const [isVoucherOpen, setIsVoucherOpen] = useState(false);
 
   useEffect(() => {
@@ -64,6 +80,15 @@ export function StoreFinancialReportView({ storeId, period }: StoreFinancialRepo
       .finally(() => { if (!ignore) setIsLoading(false); });
     return () => { ignore = true; };
   }, [period, storeId]);
+
+  useEffect(() => {
+    return () => {
+      Object.values(detailVoucherState).forEach((state) => {
+        Object.values(state.previewUrls).forEach((url) => URL.revokeObjectURL(url));
+      });
+      Object.values(voucherPreviewUrls).forEach((url) => URL.revokeObjectURL(url));
+    };
+  }, [detailVoucherState, voucherPreviewUrls]);
 
   const metrics = data?.metrics;
   const categoryRows = useMemo<CategoryRow[]>(() => {
@@ -89,6 +114,48 @@ export function StoreFinancialReportView({ storeId, period }: StoreFinancialRepo
     return { income, netIncome: Number(metrics.revenue_net_amount || 0), fee: Number(metrics.fee_amount || 0), expense, grossProfit: Number(metrics.gross_profit_amount || 0), netProfit: income - expense };
   }, [metrics]);
 
+  function revokeDetailVoucherState(states: Record<string, ExpenseVoucherState>) {
+    Object.values(states).forEach((state) => {
+      Object.values(state.previewUrls).forEach((url) => URL.revokeObjectURL(url));
+    });
+  }
+
+  async function loadExpenseVoucherState(expenseItemId: string): Promise<ExpenseVoucherState> {
+    const result = await apiClient.attachments.list(`?resource_type=expense_item&resource_id=${encodeURIComponent(expenseItemId)}&page_size=100`);
+    const entries = await Promise.all(result.items.filter(isImageAttachment).map(async (attachment) => {
+      try {
+        const blob = await apiClient.attachments.download(attachment.id);
+        return [attachment.id, URL.createObjectURL(blob)] as const;
+      } catch {
+        return [attachment.id, ""] as const;
+      }
+    }));
+    return {
+      loading: false,
+      attachments: result.items,
+      previewUrls: Object.fromEntries(entries.filter(([, url]) => url)),
+    };
+  }
+
+  async function preloadDetailVouchers(items: ExpenseItem[]) {
+    const targets = items.filter((item) => Number(item.voucher_count || 0) > 0);
+    setDetailVoucherState((current) => {
+      revokeDetailVoucherState(current);
+      return Object.fromEntries(targets.map((item) => [item.id, { loading: true, attachments: [], previewUrls: {} }]));
+    });
+    const entries = await Promise.all(targets.map(async (item) => {
+      try {
+        return [item.id, await loadExpenseVoucherState(item.id)] as const;
+      } catch {
+        return [item.id, { loading: false, attachments: [], previewUrls: {} } satisfies ExpenseVoucherState] as const;
+      }
+    }));
+    setDetailVoucherState((current) => {
+      revokeDetailVoucherState(current);
+      return Object.fromEntries(entries);
+    });
+  }
+
   async function openCategoryDetail(category: CategoryRow) {
     if (!storeId || !data) return;
     setDetailTitle(category.name);
@@ -100,6 +167,7 @@ export function StoreFinancialReportView({ storeId, period }: StoreFinancialRepo
       if (child) query.set("category_l2", child.name);
       const result = await apiClient.reports.analyticsDetails(`?${query.toString()}`);
       setDetail(result.expense_items);
+      void preloadDetailVouchers(result.expense_items);
     } catch (error) {
       message.error(error instanceof Error ? error.message : "无法加载费用明细");
     } finally {
@@ -107,14 +175,57 @@ export function StoreFinancialReportView({ storeId, period }: StoreFinancialRepo
     }
   }
 
+  function replaceVoucherPreviewUrls(nextUrls: Record<string, string>) {
+    setVoucherPreviewUrls((current) => {
+      Object.values(current).forEach((url) => URL.revokeObjectURL(url));
+      return nextUrls;
+    });
+  }
+
+  async function openAttachment(attachment: Attachment) {
+    try {
+      const blob = await apiClient.attachments.download(attachment.id);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = attachment.file_name || "报销凭证";
+      link.target = "_blank";
+      link.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "凭证打开失败");
+    }
+  }
+
   async function openVouchers(item: ExpenseItem) {
     try {
-      const result = await apiClient.attachments.list(`?resource_type=expense_item&resource_id=${encodeURIComponent(item.id)}`);
+      const result = await apiClient.attachments.list(`?resource_type=expense_item&resource_id=${encodeURIComponent(item.id)}&page_size=100`);
       setVoucherAttachments(result.items);
+      replaceVoucherPreviewUrls({});
       setIsVoucherOpen(true);
+      const imageAttachments = result.items.filter(isImageAttachment);
+      if (!imageAttachments.length) return;
+      setVoucherPreviewLoading(true);
+      const entries = await Promise.all(imageAttachments.map(async (attachment) => {
+        try {
+          const blob = await apiClient.attachments.download(attachment.id);
+          return [attachment.id, URL.createObjectURL(blob)] as const;
+        } catch {
+          return [attachment.id, ""] as const;
+        }
+      }));
+      replaceVoucherPreviewUrls(Object.fromEntries(entries.filter(([, url]) => url)));
     } catch (error) {
       message.error(error instanceof Error ? error.message : "无法加载报销凭证");
+    } finally {
+      setVoucherPreviewLoading(false);
     }
+  }
+
+  function closeVoucherModal() {
+    setIsVoucherOpen(false);
+    setVoucherAttachments([]);
+    replaceVoucherPreviewUrls({});
   }
 
   function exportPercent(value: string | number | null | undefined) {
@@ -163,11 +274,40 @@ export function StoreFinancialReportView({ storeId, period }: StoreFinancialRepo
     printWindow.document.write(html); printWindow.document.close(); printWindow.focus(); printWindow.print();
   }
 
+  function renderDetailVoucherCell(value: number | undefined, record: ExpenseItem) {
+    const count = Number(value || 0);
+    if (!count) return "无";
+    const state = detailVoucherState[record.id];
+    if (!state || state.loading) return <Typography.Text type="secondary">凭证加载中...</Typography.Text>;
+    const imageAttachments = state.attachments.filter(isImageAttachment);
+    const fileCount = state.attachments.length - imageAttachments.length;
+    return (
+      <Space size={6} wrap>
+        {imageAttachments.slice(0, 3).map((attachment) => {
+          const previewUrl = state.previewUrls[attachment.id];
+          return previewUrl ? (
+            <Image
+              key={attachment.id}
+              src={previewUrl}
+              alt={attachment.file_name || "报销凭证"}
+              width={44}
+              height={44}
+              preview={{ mask: <EyeOutlined /> }}
+              style={{ objectFit: "cover", borderRadius: 6, border: "1px solid #e5e7eb" }}
+            />
+          ) : null;
+        })}
+        {fileCount > 0 ? <Tag color="blue" icon={<PaperClipOutlined />}>{fileCount} 个文件</Tag> : null}
+        <Button type="link" size="small" onClick={() => void openVouchers(record)}>{count} 份 · 查看</Button>
+      </Space>
+    );
+  }
+
   const detailColumns = [
     { title: "日期", dataIndex: "expense_date", width: 120, render: (value: string | null) => value || "-" },
     { title: "费用内容", dataIndex: "description", ellipsis: true },
     { title: "金额", dataIndex: "amount", width: 140, align: "right" as const, render: (value: string) => formatMoney(value) },
-    { title: "报销凭证", dataIndex: "voucher_count", width: 140, render: (value: number | undefined, record: ExpenseItem) => value ? <Button type="link" onClick={() => void openVouchers(record)}>{value} 份 · 查看</Button> : "无" },
+    { title: "报销凭证", dataIndex: "voucher_count", width: 220, render: (value: number | undefined, record: ExpenseItem) => renderDetailVoucherCell(value, record) },
   ];
 
   return (
@@ -182,15 +322,53 @@ export function StoreFinancialReportView({ storeId, period }: StoreFinancialRepo
         <Card title="各类别支出统计" className="store-financial-report__category-card"><Table rowKey="key" size="middle" columns={[{ title: "费用分类", dataIndex: "name", render: (value: string, record: CategoryRow) => <Button type="link" onClick={() => void openCategoryDetail(record)}>{value}</Button> }, { title: "金额", dataIndex: "amount", align: "right" as const, render: (value: string) => `${formatMoney(value)}` }, { title: "占营业收入", dataIndex: "revenue_share", align: "right" as const }, { title: "占总支出", dataIndex: "share", align: "right" as const }, { title: "条数", dataIndex: "item_count", align: "right" as const, width: 90 }]} dataSource={categoryRows} expandable={{ childrenColumnName: "children", onExpand: (_expanded, record) => { if (!record.children?.length) void openCategoryDetail(record); } }} pagination={false} /></Card>
       </> : isLoading ? <Card loading /> : <Empty description="暂无报表数据" />}
       <Modal title={`${detailTitle} · 费用明细`} open={isDetailOpen} onCancel={() => setIsDetailOpen(false)} footer={null} width={900}><Table rowKey="id" loading={isDetailLoading} columns={detailColumns} dataSource={detail} pagination={{ pageSize: 10 }} /></Modal>
-      <Modal title="报销凭证" open={isVoucherOpen} onCancel={() => setIsVoucherOpen(false)} footer={null} width={680}>
+      <Modal title="报销凭证" open={isVoucherOpen} onCancel={closeVoucherModal} footer={null} width={760}>
         <Table
           rowKey="id"
           dataSource={voucherAttachments}
           pagination={false}
+          locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无凭证" /> }}
           columns={[
-            { title: "文件名", dataIndex: "file_name" },
-            { title: "类型", dataIndex: "content_type", render: (value: string | null) => value || "-" },
-            { title: "操作", render: (_value: unknown, record: Attachment) => <Button type="link" onClick={() => void apiClient.attachments.download(record.id).then((blob) => { const url = URL.createObjectURL(blob); const link = document.createElement("a"); link.href = url; link.download = record.file_name; link.click(); URL.revokeObjectURL(url); })}>打开/下载</Button> },
+            {
+              title: "凭证",
+              dataIndex: "file_name",
+              render: (value: string, record: Attachment) => {
+                const isImage = isImageAttachment(record);
+                const previewUrl = voucherPreviewUrls[record.id];
+                return (
+                  <Space size={12}>
+                    {isImage ? (
+                      previewUrl ? (
+                        <Image
+                          src={previewUrl}
+                          alt={value || "报销凭证"}
+                          width={72}
+                          height={72}
+                          preview={{ mask: <EyeOutlined /> }}
+                          style={{ objectFit: "cover", borderRadius: 8, border: "1px solid #e5e7eb" }}
+                        />
+                      ) : (
+                        <div className="report-voucher-thumb-placeholder">{voucherPreviewLoading ? "加载中" : "图片"}</div>
+                      )
+                    ) : (
+                      <div className="report-voucher-file-icon"><PaperClipOutlined /></div>
+                    )}
+                    <div>
+                      <Typography.Text strong ellipsis style={{ maxWidth: 360 }}>{value || "报销凭证"}</Typography.Text>
+                      <br />
+                      <Typography.Text type="secondary">{record.content_type || (isImage ? "图片凭证" : "文件凭证")}</Typography.Text>
+                    </div>
+                  </Space>
+                );
+              },
+            },
+            {
+              title: "操作",
+              width: 120,
+              render: (_value: unknown, record: Attachment) => (
+                <Button type="link" onClick={() => void openAttachment(record)}>打开/下载</Button>
+              ),
+            },
           ]}
         />
       </Modal>
