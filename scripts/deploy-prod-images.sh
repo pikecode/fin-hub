@@ -128,3 +128,11 @@ fi
 
 echo "Service status:"
 docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" ps
+
+echo "Running smoke checks..."
+if [ -x "$ROOT_DIR/scripts/smoke-prod.sh" ]; then
+  "$ROOT_DIR/scripts/smoke-prod.sh" "${SMOKE_BASE_URL:-http://127.0.0.1}"
+else
+  curl -sf "${SMOKE_BASE_URL:-http://127.0.0.1}/api/health" >/dev/null
+  echo "✅ API health passed"
+fi

@@ -197,13 +197,13 @@ docker compose \\
   -f "${COMPOSE_FILE}" \\
   ps
 
-# 健康检查
+# 健康检查：从 Nginx 入口检查真实对外路径，避免只检查容器内部导致误判
 echo ""
 echo "🏥 健康检查..."
-MAX_RETRIES=10
+MAX_RETRIES=15
 RETRY=0
 while [ \$RETRY -lt \$MAX_RETRIES ]; do
-  if curl -sf http://localhost:8000/health >/dev/null 2>&1; then
+  if curl -sf http://127.0.0.1/api/health >/dev/null 2>&1; then
     echo "✅ API 服务健康"
     break
   fi
@@ -215,8 +215,13 @@ while [ \$RETRY -lt \$MAX_RETRIES ]; do
 done
 
 if [ \$RETRY -eq \$MAX_RETRIES ]; then
-  echo "⚠️  API 服务未在预期时间内就绪"
+  echo "❌ API 服务未在预期时间内就绪"
   echo "查看日志: docker compose -f ${COMPOSE_FILE} logs api"
+  exit 1
+fi
+
+if [ -x scripts/smoke-prod.sh ]; then
+  scripts/smoke-prod.sh http://127.0.0.1
 else
   echo "✅ 所有检查通过"
 fi

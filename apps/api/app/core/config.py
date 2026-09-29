@@ -35,6 +35,8 @@ class Settings(BaseSettings):
     # Observability settings
     sentry_dsn: str | None = Field(default=None, validation_alias="SENTRY_DSN")
     log_level: str = Field(default="INFO", validation_alias="LOG_LEVEL")
+    slow_request_ms: int = Field(default=1000, validation_alias="SLOW_REQUEST_MS")
+    large_response_bytes: int = Field(default=512 * 1024, validation_alias="LARGE_RESPONSE_BYTES")
 
     @cached_property
     def cors_origins(self) -> list[str]:

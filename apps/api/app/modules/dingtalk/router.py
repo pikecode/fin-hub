@@ -263,6 +263,9 @@ def get_or_create_auto_sync_setting(session: Session) -> DingTalkAutoSyncSetting
 
 
 def refresh_auto_sync_next_run(setting: DingTalkAutoSyncSetting) -> None:
+    if setting.last_run_at and setting.interval_minutes > 0:
+        setting.next_run_at = setting.last_run_at + timedelta(minutes=setting.interval_minutes)
+        return
     hour, minute = map(int, (setting.scheduled_time or "02:00").split(":"))
     now_utc = utc_now().replace(tzinfo=UTC)
     now_local = now_utc.astimezone(AUTO_SYNC_TIMEZONE)
@@ -608,6 +611,8 @@ def update_template(
 def sync_templates_core(session: Session) -> dict[str, int]:
     config = get_or_create_config(session)
     dingtalk: DingTalkClient | None = None
+    skipped_disabled = 0
+    skipped_missing_process_code = 0
     if should_use_real_dingtalk():
         if not config.admin_user_id:
             raise HTTPException(status_code=409, detail="DingTalk admin user id is not configured")
@@ -616,15 +621,22 @@ def sync_templates_core(session: Session) -> dict[str, int]:
             processes = dingtalk.list_processes_by_user(config.admin_user_id)
         except DingTalkClientError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
-        samples = [
-            (
-                str(item.get("process_code") or item.get("processCode") or ""),
-                str(item.get("name") or item.get("process_name") or item.get("processName") or "未命名审批模板"),
-                json.dumps(item, ensure_ascii=False),
+        samples = []
+        for item in processes:
+            process_code = str(item.get("process_code") or item.get("processCode") or "").strip()
+            if not process_code:
+                skipped_missing_process_code += 1
+                continue
+            if not dingtalk_template_is_active(item):
+                skipped_disabled += 1
+                continue
+            samples.append(
+                (
+                    process_code,
+                    str(item.get("name") or item.get("process_name") or item.get("processName") or "未命名审批模板"),
+                    json.dumps(item, ensure_ascii=False),
+                )
             )
-            for item in processes
-            if item.get("process_code") or item.get("processCode")
-        ]
     else:
         samples = [
             ("seed-expense-approval", "门店费用报销", json.dumps({"source": "seed-sync"}, ensure_ascii=False)),
@@ -669,12 +681,34 @@ def sync_templates_core(session: Session) -> dict[str, int]:
                 node_updated += node_result["updated"]
     config.last_template_sync_at = now
     return {
+        "raw_pulled": len(processes) if dingtalk is not None else len(samples),
         "pulled": len(samples),
+        "skipped_disabled": skipped_disabled,
+        "skipped_missing_process_code": skipped_missing_process_code,
         "created": created,
         "updated": updated,
         "node_created": node_created,
         "node_updated": node_updated,
         "node_failed": node_failed,
+    }
+
+
+def dingtalk_template_is_active(item: dict[str, Any]) -> bool:
+    """Return false only when DingTalk explicitly marks a template disabled."""
+    active = item.get("active", item.get("is_active", item.get("isActive")))
+    if active is False or str(active).lower() in {"false", "0", "disabled", "inactive", "stopped"}:
+        return False
+    status = str(item.get("status") or item.get("process_status") or item.get("processStatus") or "").lower()
+    return status not in {
+        "disable",
+        "disabled",
+        "inactive",
+        "deactivated",
+        "stopped",
+        "closed",
+        "off",
+        "停用",
+        "已停用",
     }
 
 
@@ -3470,13 +3504,13 @@ def sync_real_instance(
         instance.processing_status = "unparsed"
         instance.parse_error = f"Missing required fields: {', '.join(missing_fields)}"
         instance.last_parsed_at = utc_now()
-        return True
+        return False
     if instance.approval_status.lower() not in PARSABLE_APPROVAL_STATUSES:
         instance.parse_status = "skipped"
         instance.processing_status = "unparsed"
         instance.parse_error = f"Approval status is not parsable: {instance.approval_status}"
         instance.last_parsed_at = utc_now()
-        return True
+        return False
     period = expense_date.strftime("%Y-%m")
     if session.scalar(select(Ledger).where(Ledger.store_id == store.id, Ledger.period == period)) is None:
         session.add(Ledger(store_id=store.id, period=period))
@@ -3488,7 +3522,7 @@ def sync_real_instance(
         instance.processing_status = "unparsed"
         instance.parse_error = "Unable to resolve approval amount"
         instance.last_parsed_at = utc_now()
-        return True
+        return False
     rows_to_create = expense_rows or installment_rows or [
         {
             "description": parse_text(raw_instance.get("title") or raw_instance.get("titleName"))
@@ -4062,13 +4096,13 @@ def execute_auto_sync(
             update_progress(
                 "departments_pull",
                 "running",
-                root_dept_id=AUTO_SYNC_DEPARTMENT_ROOT_ID,
-                max_depth=AUTO_SYNC_DEPARTMENT_MAX_DEPTH,
+                root_dept_id=setting.root_dept_id,
+                max_depth=setting.max_depth,
             )
             department_pull = pull_departments_core(
                 session,
-                root_dept_id=AUTO_SYNC_DEPARTMENT_ROOT_ID,
-                max_depth=AUTO_SYNC_DEPARTMENT_MAX_DEPTH,
+                root_dept_id=setting.root_dept_id,
+                max_depth=setting.max_depth,
             )
             update_progress("departments_pull", "succeeded", pulled_count=department_pull.pulled_count)
             update_progress("stores_sync", "running")
@@ -4107,8 +4141,8 @@ def execute_auto_sync(
             update_progress(
                 "approvals_sync",
                 "running",
-                page_size=AUTO_SYNC_APPROVAL_PAGE_SIZE,
-                max_pages=AUTO_SYNC_APPROVAL_MAX_PAGES,
+                page_size=setting.page_size,
+                max_pages=setting.max_pages,
                 incremental_start_at=start_at.isoformat(),
                 incremental_end_at=end_at.isoformat(),
                 resuming=bool(resume_state),
@@ -4135,8 +4169,8 @@ def execute_auto_sync(
                 session,
                 job=job,
                 templates=templates,
-                page_size=AUTO_SYNC_APPROVAL_PAGE_SIZE,
-                max_pages=AUTO_SYNC_APPROVAL_MAX_PAGES,
+                page_size=setting.page_size,
+                max_pages=setting.max_pages,
                 skip_existing=setting.skip_existing,
                 resume_cursors=resume_cursors,
             )

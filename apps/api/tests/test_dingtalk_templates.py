@@ -279,6 +279,34 @@ def test_real_sync_templates_auto_upserts_template_nodes(
     assert second_response.json()["data"]["node_updated"] == 1
 
 
+def test_real_sync_templates_ignores_disabled_dingtalk_templates(client: TestClient, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "dingtalk_sync_mode", "real")
+    client.put(
+        "/api/dingtalk/config",
+        json={"app_key": "ding-app-key", "app_secret": "super-secret", "admin_user_id": "admin-user"},
+    )
+
+    class FakeDingTalkClient:
+        def list_processes_by_user(self, user_id):
+            return [
+                {"processCode": "PROC-ACTIVE", "name": "启用模板", "status": "ACTIVE"},
+                {"processCode": "PROC-DISABLED", "name": "停用模板", "status": "DISABLED"},
+                {"processCode": "PROC-INACTIVE", "name": "停用模板2", "isActive": False},
+                {"processCode": "PROC-TEST-DISABLED", "name": "测试表单", "status": "DISABLE"},
+            ]
+
+        def forecast_process_nodes(self, process_code, user_id, dept_id, form_component_values=None):
+            assert process_code == "PROC-ACTIVE"
+            return {"nodes": []}
+
+    monkeypatch.setattr("app.modules.dingtalk.router.dingtalk_client", lambda config: FakeDingTalkClient())
+
+    response = client.post("/api/dingtalk/templates/sync")
+    assert response.status_code == 200
+    assert response.json()["data"]["pulled"] == 1
+    templates = client.get("/api/dingtalk/templates").json()["data"]["items"]
+    assert [template["process_code"] for template in templates] == ["PROC-ACTIVE"]
+
 def test_template_nodes_are_returned_with_approval_instance(client: TestClient, session) -> None:
     client.post("/api/dingtalk/templates/sync")
     template_id = client.get("/api/dingtalk/templates").json()["data"]["items"][0]["id"]
@@ -2147,9 +2175,9 @@ def test_real_approval_sync_persists_instance_when_expense_parse_is_incomplete(
     )
     assert response.status_code == 201
     job = response.json()["data"]
-    assert job["status"] == "succeeded"
-    assert job["success_count"] == 1
-    assert job["failed_count"] == 0
+    assert job["status"] == "failed"
+    assert job["success_count"] == 0
+    assert job["failed_count"] == 1
 
     instances = client.get(f"/api/dingtalk/approval-instances?template_id={template_id}").json()["data"]["items"]
     assert len(instances) == 1

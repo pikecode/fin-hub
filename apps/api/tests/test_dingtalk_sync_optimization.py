@@ -46,25 +46,25 @@ class TestTimeWindowValidation:
 
         assert "结束时间必须晚于开始时间" in str(exc_info.value.detail)
 
-    def test_window_exceeds_120_days_should_fail(self):
-        """✅ Test 2: Time window > 120 days should fail"""
+    def test_window_exceeds_120_days_should_pass_with_configurable_window(self):
+        """✅ Test 2: Time windows are configurable and no longer hard-coded to 120 days"""
         end = utc_now()
         start = end - timedelta(days=121)
 
-        with pytest.raises(Exception) as exc_info:
-            validate_approval_sync_window(start, end)
+        validated_start, validated_end = validate_approval_sync_window(start, end)
 
-        assert "不能超过 120 天" in str(exc_info.value.detail)
+        assert validated_start == start.replace(tzinfo=None) if start.tzinfo else start
+        assert validated_end == end.replace(tzinfo=None) if end.tzinfo else end
 
-    def test_lookback_exceeds_365_days_should_fail(self):
-        """✅ Test 3: Lookback > 365 days should fail"""
+    def test_lookback_exceeds_365_days_should_pass_with_configurable_window(self):
+        """✅ Test 3: Long lookback windows are controlled by auto-sync settings, not this helper"""
         end = utc_now()
         start = end - timedelta(days=366)
 
-        with pytest.raises(Exception) as exc_info:
-            validate_approval_sync_window(start, end)
+        validated_start, validated_end = validate_approval_sync_window(start, end)
 
-        assert "不能超过 120 天" in str(exc_info.value.detail)
+        assert validated_start <= validated_end
+        assert (validated_end - validated_start).days == 366
 
     def test_valid_120_day_window_should_pass(self):
         """✅ Test 4: Valid 120-day window should pass"""

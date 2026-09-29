@@ -804,6 +804,13 @@ class DingTalkAutoSyncSettingUpdate(BaseModel):
     sync_approvals: bool | None = None
     paused: bool | None = None
     skip_existing: bool | None = None
+    interval_minutes: int | None = Field(default=None, ge=1, le=1440)
+    window_days: int | None = Field(default=None, ge=1, le=730)
+    approval_overlap_days: int | None = Field(default=None, ge=0, le=30)
+    root_dept_id: str | None = Field(default=None, min_length=1, max_length=120)
+    max_depth: int | None = Field(default=None, ge=1, le=20)
+    page_size: int | None = Field(default=None, ge=1, le=100)
+    max_pages: int | None = Field(default=None, ge=1, le=5000)
 
 
 class ApprovalTemplateCreate(BaseModel):
