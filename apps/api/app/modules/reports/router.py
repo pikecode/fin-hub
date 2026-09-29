@@ -248,6 +248,35 @@ def read_ledger_export_rows(
     return list(revenue_records), list(expenses), list(bank_transactions)
 
 
+def export_expense_rows(expenses: list[ExpenseItem]) -> list[ExpenseItem]:
+    return [
+        item
+        for item in expenses
+        if not is_non_operating_expense(item.category_l1, item.category_l2)
+        and item.source != MAJOR_EXPENSE_VOUCHER_SOURCE
+    ]
+
+
+def expense_export_row(item: ExpenseItem) -> list[object]:
+    return [
+        item.category_l1 or "未分类",
+        item.category_l2 or "",
+        item.description,
+        item.expense_date.isoformat() if item.expense_date else "",
+        item.amount,
+    ]
+
+
+def expense_export_row_for_sheet(item: ExpenseItem) -> list[object]:
+    return [
+        item.category_l1 or "未分类",
+        item.category_l2 or "",
+        item.description,
+        item.expense_date.isoformat() if item.expense_date else "",
+        decimal_cell(item.amount),
+    ]
+
+
 def build_revenue_channel_breakdown(
     revenue_records: list[RevenueRecord],
     revenue_matches: list[RevenueBankMatch],
@@ -826,6 +855,7 @@ def read_financial_analytics_details(
                 expense_query.order_by(ExpenseItem.expense_date.desc().nullslast(), ExpenseItem.created_at.desc()).limit(page_size)
             )
         )
+        expense_items = export_expense_rows(expense_items)
     elif detail_type == "template":
         title = "审批模版明细"
         if not template_id:
@@ -1248,20 +1278,9 @@ def export_ledger_detail_csv(
         )
     writer.writerow([])
     writer.writerow(["支出明细"])
-    writer.writerow(["日期", "说明", "金额", "一级分类", "二级分类", "供应商", "收款账号", "付款状态"])
-    for item in expenses:
-        writer.writerow(
-            [
-                item.expense_date.isoformat() if item.expense_date else "",
-                item.description,
-                item.amount,
-                item.category_l1 or "",
-                item.category_l2 or "",
-                item.supplier_name or "",
-                item.payee_account or "",
-                item.payment_status,
-            ]
-        )
+    writer.writerow(["支出一级分类", "二级分类", "支出详情", "申请报销日期", "金额"])
+    for item in export_expense_rows(expenses):
+        writer.writerow(expense_export_row(item))
     writer.writerow([])
     writer.writerow(["银行流水"])
     writer.writerow(["发生时间", "方向", "金额", "对方户名", "对方账号", "摘要", "流水号", "已匹配金额"])
@@ -1361,20 +1380,9 @@ def export_ledger_detail_xlsx(
         )
 
     expense_sheet = workbook.create_sheet("支出明细")
-    expense_sheet.append(["日期", "说明", "金额", "一级分类", "二级分类", "供应商", "收款账号", "付款状态"])
-    for item in expenses:
-        expense_sheet.append(
-            [
-                item.expense_date.isoformat() if item.expense_date else "",
-                item.description,
-                decimal_cell(item.amount),
-                item.category_l1 or "",
-                item.category_l2 or "",
-                item.supplier_name or "",
-                item.payee_account or "",
-                item.payment_status,
-            ]
-        )
+    expense_sheet.append(["支出一级分类", "二级分类", "支出详情", "申请报销日期", "金额"])
+    for item in export_expense_rows(expenses):
+        expense_sheet.append(expense_export_row_for_sheet(item))
 
     bank_sheet = workbook.create_sheet("银行流水")
     bank_sheet.append(["发生时间", "方向", "金额", "对方户名", "对方账号", "摘要", "流水号", "已匹配金额"])

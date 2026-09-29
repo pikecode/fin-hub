@@ -47,6 +47,13 @@ function formatDateTime(value?: string | null) {
   return value ? dayjs(value).format("YYYY-MM-DD HH:mm") : "-";
 }
 
+function isExportOperatingExpense(item: ExpenseItem) {
+  if (item.source === "major_expense_voucher") return false;
+  if (item.category_l1 === "门店预充值" || item.category_l1 === "备用金/借款") return false;
+  if (item.category_l1 === "食材成本" && item.category_l2 === "快驴充值") return false;
+  return true;
+}
+
 function isImageAttachment(attachment: Pick<Attachment, "content_type" | "file_name">) {
   return Boolean(
     attachment.content_type?.startsWith("image/")
@@ -77,6 +84,7 @@ export function StoreFinancialReportView({ storeId, period }: StoreFinancialRepo
   const voucherPreviewUrlsRef = useRef<Record<string, string>>({});
   const [majorExpenseVouchers, setMajorExpenseVouchers] = useState<MajorExpenseVoucher[]>([]);
   const [isMajorExpenseVoucherLoading, setIsMajorExpenseVoucherLoading] = useState(false);
+  const [isPdfExporting, setIsPdfExporting] = useState(false);
 
   useEffect(() => {
     let ignore = false;
@@ -278,7 +286,7 @@ export function StoreFinancialReportView({ storeId, period }: StoreFinancialRepo
     return `<div class="bar"><span style="width:${numericValue}%;background:${color}"></span></div>`;
   }
 
-  function reportHtml() {
+  function reportHtml(expenseItems: ExpenseItem[] = []) {
     if (!data || !stats) return null;
     const overviewRows = [
       ["营业收入", formatMoney(stats.income)], ["实收", formatMoney(stats.netIncome)], ["手续费", formatMoney(stats.fee)],
@@ -297,22 +305,134 @@ export function StoreFinancialReportView({ storeId, period }: StoreFinancialRepo
     const categoryRowsHtml = categoryRows.flatMap((item) => [item, ...(item.children ?? [])]).map((item) => `<tr><td class="${item.children ? "root" : "child"}">${escapeHtml(item.name)}</td><td>${formatMoney(item.amount)}</td><td>${item.item_count}</td><td>${item.revenue_share}</td><td>${item.share}</td></tr>`).join("");
     const categoryMax = Math.max(...categoryRows.filter((item) => item.children?.length).map((item) => Number(item.amount || 0)), 0);
     const categoryChartRows = categoryRows.filter((item) => item.children?.length).map((item) => `<div class="chart-row"><span class="chart-label">${escapeHtml(item.name)}</span><div class="chart-track"><span style="width:${categoryMax > 0 ? (Number(item.amount) / categoryMax) * 100 : 0}%;background:#d9482b"></span></div><b>${formatMoney(item.amount)}</b></div>`).join("");
-    return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>${escapeHtml(data.store.name)}-${data.period}-门店财务报表</title><style>@page{size:A4;margin:14mm}body{font-family:Arial,"Microsoft YaHei",sans-serif;color:#172033;max-width:1120px;margin:auto;padding:24px}h1{margin:0 0 6px;font-size:28px}h2{margin:30px 0 12px;border-left:4px solid #0f766e;padding-left:10px;font-size:18px}.meta{color:#64748b;margin-bottom:24px}.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}.metric{padding:14px;border:1px solid #e2e8f0;border-radius:8px;background:#f8fafc}.metric span{color:#64748b}.metric b{display:block;font-size:21px;margin-top:7px}.bar{height:9px;min-width:130px;background:#f1f5f9;border-radius:99px;overflow:hidden}.bar span{display:block;height:100%;border-radius:99px}.chart-row{display:grid;grid-template-columns:130px 1fr 100px;gap:12px;align-items:center;margin:10px 0}.chart-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#475569}.chart-track{height:14px;background:#f1f5f9;border-radius:99px;overflow:hidden}.chart-track span{display:block;height:100%;border-radius:99px}.chart-row b{text-align:right;font-weight:600}table{width:100%;border-collapse:collapse;margin-bottom:8px}th,td{padding:9px;border-bottom:1px solid #e5e7eb;text-align:left}th{background:#f1f5f9;color:#475569}.root{font-weight:700}.child{padding-left:28px;color:#475569}.note{color:#64748b;font-size:12px;margin-top:24px}@media(max-width:800px){.metrics{grid-template-columns:repeat(2,1fr)}.chart-row{grid-template-columns:90px 1fr 80px}}@media print{body{padding:0}.section{break-inside:avoid}}</style></head><body><h1>${escapeHtml(data.store.name)} 门店财务报表</h1><div class="meta">账期：${formatPeriod(data.period)}　生成时间：${dayjs().format("YYYY-MM-DD HH:mm")}　口径：收入按录入日期，支出按入账月份，门店预充值不计入支出</div><h2>总览指标</h2><div class="metrics">${overviewRows}</div><h2>营业收入渠道</h2><div>${channelChartRows || "暂无收入数据"}</div><table><thead><tr><th>渠道</th><th>经营收入</th><th>实收</th><th>手续费</th><th>手续费率</th><th>收入占比</th></tr></thead><tbody>${channelRows}</tbody></table><h2>核心成本率结构</h2><table><thead><tr><th>成本项目</th><th>金额</th><th>成本率图示</th><th>成本率</th></tr></thead><tbody>${coreCostRows}</tbody></table><h2>核心食材</h2><table><thead><tr><th>食材</th><th>支出金额</th><th>占比图示</th><th>占营业收入</th></tr></thead><tbody>${foodRows}</tbody></table><h2>各类别支出统计</h2><div>${categoryChartRows || "暂无费用数据"}</div><table><thead><tr><th>费用分类</th><th>金额</th><th>条数</th><th>占营业收入</th><th>占总支出</th></tr></thead><tbody>${categoryRowsHtml}</tbody></table>${majorExpenseVouchers.length ? `<h2>主要支出凭证</h2><p class="note">仅作凭证归档和金额展示，不计入总支出、毛利和净利润。</p><div class="metrics"><div class="metric"><span>凭证记录</span><b>${majorExpenseVoucherStats.count}</b></div><div class="metric"><span>展示总金额</span><b>${formatMoney(majorExpenseVoucherStats.totalAmount)}</b></div><div class="metric"><span>附件</span><b>${majorExpenseVoucherStats.attachmentCount} 份</b></div></div><table><thead><tr><th>费用名称</th><th>所属账期</th><th>总金额</th><th>附件</th><th>备注</th><th>录入时间</th></tr></thead><tbody>${majorExpenseVouchers.map((item) => `<tr><td>${escapeHtml(item.expense_name)}</td><td>${escapeHtml(item.ledger_period)}</td><td>${formatMoney(item.display_amount)}</td><td>${item.attachment_count} 份</td><td>${escapeHtml(item.remark || "-")}</td><td>${formatDateTime(item.created_at)}</td></tr>`).join("")}</tbody></table>` : ""}<div class="note">报表导出与页面使用同一账期和统计口径。分类明细可在报表页面点击对应分类查看。</div></body></html>`;
+    const expenseDetailRows = expenseItems
+      .filter(isExportOperatingExpense)
+      .map((item) => `<tr><td>${escapeHtml(item.category_l1 || "未分类")}</td><td>${escapeHtml(item.category_l2 || "")}</td><td>${escapeHtml(item.description)}</td><td>${escapeHtml(item.expense_date || "")}</td><td>${formatMoney(item.amount)}</td></tr>`)
+      .join("");
+    const exportStyles = `
+      @page { size: A4 landscape; margin: 10mm 12mm; }
+      * { box-sizing: border-box; }
+      body { max-width: 1120px; margin: 0 auto; padding: 28px; color: #172033; background: #fff; font: 14px/1.55 Arial, "Microsoft YaHei", sans-serif; }
+      h1 { margin: 0; color: #102a43; font-size: 28px; letter-spacing: .02em; }
+      h2 { margin: 28px 0 12px; padding: 0 0 8px 12px; border-left: 4px solid #0f766e; border-bottom: 1px solid #e7edf1; color: #1f3448; font-size: 17px; break-after: avoid; page-break-after: avoid; }
+      .meta { margin: 8px 0 20px; color: #64748b; font-size: 12px; }
+      .metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+      .metric { min-width: 0; padding: 12px 14px; border: 1px solid #e2e8f0; border-radius: 8px; background: #f8fafc; break-inside: avoid; page-break-inside: avoid; }
+      .metric span { color: #64748b; font-size: 12px; }
+      .metric b { display: block; margin-top: 5px; color: #17324d; font-size: 19px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+      .bar { min-width: 90px; height: 9px; overflow: hidden; border-radius: 99px; background: #edf2f7; }
+      .bar span { display: block; height: 100%; border-radius: inherit; }
+      .chart-row { display: grid; grid-template-columns: 140px minmax(120px, 1fr) 110px; gap: 12px; align-items: center; margin: 9px 0; break-inside: avoid; page-break-inside: avoid; }
+      .chart-label { overflow: hidden; color: #475569; text-overflow: ellipsis; white-space: nowrap; }
+      .chart-track { height: 13px; overflow: hidden; border-radius: 99px; background: #edf2f7; }
+      .chart-track span { display: block; height: 100%; border-radius: inherit; }
+      .chart-row b { color: #263b50; text-align: right; font-variant-numeric: tabular-nums; }
+      table { width: 100%; margin: 0 0 12px; border-collapse: collapse; table-layout: auto; font-size: 12px; }
+      thead { display: table-header-group; }
+      tr { break-inside: avoid; page-break-inside: avoid; }
+      th, td { padding: 7px 9px; border-bottom: 1px solid #e5eaf0; text-align: left; vertical-align: top; overflow-wrap: anywhere; }
+      th { background: #f1f5f9; color: #475569; font-weight: 600; }
+      tbody tr:nth-child(even) { background: #fbfcfd; }
+      td:nth-last-child(1), th:nth-last-child(1) { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+      .financial-table--income td:nth-child(n+2), .financial-table--income th:nth-child(n+2),
+      .financial-table--cost td:nth-child(n+2), .financial-table--cost th:nth-child(n+2),
+      .financial-table--category td:nth-child(n+2), .financial-table--category th:nth-child(n+2) { text-align: right; font-variant-numeric: tabular-nums; }
+      .financial-table--expense td:nth-child(4), .financial-table--expense th:nth-child(4),
+      .financial-table--expense td:nth-child(5), .financial-table--expense th:nth-child(5),
+      .financial-table--vouchers td:nth-child(3), .financial-table--vouchers th:nth-child(3),
+      .financial-table--vouchers td:nth-child(4), .financial-table--vouchers th:nth-child(4),
+      .financial-table--vouchers td:nth-child(6), .financial-table--vouchers th:nth-child(6) { text-align: right; font-variant-numeric: tabular-nums; }
+      .root { color: #17324d; font-weight: 700; }
+      .child { padding-left: 24px; color: #526477; }
+      .note { margin-top: 18px; color: #64748b; font-size: 11px; }
+      @media (max-width: 800px) { body { padding: 16px; } .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } .chart-row { grid-template-columns: 90px minmax(80px, 1fr) 85px; gap: 8px; } }
+      @media print { body { max-width: none; padding: 0; } }
+    `;
+    return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>${escapeHtml(data.store.name)}-${data.period}-门店财务报表</title><style>${exportStyles}</style></head><body><h1>${escapeHtml(data.store.name)} 门店财务报表</h1><div class="meta">账期：${formatPeriod(data.period)}　账套状态：${data.selected_ledger?.status === "closed" ? "已封账" : "进行中"}　生成时间：${dayjs().format("YYYY-MM-DD HH:mm")}　口径：收入按录入日期统计，支出按入账月份统计，门店预充值、备用金/借款不计入支出</div><h2>总览指标</h2><div class="metrics">${overviewRows}</div><h2>营业收入渠道</h2><div>${channelChartRows || "暂无收入数据"}</div><table class="financial-table financial-table--income"><thead><tr><th>渠道</th><th>经营收入</th><th>实收</th><th>手续费</th><th>手续费率</th><th>收入占比</th></tr></thead><tbody>${channelRows}</tbody></table><h2>核心成本率结构</h2><table class="financial-table financial-table--cost"><thead><tr><th>成本项目</th><th>金额</th><th>成本率图示</th><th>成本率</th></tr></thead><tbody>${coreCostRows}</tbody></table><h2>核心食材</h2><table class="financial-table financial-table--cost"><thead><tr><th>食材</th><th>支出金额</th><th>占比图示</th><th>占营业收入</th></tr></thead><tbody>${foodRows}</tbody></table><h2>各类别支出统计</h2><div>${categoryChartRows || "暂无费用数据"}</div><table class="financial-table financial-table--category"><thead><tr><th>费用分类</th><th>金额</th><th>条数</th><th>占营业收入</th><th>占总支出</th></tr></thead><tbody>${categoryRowsHtml}</tbody></table><h2>支出明细</h2><table class="financial-table financial-table--expense"><thead><tr><th>支出一级分类</th><th>二级分类</th><th>支出详情</th><th>申请报销日期</th><th>金额</th></tr></thead><tbody>${expenseDetailRows || `<tr><td colspan="5">暂无支出明细</td></tr>`}</tbody></table>${majorExpenseVouchers.length ? `<h2>主要支出凭证</h2><p class="note">仅作凭证归档和金额展示，不计入总支出、毛利和净利润。</p><div class="metrics"><div class="metric"><span>凭证记录</span><b>${majorExpenseVoucherStats.count}</b></div><div class="metric"><span>展示总金额</span><b>${formatMoney(majorExpenseVoucherStats.totalAmount)}</b></div><div class="metric"><span>附件</span><b>${majorExpenseVoucherStats.attachmentCount} 份</b></div></div><table class="financial-table financial-table--vouchers"><thead><tr><th>费用名称</th><th>所属账期</th><th>总金额</th><th>附件</th><th>备注</th><th>录入时间</th></tr></thead><tbody>${majorExpenseVouchers.map((item) => `<tr><td>${escapeHtml(item.expense_name)}</td><td>${escapeHtml(item.ledger_period)}</td><td>${formatMoney(item.display_amount)}</td><td>${item.attachment_count} 份</td><td>${escapeHtml(item.remark || "-")}</td><td>${formatDateTime(item.created_at)}</td></tr>`).join("")}</tbody></table>` : ""}<div class="note">报表导出与页面使用同一账期和统计口径。分类明细可在报表页面点击对应分类查看。</div></body></html>`;
   }
 
-  function exportHtml() {
-    const html = reportHtml();
-    if (!html || !data) return;
-    const url = URL.createObjectURL(new Blob([html], { type: "text/html;charset=utf-8" }));
-    const link = document.createElement("a"); link.href = url; link.download = `${data.store.name}-${data.period}-门店财务报表.html`; link.click(); URL.revokeObjectURL(url);
+  function downloadBlob(blob: Blob, filename: string) {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    link.click();
+    URL.revokeObjectURL(url);
   }
 
-  function exportPdf() {
-    const html = reportHtml();
-    if (!html) return;
-    const printWindow = window.open("", "_blank");
-    if (!printWindow) { message.warning("请允许浏览器弹出窗口后再导出 PDF"); return; }
-    printWindow.document.write(html); printWindow.document.close(); printWindow.focus(); printWindow.print();
+  async function loadExportExpenseItems() {
+    if (!data) return [];
+    const query = new URLSearchParams({
+      detail_type: "category",
+      store_id: storeId,
+      period_start: data.period,
+      period_end: data.period,
+      page_size: "500",
+    });
+    const result = await apiClient.reports.analyticsDetails(`?${query.toString()}`);
+    return result.expense_items;
+  }
+
+  async function exportHtml() {
+    if (!data) return;
+    try {
+      const expenseItems = await loadExportExpenseItems();
+      const html = reportHtml(expenseItems);
+      if (!html) return;
+      downloadBlob(new Blob([html], { type: "text/html;charset=utf-8" }), `${data.store.name}-${data.period}-门店财务报表.html`);
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "导出 HTML 失败");
+    }
+  }
+
+  async function exportPdf() {
+    if (!data) return;
+    setIsPdfExporting(true);
+    try {
+      const html = reportHtml(await loadExportExpenseItems());
+      if (!html) return;
+      const filename = `${data.store.name}-${data.period}-门店财务报表.pdf`;
+      const iframe = document.createElement("iframe");
+      iframe.setAttribute("aria-hidden", "true");
+      iframe.style.position = "fixed";
+      iframe.style.left = "-10000px";
+      iframe.style.top = "0";
+      iframe.style.width = "1200px";
+      iframe.style.height = "900px";
+      iframe.style.border = "0";
+      document.body.appendChild(iframe);
+      try {
+        const frameDocument = iframe.contentDocument;
+        if (!frameDocument) throw new Error("无法准备 PDF 页面");
+        frameDocument.open();
+        frameDocument.write(html);
+        frameDocument.close();
+        await frameDocument.fonts.ready;
+        await new Promise((resolve) => window.requestAnimationFrame(() => resolve(undefined)));
+        iframe.style.height = `${Math.max(frameDocument.documentElement.scrollHeight, 900)}px`;
+        const { default: html2pdf } = await import("html2pdf.js");
+        const options = {
+          margin: [10, 12, 12, 12],
+          filename,
+          image: { type: "jpeg" as const, quality: 0.98 },
+          html2canvas: {
+            scale: frameDocument.documentElement.scrollHeight > 12000 ? 1.5 : 2,
+            useCORS: true,
+            backgroundColor: "#ffffff",
+            windowWidth: 1200,
+          },
+          jsPDF: { unit: "mm", format: "a4", orientation: "landscape" },
+          pagebreak: { mode: ["css", "legacy"], avoid: ["h1", "h2", "tr", ".metric", ".chart-row"] },
+        } as Parameters<InstanceType<typeof html2pdf.Worker>["set"]>[0];
+        await html2pdf().set(options).from(frameDocument.body).save();
+      } finally {
+        iframe.remove();
+      }
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "导出 PDF 失败");
+    } finally {
+      setIsPdfExporting(false);
+    }
   }
 
   function renderDetailVoucherCell(value: number | undefined, record: ExpenseItem) {
@@ -417,7 +537,7 @@ export function StoreFinancialReportView({ storeId, period }: StoreFinancialRepo
     <div className="store-financial-report-view">
       {errorMessage ? <Alert type="error" showIcon message="报表加载失败" description={errorMessage} /> : null}
       {isLoading ? <div className="store-financial-report__loading"><Card loading /><Card loading /></div> : data && metrics && stats ? <>
-        <div className="store-financial-report__hero"><div><Typography.Text className="store-financial-report__eyebrow">门店财务报表 · {formatPeriod(data.period)}</Typography.Text><Typography.Title level={2}>经营全景</Typography.Title><Typography.Text type="secondary">收入按录入日期统计，支出按入账月份统计，门店预充值已排除。</Typography.Text></div><div className="store-financial-report__hero-actions"><Tag color={data.selected_ledger?.status === "closed" ? "green" : "gold"}>{data.selected_ledger?.status === "closed" ? "已封账" : "进行中"}</Tag><Button icon={<DownloadOutlined />} onClick={exportHtml}>导出 HTML</Button><Button type="primary" icon={<FilePdfOutlined />} onClick={exportPdf}>导出 PDF</Button></div></div>
+        <div className="store-financial-report__hero"><div><Typography.Text className="store-financial-report__eyebrow">门店财务报表 · {formatPeriod(data.period)}</Typography.Text><Typography.Title level={2}>经营全景</Typography.Title><Typography.Text type="secondary">收入按录入日期统计，支出按入账月份统计，门店预充值已排除。</Typography.Text></div><div className="store-financial-report__hero-actions"><Tag color={data.selected_ledger?.status === "closed" ? "green" : "gold"}>{data.selected_ledger?.status === "closed" ? "已封账" : "进行中"}</Tag><Button icon={<DownloadOutlined />} onClick={() => void exportHtml()}>导出 HTML</Button><Button type="primary" icon={<FilePdfOutlined />} loading={isPdfExporting} onClick={() => void exportPdf()}>导出 PDF</Button></div></div>
         <section className="store-financial-report__section"><div className="store-financial-report__section-heading"><div><Typography.Title level={4}>总览指标</Typography.Title><Typography.Text type="secondary">本账期经营收入、支出与利润表现</Typography.Text></div></div><div className="store-ledger-report-metrics"><MetricCard title="营业收入" value={formatMoney(stats.income)} unit="元" status="normal" /><MetricCard title="实收" value={formatMoney(stats.netIncome)} unit="元" status="normal" /><MetricCard title="手续费" value={formatMoney(stats.fee)} unit="元" status="warning" /><MetricCard title="总支出" value={formatMoney(stats.expense)} unit="元" status="warning" /><MetricCard title="毛利" value={formatMoney(stats.grossProfit)} unit="元" status={stats.grossProfit >= 0 ? "normal" : "danger"} /><MetricCard title="净利润" value={formatMoney(stats.netProfit)} unit="元" status={stats.netProfit >= 0 ? "normal" : "danger"} /><MetricCard title="手续费率" value={stats.income > 0 ? `${((stats.fee / stats.income) * 100).toFixed(2)}%` : "/"} /><MetricCard title="毛利率" value={stats.income > 0 ? `${((stats.grossProfit / stats.income) * 100).toFixed(2)}%` : "/"} /><MetricCard title="净利润率" value={stats.income > 0 ? `${((stats.netProfit / stats.income) * 100).toFixed(2)}%` : "/"} /><MetricCard title="同比" value={metrics.income_year_over_year == null ? "/" : `${metrics.income_year_over_year}%`} /><MetricCard title="环比" value={metrics.income_month_over_month == null ? "/" : `${metrics.income_month_over_month}%`} /></div></section>
         <div className="store-financial-report__grid"><Card title="营业收入渠道"><RevenueChannelStackChart data={metrics.revenue_channel_summary} height={330} /></Card><Card title="核心成本率结构"><div className="store-financial-report__cost-list">{[["食材成本", metrics.food_cost_amount, metrics.food_cost_rate], ["人工成本", metrics.labor_cost_amount, metrics.labor_cost_rate], ["租金成本", metrics.rent_cost_amount, metrics.rent_cost_rate], ["运营费用", metrics.operation_expense_amount, metrics.operation_expense_rate]].map(([name, amount, rate]) => <div className="store-financial-report__cost-item" key={String(name)}><div><Typography.Text strong>{name}</Typography.Text><Typography.Text type="secondary">{formatMoney(String(amount))}</Typography.Text></div><div className="store-financial-report__bar"><span style={{ width: `${Math.min(Number(rate || 0), 100)}%` }} /></div><Typography.Text type="secondary">{rate == null ? "/" : `${rate}%`}</Typography.Text></div>)}</div></Card></div>
         <Card title="各渠道经营收入明细" className="store-financial-report__category-card"><Table rowKey="channel" size="middle" pagination={false} dataSource={metrics.revenue_channel_summary} columns={[{ title: "收入渠道", dataIndex: "channel" }, { title: "经营收入", dataIndex: "gross_amount", align: "right" as const, render: (value: string) => `${formatMoney(value)}` }, { title: "手续费", dataIndex: "fee_amount", align: "right" as const, render: (value: string) => `${formatMoney(value)}` }, { title: "手续费率", dataIndex: "fee_rate", align: "right" as const, render: (value: string) => `${value}%` }, { title: "收入占比", align: "right" as const, render: (_value: unknown, record) => ratio(Number(record.gross_amount), stats.income) }]} /></Card>
