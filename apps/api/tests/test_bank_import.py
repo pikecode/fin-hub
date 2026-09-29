@@ -494,6 +494,15 @@ def test_bank_transaction_payment_status_defaults_and_batch_unpaid(client: TestC
                     "amount": "200.00",
                     "counterparty_name": "未实付供应商",
                     "payment_status": "unpaid",
+                },
+                {
+                    "store_id": store_id,
+                    "ledger_period": "2026-08",
+                    "occurred_at": "2026-08-22T10:00:00",
+                    "direction": "income",
+                    "amount": "300.00",
+                    "counterparty_name": "未实收客户",
+                    "payment_status": "unreceived",
                 }
             ]
         },
@@ -505,6 +514,7 @@ def test_bank_transaction_payment_status_defaults_and_batch_unpaid(client: TestC
     statuses = {item["counterparty_name"]: item["payment_status"] for item in response.json()["data"]["items"]}
     assert statuses["默认已实付供应商"] == "paid"
     assert statuses["未实付供应商"] == "unpaid"
+    assert statuses["未实收客户"] == "unreceived"
 
 
 def test_bank_duplicate_check_matches_date_name_and_amount(client: TestClient) -> None:
@@ -728,3 +738,34 @@ def test_special_bank_transactions_are_excluded_from_matching_queue_and_filterab
     assert dividend.status_code == 201
     special = client.get(f"/api/bank-transactions?store_id={store_id}&special_type=shareholder_dividend")
     assert [item["counterparty_name"] for item in special.json()["data"]["items"]] == ["股东分红"]
+
+    counter_refund = client.post(
+        "/api/bank-transactions",
+        json={
+            "store_id": store_id,
+            "ledger_period": "2026-09",
+            "occurred_at": "2026-09-26T10:00:00",
+            "direction": "expense",
+            "amount": "120.00",
+            "counterparty_name": "对退款",
+            "special_type": "counter_refund",
+        },
+    )
+    assert counter_refund.status_code == 201
+    loan_repayment = client.post(
+        "/api/bank-transactions",
+        json={
+            "store_id": store_id,
+            "ledger_period": "2026-09",
+            "occurred_at": "2026-09-27T10:00:00",
+            "direction": "income",
+            "amount": "220.00",
+            "counterparty_name": "借还款",
+            "special_type": "loan_repayment",
+        },
+    )
+    assert loan_repayment.status_code == 201
+    refund_special = client.get(f"/api/bank-transactions?store_id={store_id}&special_type=counter_refund")
+    assert [item["counterparty_name"] for item in refund_special.json()["data"]["items"]] == ["对退款"]
+    loan_special = client.get(f"/api/bank-transactions?store_id={store_id}&special_type=loan_repayment")
+    assert [item["counterparty_name"] for item in loan_special.json()["data"]["items"]] == ["借还款"]

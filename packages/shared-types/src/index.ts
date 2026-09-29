@@ -487,8 +487,8 @@ export interface MajorExpenseVoucherCreate {
   remark?: string | null;
 }
 
-export type BankPaymentStatus = "paid" | "unpaid";
-export type BankSpecialType = "current_account" | "shareholder_dividend" | "shareholder_capital" | "other_income_expense";
+export type BankPaymentStatus = "paid" | "unpaid" | "unreceived";
+export type BankSpecialType = "current_account" | "shareholder_dividend" | "shareholder_capital" | "other_income_expense" | "counter_refund" | "loan_repayment";
 
 export interface BankTransaction {
   id: string;

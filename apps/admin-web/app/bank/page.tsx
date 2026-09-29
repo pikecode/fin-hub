@@ -52,7 +52,7 @@ interface BankFormValues extends Omit<BankTransactionCreate, "occurred_at"> {
 interface BankFilterValues {
   store_id?: string;
   direction?: "income" | "expense";
-  special_type?: "normal" | "current_account" | "shareholder_dividend" | "shareholder_capital" | "other_income_expense";
+  special_type?: "normal" | NonNullable<BankTransactionCreate["special_type"]>;
   unmatched_only?: boolean;
   match_status?: "unmatched" | "matched";
   amount?: number;
@@ -72,6 +72,8 @@ const bankSpecialTypeLabels: Record<Exclude<NonNullable<BankTransactionCreate["s
   shareholder_dividend: "股东分红",
   shareholder_capital: "股东注资",
   other_income_expense: "其他收支",
+  counter_refund: "对退款",
+  loan_repayment: "借还款",
 };
 
 function bankSpecialTypeLabel(value?: string | null) {
@@ -93,7 +95,7 @@ function isDuplicateConflict(error: unknown) {
 }
 
 type BankEntryField = "occurred_at" | "income_amount" | "expense_amount" | "counterparty_name" | "counterparty_account" | "summary";
-type BankPaymentStatus = "paid" | "unpaid";
+type BankPaymentStatus = NonNullable<BankTransactionCreate["payment_status"]>;
 
 interface BankEntryRow {
   key: string;
@@ -127,6 +129,7 @@ const bankEntryFields: BankEntryField[] = [
 const bankPaymentStatusOptions: Array<{ label: string; value: BankPaymentStatus }> = [
   { label: "已实付", value: "paid" },
   { label: "未实付", value: "unpaid" },
+  { label: "未实收", value: "unreceived" },
 ];
 
 const emptyBankTransactionSummary: BankTransactionSummary = {
@@ -1468,6 +1471,8 @@ export default function BankPage() {
                   { label: "股东分红", value: "shareholder_dividend" },
                   { label: "股东注资", value: "shareholder_capital" },
                   { label: "其他收支", value: "other_income_expense" },
+                  { label: "对退款", value: "counter_refund" },
+                  { label: "借还款", value: "loan_repayment" },
                 ]}
               />
             </Form.Item>
@@ -1535,6 +1540,7 @@ export default function BankPage() {
       <Modal
         title={editingTransaction ? "编辑流水" : "新增流水"}
         open={isModalOpen}
+        width={720}
         onCancel={() => {
           setIsModalOpen(false);
           setEditingTransaction(null);
@@ -1601,6 +1607,20 @@ export default function BankPage() {
                       onChange={(event) => setFieldsValue({ special_type: event.target.checked ? "other_income_expense" : null })}
                     >
                       其他收支
+                    </Checkbox>
+                    <Checkbox
+                      checked={specialType === "counter_refund"}
+                      disabled={disabled}
+                      onChange={(event) => setFieldsValue({ special_type: event.target.checked ? "counter_refund" : null })}
+                    >
+                      对退款
+                    </Checkbox>
+                    <Checkbox
+                      checked={specialType === "loan_repayment"}
+                      disabled={disabled}
+                      onChange={(event) => setFieldsValue({ special_type: event.target.checked ? "loan_repayment" : null })}
+                    >
+                      借还款
                     </Checkbox>
                   </Space>
                 );

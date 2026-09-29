@@ -18,6 +18,21 @@ function bankDirectionCell(direction: "income" | "expense", target: "income" | "
   return <StatusBadge status={direction === "income" ? "income" : "expense"} text={direction === "income" ? "收入" : "支出"} size="small" />;
 }
 
+const bankPaymentStatusLabels: Record<string, { label: string; color: string }> = {
+  paid: { label: "已实付", color: "success" },
+  unpaid: { label: "未实付", color: "warning" },
+  unreceived: { label: "未实收", color: "processing" },
+};
+
+const bankSpecialTypeLabels: Record<string, string> = {
+  current_account: "往来款",
+  shareholder_dividend: "股东分红",
+  shareholder_capital: "股东注资",
+  other_income_expense: "其他收支",
+  counter_refund: "对退款",
+  loan_repayment: "借还款",
+};
+
 export function getBankTransactionViewColumns(): BankTransactionViewColumn[] {
   return [
     {
@@ -88,9 +103,10 @@ export function getBankTransactionViewColumns(): BankTransactionViewColumn[] {
       title: "付款情况",
       dataIndex: "payment_status",
       width: 96,
-      render: (value: string | null | undefined) => (
-        <Tag color={value === "unpaid" ? "warning" : "success"}>{value === "unpaid" ? "未实付" : "已实付"}</Tag>
-      ),
+      render: (value: string | null | undefined) => {
+        const status = bankPaymentStatusLabels[value || "paid"] ?? bankPaymentStatusLabels.paid;
+        return <Tag color={status.color}>{status.label}</Tag>;
+      },
     },
     {
       key: "special_type",
@@ -98,12 +114,7 @@ export function getBankTransactionViewColumns(): BankTransactionViewColumn[] {
       dataIndex: "special_type",
       width: 110,
       render: (value: string | null | undefined) =>
-        value ? <Tag color="purple">{({
-          current_account: "往来款",
-          shareholder_dividend: "股东分红",
-          shareholder_capital: "股东注资",
-          other_income_expense: "其他收支",
-        } as Record<string, string>)[value] ?? value}</Tag> : <Tag>普通</Tag>,
+        value ? <Tag color="purple">{bankSpecialTypeLabels[value] ?? value}</Tag> : <Tag>普通</Tag>,
     },
     {
       key: "match_status",

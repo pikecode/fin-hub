@@ -106,7 +106,7 @@ def list_bank_transactions(
     store_id: str | None = None,
     ledger_period: str | None = None,
     direction: str | None = None,
-    special_type: Literal["normal", "current_account", "shareholder_dividend", "shareholder_capital", "other_income_expense"] | None = None,
+    special_type: Literal["normal", "current_account", "shareholder_dividend", "shareholder_capital", "other_income_expense", "counter_refund", "loan_repayment"] | None = None,
     match_status: Literal["unmatched", "matched"] | None = None,
     amount: Decimal | None = None,
     counterparty_name: str | None = None,
@@ -203,7 +203,7 @@ def build_bank_transaction_query(
     store_id: str | None = None,
     ledger_period: str | None = None,
     direction: str | None = None,
-    special_type: Literal["normal", "current_account", "shareholder_dividend", "shareholder_capital", "other_income_expense"] | None = None,
+    special_type: Literal["normal", "current_account", "shareholder_dividend", "shareholder_capital", "other_income_expense", "counter_refund", "loan_repayment"] | None = None,
     match_status: Literal["unmatched", "matched"] | None = None,
     amount: Decimal | None = None,
     counterparty_name: str | None = None,
@@ -257,7 +257,7 @@ def summarize_bank_transactions(
     store_id: str | None = None,
     ledger_period: str | None = None,
     direction: str | None = None,
-    special_type: Literal["normal", "current_account", "shareholder_dividend", "shareholder_capital", "other_income_expense"] | None = None,
+    special_type: Literal["normal", "current_account", "shareholder_dividend", "shareholder_capital", "other_income_expense", "counter_refund", "loan_repayment"] | None = None,
     match_status: Literal["unmatched", "matched"] | None = None,
     amount: Decimal | None = None,
     counterparty_name: str | None = None,
@@ -312,6 +312,8 @@ SPECIAL_TYPE_LABELS = {
     "shareholder_dividend": "股东分红",
     "shareholder_capital": "股东注资",
     "other_income_expense": "其他收支",
+    "counter_refund": "对退款",
+    "loan_repayment": "借还款",
 }
 
 

@@ -583,8 +583,8 @@ class BankTransactionCreate(BaseModel):
     counterparty_account: str | None = None
     summary: str | None = None
     bank_serial_no: str | None = None
-    payment_status: str = Field(default="paid", pattern=r"^(paid|unpaid)$")
-    special_type: str | None = Field(default=None, pattern=r"^(current_account|shareholder_dividend|shareholder_capital|other_income_expense)$")
+    payment_status: str = Field(default="paid", pattern=r"^(paid|unpaid|unreceived)$")
+    special_type: str | None = Field(default=None, pattern=r"^(current_account|shareholder_dividend|shareholder_capital|other_income_expense|counter_refund|loan_repayment)$")
     allow_duplicates: bool = Field(default=False, exclude=True)
 
 
@@ -620,8 +620,8 @@ class BankTransactionUpdate(BaseModel):
     counterparty_account: str | None = None
     summary: str | None = None
     bank_serial_no: str | None = None
-    payment_status: str | None = Field(default=None, pattern=r"^(paid|unpaid)$")
-    special_type: str | None = Field(default=None, pattern=r"^(current_account|shareholder_dividend|shareholder_capital|other_income_expense)$")
+    payment_status: str | None = Field(default=None, pattern=r"^(paid|unpaid|unreceived)$")
+    special_type: str | None = Field(default=None, pattern=r"^(current_account|shareholder_dividend|shareholder_capital|other_income_expense|counter_refund|loan_repayment)$")
     allow_duplicates: bool = Field(default=False, exclude=True)
 
 

@@ -48,6 +48,7 @@ class ExpensePaymentStatus(StrEnum):
 class BankPaymentStatus(StrEnum):
     PAID = "paid"
     UNPAID = "unpaid"
+    UNRECEIVED = "unreceived"
 
 
 class BankSpecialType(StrEnum):
@@ -55,6 +56,8 @@ class BankSpecialType(StrEnum):
     SHAREHOLDER_DIVIDEND = "shareholder_dividend"
     SHAREHOLDER_CAPITAL = "shareholder_capital"
     OTHER_INCOME_EXPENSE = "other_income_expense"
+    COUNTER_REFUND = "counter_refund"
+    LOAN_REPAYMENT = "loan_repayment"
 
 
 class MatchStatus(StrEnum):
