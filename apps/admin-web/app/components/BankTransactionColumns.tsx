@@ -71,8 +71,17 @@ export function getBankTransactionViewColumns(): BankTransactionViewColumn[] {
       dataIndex: "amount",
       width: 120,
       align: "right",
-      render: (value, record) => <MoneyDisplay value={value} colorize={record.direction === "income"} />,
+      render: (value, record) => <MoneyDisplay value={Number(value)} colorize={record.direction === "income"} />,
       sorter: (left, right) => Number(left.amount) - Number(right.amount),
+    },
+    {
+      key: "running_balance",
+      title: "余额",
+      dataIndex: "running_balance",
+      width: 130,
+      align: "right",
+      render: (value: string | null | undefined) => value ? <MoneyDisplay value={Number(value)} /> : "-",
+      sorter: (left, right) => Number(left.running_balance || 0) - Number(right.running_balance || 0),
     },
     {
       key: "payment_status",

@@ -27,6 +27,7 @@ import type {
   BankTransactionDuplicateCheckResult,
   BankTransactionCreate,
   BankTransactionBatchDeleteResult,
+  BankTransactionSummary,
   BankTransactionUpdate,
   BankBalance,
   BankBalanceCorrection,
@@ -452,6 +453,7 @@ export function createApiClient(options: ApiClientOptions) {
     },
     bankTransactions: {
       list: (params = "") => request<Page<BankTransaction>>(`/api/bank-transactions${params}`),
+      summary: (params = "") => request<BankTransactionSummary>(`/api/bank-transactions/summary${params}`),
       businessDetail: (id: string) =>
         request<BankTransactionBusinessDetail>(`/api/bank-transactions/${encodeURIComponent(id)}/business-detail`),
       create: (payload: BankTransactionCreate) =>

@@ -26,6 +26,7 @@ import type {
   BankBalanceCorrectionCreate,
   BankTransaction,
   BankTransactionCreate,
+  BankTransactionSummary,
   Ledger,
   Store,
 } from "@fin-hub/shared-types";
@@ -50,7 +51,6 @@ interface BankFormValues extends Omit<BankTransactionCreate, "occurred_at"> {
 
 interface BankFilterValues {
   store_id?: string;
-  month?: dayjs.Dayjs;
   direction?: "income" | "expense";
   special_type?: "normal" | "current_account" | "shareholder_dividend" | "shareholder_capital" | "other_income_expense";
   unmatched_only?: boolean;
@@ -58,7 +58,7 @@ interface BankFilterValues {
   amount?: number;
   counterparty_name?: string;
   counterparty_account?: string;
-  occurred_range?: [dayjs.Dayjs, dayjs.Dayjs];
+  list_occurred_range?: [dayjs.Dayjs, dayjs.Dayjs];
 }
 
 interface BankBalanceCorrectionFormValues {
@@ -128,6 +128,15 @@ const bankPaymentStatusOptions: Array<{ label: string; value: BankPaymentStatus 
   { label: "已实付", value: "paid" },
   { label: "未实付", value: "unpaid" },
 ];
+
+const emptyBankTransactionSummary: BankTransactionSummary = {
+  income_amount: "0",
+  expense_amount: "0",
+  net_amount: "0",
+  income_count: 0,
+  expense_count: 0,
+  transaction_count: 0,
+};
 
 function createBankEntryRows(count: number): BankEntryRow[] {
   return Array.from({ length: count }, (_, index) => ({
@@ -353,6 +362,11 @@ export default function BankPage() {
   const searchParams = useClientSearchParams();
   const queryStoreId = searchParams.get("store_id") ?? undefined;
   const queryLedgerPeriod = searchParams.get("ledger_period") ?? undefined;
+  const defaultOccurredRange = useMemo<[dayjs.Dayjs, dayjs.Dayjs]>(() => {
+    const periodMonth = queryLedgerPeriod ? dayjs(`${queryLedgerPeriod}-01`, "YYYY-MM-DD", true) : null;
+    const start = periodMonth?.isValid() ? periodMonth.startOf("month") : dayjs().startOf("month");
+    return [start, start.endOf("month")];
+  }, [queryLedgerPeriod]);
   const initialFilters = useMemo<BankFilterValues>(
     () => ({
       store_id: queryStoreId,
@@ -363,6 +377,8 @@ export default function BankPage() {
   const [stores, setStores] = useState<Store[]>([]);
   const [ledgers, setLedgers] = useState<Ledger[]>([]);
   const [transactions, setTransactions] = useState<BankTransaction[]>([]);
+  const [transactionSummary, setTransactionSummary] = useState<BankTransactionSummary>(emptyBankTransactionSummary);
+  const [summaryRange, setSummaryRange] = useState<[dayjs.Dayjs, dayjs.Dayjs]>(defaultOccurredRange);
   const [entryRows, setEntryRows] = useState<BankEntryRow[]>(() => createBankEntryRows(10));
   const [entryValidationErrors, setEntryValidationErrors] = useState<string[]>([]);
   const [uploadFileList, setUploadFileList] = useState<UploadFile[]>([]);
@@ -412,6 +428,16 @@ export default function BankPage() {
   const entryLedgerOptions = openLedgerOptions.filter((option) => !queryStoreId || option.value.startsWith(`${queryStoreId}|`));
   const currentStore = queryStoreId ? storesById.get(queryStoreId) : undefined;
   const currentStoreLedgerLabel = queryStoreId ? `${currentStore?.name ?? "当前门店"}` : "";
+  const activeRangeText = useMemo(() => {
+    const [start, end] = summaryRange;
+    if (start && end) return `${start.format("YYYY年MM月DD日")} - ${end.format("YYYY年MM月DD日")}`;
+    if (start) return `${start.format("YYYY年MM月DD日")}之后`;
+    if (end) return `${end.format("YYYY年MM月DD日")}之前`;
+    return "全部日期";
+  }, [summaryRange]);
+  const summaryIncome = Number(transactionSummary.income_amount || 0);
+  const summaryExpense = Number(transactionSummary.expense_amount || 0);
+  const summaryNet = Number(transactionSummary.net_amount || 0);
 
   const entryBatchTotals = useMemo(() => {
     return entryRows.reduce(
@@ -427,25 +453,11 @@ export default function BankPage() {
     );
   }, [entryRows]);
 
-  const transactionTotals = useMemo(
-    () => transactions.reduce(
-      (totals, transaction) => ({
-        income: totals.income + (transaction.direction === "income" ? Number(transaction.amount) : 0),
-        expense: totals.expense + (transaction.direction === "expense" ? Number(transaction.amount) : 0),
-      }),
-      { income: 0, expense: 0 },
-    ),
-    [transactions],
-  );
-
-  function buildFilterParams(values?: BankFilterValues) {
-    const params = new URLSearchParams({ page_size: "500" });
+  function buildFilterParams(values?: BankFilterValues, options: { includePagination?: boolean } = {}) {
+    const params = new URLSearchParams();
+    if (options.includePagination ?? true) params.set("page_size", "500");
     const storeId = values?.store_id || queryStoreId;
     if (storeId) params.set("store_id", storeId);
-    if (values?.month) {
-      params.set("occurred_from", values.month.startOf("month").format("YYYY-MM-DD HH:mm:ss"));
-      params.set("occurred_to", values.month.add(1, "month").startOf("month").format("YYYY-MM-DD HH:mm:ss"));
-    }
     if (values?.direction) params.set("direction", values.direction);
     if (values?.special_type) params.set("special_type", values.special_type);
     if (values?.unmatched_only) params.set("unmatched_only", "true");
@@ -453,8 +465,16 @@ export default function BankPage() {
     if (values?.amount !== undefined && values.amount !== null) params.set("amount", String(values.amount));
     if (values?.counterparty_name?.trim()) params.set("counterparty_name", values.counterparty_name.trim());
     if (values?.counterparty_account?.trim()) params.set("counterparty_account", values.counterparty_account.trim());
-    if (values?.occurred_range?.[0]) params.set("occurred_from", values.occurred_range[0].startOf("day").format("YYYY-MM-DD HH:mm:ss"));
-    if (values?.occurred_range?.[1]) params.set("occurred_to", values.occurred_range[1].add(1, "day").startOf("day").format("YYYY-MM-DD HH:mm:ss"));
+    if (values?.list_occurred_range?.[0]) params.set("occurred_from", values.list_occurred_range[0].startOf("day").format("YYYY-MM-DD HH:mm:ss"));
+    if (values?.list_occurred_range?.[1]) params.set("occurred_to", values.list_occurred_range[1].add(1, "day").startOf("day").format("YYYY-MM-DD HH:mm:ss"));
+    return `?${params.toString()}`;
+  }
+
+  function buildSummaryParams(range = summaryRange) {
+    const params = new URLSearchParams();
+    if (queryStoreId) params.set("store_id", queryStoreId);
+    if (range?.[0]) params.set("occurred_from", range[0].startOf("day").format("YYYY-MM-DD HH:mm:ss"));
+    if (range?.[1]) params.set("occurred_to", range[1].add(1, "day").startOf("day").format("YYYY-MM-DD HH:mm:ss"));
     return `?${params.toString()}`;
   }
 
@@ -462,11 +482,12 @@ export default function BankPage() {
     const requestId = ++loadRequestIdRef.current;
     setIsLoading(true);
     setErrorMessage(null);
+    const effectiveFilters = filters ?? filterForm.getFieldsValue();
     try {
       const [storePage, ledgerPage, transactionPage] = await Promise.all([
         getStores(),
         getLedgers(),
-        apiClient.bankTransactions.list(buildFilterParams(filters ?? filterForm.getFieldsValue())),
+        apiClient.bankTransactions.list(buildFilterParams(effectiveFilters, { includePagination: true })),
       ]);
       if (requestId === loadRequestIdRef.current) {
         setStores(storePage);
@@ -487,6 +508,14 @@ export default function BankPage() {
       if (requestId === loadRequestIdRef.current) {
         setIsLoading(false);
       }
+    }
+  }
+
+  async function loadSummary(range = summaryRange) {
+    try {
+      setTransactionSummary(await apiClient.bankTransactions.summary(buildSummaryParams(range)));
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "加载统计失败");
     }
   }
 
@@ -562,8 +591,10 @@ export default function BankPage() {
 
   useEffect(() => {
     filterForm.setFieldsValue(initialFilters);
+    setSummaryRange(defaultOccurredRange);
     void loadData(initialFilters);
-  }, [filterForm, initialFilters]);
+    void loadSummary(defaultOccurredRange);
+  }, [defaultOccurredRange, filterForm, initialFilters]);
 
   function openCreateModal() {
     setEditingTransaction(null);
@@ -685,6 +716,7 @@ export default function BankPage() {
       setIsModalOpen(false);
       setEditingTransaction(null);
       await loadData(initialFilters);
+      await loadSummary();
     } catch (error) {
       if (!duplicatesConfirmed && isDuplicateConflict(error)) {
         openDuplicateTransactionConfirm(
@@ -821,6 +853,7 @@ export default function BankPage() {
       message.success(`成功录入 ${result.created_count} 条流水`);
       setIsEntryModalOpen(false);
       await loadData(initialFilters);
+      await loadSummary();
     } catch (error) {
       message.error(error instanceof Error ? error.message : "录入失败");
     } finally {
@@ -939,6 +972,7 @@ export default function BankPage() {
       setIsImportModalOpen(false);
       setImportPreview(null);
       await loadData(initialFilters);
+      await loadSummary();
     } catch (error) {
       message.error(error instanceof Error ? error.message : "导入失败");
     } finally {
@@ -970,6 +1004,7 @@ export default function BankPage() {
       await apiClient.bankTransactions.delete(record.id);
       message.success("删除成功");
       await loadData(initialFilters);
+      await loadSummary();
     } catch (error) {
       message.error(error instanceof Error ? error.message : "删除失败");
     } finally {
@@ -994,6 +1029,7 @@ export default function BankPage() {
       const result = await apiClient.bankTransactions.deleteBatch(ids);
       message.success(`成功删除 ${result.deleted_count} 条流水`);
       await loadData(initialFilters);
+      await loadSummary();
     } catch (error) {
       message.error(error instanceof Error ? error.message : "批量删除失败");
     } finally {
@@ -1329,12 +1365,51 @@ export default function BankPage() {
           >
           <div className="bank-overview">
             <div className="bank-overview__metrics">
+              <div className="bank-overview__range">
+                <div className="bank-overview__range-copy">
+                  <Typography.Text className="bank-overview__range-label">统计日期范围</Typography.Text>
+                  <Typography.Text className="bank-overview__range-value">{activeRangeText}</Typography.Text>
+                </div>
+                <DatePicker.RangePicker
+                  locale={zhCN.DatePicker}
+                  allowClear={false}
+                  value={summaryRange}
+                  onChange={(dates) => {
+                    if (!dates?.[0] || !dates?.[1]) return;
+                    const nextRange: [dayjs.Dayjs, dayjs.Dayjs] = [dates[0], dates[1]];
+                    setSummaryRange(nextRange);
+                    void loadSummary(nextRange);
+                  }}
+                />
+              </div>
               <div className="bank-overview__metric bank-overview__metric--income">
-                <Statistic title="本月收入累计" value={transactionTotals.income} precision={2} prefix="¥" />
+                <Statistic title="范围收入累计" value={summaryIncome} precision={2} prefix="¥" />
+                <Typography.Text type="secondary">{transactionSummary.income_count} 笔收入流水</Typography.Text>
               </div>
               <div className="bank-overview__metric bank-overview__metric--expense">
-                <Statistic title="本月支出累计" value={transactionTotals.expense} precision={2} prefix="¥" />
+                <Statistic title="范围支出累计" value={summaryExpense} precision={2} prefix="¥" />
+                <Typography.Text type="secondary">{transactionSummary.expense_count} 笔支出流水</Typography.Text>
               </div>
+              <div className="bank-overview__metric bank-overview__metric--net">
+                <Statistic title="范围净流入" value={summaryNet} precision={2} prefix="¥" />
+                <Typography.Text type="secondary">共 {transactionSummary.transaction_count} 笔流水</Typography.Text>
+              </div>
+            </div>
+          </div>
+          <div className="bank-balance-panel">
+            <div className="bank-balance-panel__header">
+              <div>
+                <Typography.Text className="bank-balance-panel__title">银行余额管理</Typography.Text>
+                <Typography.Text type="secondary" className="bank-balance-panel__description">
+                  录入银行余额基准后，系统按之后发生的流水计算实时余额
+                </Typography.Text>
+              </div>
+              <Space wrap>
+                <Button type="primary" onClick={openBalanceCorrectionModal}>录入银行余额</Button>
+                <Button onClick={() => void loadBalanceHistory()}>查看校正记录</Button>
+              </Space>
+            </div>
+            <div className="bank-balance-panel__metrics">
               <div className="bank-overview__metric">
                 <Statistic
                   title="银行余额录入基准"
@@ -1360,28 +1435,16 @@ export default function BankPage() {
                 )}
               </div>
             </div>
-            <div className="bank-overview__actions">
-              <Typography.Text className="bank-overview__actions-title">余额校正</Typography.Text>
-              <Typography.Text type="secondary" className="bank-overview__actions-description">
-                通过录入日期之后的银行流水计算实时余额
-              </Typography.Text>
-              <Space wrap>
-                <Button type="primary" onClick={openBalanceCorrectionModal}>录入银行余额</Button>
-                <Button onClick={() => void loadBalanceHistory()}>查看校正记录</Button>
-              </Space>
-            </div>
           </div>
           <Form
             form={filterForm}
             layout="inline"
+            className="bank-filter-form"
             onFinish={(values) => void loadData(values)}
             style={{ marginBottom: 16 }}
           >
-            <Form.Item name="month">
-              <DatePicker picker="month" locale={zhCN.DatePicker} allowClear placeholder="发生月份" />
-            </Form.Item>
-            <Form.Item name="occurred_range">
-              <DatePicker.RangePicker locale={zhCN.DatePicker} allowClear placeholder={["发生日期开始", "发生日期结束"]} />
+            <Form.Item name="list_occurred_range" label="流水发生日期">
+              <DatePicker.RangePicker locale={zhCN.DatePicker} allowClear placeholder={["开始日期", "结束日期"]} />
             </Form.Item>
             <Form.Item name="direction">
               <Select

@@ -601,6 +601,15 @@ class BankTransactionDuplicateCheckResult(BaseModel):
     duplicate_count: int
 
 
+class BankTransactionSummaryRead(BaseModel):
+    income_amount: Decimal
+    expense_amount: Decimal
+    net_amount: Decimal
+    income_count: int
+    expense_count: int
+    transaction_count: int
+
+
 class BankTransactionUpdate(BaseModel):
     store_id: str | None = None
     ledger_period: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}$")
@@ -622,6 +631,7 @@ class BankTransactionRead(BankTransactionCreate):
     id: str
     ledger_period: str
     matched_amount: Decimal
+    running_balance: Decimal | None = None
     import_job_id: str | None = None
     created_at: datetime
     updated_at: datetime

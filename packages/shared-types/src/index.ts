@@ -504,6 +504,7 @@ export interface BankTransaction {
   payment_status: BankPaymentStatus;
   special_type?: BankSpecialType | null;
   matched_amount: string;
+  running_balance?: string | null;
   import_job_id?: string | null;
   created_at: string;
   updated_at: string;
@@ -580,6 +581,15 @@ export interface BankTransactionBatchCreateResult {
 export interface BankTransactionDuplicateCheckResult {
   duplicate_indices: number[];
   duplicate_count: number;
+}
+
+export interface BankTransactionSummary {
+  income_amount: string;
+  expense_amount: string;
+  net_amount: string;
+  income_count: number;
+  expense_count: number;
+  transaction_count: number;
 }
 
 export interface BankTransactionUpdate {

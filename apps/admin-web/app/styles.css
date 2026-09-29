@@ -3862,9 +3862,6 @@ select,
 }
 
 .bank-overview {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 300px;
-  gap: 16px;
   margin: 16px;
   padding: 16px;
   border: 1px solid #e7edf3;
@@ -3874,8 +3871,42 @@ select,
 
 .bank-overview__metrics {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
+}
+
+.bank-overview__range {
+  display: flex;
+  grid-column: 1 / -1;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid #dbeafe;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #f8fbff 0%, #eefcf8 100%);
+}
+
+.bank-overview__range-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.bank-overview__range-label {
+  color: #64748b;
+  font-size: 13px;
+}
+
+.bank-overview__range-value {
+  overflow: hidden;
+  color: #0f172a;
+  font-size: 14px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .bank-overview__metric {
@@ -3892,6 +3923,10 @@ select,
 
 .bank-overview__metric--expense {
   border-top: 3px solid #f97316;
+}
+
+.bank-overview__metric--net {
+  border-top: 3px solid #7c3aed;
 }
 
 .bank-overview__metric--balance {
@@ -3920,26 +3955,45 @@ select,
   white-space: nowrap;
 }
 
-.bank-overview__actions {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  justify-content: center;
-  gap: 8px;
-  padding: 4px 4px 4px 20px;
-  border-left: 1px solid #e2e8f0;
+.bank-balance-panel {
+  margin: 0 16px 16px;
+  padding: 16px;
+  border: 1px solid #e7edf3;
+  border-radius: 10px;
+  background: #ffffff;
 }
 
-.bank-overview__actions-title {
+.bank-balance-panel__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.bank-balance-panel__title {
+  display: block;
   color: #0f172a;
   font-size: 16px;
   font-weight: 700;
 }
 
-.bank-overview__actions-description {
-  margin-bottom: 6px;
+.bank-balance-panel__description {
+  display: block;
+  margin-top: 4px;
   font-size: 12px;
-  line-height: 1.5;
+}
+
+.bank-balance-panel__metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.bank-filter-form {
+  row-gap: 10px;
+  padding: 0 16px 16px;
+  border-bottom: 1px solid #eef2f7;
 }
 
 .revenue-entry-table .ant-table-thead > tr > th {
@@ -4143,18 +4197,16 @@ select,
     justify-content: flex-start;
   }
 
-  .bank-overview {
-    grid-template-columns: 1fr;
-  }
-
   .bank-overview__metrics {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .bank-overview__actions {
-    padding: 16px 0 0;
-    border-top: 1px solid #e2e8f0;
-    border-left: 0;
+  .bank-balance-panel__header {
+    flex-direction: column;
+  }
+
+  .bank-balance-panel__metrics {
+    grid-template-columns: 1fr;
   }
 
   .store-financial-report__hero {

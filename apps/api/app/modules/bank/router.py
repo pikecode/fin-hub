@@ -16,6 +16,7 @@ from app.models import (
     ApprovalInstance,
     ApprovalTemplate,
     Attachment,
+    BankBalanceCorrection,
     BankTransaction,
     ExpenseBankMatch,
     ExpenseItem,
@@ -56,6 +57,7 @@ from app.schemas import (
     BankTransactionCreate,
     BankTransactionDuplicateCheckResult,
     BankTransactionRead,
+    BankTransactionSummaryRead,
     BankTransactionUpdate,
     Page,
 )
@@ -118,6 +120,98 @@ def list_bank_transactions(
     current_user: User = Depends(get_current_user),
 ) -> ApiEnvelope[Page[BankTransactionRead]]:
     ensure_permission(session, current_user, "reconciliation.view")
+    query = build_bank_transaction_query(
+        session=session,
+        current_user=current_user,
+        store_id=store_id,
+        ledger_period=ledger_period,
+        direction=direction,
+        special_type=special_type,
+        match_status=match_status,
+        amount=amount,
+        counterparty_name=counterparty_name,
+        counterparty_account=counterparty_account,
+        occurred_from=occurred_from,
+        occurred_to=occurred_to,
+        exclude_special=exclude_special,
+    ).order_by(BankTransaction.occurred_at.desc())
+    items, total = paginate(session, query, page, page_size)
+    attach_running_balances(session, items)
+    return ApiEnvelope(data=Page(items=items, total=total, page=page, page_size=page_size))
+
+
+def attach_running_balances(session: Session, items: list[BankTransaction]) -> None:
+    if not items:
+        return
+    item_ids = {item.id for item in items}
+    store_ids = sorted({item.store_id for item in items})
+    for store_id in store_ids:
+        corrections = list(
+            session.scalars(
+                select(BankBalanceCorrection)
+                .where(BankBalanceCorrection.store_id == store_id)
+                .order_by(
+                    BankBalanceCorrection.correction_date.asc(),
+                    BankBalanceCorrection.created_at.asc(),
+                    BankBalanceCorrection.id.asc(),
+                )
+            )
+        )
+        if not corrections:
+            for item in items:
+                if item.store_id == store_id:
+                    item.running_balance = None
+            continue
+
+        first_start = datetime.combine(corrections[0].correction_date, time.min)
+        transactions = list(
+            session.scalars(
+                select(BankTransaction)
+                .where(BankTransaction.store_id == store_id, BankTransaction.occurred_at >= first_start)
+                .order_by(
+                    BankTransaction.occurred_at.asc(),
+                    BankTransaction.created_at.asc(),
+                    BankTransaction.id.asc(),
+                )
+            )
+        )
+        correction_index = 0
+        running_balance = Decimal(corrections[0].balance_amount)
+        for transaction in transactions:
+            while (
+                correction_index + 1 < len(corrections)
+                and transaction.occurred_at >= datetime.combine(corrections[correction_index + 1].correction_date, time.min)
+            ):
+                correction_index += 1
+                running_balance = Decimal(corrections[correction_index].balance_amount)
+            if transaction.direction == "income":
+                running_balance += Decimal(transaction.amount)
+            else:
+                running_balance -= Decimal(transaction.amount)
+            if transaction.id in item_ids:
+                transaction.running_balance = running_balance
+
+        for item in items:
+            if item.store_id == store_id and not hasattr(item, "running_balance"):
+                item.running_balance = None
+
+
+def build_bank_transaction_query(
+    *,
+    session: Session,
+    current_user: User,
+    store_id: str | None = None,
+    ledger_period: str | None = None,
+    direction: str | None = None,
+    special_type: Literal["normal", "current_account", "shareholder_dividend", "shareholder_capital", "other_income_expense"] | None = None,
+    match_status: Literal["unmatched", "matched"] | None = None,
+    amount: Decimal | None = None,
+    counterparty_name: str | None = None,
+    counterparty_account: str | None = None,
+    occurred_from: datetime | None = None,
+    occurred_to: datetime | None = None,
+    exclude_special: bool = False,
+):
     query = select(BankTransaction).order_by(BankTransaction.occurred_at.desc())
     if store_id:
         ensure_store_access(session, current_user, store_id)
@@ -155,8 +249,62 @@ def list_bank_transactions(
         query = query.where(BankTransaction.occurred_at < occurred_to)
     if exclude_special:
         query = query.where(BankTransaction.special_type.is_(None))
-    items, total = paginate(session, query, page, page_size)
-    return ApiEnvelope(data=Page(items=items, total=total, page=page, page_size=page_size))
+    return query
+
+
+@router.get("/summary", response_model=ApiEnvelope[BankTransactionSummaryRead])
+def summarize_bank_transactions(
+    store_id: str | None = None,
+    ledger_period: str | None = None,
+    direction: str | None = None,
+    special_type: Literal["normal", "current_account", "shareholder_dividend", "shareholder_capital", "other_income_expense"] | None = None,
+    match_status: Literal["unmatched", "matched"] | None = None,
+    amount: Decimal | None = None,
+    counterparty_name: str | None = None,
+    counterparty_account: str | None = None,
+    occurred_from: datetime | None = None,
+    occurred_to: datetime | None = None,
+    exclude_special: bool = False,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> ApiEnvelope[BankTransactionSummaryRead]:
+    ensure_permission(session, current_user, "reconciliation.view")
+    filtered = build_bank_transaction_query(
+        session=session,
+        current_user=current_user,
+        store_id=store_id,
+        ledger_period=ledger_period,
+        direction=direction,
+        special_type=special_type,
+        match_status=match_status,
+        amount=amount,
+        counterparty_name=counterparty_name,
+        counterparty_account=counterparty_account,
+        occurred_from=occurred_from,
+        occurred_to=occurred_to,
+        exclude_special=exclude_special,
+    ).subquery()
+    result = session.execute(
+        select(
+            func.coalesce(func.sum(filtered.c.amount).filter(filtered.c.direction == "income"), Decimal("0")),
+            func.coalesce(func.sum(filtered.c.amount).filter(filtered.c.direction == "expense"), Decimal("0")),
+            func.count().filter(filtered.c.direction == "income"),
+            func.count().filter(filtered.c.direction == "expense"),
+            func.count(),
+        )
+    ).one()
+    income_amount = result[0] or Decimal("0")
+    expense_amount = result[1] or Decimal("0")
+    return ApiEnvelope(
+        data=BankTransactionSummaryRead(
+            income_amount=income_amount,
+            expense_amount=expense_amount,
+            net_amount=income_amount - expense_amount,
+            income_count=result[2] or 0,
+            expense_count=result[3] or 0,
+            transaction_count=result[4] or 0,
+        )
+    )
 
 
 SPECIAL_TYPE_LABELS = {

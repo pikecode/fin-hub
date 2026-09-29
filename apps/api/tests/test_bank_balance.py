@@ -87,6 +87,56 @@ def test_bank_balance_uses_latest_correction_and_transactions_on_or_after_date(
     assert history.json()["data"][0]["created_by"] == "系统管理员"
 
 
+def test_bank_transactions_include_running_balance_after_correction(
+    client: TestClient, session: Session
+) -> None:
+    store_id = client.post("/api/stores", json={"name": "流水余额列测试店"}).json()["data"]["id"]
+    session.add_all(
+        [
+            BankTransaction(
+                store_id=store_id,
+                ledger_period="2026-09",
+                occurred_at=datetime(2026, 9, 15, 9, 0),  # noqa: DTZ001
+                direction="expense",
+                amount=Decimal("1000.00"),
+                counterparty_name="支出供应商",
+            ),
+            BankTransaction(
+                store_id=store_id,
+                ledger_period="2026-09",
+                occurred_at=datetime(2026, 9, 16, 9, 0),  # noqa: DTZ001
+                direction="income",
+                amount=Decimal("3000.00"),
+                counterparty_name="收入客户",
+            ),
+        ]
+    )
+    session.commit()
+
+    response = client.post(
+        "/api/bank-balance/corrections",
+        json={
+            "store_id": store_id,
+            "correction_date": "2026-09-14",
+            "balance_amount": "10000.00",
+            "remark": "银行余额基准",
+            "password": "admin123456",
+        },
+    )
+    assert response.status_code == 201
+
+    transactions = client.get(
+        f"/api/bank-transactions?store_id={store_id}&page_size=20"
+    )
+    assert transactions.status_code == 200
+    rows = {
+        item["counterparty_name"]: item["running_balance"]
+        for item in transactions.json()["data"]["items"]
+    }
+    assert rows["支出供应商"] == "9000.00"
+    assert rows["收入客户"] == "12000.00"
+
+
 def test_bank_balance_correction_requires_password_and_open_ledger(client: TestClient) -> None:
     store_id = client.post("/api/stores", json={"name": "余额封账测试店"}).json()["data"]["id"]
     invalid = client.post(
