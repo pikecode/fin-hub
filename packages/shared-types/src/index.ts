@@ -566,6 +566,7 @@ export interface BankTransactionCreate {
   bank_serial_no?: string | null;
   payment_status?: BankPaymentStatus;
   special_type?: BankSpecialType | null;
+  allow_duplicates?: boolean;
 }
 
 export interface BankTransactionBatchCreateRequest {
@@ -574,6 +575,11 @@ export interface BankTransactionBatchCreateRequest {
 
 export interface BankTransactionBatchCreateResult {
   created_count: number;
+}
+
+export interface BankTransactionDuplicateCheckResult {
+  duplicate_indices: number[];
+  duplicate_count: number;
 }
 
 export interface BankTransactionUpdate {
@@ -588,6 +594,7 @@ export interface BankTransactionUpdate {
   bank_serial_no?: string | null;
   payment_status?: BankPaymentStatus;
   special_type?: BankSpecialType | null;
+  allow_duplicates?: boolean;
 }
 
 export interface BankTransactionBatchDeleteResult {

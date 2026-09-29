@@ -24,6 +24,7 @@ import type {
   BankTransactionBusinessDetail,
   BankTransactionBatchCreateRequest,
   BankTransactionBatchCreateResult,
+  BankTransactionDuplicateCheckResult,
   BankTransactionCreate,
   BankTransactionBatchDeleteResult,
   BankTransactionUpdate,
@@ -460,6 +461,11 @@ export function createApiClient(options: ApiClientOptions) {
         }),
       createBatch: (payload: BankTransactionBatchCreateRequest) =>
         request<BankTransactionBatchCreateResult>("/api/bank-transactions/batch", {
+          method: "POST",
+          body: JSON.stringify(payload),
+        }),
+      checkDuplicates: (payload: BankTransactionBatchCreateRequest) =>
+        request<BankTransactionDuplicateCheckResult>("/api/bank-transactions/duplicates/check", {
           method: "POST",
           body: JSON.stringify(payload),
         }),

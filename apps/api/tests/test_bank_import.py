@@ -507,6 +507,132 @@ def test_bank_transaction_payment_status_defaults_and_batch_unpaid(client: TestC
     assert statuses["未实付供应商"] == "unpaid"
 
 
+def test_bank_duplicate_check_matches_date_name_and_amount(client: TestClient) -> None:
+    store_id = client.post("/api/stores", json={"name": "流水重复检查店"}).json()["data"]["id"]
+    client.post(
+        "/api/bank-transactions",
+        json={
+            "store_id": store_id,
+            "occurred_at": "2026-08-20T09:30:00",
+            "direction": "expense",
+            "amount": "128.50",
+            "counterparty_name": "测试供应商",
+        },
+    )
+
+    response = client.post(
+        "/api/bank-transactions/duplicates/check",
+        json={
+            "items": [
+                {
+                    "store_id": store_id,
+                    "occurred_at": "2026-08-20T00:00:00",
+                    "direction": "income",
+                    "amount": "128.50",
+                    "counterparty_name": "测试供应商",
+                },
+                {
+                    "store_id": store_id,
+                    "occurred_at": "2026-08-20T18:00:00",
+                    "direction": "expense",
+                    "amount": "128.50",
+                    "counterparty_name": "测试供应商",
+                },
+                {
+                    "store_id": store_id,
+                    "occurred_at": "2026-08-21T00:00:00",
+                    "direction": "expense",
+                    "amount": "128.50",
+                    "counterparty_name": "测试供应商",
+                },
+            ]
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["duplicate_indices"] == [0, 1]
+    assert response.json()["data"]["duplicate_count"] == 2
+
+
+def test_create_bank_duplicate_requires_explicit_confirmation(client: TestClient) -> None:
+    store_id = client.post("/api/stores", json={"name": "重复流水保存保护店"}).json()["data"]["id"]
+    payload = {
+        "store_id": store_id,
+        "occurred_at": "2026-09-18T00:00:00",
+        "direction": "expense",
+        "amount": "100.00",
+        "counterparty_name": "11",
+    }
+    assert client.post("/api/bank-transactions", json=payload).status_code == 201
+
+    rejected = client.post("/api/bank-transactions", json=payload)
+    assert rejected.status_code == 409
+    assert rejected.json()["detail"] == "BANK_TRANSACTION_DUPLICATE"
+
+    confirmed = client.post("/api/bank-transactions", json={**payload, "allow_duplicates": True})
+    assert confirmed.status_code == 201
+
+
+def test_update_bank_duplicate_requires_explicit_confirmation(client: TestClient) -> None:
+    store_id = client.post("/api/stores", json={"name": "重复流水编辑保护店"}).json()["data"]["id"]
+    first_payload = {
+        "store_id": store_id,
+        "occurred_at": "2026-09-18T00:00:00",
+        "direction": "expense",
+        "amount": "100.00",
+        "counterparty_name": "11",
+    }
+    second_payload = {
+        **first_payload,
+        "occurred_at": "2026-09-19T00:00:00",
+        "counterparty_name": "22",
+    }
+    assert client.post("/api/bank-transactions", json=first_payload).status_code == 201
+    second_id = client.post("/api/bank-transactions", json=second_payload).json()["data"]["id"]
+
+    rejected = client.patch(f"/api/bank-transactions/{second_id}", json=first_payload)
+    assert rejected.status_code == 409
+    assert rejected.json()["detail"] == "BANK_TRANSACTION_DUPLICATE"
+
+    confirmed = client.patch(
+        f"/api/bank-transactions/{second_id}",
+        json={**first_payload, "allow_duplicates": True},
+    )
+    assert confirmed.status_code == 200
+
+
+def test_bank_import_can_include_confirmed_duplicates(client: TestClient) -> None:
+    store_id = client.post("/api/stores", json={"name": "确认导入重复流水店"}).json()["data"]["id"]
+    client.post(
+        "/api/bank-transactions",
+        json={
+            "store_id": store_id,
+            "occurred_at": "2026-08-20T09:30:00",
+            "direction": "expense",
+            "amount": "128.50",
+            "counterparty_name": "测试供应商",
+        },
+    )
+    csv_content = "发生日期,收入,支出,对方户名,对方账号,备注,流水号\n2026-08-20 18:00:00,,128.50,测试供应商,acct,重复流水,NEW-SERIAL"
+
+    preview = client.post(
+        "/api/bank-transactions/import/preview",
+        data={"store_id": store_id, "ledger_period": "2026-08"},
+        files={"file": ("duplicates.csv", csv_content.encode("utf-8"), "text/csv")},
+    )
+    assert preview.status_code == 200
+    assert preview.json()["data"]["duplicate_count"] == 1
+
+    imported = client.post(
+        "/api/bank-transactions/import",
+        data={"store_id": store_id, "ledger_period": "2026-08", "allow_duplicates": "true"},
+        files={"file": ("duplicates.csv", csv_content.encode("utf-8"), "text/csv")},
+    )
+    assert imported.status_code == 201
+    assert imported.json()["data"]["created_count"] == 1
+    assert imported.json()["data"]["skipped_count"] == 0
+
+
 def test_matched_bank_transaction_allows_payment_status_update_only(client: TestClient) -> None:
     store_id = client.post("/api/stores", json={"name": "已匹配付款状态店"}).json()["data"]["id"]
     client.post("/api/ledgers", json={"store_id": store_id, "period": "2026-08"})

@@ -585,6 +585,7 @@ class BankTransactionCreate(BaseModel):
     bank_serial_no: str | None = None
     payment_status: str = Field(default="paid", pattern=r"^(paid|unpaid)$")
     special_type: str | None = Field(default=None, pattern=r"^(current_account|shareholder_dividend|shareholder_capital|other_income_expense)$")
+    allow_duplicates: bool = Field(default=False, exclude=True)
 
 
 class BankTransactionBatchCreateRequest(BaseModel):
@@ -593,6 +594,11 @@ class BankTransactionBatchCreateRequest(BaseModel):
 
 class BankTransactionBatchCreateResult(BaseModel):
     created_count: int
+
+
+class BankTransactionDuplicateCheckResult(BaseModel):
+    duplicate_indices: list[int]
+    duplicate_count: int
 
 
 class BankTransactionUpdate(BaseModel):
@@ -607,6 +613,7 @@ class BankTransactionUpdate(BaseModel):
     bank_serial_no: str | None = None
     payment_status: str | None = Field(default=None, pattern=r"^(paid|unpaid)$")
     special_type: str | None = Field(default=None, pattern=r"^(current_account|shareholder_dividend|shareholder_capital|other_income_expense)$")
+    allow_duplicates: bool = Field(default=False, exclude=True)
 
 
 class BankTransactionRead(BankTransactionCreate):

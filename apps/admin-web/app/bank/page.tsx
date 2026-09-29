@@ -1,6 +1,6 @@
 "use client";
 
-import { Alert, Button, Card, Checkbox, DatePicker, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Statistic, Table, Tabs, Upload, Typography, message } from "antd";
+import { Alert, Button, Card, Checkbox, DatePicker, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Statistic, Table, Tabs, Tag, Upload, Typography, message } from "antd";
 import zhCN from "antd/locale/zh_CN";
 import type { ColumnsType } from "antd/es/table";
 import type { UploadFile } from "antd/es/upload/interface";
@@ -76,6 +76,20 @@ const bankSpecialTypeLabels: Record<Exclude<NonNullable<BankTransactionCreate["s
 
 function bankSpecialTypeLabel(value?: string | null) {
   return value ? bankSpecialTypeLabels[value as keyof typeof bankSpecialTypeLabels] ?? value : "普通流水";
+}
+
+function isDuplicateConflict(error: unknown) {
+  if (typeof error === "string") return error.includes("BANK_TRANSACTION_DUPLICATE");
+  if (!error || typeof error !== "object") return false;
+  const candidate = error as { status?: unknown; message?: unknown; payload?: unknown; detail?: unknown };
+  const messageText = typeof candidate.message === "string" ? candidate.message : "";
+  if (messageText.includes("BANK_TRANSACTION_DUPLICATE")) return true;
+  if (candidate.detail === "BANK_TRANSACTION_DUPLICATE") return true;
+  const payload = candidate.payload;
+  if (payload && typeof payload === "object" && "detail" in payload) {
+    return (payload as { detail?: unknown }).detail === "BANK_TRANSACTION_DUPLICATE";
+  }
+  return false;
 }
 
 type BankEntryField = "occurred_at" | "income_amount" | "expense_amount" | "counterparty_name" | "counterparty_account" | "summary";
@@ -367,7 +381,15 @@ export default function BankPage() {
   const [balancePassword, setBalancePassword] = useState("");
   const [isBalanceSaving, setIsBalanceSaving] = useState(false);
   const [editingTransaction, setEditingTransaction] = useState<BankTransaction | null>(null);
-  const [pendingSpecialTransaction, setPendingSpecialTransaction] = useState<BankFormValues | null>(null);
+  const [pendingSpecialTransaction, setPendingSpecialTransaction] = useState<{
+    values: BankFormValues;
+    duplicatesConfirmed: boolean;
+  } | null>(null);
+  const [pendingDuplicateConfirm, setPendingDuplicateConfirm] = useState<{
+    content: string;
+    okText: string;
+    onConfirm: () => void;
+  } | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [form] = Form.useForm<BankFormValues>();
   const [entryForm] = Form.useForm<{ ledger_key: string }>();
@@ -575,7 +597,7 @@ export default function BankPage() {
     setIsModalOpen(true);
   }
 
-  async function submitTransaction(values: BankFormValues, specialConfirmed = false) {
+  async function submitTransaction(values: BankFormValues, specialConfirmed = false, duplicatesConfirmed = false) {
     if (!values.occurred_at) {
       message.warning("请选择发生时间");
       return;
@@ -609,37 +631,84 @@ export default function BankPage() {
         special_type: values.special_type || null,
         payment_status: values.payment_status || "paid",
       };
+      if (!editingTransaction && !duplicatesConfirmed) {
+        const duplicateCheck = await apiClient.bankTransactions.checkDuplicates({ items: [payload] });
+        if (duplicateCheck.duplicate_count > 0) {
+          openDuplicateTransactionConfirm(
+            "已有发生日期、对方户名和金额均相同的流水。仍要导入这笔流水吗？",
+            () => void submitTransaction(values, specialConfirmed, true),
+          );
+          return;
+        }
+      }
       if (values.special_type && !specialConfirmed) {
-        setPendingSpecialTransaction(values);
+        setPendingSpecialTransaction({ values, duplicatesConfirmed });
         return;
       }
       setIsLoading(true);
       if (editingTransaction) {
         const isMatched = Number(editingTransaction.matched_amount || 0) > 0;
-        await apiClient.bankTransactions.update(
-          editingTransaction.id,
-          isMatched ? { payment_status: payload.payment_status } : payload,
-        );
+        try {
+          await apiClient.bankTransactions.update(
+            editingTransaction.id,
+            isMatched
+              ? { payment_status: payload.payment_status }
+              : { ...payload, allow_duplicates: duplicatesConfirmed },
+          );
+        } catch (error) {
+          if (!duplicatesConfirmed && isDuplicateConflict(error)) {
+            openDuplicateTransactionConfirm(
+              "已有发生日期、对方户名和金额均相同的流水。仍要保存这笔流水吗？",
+              () => void submitTransaction(values, specialConfirmed, true),
+              "仍然保存",
+            );
+            return;
+          }
+          throw error;
+        }
         message.success("更新成功");
       } else {
-        await apiClient.bankTransactions.create(payload);
+        try {
+          await apiClient.bankTransactions.create({ ...payload, allow_duplicates: duplicatesConfirmed });
+        } catch (error) {
+          if (!duplicatesConfirmed && isDuplicateConflict(error)) {
+            openDuplicateTransactionConfirm(
+              "已有发生日期、对方户名和金额均相同的流水。仍要导入这笔流水吗？",
+              () => void submitTransaction(values, specialConfirmed, true),
+            );
+            return;
+          }
+          throw error;
+        }
         message.success("创建成功");
       }
       setIsModalOpen(false);
       setEditingTransaction(null);
       await loadData(initialFilters);
     } catch (error) {
+      if (!duplicatesConfirmed && isDuplicateConflict(error)) {
+        openDuplicateTransactionConfirm(
+          "已有发生日期、对方户名和金额均相同的流水。仍要保存这笔流水吗？",
+          () => void submitTransaction(values, specialConfirmed, true),
+          "仍然保存",
+        );
+        return;
+      }
       message.error(error instanceof Error ? error.message : "操作失败");
     } finally {
       setIsLoading(false);
     }
   }
 
+  function openDuplicateTransactionConfirm(content: string, onConfirm: () => void, okText = "仍然导入") {
+    setPendingDuplicateConfirm({ content, okText, onConfirm });
+  }
+
   async function confirmPendingSpecialTransaction() {
     if (!pendingSpecialTransaction) return;
-    const values = pendingSpecialTransaction;
+    const { values, duplicatesConfirmed } = pendingSpecialTransaction;
     setPendingSpecialTransaction(null);
-    await submitTransaction(values, true);
+    await submitTransaction(values, true, duplicatesConfirmed);
   }
 
   async function confirmTransactionSubmit() {
@@ -672,7 +741,7 @@ export default function BankPage() {
     });
   }
 
-  async function submitEntryBatch(values: { ledger_key?: string }) {
+  async function submitEntryBatch(values: { ledger_key?: string }, duplicatesConfirmed = false) {
     const [formStoreId] = (values.ledger_key ?? "").split("|");
     const storeId = formStoreId || queryStoreId;
     if (!storeId) {
@@ -692,39 +761,63 @@ export default function BankPage() {
     }
     setIsLoading(true);
     try {
-    const batch: BankTransactionCreate[] = [];
-    for (const row of nonEmptyRows) {
-      const occurredAt = parseEntryOccurredAt(row.occurred_at);
-      const counterpartyName = normalizePastedCell(row.counterparty_name);
-      const incomeAmount = normalizePastedAmount(row.income_amount);
-      const expenseAmount = normalizePastedAmount(row.expense_amount);
-      const hasIncome = Boolean(incomeAmount);
-      const hasExpense = Boolean(expenseAmount);
-      if (!occurredAt) {
-        throw new Error("批量录入中存在无效的发生时间");
-      }
-      if (!counterpartyName) {
-        throw new Error("批量录入中存在未填写对方户名的行");
-      }
-      if (hasIncome && hasExpense) {
-        throw new Error("批量录入中存在同时填写收入和支出的行");
-      }
-      if (!hasIncome && !hasExpense) {
-        throw new Error("批量录入中存在未填写金额的行");
-      }
-      batch.push({
-        store_id: storeId,
-        ledger_period: occurredAt.format("YYYY-MM"),
-        occurred_at: toBankOccurredAt(occurredAt),
-        direction: hasIncome ? "income" : "expense",
-        amount: hasIncome ? incomeAmount : expenseAmount,
-        counterparty_name: counterpartyName,
-        counterparty_account: normalizePastedCell(row.counterparty_account) || null,
-        summary: normalizePastedCell(row.summary) || null,
-        payment_status: row.payment_status || "paid",
+      const batch: BankTransactionCreate[] = [];
+      for (const row of nonEmptyRows) {
+        const occurredAt = parseEntryOccurredAt(row.occurred_at);
+        const counterpartyName = normalizePastedCell(row.counterparty_name);
+        const incomeAmount = normalizePastedAmount(row.income_amount);
+        const expenseAmount = normalizePastedAmount(row.expense_amount);
+        const hasIncome = Boolean(incomeAmount);
+        const hasExpense = Boolean(expenseAmount);
+        if (!occurredAt) {
+          throw new Error("批量录入中存在无效的发生时间");
+        }
+        if (!counterpartyName) {
+          throw new Error("批量录入中存在未填写对方户名的行");
+        }
+        if (hasIncome && hasExpense) {
+          throw new Error("批量录入中存在同时填写收入和支出的行");
+        }
+        if (!hasIncome && !hasExpense) {
+          throw new Error("批量录入中存在未填写金额的行");
+        }
+        batch.push({
+          store_id: storeId,
+          ledger_period: occurredAt.format("YYYY-MM"),
+          occurred_at: toBankOccurredAt(occurredAt),
+          direction: hasIncome ? "income" : "expense",
+          amount: hasIncome ? incomeAmount : expenseAmount,
+          counterparty_name: counterpartyName,
+          counterparty_account: normalizePastedCell(row.counterparty_account) || null,
+          summary: normalizePastedCell(row.summary) || null,
+          payment_status: row.payment_status || "paid",
         });
       }
-      const result = await apiClient.bankTransactions.createBatch({ items: batch });
+      if (!duplicatesConfirmed) {
+        const duplicateCheck = await apiClient.bankTransactions.checkDuplicates({ items: batch });
+        if (duplicateCheck.duplicate_count > 0) {
+          openDuplicateTransactionConfirm(
+            `有 ${duplicateCheck.duplicate_count} 条流水与已有流水或本次录入的其他流水日期、对方户名和金额相同。仍要继续导入吗？`,
+            () => void submitEntryBatch(values, true),
+          );
+          return;
+        }
+      }
+      let result;
+      try {
+        result = await apiClient.bankTransactions.createBatch({
+          items: batch.map((item) => ({ ...item, allow_duplicates: duplicatesConfirmed })),
+        });
+      } catch (error) {
+        if (!duplicatesConfirmed && isDuplicateConflict(error)) {
+          openDuplicateTransactionConfirm(
+            "有流水的日期、对方户名和金额与已有记录一致。仍要继续导入吗？",
+            () => void submitEntryBatch(values, true),
+          );
+          return;
+        }
+        throw error;
+      }
       message.success(`成功录入 ${result.created_count} 条流水`);
       setIsEntryModalOpen(false);
       await loadData(initialFilters);
@@ -812,7 +905,7 @@ export default function BankPage() {
     }
   }
 
-  async function confirmImport() {
+  async function confirmImport(duplicatesConfirmed = false) {
     if (!importPreview) return;
     const ledgerKey = importForm.getFieldValue("ledger_key");
     const [formStoreId, formPeriod] = (ledgerKey ?? "").split("|");
@@ -827,11 +920,19 @@ export default function BankPage() {
       message.warning("请选择文件");
       return;
     }
+    if (importPreview.duplicate_count > 0 && !duplicatesConfirmed) {
+      openDuplicateTransactionConfirm(
+        `导入文件中有 ${importPreview.duplicate_count} 条流水与已有流水或文件内其他流水日期、对方户名和金额相同。仍要继续导入吗？`,
+        () => void confirmImport(true),
+      );
+      return;
+    }
     setIsLoading(true);
     try {
       const payload = new FormData();
       payload.append("store_id", storeId);
       payload.append("ledger_period", period);
+      if (duplicatesConfirmed) payload.append("allow_duplicates", "true");
       payload.append("file", file);
       await apiClient.bankTransactions.importFile(payload);
       message.success(`成功导入 ${importPreview.valid_count} 条流水`);
@@ -1157,6 +1258,7 @@ export default function BankPage() {
   const previewColumns: ColumnsType<BankImportPreviewRow> = [
     { title: "行号", dataIndex: "row_number", width: 70 },
     { title: "发生日期", dataIndex: "occurred_at", width: 120, render: (v) => v?.slice(0, 10) || "-" },
+    { title: "重复检查", dataIndex: "duplicate", width: 100, render: (value) => value ? <Tag color="orange">疑似重复</Tag> : <Tag color="green">正常</Tag> },
     {
       title: "类型",
       children: [
@@ -1374,6 +1476,7 @@ export default function BankPage() {
           setIsModalOpen(false);
           setEditingTransaction(null);
           setPendingSpecialTransaction(null);
+          setPendingDuplicateConfirm(null);
         }}
         onOk={() => void confirmTransactionSubmit()}
         confirmLoading={isLoading}
@@ -1461,6 +1564,23 @@ export default function BankPage() {
             <Input disabled={Boolean(editingTransaction && Number(editingTransaction.matched_amount || 0) > 0)} />
           </Form.Item>
         </Form>
+      </Modal>
+
+      <Modal
+        title="发现重复流水"
+        open={Boolean(pendingDuplicateConfirm)}
+        okText={pendingDuplicateConfirm?.okText ?? "仍然导入"}
+        cancelText="取消"
+        onCancel={() => setPendingDuplicateConfirm(null)}
+        onOk={() => {
+          const onConfirm = pendingDuplicateConfirm?.onConfirm;
+          setPendingDuplicateConfirm(null);
+          onConfirm?.();
+        }}
+      >
+        <Typography.Paragraph style={{ marginBottom: 0 }}>
+          {pendingDuplicateConfirm?.content}
+        </Typography.Paragraph>
       </Modal>
 
       <Modal
@@ -1566,7 +1686,7 @@ export default function BankPage() {
         cancelText="取消"
       >
         <Typography.Paragraph>
-          该笔流水将标记为{bankSpecialTypeLabel(pendingSpecialTransaction?.special_type)}，保存后不会进入审批单对账或收入对账。
+          该笔流水将标记为{bankSpecialTypeLabel(pendingSpecialTransaction?.values.special_type)}，保存后不会进入审批单对账或收入对账。
         </Typography.Paragraph>
         <Typography.Text>是否继续保存？</Typography.Text>
       </Modal>
@@ -1662,8 +1782,10 @@ export default function BankPage() {
           importPreview ? (
             <Space>
               <Button onClick={() => setIsImportModalOpen(false)}>取消</Button>
-              <Button type="primary" loading={isLoading} onClick={confirmImport}>
-                确认导入 ({importPreview.valid_count} 条)
+              <Button type="primary" loading={isLoading} onClick={() => void confirmImport()}>
+                {importPreview.duplicate_count > 0
+                  ? `确认导入 (${importPreview.valid_count + importPreview.duplicate_count} 条，含重复)`
+                  : `确认导入 (${importPreview.valid_count} 条)`}
               </Button>
             </Space>
           ) : null
@@ -1715,10 +1837,10 @@ export default function BankPage() {
         {importPreview && (
           <Space direction="vertical" style={{ width: "100%" }} size={12}>
             <Alert
-              type={importPreview.error_count > 0 ? "warning" : "success"}
+              type={importPreview.error_count > 0 || importPreview.duplicate_count > 0 ? "warning" : "success"}
               showIcon
               message={`有效 ${importPreview.valid_count} 条，重复 ${importPreview.duplicate_count} 条，错误 ${importPreview.error_count} 条`}
-              description="导入预览和批量录入使用同一套收入/支出字段。"
+              description={importPreview.duplicate_count > 0 ? "确认导入时会再次提示；确认后将保留重复流水。" : "导入预览和批量录入使用同一套收入/支出字段。"}
             />
             <Table
               rowKey="row_number"

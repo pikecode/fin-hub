@@ -1,14 +1,14 @@
 import csv
 import io
 from collections.abc import Iterable
-from datetime import datetime
+from datetime import datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Literal
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from openpyxl import load_workbook
-from sqlalchemy import select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.database import get_session
@@ -39,6 +39,7 @@ from app.modules.auth.router import audit_actor, get_current_user
 from app.modules.common import paginate
 from app.schemas import (
     ApiEnvelope,
+    AttachmentRead,
     BankBusinessExpenseRead,
     BankBusinessRevenueRead,
     BankBusinessRevenueRecordRead,
@@ -53,9 +54,9 @@ from app.schemas import (
     BankTransactionBatchDeleteResult,
     BankTransactionBusinessDetailRead,
     BankTransactionCreate,
+    BankTransactionDuplicateCheckResult,
     BankTransactionRead,
     BankTransactionUpdate,
-    AttachmentRead,
     Page,
 )
 
@@ -264,6 +265,8 @@ def create_bank_transaction(
     if not payload.store_id:
         raise HTTPException(status_code=422, detail="Store is required")
     ensure_store_access(session, current_user, payload.store_id)
+    if not payload.allow_duplicates and find_bank_transaction_duplicate_indices(session, [payload]):
+        raise HTTPException(status_code=409, detail="BANK_TRANSACTION_DUPLICATE")
     transaction = BankTransaction(**normalize_bank_assignment(session, payload))
     session.add(transaction)
     session.flush()
@@ -295,6 +298,14 @@ def create_bank_transactions_batch(
     if not payload.items:
         raise HTTPException(status_code=422, detail="At least one bank transaction is required")
 
+    if any(not item.allow_duplicates for item in payload.items):
+        duplicate_indices = find_bank_transaction_duplicate_indices(
+            session,
+            [item for item in payload.items if not item.allow_duplicates],
+        )
+        if duplicate_indices:
+            raise HTTPException(status_code=409, detail="BANK_TRANSACTION_DUPLICATE")
+
     transactions: list[BankTransaction] = []
     for item in payload.items:
         if not item.store_id:
@@ -322,6 +333,74 @@ def create_bank_transactions_batch(
         )
     session.commit()
     return ApiEnvelope(data=BankTransactionBatchCreateResult(created_count=len(transactions)))
+
+
+@router.post("/duplicates/check", response_model=ApiEnvelope[BankTransactionDuplicateCheckResult])
+def check_bank_transaction_duplicates(
+    payload: BankTransactionBatchCreateRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> ApiEnvelope[BankTransactionDuplicateCheckResult]:
+    ensure_permission(session, current_user, "reconciliation.manage")
+    for item in payload.items:
+        ensure_store_access(session, current_user, item.store_id)
+    duplicate_indices = find_bank_transaction_duplicate_indices(session, payload.items)
+    return ApiEnvelope(
+        data=BankTransactionDuplicateCheckResult(
+            duplicate_indices=duplicate_indices,
+            duplicate_count=len(duplicate_indices),
+        )
+    )
+
+
+def find_bank_transaction_duplicate_indices(
+    session: Session,
+    items: list[BankTransactionCreate],
+    *,
+    exclude_transaction_id: str | None = None,
+) -> list[int]:
+    predicates = []
+    draft_keys: list[tuple[str, object, str, Decimal]] = []
+    for item in items:
+        occurred_date = item.occurred_at.date()
+        start_at = datetime.combine(occurred_date, time.min)
+        predicate_parts = [
+            BankTransaction.store_id == item.store_id,
+            BankTransaction.occurred_at >= start_at,
+            BankTransaction.occurred_at < start_at + timedelta(days=1),
+            func.trim(func.coalesce(BankTransaction.counterparty_name, ""))
+            == (item.counterparty_name or "").strip(),
+            BankTransaction.amount == item.amount,
+        ]
+        if exclude_transaction_id:
+            predicate_parts.append(BankTransaction.id != exclude_transaction_id)
+        predicates.append(
+            and_(*predicate_parts)
+        )
+        draft_keys.append(
+            (item.store_id, occurred_date, (item.counterparty_name or "").strip(), item.amount)
+        )
+    existing_keys: set[tuple[str, object, str, Decimal]] = set()
+    if predicates:
+        matches = session.scalars(select(BankTransaction).where(or_(*predicates))).all()
+        existing_keys = {
+            (
+                transaction.store_id,
+                transaction.occurred_at.date(),
+                (transaction.counterparty_name or "").strip(),
+                Decimal(transaction.amount),
+            )
+            for transaction in matches
+        }
+
+    seen_keys: set[tuple[str, object, str, Decimal]] = set()
+    duplicate_indices = []
+    for index, key in enumerate(draft_keys):
+        if key in existing_keys or key in seen_keys:
+            duplicate_indices.append(index)
+        seen_keys.add(key)
+
+    return duplicate_indices
 
 
 @router.get("/import/template.csv")
@@ -392,7 +471,29 @@ def update_bank_transaction(
         if exists is not None:
             raise HTTPException(status_code=409, detail="Bank serial number already exists")
 
+    duplicate_probe = BankTransactionCreate(
+        store_id=target_store_id,
+        ledger_period=target_ledger_period,
+        occurred_at=updates.get("occurred_at", transaction.occurred_at),
+        direction=updates.get("direction", transaction.direction),
+        amount=updates.get("amount", transaction.amount),
+        counterparty_name=updates.get("counterparty_name", transaction.counterparty_name),
+        counterparty_account=updates.get("counterparty_account", transaction.counterparty_account),
+        summary=updates.get("summary", transaction.summary),
+        bank_serial_no=updates.get("bank_serial_no", transaction.bank_serial_no),
+        payment_status=updates.get("payment_status", transaction.payment_status),
+        special_type=updates.get("special_type", transaction.special_type),
+    )
+    if not payload.allow_duplicates and find_bank_transaction_duplicate_indices(
+        session,
+        [duplicate_probe],
+        exclude_transaction_id=transaction_id,
+    ):
+        raise HTTPException(status_code=409, detail="BANK_TRANSACTION_DUPLICATE")
+
     for field, value in updates.items():
+        if field == "allow_duplicates":
+            continue
         setattr(transaction, field, value)
 
     write_audit_log(
@@ -531,15 +632,18 @@ def transaction_exists(session: Session, payload: dict) -> bool:
     serial_no = payload.get("bank_serial_no")
     if serial_no:
         exists = session.scalar(select(BankTransaction).where(BankTransaction.bank_serial_no == serial_no))
-        return exists is not None
+        if exists is not None:
+            return True
+    occurred_at = payload["occurred_at"]
+    start_at = datetime.combine(occurred_at.date(), time.min)
     exists = session.scalar(
         select(BankTransaction).where(
             BankTransaction.store_id == payload.get("store_id"),
-            BankTransaction.ledger_period == payload.get("ledger_period"),
-            BankTransaction.occurred_at == payload["occurred_at"],
-            BankTransaction.direction == payload["direction"],
+            BankTransaction.occurred_at >= start_at,
+            BankTransaction.occurred_at < start_at + timedelta(days=1),
             BankTransaction.amount == payload["amount"],
-            BankTransaction.counterparty_name == payload.get("counterparty_name"),
+            func.trim(func.coalesce(BankTransaction.counterparty_name, ""))
+            == (payload.get("counterparty_name") or "").strip(),
         )
     )
     return exists is not None
@@ -627,12 +731,18 @@ async def preview_bank_transactions_file(
     content = await file.read()
 
     duplicate_count = 0
+    seen_keys: set[tuple[str, object, str, Decimal]] = set()
     row_errors: list[BankImportRowError] = []
     preview_rows: list[BankImportPreviewRow] = []
     for index, row in read_import_rows(file.filename, content):
         try:
             payload = parse_import_payload(row, store_id, ledger_period)
-            duplicate = transaction_exists(session, payload)
+            key = (
+                payload["store_id"], payload["occurred_at"].date(),
+                (payload["counterparty_name"] or "").strip(), payload["amount"],
+            )
+            duplicate = transaction_exists(session, payload) or key in seen_keys
+            seen_keys.add(key)
             if duplicate:
                 duplicate_count += 1
             preview_rows.append(
@@ -665,6 +775,7 @@ async def preview_bank_transactions_file(
 async def import_bank_transactions_file(
     store_id: str = Form(...),
     ledger_period: str | None = Form(None),
+    allow_duplicates: bool = Form(False),
     started_by: str = Form("admin"),
     file: UploadFile = File(...),
     session: Session = Depends(get_session),
@@ -687,6 +798,7 @@ async def import_bank_transactions_file(
 
     created_count = 0
     skipped_count = 0
+    seen_keys: set[tuple[str, object, str, Decimal]] = set()
     row_errors: list[BankImportRowError] = []
     try:
         for index, row in read_import_rows(file.filename, content):
@@ -695,7 +807,13 @@ async def import_bank_transactions_file(
                 payload = parse_import_payload(row, store_id, ledger_period)
                 if payload["ledger_period"] and not ledger_period:
                     ensure_open_or_create_ledger(session, payload["store_id"], payload["ledger_period"])
-                if transaction_exists(session, payload):
+                key = (
+                    payload["store_id"], payload["occurred_at"].date(),
+                    (payload["counterparty_name"] or "").strip(), payload["amount"],
+                )
+                duplicate = transaction_exists(session, payload) or key in seen_keys
+                seen_keys.add(key)
+                if duplicate and not allow_duplicates:
                     skipped_count += 1
                     continue
                 payload["import_job_id"] = job.id
