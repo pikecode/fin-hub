@@ -51,6 +51,8 @@ import type {
   KuailvPurchase,
   KuailvPurchaseCreate,
   KuailvPurchaseUpdate,
+  MajorExpenseVoucher,
+  MajorExpenseVoucherCreate,
   FinancialAnalyticsReport,
   FinancialAnalyticsDetailReport,
   DividendWorkspace,
@@ -385,6 +387,14 @@ export function createApiClient(options: ApiClientOptions) {
         delete: (id: string) =>
           request<{ ok: boolean }>(`/api/expense-items/kuailv-purchases/${id}`, {
             method: "DELETE",
+          }),
+      },
+      majorExpenseVouchers: {
+        list: (params = "") => request<MajorExpenseVoucher[]>(`/api/expense-items/major-expense-vouchers${params}`),
+        create: (payload: MajorExpenseVoucherCreate) =>
+          request<MajorExpenseVoucher>("/api/expense-items/major-expense-vouchers", {
+            method: "POST",
+            body: JSON.stringify(payload),
           }),
       },
     },

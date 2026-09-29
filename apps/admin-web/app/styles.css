@@ -4533,3 +4533,66 @@ select,
   color: #2563eb;
   background: #eff6ff;
 }
+
+.store-financial-report__major-voucher-card {
+  margin-top: 18px;
+  overflow: hidden;
+  border: 1px solid #d8eee9;
+  border-radius: 16px;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fcfb 100%);
+  box-shadow: 0 12px 30px rgba(15, 118, 110, 0.07);
+}
+
+.store-financial-report__major-voucher-card .ant-card-head {
+  border-bottom-color: #e2f2ef;
+  background: linear-gradient(90deg, rgba(236, 253, 245, 0.88), rgba(239, 246, 255, 0.72));
+}
+
+.store-financial-report__major-voucher-card .ant-card-head-title {
+  color: #0f3f3b;
+  font-size: 16px;
+  font-weight: 800;
+}
+
+.store-financial-report__major-voucher-alert {
+  margin-bottom: 14px;
+  border-color: #bde7df;
+  background: #f2fbf9;
+}
+
+
+
+.store-financial-report__major-voucher-note {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  margin-bottom: 14px;
+  padding: 14px 16px;
+  border: 1px solid #d8eee9;
+  border-radius: 12px;
+  background: linear-gradient(90deg, #f3fbf9, #f8fbff);
+}
+
+.store-financial-report__major-voucher-note-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  color: #0f766e;
+  font-size: 16px;
+  border-radius: 999px;
+  background: #e0f7f2;
+}
+
+.store-financial-report__major-voucher-note-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.store-financial-report__major-voucher-note-main .ant-typography {
+  margin: 0;
+}

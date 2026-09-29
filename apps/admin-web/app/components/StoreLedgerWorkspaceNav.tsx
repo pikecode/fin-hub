@@ -16,7 +16,7 @@ import type { Store } from "@fin-hub/shared-types";
 import { getMyStores } from "../lib/referenceData";
 import { confirmLeaveIfNeeded } from "./navigationGuard";
 
-type StoreLedgerTabKey = "overview" | "report" | "dividend" | "bank" | "bankDetails" | "approvals" | "revenue" | "revenueMatching" | "matching" | "kuailvPurchase";
+type StoreLedgerTabKey = "overview" | "report" | "dividend" | "bank" | "bankDetails" | "approvals" | "revenue" | "revenueMatching" | "matching" | "kuailvPurchase" | "majorExpenseVouchers";
 
 interface StoreLedgerWorkspaceNavProps {
   storeId: string;
@@ -42,6 +42,7 @@ const tabItems: Array<{ key: StoreLedgerTabKey; label: string; icon: any }> = [
   { key: "revenueMatching", label: "收入对账", icon: <ReconciliationOutlined /> },
   { key: "matching", label: "审批单对账", icon: <ReconciliationOutlined /> },
   { key: "kuailvPurchase", label: "快驴采购录入", icon: <FileTextOutlined /> },
+  { key: "majorExpenseVouchers", label: "主要支出凭证录入", icon: <FileTextOutlined /> },
 ];
 
 function modulePath(storeId: string, key: StoreLedgerTabKey, period?: string) {
@@ -72,10 +73,11 @@ function modulePath(storeId: string, key: StoreLedgerTabKey, period?: string) {
     if (period) query.set("ledger_period", period);
     return `/revenue?${query.toString()}`;
   }
-  if (key === "matching" || key === "kuailvPurchase") {
+  if (key === "matching" || key === "kuailvPurchase" || key === "majorExpenseVouchers") {
     const query = new URLSearchParams({ store_id: storeId });
     if (period) query.set("ledger_period", period);
     if (key === "kuailvPurchase") query.set("module", "kuailv");
+    if (key === "majorExpenseVouchers") query.set("module", "major-expense-vouchers");
     return `/finance/reconciliation?${query.toString()}`;
   }
   if (key === "revenueMatching") {

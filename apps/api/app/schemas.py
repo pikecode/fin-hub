@@ -1,4 +1,4 @@
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Generic, TypeVar
 
@@ -488,6 +488,26 @@ class KuailvPurchaseUpdate(BaseModel):
     purchase_date: date
     amount: Decimal = Field(gt=0)
     remark: str | None = None
+
+
+class MajorExpenseVoucherCreate(BaseModel):
+    store_id: str
+    ledger_period: str = Field(pattern=r"^\d{4}-\d{2}$")
+    expense_name: str = Field(min_length=1, max_length=120)
+    display_amount: Decimal = Field(ge=0)
+    remark: str | None = None
+
+
+class MajorExpenseVoucherRead(BaseModel):
+    id: str
+    store_id: str
+    ledger_period: str
+    expense_name: str
+    display_amount: Decimal
+    remark: str | None = None
+    attachment_count: int = 0
+    created_at: datetime
+    updated_at: datetime
 
 
 class ExpenseItemRead(ExpenseItemCreate):

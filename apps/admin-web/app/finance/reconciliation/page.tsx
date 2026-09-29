@@ -44,6 +44,7 @@ import type {
   ExpenseCategory,
   ExpenseItem,
   KuailvPurchase,
+  MajorExpenseVoucher,
   Ledger,
   ReconciliationExpenseCandidate,
   ReconciliationRecord,
@@ -88,6 +89,20 @@ interface KuailvPurchaseValues {
   voucher_files?: UploadFile[];
   remark?: string;
 }
+
+interface MajorExpenseVoucherValues {
+  expense_name?: string;
+  ledger_period?: dayjs.Dayjs;
+  display_amount?: string;
+  attachments?: UploadFile[];
+  remark?: string;
+}
+
+type VoucherRecord = {
+  id: string;
+  title: string;
+  subtitle?: string;
+};
 
 interface ApprovalAttachmentState {
   loading: boolean;
@@ -302,7 +317,8 @@ export default function FinanceReconciliationPage() {
   const [candidates, setCandidates] = useState<ReconciliationExpenseCandidate[]>([]);
   const [records, setRecords] = useState<ReconciliationRecord[]>([]);
   const [kuailvPurchases, setKuailvPurchases] = useState<KuailvPurchase[]>([]);
-  const [kuailvVoucherRecord, setKuailvVoucherRecord] = useState<KuailvPurchase | null>(null);
+  const [majorExpenseVouchers, setMajorExpenseVouchers] = useState<MajorExpenseVoucher[]>([]);
+  const [voucherRecord, setVoucherRecord] = useState<VoucherRecord | null>(null);
   const [editingKuailvPurchase, setEditingKuailvPurchase] = useState<KuailvPurchase | null>(null);
   const [selectedStoreId, setSelectedStoreId] = useState<string>();
   const [activeTabKey, setActiveTabKey] = useState("workbench");
@@ -331,12 +347,14 @@ export default function FinanceReconciliationPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [isCandidateLoading, setIsCandidateLoading] = useState(false);
   const [isKuailvLoading, setIsKuailvLoading] = useState(false);
+  const [isMajorExpenseVoucherLoading, setIsMajorExpenseVoucherLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [filterForm] = Form.useForm<CandidateFilters>();
   const [confirmForm] = Form.useForm<ConfirmValues>();
   const [editForm] = Form.useForm<EditValues>();
   const [kuailvForm] = Form.useForm<KuailvPurchaseValues>();
+  const [majorExpenseVoucherForm] = Form.useForm<MajorExpenseVoucherValues>();
   // 预加载缓存：transactionId -> candidates
   const [candidatesCache, setCandidatesCache] = useState<Map<string, ReconciliationExpenseCandidate[]>>(new Map());
   const [preloadingTransactionIds, setPreloadingTransactionIds] = useState<Set<string>>(new Set());
@@ -389,12 +407,26 @@ export default function FinanceReconciliationPage() {
       .reverse()
       .map((period) => ({ label: period, value: period }));
   }, [ledgers, selectedLedgerPeriod]);
-  const activeModuleKey = searchParams.get("module") === "kuailv" ? "kuailvPurchase" : "matching";
+  const moduleParam = searchParams.get("module");
+  const activeModuleKey = moduleParam === "kuailv"
+    ? "kuailvPurchase"
+    : moduleParam === "major-expense-vouchers"
+      ? "majorExpenseVouchers"
+      : "matching";
   const isKuailvPurchaseModule = activeModuleKey === "kuailvPurchase";
-  const pageTitle = isKuailvPurchaseModule ? "快驴采购录入" : "审批单对账";
+  const isMajorExpenseVoucherModule = activeModuleKey === "majorExpenseVouchers";
+  const pageTitle = isKuailvPurchaseModule
+    ? "快驴采购录入"
+    : isMajorExpenseVoucherModule
+      ? "主要支出凭证录入"
+      : "审批单对账";
   const kuailvTotalAmount = useMemo(
     () => kuailvPurchases.reduce((total, item) => total + Number(item.amount || 0), 0),
     [kuailvPurchases],
+  );
+  const majorExpenseVoucherTotalAmount = useMemo(
+    () => majorExpenseVouchers.reduce((total, item) => total + Number(item.display_amount || 0), 0),
+    [majorExpenseVouchers],
   );
   const detailPayload = useMemo(() => parseApprovalPayload(detailRecord?.approval_instance), [detailRecord]);
   const detailFields = useMemo<DingTalkField[]>(() => {
@@ -629,6 +661,19 @@ export default function FinanceReconciliationPage() {
     }
   }
 
+  async function loadMajorExpenseVouchers(storeId: string) {
+    setIsMajorExpenseVoucherLoading(true);
+    try {
+      const params = new URLSearchParams({ store_id: storeId, ledger_period: selectedLedgerPeriod });
+      const items = await apiClient.expenseItems.majorExpenseVouchers.list(`?${params.toString()}`);
+      setMajorExpenseVouchers(items);
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "无法加载主要支出凭证记录");
+    } finally {
+      setIsMajorExpenseVoucherLoading(false);
+    }
+  }
+
   async function submitKuailvPurchase(values: KuailvPurchaseValues) {
     if (!selectedStoreId) {
       message.warning("请先选择门店");
@@ -672,6 +717,47 @@ export default function FinanceReconciliationPage() {
       message.error(error instanceof Error ? error.message : "快驴采购录入失败");
     } finally {
       setIsKuailvLoading(false);
+    }
+  }
+
+  async function submitMajorExpenseVoucher(values: MajorExpenseVoucherValues) {
+    if (!selectedStoreId) {
+      message.warning("请先选择门店");
+      return;
+    }
+    if (!values.expense_name?.trim()) {
+      message.warning("请输入费用名称");
+      return;
+    }
+    if (!values.ledger_period) {
+      message.warning("请选择所属账期月份");
+      return;
+    }
+    const files = (values.attachments ?? []).flatMap((item) => (item.originFileObj ? [item.originFileObj] : []));
+    setIsMajorExpenseVoucherLoading(true);
+    try {
+      const voucher = await apiClient.expenseItems.majorExpenseVouchers.create({
+        store_id: selectedStoreId,
+        ledger_period: values.ledger_period.format("YYYY-MM"),
+        expense_name: values.expense_name.trim(),
+        display_amount: values.display_amount || "0",
+        remark: values.remark || null,
+      });
+      await Promise.all(
+        files.map((file) => {
+          const payload = new FormData();
+          payload.append("file", file);
+          return apiClient.attachments.upload("expense_item", voucher.id, payload);
+        }),
+      );
+      message.success("主要支出凭证已录入");
+      majorExpenseVoucherForm.resetFields();
+      majorExpenseVoucherForm.setFieldsValue({ ledger_period: dayjs(`${selectedLedgerPeriod}-01`) });
+      await loadMajorExpenseVouchers(selectedStoreId);
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "主要支出凭证录入失败");
+    } finally {
+      setIsMajorExpenseVoucherLoading(false);
     }
   }
 
@@ -722,12 +808,14 @@ export default function FinanceReconciliationPage() {
         ledger_period: dayjs(`${selectedLedgerPeriod}-01`),
       });
     }
-  }, [editingKuailvPurchase, kuailvForm, selectedLedgerPeriod]);
+    majorExpenseVoucherForm.setFieldsValue({ ledger_period: dayjs(`${selectedLedgerPeriod}-01`) });
+  }, [editingKuailvPurchase, kuailvForm, majorExpenseVoucherForm, selectedLedgerPeriod]);
 
   useEffect(() => {
     if (selectedStoreId) {
       void loadStoreWorkspace(selectedStoreId);
       void loadKuailvPurchases(selectedStoreId);
+      void loadMajorExpenseVouchers(selectedStoreId);
     }
   }, [selectedStoreId, selectedLedgerPeriod]);
 
@@ -877,9 +965,25 @@ export default function FinanceReconciliationPage() {
     }
   }
 
-  function openKuailvVoucherModal(record: KuailvPurchase) {
-    setKuailvVoucherRecord(record);
+  function openVoucherModal(record: VoucherRecord) {
+    setVoucherRecord(record);
     void loadExpenseAttachments(record.id);
+  }
+
+  function openKuailvVoucherModal(record: KuailvPurchase) {
+    openVoucherModal({
+      id: record.id,
+      title: "快驴采购凭证",
+      subtitle: `${record.purchase_date ? dayjs(record.purchase_date).format("YYYY-MM-DD") : "-"} · ${formatMoney(record.amount)}`,
+    });
+  }
+
+  function openMajorExpenseVoucherModal(record: MajorExpenseVoucher) {
+    openVoucherModal({
+      id: record.id,
+      title: "主要支出凭证",
+      subtitle: `${record.expense_name} · ${record.ledger_period} · ${formatMoney(record.display_amount)}`,
+    });
   }
 
   async function openStoredAttachment(attachment: Attachment) {
@@ -1261,6 +1365,86 @@ export default function FinanceReconciliationPage() {
     );
   }
 
+  const majorExpenseVoucherColumns: ColumnsType<MajorExpenseVoucher> = [
+    {
+      title: "费用名称",
+      dataIndex: "expense_name",
+      minWidth: 220,
+      ellipsis: true,
+    },
+    {
+      title: "所属账期月份",
+      dataIndex: "ledger_period",
+      width: 130,
+    },
+    {
+      title: "总金额",
+      dataIndex: "display_amount",
+      width: 150,
+      align: "right",
+      render: (value) => formatMoney(value),
+    },
+    {
+      title: "附件",
+      dataIndex: "attachment_count",
+      width: 180,
+      render: (value, record) => {
+        const attachmentState = approvalAttachmentsByExpenseItemId[record.id];
+        const attachments = attachmentState?.attachments ?? [];
+        const imageAttachments = attachments.filter(isImageAttachment);
+        const fileAttachments = attachments.filter((attachment) => !isImageAttachment(attachment));
+        const count = attachmentState?.attachments?.length ?? Number(value || 0);
+        if (!count) return <Tag>未上传</Tag>;
+        return (
+          <Space size={6} wrap className="kuailv-purchase-voucher-cell">
+            {imageAttachments.length ? (
+              <Image.PreviewGroup>
+                <Space size={4}>
+                  {imageAttachments.slice(0, 3).map((attachment) => {
+                    const sourceUrl = externalAttachmentUrl(attachment) || attachmentState?.accessUrls[attachment.id] || attachmentPreviewUrls[attachment.id];
+                    return sourceUrl ? (
+                      <Image
+                        key={attachment.id}
+                        src={sourceUrl}
+                        alt={attachment.file_name || "附件"}
+                        width={42}
+                        height={42}
+                        preview={{ mask: <EyeOutlined /> }}
+                        style={{ objectFit: "cover", borderRadius: 4 }}
+                      />
+                    ) : null;
+                  })}
+                </Space>
+              </Image.PreviewGroup>
+            ) : null}
+            {fileAttachments.length ? <Tag color="blue" icon={<PaperClipOutlined />}>{fileAttachments.length} 个文件</Tag> : null}
+            <Button
+              type="link"
+              size="small"
+              icon={<EyeOutlined />}
+              loading={attachmentState?.loading}
+              onClick={() => openMajorExpenseVoucherModal(record)}
+            >
+              查看
+            </Button>
+          </Space>
+        );
+      },
+    },
+    {
+      title: "备注",
+      dataIndex: "remark",
+      ellipsis: true,
+      render: (value) => value || "-",
+    },
+    {
+      title: "录入时间",
+      dataIndex: "created_at",
+      width: 170,
+      render: (value) => formatDateTime(value),
+    },
+  ];
+
   const kuailvPurchaseColumns: ColumnsType<KuailvPurchase> = [
     {
       title: "采购日期",
@@ -1369,18 +1553,21 @@ export default function FinanceReconciliationPage() {
   }, [isConfirmOpen, sortedConfirmExpenseItems]);
 
   useEffect(() => {
-    if (!isKuailvPurchaseModule || !kuailvPurchases.length) return;
-    void preloadExpenseAttachments(kuailvPurchases);
-  }, [isKuailvPurchaseModule, kuailvPurchases]);
+    if (isKuailvPurchaseModule && kuailvPurchases.length) void preloadExpenseAttachments(kuailvPurchases);
+    if (isMajorExpenseVoucherModule && majorExpenseVouchers.length) void preloadExpenseAttachments(majorExpenseVouchers);
+  }, [isKuailvPurchaseModule, isMajorExpenseVoucherModule, kuailvPurchases, majorExpenseVouchers]);
 
   useEffect(() => {
-    const attachmentIds = new Set(kuailvPurchases.map((purchase) => purchase.id));
-    if (kuailvVoucherRecord) attachmentIds.add(kuailvVoucherRecord.id);
+    const attachmentIds = new Set([
+      ...kuailvPurchases.map((purchase) => purchase.id),
+      ...majorExpenseVouchers.map((voucher) => voucher.id),
+    ]);
+    if (voucherRecord) attachmentIds.add(voucherRecord.id);
     const images = Array.from(attachmentIds)
       .flatMap((expenseItemId) => approvalAttachmentsByExpenseItemId[expenseItemId]?.attachments ?? [])
       .filter(isImageAttachment);
     if (images.length) void Promise.all(images.map(loadAttachmentPreview));
-  }, [kuailvPurchases, kuailvVoucherRecord, approvalAttachmentsByExpenseItemId]);
+  }, [kuailvPurchases, majorExpenseVouchers, voucherRecord, approvalAttachmentsByExpenseItemId]);
 
   useEffect(() => {
     if (!editingRecord) return;
@@ -1626,6 +1813,83 @@ export default function FinanceReconciliationPage() {
                     columns={kuailvPurchaseColumns}
                     dataSource={kuailvPurchases}
                     rowClassName={(record) => (record.id === editingKuailvPurchase?.id ? "kuailv-purchase-row-editing" : "")}
+                    pagination={false}
+                  />
+                </Card>
+              </Space>
+      ) : isMajorExpenseVoucherModule ? (
+              <Space direction="vertical" size={12} style={{ width: "100%", display: "flex" }}>
+                <Card size="small" className="reconciliation-summary-card">
+                  <div className="reconciliation-summary-card__main">
+                    <div className="reconciliation-summary-card__store">
+                      <Typography.Text className="reconciliation-summary-card__label">所属账期</Typography.Text>
+                      <Typography.Title level={4} style={{ margin: 0 }}>{selectedLedgerPeriod}</Typography.Title>
+                    </div>
+                    <div className="reconciliation-summary-card__metrics">
+                      <Statistic title="总金额（仅展示，不计入报表）" value={majorExpenseVoucherTotalAmount} precision={2} prefix="¥" />
+                      <Statistic title="凭证记录" value={majorExpenseVouchers.length} />
+                    </div>
+                  </div>
+                </Card>
+
+                <Card size="small" title="录入主要支出凭证" className="data-table-card kuailv-purchase-form-card">
+                  <Alert
+                    type="info"
+                    showIcon
+                    style={{ marginBottom: 12 }}
+                    message="总金额仅用于凭证台账展示，系统保存为 0 元费用，不计入财务报表和门店总览支出。"
+                  />
+                  <Form
+                    form={majorExpenseVoucherForm}
+                    layout="inline"
+                    onFinish={(values) => void submitMajorExpenseVoucher(values)}
+                    initialValues={{ ledger_period: dayjs(`${selectedLedgerPeriod}-01`) }}
+                  >
+                    <Form.Item label="费用名称" name="expense_name" rules={[{ required: true, message: "请输入费用名称" }]}>
+                      <Input placeholder="例如：房租合同、工资凭证" style={{ width: 220 }} />
+                    </Form.Item>
+                    <Form.Item
+                      label="所属账期月份"
+                      name="ledger_period"
+                      rules={[{ required: true, message: "请选择所属账期月份" }]}
+                    >
+                      <DatePicker picker="month" allowClear={false} locale={zhCN.DatePicker} />
+                    </Form.Item>
+                    <Form.Item label="总金额" name="display_amount" rules={[{ required: true, message: "请输入总金额" }]}>
+                      <Input placeholder="0.00" style={{ width: 140 }} />
+                    </Form.Item>
+                    <Form.Item
+                      label="附件"
+                      name="attachments"
+                      valuePropName="fileList"
+                      getValueFromEvent={(event) => event?.fileList}
+                      extra="可选，支持图片、PDF、Office、表格、文本、压缩包等文件"
+                    >
+                      <Upload beforeUpload={() => false} multiple>
+                        <Button icon={<UploadOutlined />}>选择附件</Button>
+                      </Upload>
+                    </Form.Item>
+                    <Form.Item label="备注" name="remark">
+                      <Input placeholder="可选" style={{ width: 220 }} />
+                    </Form.Item>
+                    <Button type="primary" htmlType="submit" loading={isMajorExpenseVoucherLoading} disabled={!selectedStoreId}>
+                      保存
+                    </Button>
+                  </Form>
+                </Card>
+
+                <Card
+                  size="small"
+                  title="主要支出凭证记录"
+                  extra={<Typography.Text type="secondary">总金额仅展示，不进入报表统计</Typography.Text>}
+                  className="data-table-card kuailv-purchase-list-card"
+                >
+                  <Table
+                    rowKey="id"
+                    size="small"
+                    loading={isMajorExpenseVoucherLoading}
+                    columns={majorExpenseVoucherColumns}
+                    dataSource={majorExpenseVouchers}
                     pagination={false}
                   />
                 </Card>
@@ -1878,24 +2142,22 @@ export default function FinanceReconciliationPage() {
       <Modal
         title={
           <Space direction="vertical" size={2}>
-            <Typography.Text strong>快驴采购凭证</Typography.Text>
-            {kuailvVoucherRecord ? (
+            <Typography.Text strong>{voucherRecord?.title || "凭证"}</Typography.Text>
+            {voucherRecord?.subtitle ? (
               <Typography.Text type="secondary" className="reconciliation-confirm-modal__subtitle">
-                {kuailvVoucherRecord.purchase_date ? dayjs(kuailvVoucherRecord.purchase_date).format("YYYY-MM-DD") : "-"}
-                {' · '}
-                {formatMoney(kuailvVoucherRecord.amount)}
+                {voucherRecord.subtitle}
               </Typography.Text>
             ) : null}
           </Space>
         }
-        open={Boolean(kuailvVoucherRecord)}
+        open={Boolean(voucherRecord)}
         destroyOnHidden
         footer={null}
-        onCancel={() => setKuailvVoucherRecord(null)}
+        onCancel={() => setVoucherRecord(null)}
         width={720}
       >
         {(() => {
-          const attachmentState = kuailvVoucherRecord ? approvalAttachmentsByExpenseItemId[kuailvVoucherRecord.id] : undefined;
+          const attachmentState = voucherRecord ? approvalAttachmentsByExpenseItemId[voucherRecord.id] : undefined;
           const attachments = attachmentState?.attachments ?? [];
           if (attachmentState?.loading) return <Spin />;
           if (!attachments.length) return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无凭证" />;

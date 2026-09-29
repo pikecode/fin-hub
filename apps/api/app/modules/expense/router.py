@@ -1,22 +1,43 @@
 import json
-
-from fastapi import APIRouter, Depends, HTTPException
 from datetime import date
 from decimal import Decimal
 
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.database import get_session
-from app.models import Attachment, ApprovalInstance, ExpenseCategory, ExpenseItem, ExpensePaymentStatus, Ledger, LedgerStatus, MasterDataStatus, User
+from app.models import (
+    ApprovalInstance,
+    Attachment,
+    ExpenseCategory,
+    ExpenseItem,
+    ExpensePaymentStatus,
+    Ledger,
+    LedgerStatus,
+    MasterDataStatus,
+    User,
+)
 from app.modules.approvals.status import refresh_approval_processing_status
 from app.modules.audit.service import write_audit_log
 from app.modules.auth.router import audit_actor, require_permission
 from app.modules.common import paginate
-from app.schemas import ApiEnvelope, ExpenseItemCreate, ExpenseItemRead, ExpenseItemUpdate, KuailvPurchaseCreate, KuailvPurchaseRead, KuailvPurchaseUpdate, Page
+from app.schemas import (
+    ApiEnvelope,
+    ExpenseItemCreate,
+    ExpenseItemRead,
+    ExpenseItemUpdate,
+    KuailvPurchaseCreate,
+    KuailvPurchaseRead,
+    KuailvPurchaseUpdate,
+    MajorExpenseVoucherCreate,
+    MajorExpenseVoucherRead,
+    Page,
+)
 
 router = APIRouter(prefix="/expense-items", tags=["expense"])
 KUAILV_PURCHASE_SOURCE = "kuailv_purchase"
+MAJOR_EXPENSE_VOUCHER_SOURCE = "major_expense_voucher"
 FOOD_COST_CATEGORY_L1 = "食材成本"
 KUAILV_PURCHASE_CATEGORY_L2 = "快驴采购"
 
@@ -83,6 +104,33 @@ def kuailv_purchase_read(session: Session, item: ExpenseItem) -> KuailvPurchaseR
         ledger_period=item.ledger_period or "",
         purchase_date=item.expense_date,
         amount=Decimal(item.amount),
+        remark=item.remark,
+        attachment_count=attachment_count or 0,
+        created_at=item.created_at,
+        updated_at=item.updated_at,
+    )
+
+
+def major_expense_voucher_read(session: Session, item: ExpenseItem) -> MajorExpenseVoucherRead:
+    attachment_count = session.scalar(
+        select(func.count()).select_from(Attachment).where(
+            Attachment.resource_type == "expense_item",
+            Attachment.resource_id == item.id,
+        )
+    )
+    display_amount = Decimal("0.00")
+    if item.source_snapshot_json:
+        try:
+            snapshot = json.loads(item.source_snapshot_json)
+            display_amount = Decimal(str(snapshot.get("display_amount") or "0"))
+        except (json.JSONDecodeError, TypeError, ValueError):
+            display_amount = Decimal("0.00")
+    return MajorExpenseVoucherRead(
+        id=item.id,
+        store_id=item.store_id or "",
+        ledger_period=item.ledger_period or "",
+        expense_name=item.description,
+        display_amount=display_amount,
         remark=item.remark,
         attachment_count=attachment_count or 0,
         created_at=item.created_at,
@@ -239,6 +287,66 @@ def create_kuailv_purchase(
     session.commit()
     session.refresh(item)
     return ApiEnvelope(data=kuailv_purchase_read(session, item))
+
+
+@router.get("/major-expense-vouchers", response_model=ApiEnvelope[list[MajorExpenseVoucherRead]])
+def list_major_expense_vouchers(
+    store_id: str,
+    ledger_period: str,
+    session: Session = Depends(get_session),
+    _: User = Depends(require_permission("reconciliation.view")),
+) -> ApiEnvelope[list[MajorExpenseVoucherRead]]:
+    items = session.scalars(
+        select(ExpenseItem)
+        .where(
+            ExpenseItem.store_id == store_id,
+            ExpenseItem.ledger_period == ledger_period,
+            ExpenseItem.source == MAJOR_EXPENSE_VOUCHER_SOURCE,
+        )
+        .order_by(ExpenseItem.created_at.desc())
+    ).all()
+    return ApiEnvelope(data=[major_expense_voucher_read(session, item) for item in items])
+
+
+@router.post("/major-expense-vouchers", response_model=ApiEnvelope[MajorExpenseVoucherRead], status_code=201)
+def create_major_expense_voucher(
+    payload: MajorExpenseVoucherCreate,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_permission("reconciliation.manage")),
+) -> ApiEnvelope[MajorExpenseVoucherRead]:
+    ensure_open_or_create_ledger(session, payload.store_id, payload.ledger_period)
+    item = ExpenseItem(
+        store_id=payload.store_id,
+        ledger_period=payload.ledger_period,
+        expense_date=None,
+        description=payload.expense_name,
+        amount=Decimal("0.00"),
+        category_l1=None,
+        category_l2=None,
+        payment_status=ExpensePaymentStatus.NO_BANK_FLOW.value,
+        source=MAJOR_EXPENSE_VOUCHER_SOURCE,
+        source_document_id=None,
+        source_snapshot_json=json.dumps({"display_amount": str(payload.display_amount)}, ensure_ascii=False),
+        remark=payload.remark,
+    )
+    session.add(item)
+    session.flush()
+    write_audit_log(
+        session,
+        actor=audit_actor(current_user),
+        action="major_expense_voucher.create",
+        resource_type="expense_item",
+        resource_id=item.id,
+        summary=f"新增主要支出凭证：{payload.expense_name} {payload.display_amount}",
+        metadata={
+            "store_id": item.store_id,
+            "ledger_period": item.ledger_period,
+            "display_amount": payload.display_amount,
+        },
+    )
+    session.commit()
+    session.refresh(item)
+    return ApiEnvelope(data=major_expense_voucher_read(session, item))
 
 
 def ensure_kuailv_purchase(session: Session, item_id: str) -> ExpenseItem:

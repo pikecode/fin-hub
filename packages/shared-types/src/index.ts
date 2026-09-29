@@ -466,6 +466,27 @@ export interface KuailvPurchaseCreate {
 
 export type KuailvPurchaseUpdate = Omit<KuailvPurchaseCreate, "store_id">;
 
+
+export interface MajorExpenseVoucher {
+  id: string;
+  store_id: string;
+  ledger_period: string;
+  expense_name: string;
+  display_amount: string;
+  remark?: string | null;
+  attachment_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MajorExpenseVoucherCreate {
+  store_id: string;
+  ledger_period: string;
+  expense_name: string;
+  display_amount: string;
+  remark?: string | null;
+}
+
 export type BankPaymentStatus = "paid" | "unpaid";
 export type BankSpecialType = "current_account" | "shareholder_dividend" | "shareholder_capital" | "other_income_expense";
 

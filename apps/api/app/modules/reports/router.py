@@ -62,6 +62,7 @@ from app.schemas import (
 )
 
 router = APIRouter(prefix="/reports", tags=["reports"])
+MAJOR_EXPENSE_VOUCHER_SOURCE = "major_expense_voucher"
 
 
 def operating_expense_category_condition():
@@ -69,6 +70,7 @@ def operating_expense_category_condition():
         ExpenseItem.category_l1.in_(NON_OPERATING_EXPENSE_CATEGORY_L1),
         (ExpenseItem.category_l1 == FOOD_COST_CATEGORY_L1)
         & (ExpenseItem.category_l2 == PREPAID_FOOD_COST_CATEGORY_L2),
+        ExpenseItem.source == MAJOR_EXPENSE_VOUCHER_SOURCE,
     )
 
 
@@ -170,7 +172,12 @@ def build_report_summary(session: Session, ledger: Ledger, store: Store) -> Ledg
             )
         )
     )
-    expense_rows = [item for item in expense_rows if not is_non_operating_expense(item.category_l1, item.category_l2)]
+    expense_rows = [
+        item
+        for item in expense_rows
+        if not is_non_operating_expense(item.category_l1, item.category_l2)
+        and item.source != MAJOR_EXPENSE_VOUCHER_SOURCE
+    ]
     expense_amount = sum((Decimal(item.amount) for item in expense_rows), Decimal("0.00"))
     pending_expense_count = session.scalar(
         select(func.count()).select_from(ExpenseItem).where(
@@ -1085,7 +1092,12 @@ def read_ledger_detail(
             .where(ExpenseItem.store_id == store_id, ExpenseItem.ledger_period == period)
         )
     )
-    detail_expenses = [item for item in detail_expenses if not is_non_operating_expense(item.category_l1, item.category_l2)]
+    detail_expenses = [
+        item
+        for item in detail_expenses
+        if not is_non_operating_expense(item.category_l1, item.category_l2)
+        and item.source != MAJOR_EXPENSE_VOUCHER_SOURCE
+    ]
     category_buckets: dict[tuple[str, str | None], tuple[Decimal, int]] = {}
     supplier_buckets: dict[str, tuple[Decimal, int]] = {}
     for item in detail_expenses:
