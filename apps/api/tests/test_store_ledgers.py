@@ -578,7 +578,8 @@ def test_store_ledger_workspace_excludes_prepaid_kuailv_food_cost(
     session.flush()
     food_category = ExpenseCategory(name="食材成本", parent_id=None, sort_order=1)
     prepaid_category = ExpenseCategory(name="门店预充值", parent_id=None, sort_order=2)
-    session.add_all([food_category, prepaid_category])
+    reserve_loan_category = ExpenseCategory(name="备用金/借款", parent_id=None, sort_order=3)
+    session.add_all([food_category, prepaid_category, reserve_loan_category])
     session.flush()
     session.add_all(
         [
@@ -614,6 +615,16 @@ def test_store_ledger_workspace_excludes_prepaid_kuailv_food_cost(
         source="dingtalk",
         source_document_id="kuailv-prepaid-approval:prepaid",
     )
+    reserve_loan_expense = ExpenseItem(
+        store_id=store_id,
+        ledger_period="2026-08",
+        description="备用金借款",
+        amount=Decimal("200.00"),
+        category_l1="备用金/借款",
+        category_l2=None,
+        source="dingtalk",
+        source_document_id="kuailv-prepaid-approval:reserve-loan",
+    )
     normal_food_bank = BankTransaction(
         store_id=store_id,
         ledger_period="2026-08",
@@ -632,7 +643,23 @@ def test_store_ledger_workspace_excludes_prepaid_kuailv_food_cost(
         matched_amount=Decimal("500.00"),
         summary="快驴预充值付款",
     )
-    session.add_all([normal_food_expense, prepaid_expense, normal_food_bank, prepaid_bank])
+    reserve_loan_bank = BankTransaction(
+        store_id=store_id,
+        ledger_period="2026-08",
+        occurred_at=datetime(2026, 8, 24, 10, 30, 0),
+        direction="expense",
+        amount=Decimal("200.00"),
+        matched_amount=Decimal("200.00"),
+        summary="备用金借款付款",
+    )
+    session.add_all([
+        normal_food_expense,
+        prepaid_expense,
+        reserve_loan_expense,
+        normal_food_bank,
+        prepaid_bank,
+        reserve_loan_bank,
+    ])
     session.flush()
     session.add_all(
         [
@@ -650,6 +677,13 @@ def test_store_ledger_workspace_excludes_prepaid_kuailv_food_cost(
                 accounting_period="2026-08",
                 status=MatchStatus.CONFIRMED.value,
             ),
+            ExpenseBankMatch(
+                expense_item_id=reserve_loan_expense.id,
+                bank_transaction_id=reserve_loan_bank.id,
+                amount=Decimal("200.00"),
+                accounting_period="2026-08",
+                status=MatchStatus.CONFIRMED.value,
+            ),
         ]
     )
     session.commit()
@@ -662,6 +696,7 @@ def test_store_ledger_workspace_excludes_prepaid_kuailv_food_cost(
     category_names = [item["name"] for item in workspace["metrics"]["expense_category_summary"]]
     assert "食材成本 / 肉类" in category_names
     assert "门店预充值 / 快驴充值" not in category_names
+    assert "备用金/借款" not in category_names
 
 
 def test_kuailv_purchase_entry_counts_as_food_cost_expense(

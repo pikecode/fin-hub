@@ -29,11 +29,18 @@ from app.models import (
 from app.modules.approvals.status import approval_expense_stats_map
 from app.modules.auth.permissions import effective_store_ids, ensure_permission, ensure_store_access
 from app.modules.auth.router import get_optional_current_user
+from app.modules.expense_classification import (
+    FOOD_COST_CATEGORY_L1,
+    NON_OPERATING_EXPENSE_CATEGORY_L1,
+    PREPAID_FOOD_COST_CATEGORY_L2,
+    is_non_operating_expense,
+)
 from app.modules.shareholder_auth.service import grant_store_ids, require_shareholder_grant
 from app.schemas import (
     ApiEnvelope,
-    FinancialAnalyticsApprovalStatusItem,
     ExpenseBreakdownItem,
+    ExpenseItemRead,
+    FinancialAnalyticsApprovalStatusItem,
     FinancialAnalyticsCategoryItem,
     FinancialAnalyticsDetailReport,
     FinancialAnalyticsMetrics,
@@ -42,8 +49,6 @@ from app.schemas import (
     FinancialAnalyticsStoreItem,
     FinancialAnalyticsTemplateItem,
     FinancialAnalyticsTrendItem,
-    ExpenseItemRead,
-    RevenueChannelMonthlyBreakdownItem,
     LedgerPeriodOption,
     LedgerReportDetail,
     LedgerReportSummary,
@@ -51,11 +56,20 @@ from app.schemas import (
     ReconciliationRecord,
     ReportPeriodOption,
     RevenueChannelBreakdownItem,
+    RevenueChannelMonthlyBreakdownItem,
     StoreComparisonReport,
     StoreReportSummary,
 )
 
 router = APIRouter(prefix="/reports", tags=["reports"])
+
+
+def operating_expense_category_condition():
+    return ~or_(
+        ExpenseItem.category_l1.in_(NON_OPERATING_EXPENSE_CATEGORY_L1),
+        (ExpenseItem.category_l1 == FOOD_COST_CATEGORY_L1)
+        & (ExpenseItem.category_l2 == PREPAID_FOOD_COST_CATEGORY_L2),
+    )
 
 
 def read_bearer_token(authorization: str | None) -> str | None:
@@ -156,14 +170,14 @@ def build_report_summary(session: Session, ledger: Ledger, store: Store) -> Ledg
             )
         )
     )
-    expense_rows = [item for item in expense_rows if item.category_l1 != "门店预充值"]
+    expense_rows = [item for item in expense_rows if not is_non_operating_expense(item.category_l1, item.category_l2)]
     expense_amount = sum((Decimal(item.amount) for item in expense_rows), Decimal("0.00"))
     pending_expense_count = session.scalar(
         select(func.count()).select_from(ExpenseItem).where(
             ExpenseItem.store_id == ledger.store_id,
             ExpenseItem.ledger_period == ledger.period,
             ExpenseItem.payment_status.in_(["unpaid", "partial_paid"]),
-            ExpenseItem.category_l1 != "门店预充值",
+            operating_expense_category_condition(),
         )
     )
     pending_bank_count = session.scalar(
@@ -391,7 +405,7 @@ def read_financial_analytics(
     revenue_query = apply_period_range(revenue_query, RevenueRecord.ledger_period, period_start, period_end)
     expense_query = select(ExpenseItem).where(
         ExpenseItem.store_id.in_(store_ids),
-        ExpenseItem.category_l1 != "门店预充值",
+        operating_expense_category_condition(),
     )
     expense_query = apply_period_range(expense_query, ExpenseItem.ledger_period, period_start, period_end)
     bank_query = select(BankTransaction).where(BankTransaction.store_id.in_(store_ids))
@@ -1071,7 +1085,7 @@ def read_ledger_detail(
             .where(ExpenseItem.store_id == store_id, ExpenseItem.ledger_period == period)
         )
     )
-    detail_expenses = [item for item in detail_expenses if item.category_l1 != "门店预充值"]
+    detail_expenses = [item for item in detail_expenses if not is_non_operating_expense(item.category_l1, item.category_l2)]
     category_buckets: dict[tuple[str, str | None], tuple[Decimal, int]] = {}
     supplier_buckets: dict[str, tuple[Decimal, int]] = {}
     for item in detail_expenses:

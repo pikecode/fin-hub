@@ -26,6 +26,7 @@ from app.modules.approvals.status import approval_expense_stats_map
 from app.modules.auth.permissions import ensure_permission, ensure_store_access
 from app.modules.auth.router import get_current_user
 from app.modules.dingtalk.router import approval_instance_read
+from app.modules.expense_classification import FOOD_COST_CATEGORY_L1, is_non_operating_expense
 from app.modules.ledgers.router import build_close_check
 from app.modules.matching.router import (
     approval_expense_join_condition,
@@ -37,9 +38,6 @@ from app.schemas import ApiEnvelope, StoreLedgerWorkspaceMetrics, StoreLedgerWor
 router = APIRouter(prefix="/store-ledgers", tags=["store-ledgers"])
 REVENUE_FEE_SOURCE = "revenue_fee"
 KUAILV_PURCHASE_SOURCE = "kuailv_purchase"
-FOOD_COST_CATEGORY_L1 = "食材成本"
-PREPAID_FOOD_COST_CATEGORY_L2 = "快驴充值"
-STORE_PREPAID_CATEGORY_L1 = "门店预充值"
 
 
 def decimal_sum(value: Decimal | None) -> Decimal:
@@ -69,12 +67,6 @@ def previous_period(period: str) -> str:
     if start.month == 1:
         return f"{start.year - 1}-12"
     return f"{start.year}-{start.month - 1:02d}"
-
-
-def is_prepaid_food_cost(category_l1: str | None, category_l2: str | None) -> bool:
-    return category_l1 == STORE_PREPAID_CATEGORY_L1 or (
-        category_l1 == FOOD_COST_CATEGORY_L1 and category_l2 == PREPAID_FOOD_COST_CATEGORY_L2
-    )
 
 
 def dedupe_expense_rows(rows):
@@ -157,14 +149,14 @@ def calculate_store_ledger_profit(session: Session, store_id: str, period: str) 
         RevenueRecord.store_id == store_id, RevenueRecord.ledger_period == period,
     )))
     confirmed_expense_rows = confirmed_accounting_expense_rows(session, store_id, period)
-    confirmed_expense_rows = [row for row in confirmed_expense_rows if not is_prepaid_food_cost(row[1], row[2])]
+    confirmed_expense_rows = [row for row in confirmed_expense_rows if not is_non_operating_expense(row[1], row[2])]
     revenue_fee_rows = session.execute(select(ExpenseItem.amount).where(
         ExpenseItem.store_id == store_id, ExpenseItem.ledger_period == period, ExpenseItem.source == REVENUE_FEE_SOURCE,
     )).all()
     kuailv_purchase_rows = session.execute(select(ExpenseItem.category_l1, ExpenseItem.category_l2, ExpenseItem.amount).where(
         ExpenseItem.store_id == store_id, ExpenseItem.ledger_period == period, ExpenseItem.source == KUAILV_PURCHASE_SOURCE,
     )).all()
-    kuailv_purchase_rows = [row for row in kuailv_purchase_rows if not is_prepaid_food_cost(row[0], row[1])]
+    kuailv_purchase_rows = [row for row in kuailv_purchase_rows if not is_non_operating_expense(row[0], row[1])]
     expense_amount = sum((decimal_sum(row[3]) for row in confirmed_expense_rows), Decimal("0.00"))
     expense_amount += sum((decimal_sum(row[0]) for row in revenue_fee_rows), Decimal("0.00"))
     expense_amount += sum((decimal_sum(row[2]) for row in kuailv_purchase_rows), Decimal("0.00"))
@@ -272,7 +264,7 @@ def read_store_ledger_workspace(
         )
     )
     confirmed_expense_rows = confirmed_accounting_expense_rows(session, store_id, selected_period)
-    confirmed_expense_rows = [row for row in confirmed_expense_rows if not is_prepaid_food_cost(row[1], row[2])]
+    confirmed_expense_rows = [row for row in confirmed_expense_rows if not is_non_operating_expense(row[1], row[2])]
     revenue_fee_rows = session.execute(
         select(
             ExpenseItem.category_l1,
@@ -298,7 +290,7 @@ def read_store_ledger_workspace(
         )
     ).all()
     kuailv_purchase_rows = [
-        row for row in kuailv_purchase_rows if not is_prepaid_food_cost(row[0], row[1])
+        row for row in kuailv_purchase_rows if not is_non_operating_expense(row[0], row[1])
     ]
     expense_amount = sum(
         (decimal_sum(row[3]) for row in confirmed_expense_rows), Decimal("0.00")
