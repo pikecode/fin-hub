@@ -26,6 +26,8 @@
 
 ### 功能与实现
 
+- [门店筹建费用开发实施计划](2026-10-04-store-preopening-expense-implementation-plan.md)
+- [门店筹建费用需求分析与设计（评审稿）](2026-10-04-store-preopening-expense-requirements-design.md)
 - [API 第一阶段实现说明](features/api-first-implementation-notes.md)
 - [后台管理第一阶段实现说明](features/admin-first-implementation-notes.md)
 - [小程序第一阶段实现说明](features/miniapp-first-implementation-notes.md)

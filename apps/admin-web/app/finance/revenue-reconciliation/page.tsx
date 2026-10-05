@@ -11,6 +11,7 @@ import { formatMoney } from "@fin-hub/shared-utils";
 import { AppShell } from "../../components/AppShell";
 import { StoreLedgerWorkspaceNav } from "../../components/StoreLedgerWorkspaceNav";
 import { apiClient } from "../../lib/api";
+import { loadAllPages } from "../../lib/pagination";
 import { getLedgers, getRevenueChannels, getStores } from "../../lib/referenceData";
 import { useClientSearchParams } from "../../lib/searchParams";
 
@@ -155,15 +156,6 @@ export default function RevenueReconciliationPage() {
   const matchModalDifference = bankRemaining - matchModalNetAmount;
   const matchModalVisibleRecordIds = matchModalVisibleRecords.map((record) => record.id).join("|");
   const isMatchDateRangeComplete = Boolean(matchDateRange[0] && matchDateRange[1]);
-  const matchedRevenueDateSet = useMemo(() => {
-    const next = new Set<string>();
-    records.forEach((record) => {
-      if (isRevenueRecordCovered(record, activeMatches)) {
-        next.add(record.revenue_date);
-      }
-    });
-    return next;
-  }, [activeMatches, records]);
   const filteredRecords = unmatchedRecords
     .filter((record) => !channelFilter || record.channel === channelFilter)
     .filter((record) => {
@@ -231,9 +223,9 @@ export default function RevenueReconciliationPage() {
       const revenueParams = new URLSearchParams({ store_id: storeId, page_size: "500" });
       const matchParams = new URLSearchParams({ store_id: storeId, page_size: "500" });
       const results = await Promise.allSettled([
-        apiClient.bankTransactions.list(`?${bankParams.toString()}`),
-        apiClient.revenueRecords.list(`?${revenueParams.toString()}`),
-        apiClient.matches.listRevenue(`?${matchParams.toString()}`),
+        loadAllPages((page, pageSize) => { const query = new URLSearchParams(bankParams); query.set("page", String(page)); query.set("page_size", String(pageSize)); return apiClient.bankTransactions.list(`?${query}`); }, () => requestId === loadRequestIdRef.current),
+        loadAllPages((page, pageSize) => { const query = new URLSearchParams(revenueParams); query.set("page", String(page)); query.set("page_size", String(pageSize)); return apiClient.revenueRecords.list(`?${query}`); }, () => requestId === loadRequestIdRef.current),
+        loadAllPages((page, pageSize) => { const query = new URLSearchParams(matchParams); query.set("page", String(page)); query.set("page_size", String(pageSize)); return apiClient.matches.listRevenue(`?${query}`); }, () => requestId === loadRequestIdRef.current),
       ]);
 
       if (requestId !== loadRequestIdRef.current) return;
@@ -445,6 +437,7 @@ export default function RevenueReconciliationPage() {
       setMatchValidationMessage("请先选择左侧收入银行流水。");
       return false;
     }
+    setMatchValidationMessage(null);
     setIsSaving(true);
     setSubmitStatus("正在提交收入匹配");
     message.loading({ content: "正在提交收入匹配", key: "revenue-match-submit", duration: 0 });
@@ -466,8 +459,19 @@ export default function RevenueReconciliationPage() {
     } catch (error) {
       setSubmitStatus(null);
       message.destroy("revenue-match-submit");
-      message.error(error instanceof Error ? error.message : "确认收入对账失败");
-      setErrorMessage(error instanceof Error ? error.message : "确认收入对账失败");
+      const rawMessage = error instanceof Error ? error.message : "确认收入对账失败";
+      const errorTranslations: Record<string, string> = {
+        "Revenue bank match already exists": "该流水已有相同的收入匹配记录，请刷新后重试。",
+        "Bank transaction already matched": "该银行流水已匹配，请先撤销原匹配。",
+        "Revenue records already matched": "所选营业收入已匹配其他流水，请刷新后重新选择。",
+        "Revenue records already matched for selected range": "所选日期内的营业收入已匹配，请重新选择。",
+        "Ledger is closed": "账期已封账，无法修改匹配。",
+        "Revenue channel is missing or inactive": "收入渠道不存在或已停用，请检查渠道设置。",
+      };
+      const failureMessage = errorTranslations[rawMessage] ?? rawMessage;
+      setMatchValidationMessage(failureMessage);
+      message.error(failureMessage);
+      setErrorMessage(failureMessage);
       return false;
     } finally {
       setIsSaving(false);
@@ -793,7 +797,6 @@ export default function RevenueReconciliationPage() {
                   setMatchDateRange(nextRange);
                   setMatchValidationMessage(null);
                 }}
-                disabledDate={(current) => Boolean(current && matchedRevenueDateSet.has(current.format("YYYY-MM-DD")))}
                 placeholder={["开始日期", "结束日期"]}
                 style={{ width: "100%" }}
               />

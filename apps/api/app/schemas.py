@@ -511,6 +511,12 @@ class MajorExpenseVoucherRead(BaseModel):
 
 
 class ExpenseItemRead(ExpenseItemCreate):
+    # Synced approval rows may contain zero-amount voucher supplements.
+    amount: Decimal = Field(ge=0)
+    expense_scope: str = "operating"
+    preopening_category_id: str | None = None
+    preopening_category_l1: str | None = None
+    preopening_category_l2: str | None = None
     model_config = ConfigDict(from_attributes=True)
 
     id: str
@@ -851,12 +857,14 @@ class DingTalkAutoSyncSettingUpdate(BaseModel):
 
 
 class ApprovalTemplateCreate(BaseModel):
+    is_preopening_expense: bool = False
     process_code: str = Field(min_length=1, max_length=160)
     name: str = Field(min_length=1, max_length=160)
     is_enabled: bool = True
 
 
 class ApprovalTemplateUpdate(BaseModel):
+    is_preopening_expense: bool | None = None
     name: str | None = Field(default=None, min_length=1, max_length=160)
     is_enabled: bool | None = None
 
@@ -1410,6 +1418,8 @@ class ApprovalModifiedResyncResult(BaseModel):
 
 
 class ApprovalInstanceRead(BaseModel):
+    title: str | None = None
+    expense_scope: str = "operating"
     model_config = ConfigDict(from_attributes=True)
 
     id: str

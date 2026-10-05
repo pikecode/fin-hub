@@ -721,6 +721,20 @@ def test_list_approval_instances_orders_by_submit_time_desc(client: TestClient, 
     items = response.json()["data"]["items"]
     assert [item["approval_no"] for item in items] == ["SORT-NEW", "SORT-OLD"]
 
+    session.add(ApprovalInstance(template_id=template_id, dingtalk_instance_id="approval-sort-day-end",
+                                approval_no="SORT-END", approval_status="approved", store_id=store_id,
+                                submit_at=datetime(2026, 8, 2, 23, 59, 59)))
+    session.commit()
+    params = {"store_id": store_id, "submit_date_start": "2026-08-02", "submit_date_end": "2026-08-02", "page_size": 1}
+    filtered = client.get("/api/dingtalk/approval-instances", params=params)
+    assert filtered.status_code == 200
+    assert filtered.json()["data"]["total"] == 2
+    assert filtered.json()["data"]["items"][0]["approval_no"] == "SORT-END"
+    params["page"] = 2
+    assert client.get("/api/dingtalk/approval-instances", params=params).json()["data"]["items"][0]["approval_no"] == "SORT-NEW"
+    params["submit_date_start"] = "2026-08-03"
+    assert client.get("/api/dingtalk/approval-instances", params=params).status_code == 422
+
 
 def test_list_approval_instances_returns_expense_aggregation(client: TestClient, session) -> None:
     store_id = client.post("/api/stores", json={"name": "蘑说审批聚合店"}).json()["data"]["id"]
@@ -1324,8 +1338,9 @@ def test_resume_approval_sync_uses_saved_cursor(client: TestClient, monkeypatch)
     assert resume_response.status_code == 201
     resume_job = resume_response.json()["data"]
     assert resume_job["status"] == "succeeded"
-    assert resume_job["processed_count"] == 2
-    assert resume_job["success_count"] == 2
+    # The already parsed first page must not be re-fetched just because it is unmatched.
+    assert resume_job["processed_count"] == 1
+    assert resume_job["success_count"] == 1
     assert resume_job["next_cursor"] is None
     assert resume_job["request_start_at"].startswith("2026-08-01")
     assert resume_job["request_end_at"].startswith("2026-08-31")
@@ -2175,7 +2190,9 @@ def test_real_approval_sync_persists_instance_when_expense_parse_is_incomplete(
     )
     assert response.status_code == 201
     job = response.json()["data"]
-    assert job["status"] == "failed"
+    assert job["status"] == "succeeded"
+    assert json.loads(job["raw_summary"])["pull_completed"] is True
+    assert json.loads(job["raw_summary"])["parse_failed_count"] == 1
     assert job["success_count"] == 0
     assert job["failed_count"] == 1
 
@@ -2434,3 +2451,118 @@ def test_template_enabled_status_can_be_updated(client: TestClient) -> None:
 
     assert response.status_code == 200
     assert response.json()["data"]["is_enabled"] is False
+
+
+def test_approval_instances_server_pagination_and_filters(client, session):
+    enabled = ApprovalTemplate(process_code="PAGINATION", name="分页报销", is_enabled=True)
+    disabled = ApprovalTemplate(process_code="PAGINATION-OFF", name="停用", is_enabled=False)
+    session.add_all([enabled, disabled])
+    session.flush()
+    for i in range(25):
+        session.add(ApprovalInstance(
+            template_id=enabled.id,
+            dingtalk_instance_id=f"pagination-{i}",
+            approval_no=f"PAGE-{i:02d}",
+            applicant_name="张%三" if i == 0 else "王四",
+            department_name="测试门店",
+            approval_status="agree" if i % 2 == 0 else "RUNNING",
+            submit_at=datetime(2026, 8, 1),
+        ))
+    session.add(ApprovalInstance(template_id=disabled.id, dingtalk_instance_id="pagination-hidden", approval_status="agree"))
+    session.commit()
+    base = f"/api/dingtalk/approval-instances?template_id={enabled.id}"
+    first = client.get(base + "&page=1&page_size=5").json()["data"]
+    second = client.get(base + "&page=2&page_size=5").json()["data"]
+    assert first["total"] == second["total"] == 25
+    assert len(first["items"]) == len(second["items"]) == 5
+    assert not ({x["id"] for x in first["items"]} & {x["id"] for x in second["items"]})
+    filtered = client.get(base, params={"approval_status": "已通过", "page_size": 5}).json()["data"]
+    assert filtered["total"] == 13
+    assert all(x["approval_status"] == "agree" for x in filtered["items"])
+    search = client.get(base, params={"keyword": "张%"}).json()["data"]
+    assert search["total"] == 1
+    assert search["items"][0]["approval_no"] == "PAGE-00"
+    capped = client.get(base + "&page_size=500").json()["data"]
+    assert capped["page_size"] == 200
+
+
+def test_reparse_non_installment_approval_with_empty_mapped_amount(client, session):
+    from app.models import TemplateFieldMapping
+
+    store_id = client.post("/api/stores", json={"name": "非分期筹建测试店"}).json()["data"]["id"]
+    template = ApprovalTemplate(process_code="EMPTY-INSTALLMENT", name="筹建报销", is_enabled=True, is_preopening_expense=True)
+    session.add(template)
+    session.flush()
+    session.add(TemplateFieldMapping(template_id=template.id, standard_field="amount", source_path="field:first-payment", source_field_name="首期费用"))
+    session.add(TemplateFieldMapping(template_id=template.id, standard_field="store", source_path="field:报销门店", source_field_name="报销门店"))
+    raw = {
+        "process_instance_id": "empty-installment-approval",
+        "business_id": "NO-EMPTY-INSTALLMENT",
+        "status": "COMPLETED",
+        "result": "agree",
+        "create_time": "2026-09-01 09:00:00",
+        "finish_time": "2026-09-01 18:00:00",
+        "form_component_values": [
+            {"name": "日期", "value": "2026-09-01"},
+            {"name": "报销门店", "value": "非分期筹建测试店"},
+            {"name": "金额（元）", "value": "9256"},
+            {"name": "是否分期付款", "value": "否"},
+            {"name": "首期费用", "id": "first-payment", "value": "null"},
+            {"name": "支出详情", "value": "围挡制作"},
+        ],
+    }
+    approval = ApprovalInstance(template_id=template.id, store_id=store_id, dingtalk_instance_id=raw["process_instance_id"], approval_no=raw["business_id"], approval_status="agree", expense_scope="preopening", raw_payload=json.dumps(raw), parse_status="skipped", parse_error="Unable to resolve approval amount")
+    session.add(approval)
+    session.commit()
+    response = client.post("/api/dingtalk/approvals/reparse", json=[raw["business_id"]])
+    assert response.status_code == 200, response.text
+    session.refresh(approval)
+    assert approval.parse_status == "parsed", approval.parse_error
+    assert approval.parse_error is None
+    items = session.scalars(select(ExpenseItem).where(ExpenseItem.approval_instance_id == approval.id)).all()
+    assert len(items) == 1
+    assert items[0].amount == Decimal("9256")
+    assert items[0].expense_scope == "preopening"
+    report = client.get(f"/api/preopening/stores/{store_id}").json()["data"]
+    assert len(report["approvals"]) == 1
+    assert Decimal(report["approvals"][0]["amount"]) == Decimal("9256")
+
+
+def test_compact_approval_list_keeps_full_detail_on_demand(client, session):
+    store_id = client.post("/api/stores", json={"name": "列表轻量测试店"}).json()["data"]["id"]
+    template = ApprovalTemplate(process_code="COMPACT-LIST", name="轻量审批", is_enabled=True)
+    session.add(template)
+    session.flush()
+    approval = ApprovalInstance(template_id=template.id, store_id=store_id,
+        dingtalk_instance_id="compact-approval", approval_no="COMPACT-001", approval_status="agree",
+        applicant_name="测试申请人", raw_payload=json.dumps({"title": "完整审批详情", "form_component_values": [{"name": "备注", "value": "内容" * 1000}]}))
+    session.add(approval)
+    session.commit()
+    params = {"store_id": store_id, "compact": "true", "page_size": 20}
+    listing = client.get("/api/dingtalk/approval-instances", params=params).json()["data"]
+    assert listing["total"] == 1
+    assert listing["items"][0]["raw_payload"] is None
+    assert listing["items"][0]["title"] == "完整审批详情"
+    assert listing["items"][0]["applicant_name"] == "测试申请人"
+    detail = client.get(f"/api/dingtalk/approval-instances/{approval.id}")
+    assert detail.status_code == 200
+    assert json.loads(detail.json()["data"]["raw_payload"])["title"] == "完整审批详情"
+    legacy = client.get("/api/dingtalk/approval-instances", params={"store_id": store_id}).json()["data"]
+    assert legacy["items"][0]["raw_payload"] == detail.json()["data"]["raw_payload"]
+
+
+def test_approval_expense_list_preserves_zero_amount_voucher_rows(client, session):
+    store_id = client.post("/api/stores", json={"name": "凭证补充明细店"}).json()["data"]["id"]
+    template_id = client.post("/api/dingtalk/templates", json={"process_code": "PROC-ZERO-VOUCHER", "name": "报销", "is_enabled": True}).json()["data"]["id"]
+    approval = ApprovalInstance(template_id=template_id, dingtalk_instance_id="zero-voucher", store_id=store_id, approval_status="approved")
+    session.add(approval)
+    session.flush()
+    for line, description, amount in [(1, "鸡肉", "15690.60"), (2, "鸡肉凭证补充", "0.00"), (3, "青菜", "9471.61")]:
+        session.add(ExpenseItem(store_id=store_id, ledger_period="2026-08", description=description, amount=Decimal(amount), source="dingtalk", source_document_id=f"zero-voucher:line-{line}", approval_instance_id=approval.id, approval_line_no=line))
+    session.commit()
+    response = client.get("/api/expense-items", params={"approval_instance_id": approval.id})
+    assert response.status_code == 200
+    rows = response.json()["data"]["items"]
+    assert len(rows) == 3
+    assert {row["description"]: Decimal(row["amount"]) for row in rows} == {"鸡肉": Decimal("15690.60"), "鸡肉凭证补充": Decimal("0"), "青菜": Decimal("9471.61")}
+    assert client.post("/api/expense-items", json={"store_id": store_id, "ledger_period": "2026-08", "description": "手工零金额", "amount": "0"}).status_code == 422

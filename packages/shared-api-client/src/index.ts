@@ -271,6 +271,8 @@ export function createApiClient(options: ApiClientOptions) {
         }),
     },
     storeLedgers: {
+      report: (storeId: string, params = "") =>
+        request<StoreLedgerWorkspace>(`/api/store-ledgers/${storeId}/report${params}`),
       workspace: (storeId: string, params = "") =>
         request<StoreLedgerWorkspace>(`/api/store-ledgers/${storeId}/workspace${params}`),
     },
@@ -710,8 +712,17 @@ export function createApiClient(options: ApiClientOptions) {
           method: "POST",
         }),
       listSyncJobs: (params = "") => request<Page<SyncJob>>(`/api/dingtalk/sync-jobs${params}`),
+      readApprovalInstance: (id: string) => request<ApprovalInstance>(`/api/dingtalk/approval-instances/${encodeURIComponent(id)}`),
       listApprovalInstances: (params = "") =>
         request<Page<ApprovalInstance>>(`/api/dingtalk/approval-instances${params}`),
+      unmarkApprovalInstanceMatched: (approvalId: string) =>
+        request<ApprovalInstance>(`/api/dingtalk/approval-instances/${encodeURIComponent(approvalId)}/unmark-matched`, {
+          method: "POST",
+        }),
+      markApprovalInstanceMatched: (approvalId: string) =>
+        request<ApprovalInstance>(`/api/dingtalk/approval-instances/${encodeURIComponent(approvalId)}/mark-matched`, {
+          method: "POST",
+        }),
     },
     reports: {
       analytics: (params = "") => request<FinancialAnalyticsReport>(`/api/reports/analytics${params}`),

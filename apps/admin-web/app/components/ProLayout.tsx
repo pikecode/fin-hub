@@ -86,6 +86,12 @@ const navigationTree: NavItem[] = [
         permission: "revenue.view",
       },
       {
+        key: "/preopening-categories",
+        icon: <TagsOutlined />,
+        label: "筹建费用分类",
+        permission: "categories.view",
+      },
+      {
         key: "/categories",
         icon: <TagsOutlined />,
         label: "费用分类",

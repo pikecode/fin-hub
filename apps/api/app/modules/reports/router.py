@@ -35,6 +35,7 @@ from app.modules.expense_classification import (
     PREPAID_FOOD_COST_CATEGORY_L2,
     is_non_operating_expense,
 )
+from app.modules.store_ledgers.router import confirmed_accounting_expense_rows
 from app.modules.shareholder_auth.service import grant_store_ids, require_shareholder_grant
 from app.schemas import (
     ApiEnvelope,
@@ -66,7 +67,7 @@ MAJOR_EXPENSE_VOUCHER_SOURCE = "major_expense_voucher"
 
 
 def operating_expense_category_condition():
-    return ~or_(
+    return (ExpenseItem.expense_scope == "operating") & ~or_(
         ExpenseItem.category_l1.in_(NON_OPERATING_EXPENSE_CATEGORY_L1),
         (ExpenseItem.category_l1 == FOOD_COST_CATEGORY_L1)
         & (ExpenseItem.category_l2 == PREPAID_FOOD_COST_CATEGORY_L2),
@@ -166,7 +167,7 @@ def build_report_summary(session: Session, ledger: Ledger, store: Store) -> Ledg
     income_amount = revenue_amount if revenue_amount > 0 else bank_income_amount
     expense_rows = list(
         session.scalars(
-            select(ExpenseItem).where(
+            select(ExpenseItem).where(ExpenseItem.expense_scope == "operating",
                 ExpenseItem.store_id == ledger.store_id,
                 ExpenseItem.ledger_period == ledger.period,
             )
@@ -175,7 +176,7 @@ def build_report_summary(session: Session, ledger: Ledger, store: Store) -> Ledg
     expense_rows = [
         item
         for item in expense_rows
-        if not is_non_operating_expense(item.category_l1, item.category_l2)
+        if item.expense_scope == "operating" and not is_non_operating_expense(item.category_l1, item.category_l2)
         and item.source != MAJOR_EXPENSE_VOUCHER_SOURCE
     ]
     expense_amount = sum((Decimal(item.amount) for item in expense_rows), Decimal("0.00"))
@@ -237,7 +238,7 @@ def read_ledger_export_rows(
     ).all()
     expenses = session.scalars(
         select(ExpenseItem)
-        .where(ExpenseItem.store_id == store_id, ExpenseItem.ledger_period == period)
+        .where(ExpenseItem.expense_scope == "operating", ExpenseItem.store_id == store_id, ExpenseItem.ledger_period == period)
         .order_by(ExpenseItem.expense_date.asc(), ExpenseItem.created_at.asc())
     ).all()
     bank_transactions = session.scalars(
@@ -252,7 +253,7 @@ def export_expense_rows(expenses: list[ExpenseItem]) -> list[ExpenseItem]:
     return [
         item
         for item in expenses
-        if not is_non_operating_expense(item.category_l1, item.category_l2)
+        if item.expense_scope == "operating" and not is_non_operating_expense(item.category_l1, item.category_l2)
         and item.source != MAJOR_EXPENSE_VOUCHER_SOURCE
     ]
 
@@ -439,7 +440,7 @@ def read_financial_analytics(
 
     revenue_query = select(RevenueRecord).where(RevenueRecord.store_id.in_(store_ids))
     revenue_query = apply_period_range(revenue_query, RevenueRecord.ledger_period, period_start, period_end)
-    expense_query = select(ExpenseItem).where(
+    expense_query = select(ExpenseItem).where(ExpenseItem.expense_scope == "operating",
         ExpenseItem.store_id.in_(store_ids),
         operating_expense_category_condition(),
     )
@@ -797,7 +798,7 @@ def read_financial_analytics_details(
     if not store_ids:
         return ApiEnvelope(data=FinancialAnalyticsDetailReport(title="暂无授权门店"))
 
-    expense_query = select(ExpenseItem).where(ExpenseItem.store_id.in_(store_ids))
+    expense_query = select(ExpenseItem).where(ExpenseItem.expense_scope == "operating", ExpenseItem.store_id.in_(store_ids))
     expense_query = apply_period_range(expense_query, ExpenseItem.ledger_period, period_start, period_end)
     bank_query = select(BankTransaction).where(BankTransaction.store_id.in_(store_ids))
     bank_query = apply_period_range(bank_query, BankTransaction.ledger_period, period_start, period_end)
@@ -844,6 +845,34 @@ def read_financial_analytics_details(
         approval_instances = list(
             session.scalars(approval_query.order_by(ApprovalInstance.created_at.desc()).limit(page_size))
         )
+    elif detail_type == "report_expense":
+        title = "报表支出明细"
+        # Use confirmed accounting months, not the approval's original ledger month.
+        periods_query = select(ExpenseItem.store_id, ExpenseBankMatch.accounting_period).join(
+            ExpenseBankMatch, ExpenseBankMatch.expense_item_id == ExpenseItem.id
+        ).where(ExpenseItem.store_id.in_(store_ids), ExpenseBankMatch.status == MatchStatus.CONFIRMED.value)
+        periods_query = apply_period_range(periods_query, ExpenseBankMatch.accounting_period, period_start, period_end)
+        expense_ids = set()
+        for matched_store_id, period in session.execute(periods_query.distinct()):
+            if period:
+                expense_ids.update(row[0] for row in confirmed_accounting_expense_rows(session, matched_store_id, period))
+        automatic_query = select(ExpenseItem.id).where(
+            ExpenseItem.store_id.in_(store_ids), ExpenseItem.expense_scope == "operating",
+            ExpenseItem.source.in_(["revenue_fee", "kuailv_purchase"]),
+        )
+        automatic_query = apply_period_range(automatic_query, ExpenseItem.ledger_period, period_start, period_end)
+        expense_ids.update(session.scalars(automatic_query))
+        accounted_query = select(ExpenseItem).where(
+            ExpenseItem.id.in_(expense_ids), ExpenseItem.amount > 0,
+            ExpenseItem.expense_scope == "operating",
+        )
+        if category_l1:
+            accounted_query = accounted_query.where(ExpenseItem.category_l1 == category_l1)
+        if category_l2:
+            accounted_query = accounted_query.where(ExpenseItem.category_l2 == category_l2)
+        expense_items = export_expense_rows(list(session.scalars(
+            accounted_query.order_by(ExpenseItem.expense_date.desc().nullslast(), ExpenseItem.created_at.desc())
+        )))
     elif detail_type == "category":
         title = "费用分类明细"
         if category_l1:
@@ -1119,13 +1148,13 @@ def read_ledger_detail(
     detail_expenses = list(
         session.scalars(
             select(ExpenseItem)
-            .where(ExpenseItem.store_id == store_id, ExpenseItem.ledger_period == period)
+            .where(ExpenseItem.expense_scope == "operating", ExpenseItem.store_id == store_id, ExpenseItem.ledger_period == period)
         )
     )
     detail_expenses = [
         item
         for item in detail_expenses
-        if not is_non_operating_expense(item.category_l1, item.category_l2)
+        if item.expense_scope == "operating" and not is_non_operating_expense(item.category_l1, item.category_l2)
         and item.source != MAJOR_EXPENSE_VOUCHER_SOURCE
     ]
     category_buckets: dict[tuple[str, str | None], tuple[Decimal, int]] = {}

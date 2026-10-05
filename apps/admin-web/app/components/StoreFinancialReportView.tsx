@@ -57,8 +57,21 @@ function isExportOperatingExpense(item: ExpenseItem) {
 function isImageAttachment(attachment: Pick<Attachment, "content_type" | "file_name">) {
   return Boolean(
     attachment.content_type?.startsWith("image/")
-      || attachment.file_name?.match(/\.(apng|avif|gif|jpe?g|png|webp)$/i),
+      || attachment.file_name?.match(/\.(apng|avif|gif|jpe?g|png|webp)(?:[?#].*)?$/i),
   );
+}
+
+function externalAttachmentUrl(attachment: Attachment): string | null {
+  const value = attachment.external_file_id;
+  if (!value) return null;
+  if (/^https?:\/\//i.test(value)) return value;
+  try {
+    const parsed = JSON.parse(value);
+    const url = parsed?.url ?? parsed?.downloadUrl ?? parsed?.download_url;
+    return typeof url === "string" && /^https?:\/\//i.test(url) ? url : null;
+  } catch {
+    return null;
+  }
 }
 
 export interface StoreFinancialReportViewProps {
@@ -91,7 +104,7 @@ export function StoreFinancialReportView({ storeId, period }: StoreFinancialRepo
     setIsLoading(true);
     setData(null);
     setErrorMessage(null);
-    apiClient.storeLedgers.workspace(storeId, `?period=${encodeURIComponent(period)}`)
+    apiClient.storeLedgers.report(storeId, `?period=${encodeURIComponent(period)}`)
       .then((workspace) => { if (!ignore) setData(workspace); })
       .catch((error) => { if (!ignore) setErrorMessage(error instanceof Error ? error.message : "报表加载失败"); })
       .finally(() => { if (!ignore) setIsLoading(false); });
@@ -165,10 +178,16 @@ export function StoreFinancialReportView({ storeId, period }: StoreFinancialRepo
 
   async function loadExpenseVoucherState(expenseItemId: string): Promise<ExpenseVoucherState> {
     const result = await apiClient.attachments.list(`?resource_type=expense_item&resource_id=${encodeURIComponent(expenseItemId)}&page_size=100`);
-    const entries = await Promise.all(result.items.filter(isImageAttachment).map(async (attachment) => {
+    const entries = await Promise.all(result.items.map(async (attachment) => {
       try {
+        if (attachment.source === "dingtalk") {
+          const url = externalAttachmentUrl(attachment) || (await apiClient.attachments.accessUrl(attachment.id)).url;
+          if (/\.(apng|avif|gif|jpe?g|png|webp)(?:[?#].*)?$/i.test(url)) attachment.content_type = "image/*";
+          return [attachment.id, url] as const;
+        }
         const blob = await apiClient.attachments.download(attachment.id);
-        return [attachment.id, URL.createObjectURL(blob)] as const;
+        if (blob.type.startsWith("image/")) attachment.content_type = blob.type;
+        return [attachment.id, isImageAttachment(attachment) ? URL.createObjectURL(blob) : ""] as const;
       } catch {
         return [attachment.id, ""] as const;
       }
@@ -205,7 +224,7 @@ export function StoreFinancialReportView({ storeId, period }: StoreFinancialRepo
     setIsDetailOpen(true);
     setIsDetailLoading(true);
     try {
-      const query = new URLSearchParams({ detail_type: "category", store_id: storeId, period_start: data.period, period_end: data.period, category_l1: category.children?.length ? category.name : categoryRows.find((row) => row.children?.some((child) => child.key === category.key))?.name || category.name, page_size: "500" });
+      const query = new URLSearchParams({ detail_type: "report_expense", store_id: storeId, period_start: data.period, period_end: data.period, category_l1: category.children?.length ? category.name : categoryRows.find((row) => row.children?.some((child) => child.key === category.key))?.name || category.name, page_size: "500" });
       const child = categoryRows.flatMap((row) => row.children ?? []).find((item) => item.key === category.key);
       if (child) query.set("category_l2", child.name);
       const result = await apiClient.reports.analyticsDetails(`?${query.toString()}`);
@@ -227,6 +246,11 @@ export function StoreFinancialReportView({ storeId, period }: StoreFinancialRepo
 
   async function openAttachment(attachment: Attachment) {
     try {
+      if (attachment.source === "dingtalk") {
+        const url = externalAttachmentUrl(attachment) || (await apiClient.attachments.accessUrl(attachment.id)).url;
+        window.open(url, "_blank", "noopener,noreferrer");
+        return;
+      }
       const blob = await apiClient.attachments.download(attachment.id);
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
@@ -247,18 +271,10 @@ export function StoreFinancialReportView({ storeId, period }: StoreFinancialRepo
       setVoucherAttachments(result.items);
       replaceVoucherPreviewUrls({});
       setIsVoucherOpen(true);
-      const imageAttachments = result.items.filter(isImageAttachment);
-      if (!imageAttachments.length) return;
       setVoucherPreviewLoading(true);
-      const entries = await Promise.all(imageAttachments.map(async (attachment) => {
-        try {
-          const blob = await apiClient.attachments.download(attachment.id);
-          return [attachment.id, URL.createObjectURL(blob)] as const;
-        } catch {
-          return [attachment.id, ""] as const;
-        }
-      }));
-      replaceVoucherPreviewUrls(Object.fromEntries(entries.filter(([, url]) => url)));
+      const state = await loadExpenseVoucherState(resourceId);
+      setVoucherAttachments(state.attachments);
+      replaceVoucherPreviewUrls(state.previewUrls);
     } catch (error) {
       message.error(error instanceof Error ? error.message : "无法加载报销凭证");
     } finally {
@@ -295,7 +311,7 @@ export function StoreFinancialReportView({ storeId, period }: StoreFinancialRepo
       ["毛利率", exportPercent(stats.income > 0 ? ((stats.grossProfit / stats.income) * 100).toFixed(2) : null)],
       ["净利润率", exportPercent(stats.income > 0 ? ((stats.netProfit / stats.income) * 100).toFixed(2) : null)],
       ["同比", exportPercent(metrics!.income_year_over_year)], ["环比", exportPercent(metrics!.income_month_over_month)],
-    ].map(([name, value]) => `<div class="metric"><span>${name}</span><b>${value}</b></div>`).join("");
+    ].map(([name, value], index) => `<div class="metric ${index === 0 ? "metric--primary" : ""}"><span>${name}</span><b>${value}</b></div>`).join("");
     const channelRows = metrics!.revenue_channel_summary.map((item) => `<tr><td>${escapeHtml(item.channel)}</td><td>${formatMoney(item.gross_amount)}</td><td>${formatMoney(item.net_amount)}</td><td>${formatMoney(item.fee_amount)}</td><td>${exportPercent(item.fee_rate)}</td><td>${ratio(Number(item.gross_amount), stats.income)}</td></tr>`).join("");
     const channelMax = Math.max(...metrics!.revenue_channel_summary.map((item) => Number(item.gross_amount || 0)), 0);
     const channelChartRows = metrics!.revenue_channel_summary.map((item) => `<div class="chart-row"><span class="chart-label">${escapeHtml(item.channel)}</span><div class="chart-track"><span style="width:${channelMax > 0 ? (Number(item.gross_amount) / channelMax) * 100 : 0}%;background:#0f766e"></span></div><b>${formatMoney(item.gross_amount)}</b></div>`).join("");
@@ -310,45 +326,54 @@ export function StoreFinancialReportView({ storeId, period }: StoreFinancialRepo
       .map((item) => `<tr><td>${escapeHtml(item.category_l1 || "未分类")}</td><td>${escapeHtml(item.category_l2 || "")}</td><td>${escapeHtml(item.description)}</td><td>${escapeHtml(item.expense_date || "")}</td><td>${formatMoney(item.amount)}</td></tr>`)
       .join("");
     const exportStyles = `
-      @page { size: A4 landscape; margin: 10mm 12mm; }
-      * { box-sizing: border-box; }
-      body { max-width: 1120px; margin: 0 auto; padding: 28px; color: #172033; background: #fff; font: 14px/1.55 Arial, "Microsoft YaHei", sans-serif; }
-      h1 { margin: 0; color: #102a43; font-size: 28px; letter-spacing: .02em; }
-      h2 { margin: 28px 0 12px; padding: 0 0 8px 12px; border-left: 4px solid #0f766e; border-bottom: 1px solid #e7edf1; color: #1f3448; font-size: 17px; break-after: avoid; page-break-after: avoid; }
-      .meta { margin: 8px 0 20px; color: #64748b; font-size: 12px; }
-      .metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
-      .metric { min-width: 0; padding: 12px 14px; border: 1px solid #e2e8f0; border-radius: 8px; background: #f8fafc; break-inside: avoid; page-break-inside: avoid; }
-      .metric span { color: #64748b; font-size: 12px; }
-      .metric b { display: block; margin-top: 5px; color: #17324d; font-size: 19px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-      .bar { min-width: 90px; height: 9px; overflow: hidden; border-radius: 99px; background: #edf2f7; }
-      .bar span { display: block; height: 100%; border-radius: inherit; }
-      .chart-row { display: grid; grid-template-columns: 140px minmax(120px, 1fr) 110px; gap: 12px; align-items: center; margin: 9px 0; break-inside: avoid; page-break-inside: avoid; }
-      .chart-label { overflow: hidden; color: #475569; text-overflow: ellipsis; white-space: nowrap; }
-      .chart-track { height: 13px; overflow: hidden; border-radius: 99px; background: #edf2f7; }
-      .chart-track span { display: block; height: 100%; border-radius: inherit; }
-      .chart-row b { color: #263b50; text-align: right; font-variant-numeric: tabular-nums; }
-      table { width: 100%; margin: 0 0 12px; border-collapse: collapse; table-layout: auto; font-size: 12px; }
-      thead { display: table-header-group; }
-      tr { break-inside: avoid; page-break-inside: avoid; }
-      th, td { padding: 7px 9px; border-bottom: 1px solid #e5eaf0; text-align: left; vertical-align: top; overflow-wrap: anywhere; }
-      th { background: #f1f5f9; color: #475569; font-weight: 600; }
-      tbody tr:nth-child(even) { background: #fbfcfd; }
-      td:nth-last-child(1), th:nth-last-child(1) { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
-      .financial-table--income td:nth-child(n+2), .financial-table--income th:nth-child(n+2),
-      .financial-table--cost td:nth-child(n+2), .financial-table--cost th:nth-child(n+2),
-      .financial-table--category td:nth-child(n+2), .financial-table--category th:nth-child(n+2) { text-align: right; font-variant-numeric: tabular-nums; }
-      .financial-table--expense td:nth-child(4), .financial-table--expense th:nth-child(4),
-      .financial-table--expense td:nth-child(5), .financial-table--expense th:nth-child(5),
-      .financial-table--vouchers td:nth-child(3), .financial-table--vouchers th:nth-child(3),
-      .financial-table--vouchers td:nth-child(4), .financial-table--vouchers th:nth-child(4),
-      .financial-table--vouchers td:nth-child(6), .financial-table--vouchers th:nth-child(6) { text-align: right; font-variant-numeric: tabular-nums; }
-      .root { color: #17324d; font-weight: 700; }
-      .child { padding-left: 24px; color: #526477; }
-      .note { margin-top: 18px; color: #64748b; font-size: 11px; }
-      @media (max-width: 800px) { body { padding: 16px; } .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } .chart-row { grid-template-columns: 90px minmax(80px, 1fr) 85px; gap: 8px; } }
-      @media print { body { max-width: none; padding: 0; } }
+      @page { size: A4 landscape; margin: 10mm 12mm 16mm; }
+      .financial-export, .financial-export * { box-sizing: border-box; }
+      .financial-export { width: 100%; max-width: 1120px; margin: 0 auto; padding: 18px; color: #243449; background: #fff; font: 12px/1.5 Arial, "PingFang SC", "Microsoft YaHei", sans-serif; }
+      .financial-export .report-section { break-inside: avoid; page-break-inside: avoid; }
+      .financial-export .report-header { padding: 18px 22px; margin-bottom: 16px; border-radius: 12px; background: #123c43; color: #fff; page-break-inside: avoid; }
+      .financial-export .report-eyebrow { color: #b6d9d7; font-size: 11px; letter-spacing: 2px; margin-bottom: 8px; }
+      .financial-export h1 { margin: 0 0 6px; color: #fff; font-size: 28px; font-weight: 700; line-height: 1.4; }
+      .financial-export .report-period { color: #dcece9; font-size: 14px; }
+      .financial-export h2 { margin: 16px 0 8px; padding: 0 0 8px 12px; border-left: 4px solid #138a7b; border-bottom: 1px solid #dce7e9; color: #183c46; font-size: 17px; break-after: avoid; page-break-after: avoid; }
+      .financial-export .meta { margin: 10px 0 0; color: #dcece9; font-size: 11px; }
+      .financial-export .report-scope { padding: 10px 14px; margin-bottom: 18px; background: #f1f7f6; border-left: 3px solid #b6d5ce; color: #59736e; font-size: 11px; }
+      .financial-export .metrics { display: flex; flex-wrap: wrap; margin: -5px; }
+      .financial-export .metric { width: calc(25% - 10px); margin: 5px; padding: 8px 12px; border: 1px solid #dee8eb; border-radius: 8px; background: #f6f9fa; break-inside: avoid; page-break-inside: avoid; }
+      .financial-export .metric span { display: block; color: #69808a; font-size: 11px; }
+      .financial-export .metric b { display: block; margin-top: 6px; color: #203f4b; font-size: 19px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+      .financial-export .metric--primary { background: #e9f6f2; border-color: #b1d7ca; }
+      .financial-export .metric--primary b { color: #087969; }
+      .financial-export .bar { min-width: 90px; height: 12px; overflow: hidden; border-radius: 6px; background: #eee9e4; }
+      .financial-export .bar span { display: block; height: 100%; border-radius: inherit; }
+      .financial-export .chart-row { display: flex; align-items: center; margin: 10px 0; padding: 0 4px; break-inside: avoid; page-break-inside: avoid; }
+      .financial-export .chart-label { width: 140px; flex-shrink: 0; overflow: hidden; color: #536c77; text-overflow: ellipsis; white-space: nowrap; }
+      .financial-export .chart-track { flex: 1; height: 14px; margin: 0 14px; overflow: hidden; border-radius: 7px; background: #edf2f3; }
+      .financial-export .chart-track span { display: block; height: 100%; border-radius: inherit; }
+      .financial-export .chart-row b { width: 120px; flex-shrink: 0; color: #263f4d; text-align: right; font-size: 12px; font-variant-numeric: tabular-nums; }
+      .financial-export table { width: 100%; margin: 10px 0 8px; border-collapse: collapse; table-layout: fixed; font-size: 11px; }
+      .financial-export thead { display: table-header-group; }
+      .financial-export tr { break-inside: avoid; page-break-inside: avoid; }
+      .financial-export th, .financial-export td { padding: 7px 10px; border-bottom: 1px solid #e0e9ed; text-align: left; vertical-align: middle; overflow-wrap: anywhere; }
+      .financial-export th { background: #eaf1f3; color: #3c5965; font-weight: 600; border-top: 1px solid #d8e5e9; }
+      .financial-export tbody tr:nth-child(even) { background: #f7fafb; }
+      .financial-export .financial-table--income td:nth-child(n+2), .financial-export .financial-table--income th:nth-child(n+2),
+      .financial-export .financial-table--cost td:nth-child(n+2), .financial-export .financial-table--cost th:nth-child(n+2),
+      .financial-export .financial-table--category td:nth-child(n+2), .financial-export .financial-table--category th:nth-child(n+2) { text-align: right; font-variant-numeric: tabular-nums; }
+      .financial-export .financial-table--expense th:nth-child(3) { width: 36%; }
+      .financial-export .financial-table--expense td:nth-child(4), .financial-export .financial-table--expense th:nth-child(4),
+      .financial-export .financial-table--expense td:nth-child(5), .financial-export .financial-table--expense th:nth-child(5),
+      .financial-export .financial-table--vouchers td:nth-child(3), .financial-export .financial-table--vouchers th:nth-child(3),
+      .financial-export .financial-table--vouchers td:nth-child(4), .financial-export .financial-table--vouchers th:nth-child(4),
+      .financial-export .financial-table--vouchers td:nth-child(6), .financial-export .financial-table--vouchers th:nth-child(6) { text-align: right; font-variant-numeric: tabular-nums; }
+      .financial-export .financial-table--cost th:nth-child(3) { width: 40%; }
+      .financial-export .root { color: #214c57; font-weight: 700; }
+      .financial-export .child { padding-left: 28px; color: #657b84; }
+      .financial-export .note { margin-top: 18px; padding-top: 10px; border-top: 1px solid #dce7e9; color: #71858e; font-size: 10px; }
+      @media print { .financial-export { max-width: none; padding: 0; } }
     `;
-    return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>${escapeHtml(data.store.name)}-${data.period}-门店财务报表</title><style>${exportStyles}</style></head><body><h1>${escapeHtml(data.store.name)} 门店财务报表</h1><div class="meta">账期：${formatPeriod(data.period)}　账套状态：${data.selected_ledger?.status === "closed" ? "已封账" : "进行中"}　生成时间：${dayjs().format("YYYY-MM-DD HH:mm")}　口径：收入按录入日期统计，支出按入账月份统计，门店预充值、备用金/借款不计入支出</div><h2>总览指标</h2><div class="metrics">${overviewRows}</div><h2>营业收入渠道</h2><div>${channelChartRows || "暂无收入数据"}</div><table class="financial-table financial-table--income"><thead><tr><th>渠道</th><th>经营收入</th><th>实收</th><th>手续费</th><th>手续费率</th><th>收入占比</th></tr></thead><tbody>${channelRows}</tbody></table><h2>核心成本率结构</h2><table class="financial-table financial-table--cost"><thead><tr><th>成本项目</th><th>金额</th><th>成本率图示</th><th>成本率</th></tr></thead><tbody>${coreCostRows}</tbody></table><h2>核心食材</h2><table class="financial-table financial-table--cost"><thead><tr><th>食材</th><th>支出金额</th><th>占比图示</th><th>占营业收入</th></tr></thead><tbody>${foodRows}</tbody></table><h2>各类别支出统计</h2><div>${categoryChartRows || "暂无费用数据"}</div><table class="financial-table financial-table--category"><thead><tr><th>费用分类</th><th>金额</th><th>条数</th><th>占营业收入</th><th>占总支出</th></tr></thead><tbody>${categoryRowsHtml}</tbody></table><h2>支出明细</h2><table class="financial-table financial-table--expense"><thead><tr><th>支出一级分类</th><th>二级分类</th><th>支出详情</th><th>申请报销日期</th><th>金额</th></tr></thead><tbody>${expenseDetailRows || `<tr><td colspan="5">暂无支出明细</td></tr>`}</tbody></table>${majorExpenseVouchers.length ? `<h2>主要支出凭证</h2><p class="note">仅作凭证归档和金额展示，不计入总支出、毛利和净利润。</p><div class="metrics"><div class="metric"><span>凭证记录</span><b>${majorExpenseVoucherStats.count}</b></div><div class="metric"><span>展示总金额</span><b>${formatMoney(majorExpenseVoucherStats.totalAmount)}</b></div><div class="metric"><span>附件</span><b>${majorExpenseVoucherStats.attachmentCount} 份</b></div></div><table class="financial-table financial-table--vouchers"><thead><tr><th>费用名称</th><th>所属账期</th><th>总金额</th><th>附件</th><th>备注</th><th>录入时间</th></tr></thead><tbody>${majorExpenseVouchers.map((item) => `<tr><td>${escapeHtml(item.expense_name)}</td><td>${escapeHtml(item.ledger_period)}</td><td>${formatMoney(item.display_amount)}</td><td>${item.attachment_count} 份</td><td>${escapeHtml(item.remark || "-")}</td><td>${formatDateTime(item.created_at)}</td></tr>`).join("")}</tbody></table>` : ""}<div class="note">报表导出与页面使用同一账期和统计口径。分类明细可在报表页面点击对应分类查看。</div></body></html>`;
+    const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>${escapeHtml(data.store.name)}-${data.period}-门店财务报表</title></head><body style="margin:0;background:#fff"><main class="financial-export"><style>${exportStyles}</style><header class="report-header"><div class="report-eyebrow">门店财务报表 · FINANCIAL REPORT</div><h1>${escapeHtml(data.store.name)}</h1><div class="report-period">${formatPeriod(data.period)} · 月度经营报告</div><div class="meta">账套状态：${data.selected_ledger?.status === "closed" ? "已封账" : "进行中"}　生成时间：${dayjs().format("YYYY-MM-DD HH:mm")}</div></header><div class="report-scope">统计口径：收入按录入日期统计，支出按入账月份统计；门店预充值、备用金/借款不计入支出。</div><h2>总览指标</h2><div class="metrics">${overviewRows}</div><h2>营业收入渠道</h2><div>${channelChartRows || "暂无收入数据"}</div><table class="financial-table financial-table--income"><thead><tr><th>渠道</th><th>经营收入</th><th>实收</th><th>手续费</th><th>手续费率</th><th>收入占比</th></tr></thead><tbody>${channelRows}</tbody></table><h2>核心成本率结构</h2><table class="financial-table financial-table--cost"><thead><tr><th>成本项目</th><th>金额</th><th>成本率图示</th><th>成本率</th></tr></thead><tbody>${coreCostRows}</tbody></table><h2>核心食材</h2><table class="financial-table financial-table--cost"><thead><tr><th>食材</th><th>支出金额</th><th>占比图示</th><th>占营业收入</th></tr></thead><tbody>${foodRows}</tbody></table><h2>各类别支出统计</h2><div>${categoryChartRows || "暂无费用数据"}</div><table class="financial-table financial-table--category"><thead><tr><th>费用分类</th><th>金额</th><th>条数</th><th>占营业收入</th><th>占总支出</th></tr></thead><tbody>${categoryRowsHtml}</tbody></table><h2>支出明细</h2><table class="financial-table financial-table--expense"><thead><tr><th>支出一级分类</th><th>二级分类</th><th>支出详情</th><th>申请报销日期</th><th>金额</th></tr></thead><tbody>${expenseDetailRows || `<tr><td colspan="5">暂无支出明细</td></tr>`}</tbody></table>${majorExpenseVouchers.length ? `<h2>主要支出凭证</h2><p class="note">仅作凭证归档和金额展示，不计入总支出、毛利和净利润。</p><div class="metrics"><div class="metric"><span>凭证记录</span><b>${majorExpenseVoucherStats.count}</b></div><div class="metric"><span>展示总金额</span><b>${formatMoney(majorExpenseVoucherStats.totalAmount)}</b></div><div class="metric"><span>附件</span><b>${majorExpenseVoucherStats.attachmentCount} 份</b></div></div><table class="financial-table financial-table--vouchers"><thead><tr><th>费用名称</th><th>所属账期</th><th>总金额</th><th>附件</th><th>备注</th><th>录入时间</th></tr></thead><tbody>${majorExpenseVouchers.map((item) => `<tr><td>${escapeHtml(item.expense_name)}</td><td>${escapeHtml(item.ledger_period)}</td><td>${formatMoney(item.display_amount)}</td><td>${item.attachment_count} 份</td><td>${escapeHtml(item.remark || "-")}</td><td>${formatDateTime(item.created_at)}</td></tr>`).join("")}</tbody></table>` : ""}<div class="note">报表导出与页面使用同一账期和统计口径。分类明细可在报表页面点击对应分类查看。</div></main></body></html>`;
+    // Keep each section title with its chart/table; oversized detail sections may span pages.
+    return html.replace(/<h2>/g, '</section><section class="report-section"><h2>').replace('</section><section class="report-section">', '<section class="report-section">').replace('</main>', '</section></main>');
   }
 
   function downloadBlob(blob: Blob, filename: string) {
@@ -363,7 +388,7 @@ export function StoreFinancialReportView({ storeId, period }: StoreFinancialRepo
   async function loadExportExpenseItems() {
     if (!data) return [];
     const query = new URLSearchParams({
-      detail_type: "category",
+      detail_type: "report_expense",
       store_id: storeId,
       period_start: data.period,
       period_end: data.period,
@@ -412,7 +437,7 @@ export function StoreFinancialReportView({ storeId, period }: StoreFinancialRepo
         iframe.style.height = `${Math.max(frameDocument.documentElement.scrollHeight, 900)}px`;
         const { default: html2pdf } = await import("html2pdf.js");
         const options = {
-          margin: [10, 12, 12, 12],
+          margin: [10, 12, 16, 12],
           filename,
           image: { type: "jpeg" as const, quality: 0.98 },
           html2canvas: {
@@ -422,9 +447,24 @@ export function StoreFinancialReportView({ storeId, period }: StoreFinancialRepo
             windowWidth: 1200,
           },
           jsPDF: { unit: "mm", format: "a4", orientation: "landscape" },
-          pagebreak: { mode: ["css", "legacy"], avoid: ["h1", "h2", "tr", ".metric", ".chart-row"] },
+          pagebreak: { mode: ["css", "legacy"], avoid: [".report-header", "h2", "tr", ".metric", ".chart-row"] },
         } as Parameters<InstanceType<typeof html2pdf.Worker>["set"]>[0];
-        await html2pdf().set(options).from(frameDocument.body).save();
+        const reportElement = frameDocument.querySelector<HTMLElement>(".financial-export");
+        if (!reportElement) throw new Error("无法读取报表内容");
+        // Styles travel with the source element when html2pdf clones it into the current document.
+        const worker = html2pdf().set(options).from(reportElement).toPdf();
+        const pdf = await worker.get("pdf");
+        const pageCount = pdf.internal.getNumberOfPages();
+        for (let page = 1; page <= pageCount; page += 1) {
+          pdf.setPage(page);
+          pdf.setDrawColor(220, 231, 233);
+          pdf.line(12, 198, 285, 198);
+          pdf.setFontSize(8);
+          pdf.setTextColor(110, 127, 137);
+          pdf.text(`${data.period}  |  FINANCIAL REPORT`, 12, 203);
+          pdf.text(`${page} / ${pageCount}`, 285, 203, { align: "right" });
+        }
+        await worker.save();
       } finally {
         iframe.remove();
       }
@@ -441,25 +481,30 @@ export function StoreFinancialReportView({ storeId, period }: StoreFinancialRepo
     const state = detailVoucherState[record.id];
     if (!state || state.loading) return <Typography.Text type="secondary">凭证加载中...</Typography.Text>;
     const imageAttachments = state.attachments.filter(isImageAttachment);
-    const fileCount = state.attachments.length - imageAttachments.length;
     return (
-      <Space size={6} wrap>
-        {imageAttachments.slice(0, 3).map((attachment) => {
+      <Space size={8} wrap>
+        <Image.PreviewGroup>
+        {imageAttachments.map((attachment) => {
           const previewUrl = state.previewUrls[attachment.id];
           return previewUrl ? (
             <Image
               key={attachment.id}
               src={previewUrl}
               alt={attachment.file_name || "报销凭证"}
-              width={44}
-              height={44}
+              width={56}
+              height={72}
               preview={{ mask: <EyeOutlined /> }}
               style={{ objectFit: "cover", borderRadius: 6, border: "1px solid #e5e7eb" }}
             />
           ) : null;
         })}
-        {fileCount > 0 ? <Tag color="blue" icon={<PaperClipOutlined />}>{fileCount} 个文件</Tag> : null}
-        <Button type="link" size="small" onClick={() => void openVouchers(record)}>{count} 份 · 查看</Button>
+        </Image.PreviewGroup>
+        {state.attachments.filter((attachment) => !isImageAttachment(attachment)).map((attachment) => (
+          <Button key={attachment.id} size="small" icon={<PaperClipOutlined />} onClick={() => void openAttachment(attachment)}>
+            {attachment.file_name || "报销凭证"}
+          </Button>
+        ))}
+        {imageAttachments.some((attachment) => !state.previewUrls[attachment.id]) || !state.attachments.length ? <Button type="link" size="small" onClick={() => void openVouchers(record)}>{count} 份 · 查看</Button> : null}
       </Space>
     );
   }
@@ -604,11 +649,11 @@ export function StoreFinancialReportView({ storeId, period }: StoreFinancialRepo
                     ) : (
                       <div className="report-voucher-file-icon"><PaperClipOutlined /></div>
                     )}
-                    <div>
+                    {!isImage ? <div>
                       <Typography.Text strong ellipsis style={{ maxWidth: 360 }}>{value || "报销凭证"}</Typography.Text>
                       <br />
                       <Typography.Text type="secondary">{record.content_type || (isImage ? "图片凭证" : "文件凭证")}</Typography.Text>
-                    </div>
+                    </div> : null}
                   </Space>
                 );
               },

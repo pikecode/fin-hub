@@ -1,12 +1,12 @@
 import hashlib
 import json
-from datetime import UTC, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
 from time import sleep
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Query
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
@@ -21,8 +21,8 @@ from app.models import (
     AttachmentStatus,
     DingTalkAutoSyncSetting,
     DingTalkConfig,
-    ExpenseCategory,
     ExpenseBankMatch,
+    ExpenseCategory,
     ExpenseItem,
     Ledger,
     MasterDataStatus,
@@ -41,17 +41,18 @@ from app.modules.approvals.status import (
 )
 from app.modules.audit.service import write_audit_log
 from app.modules.auth.permissions import ensure_permission, ensure_store_access
-from app.modules.auth.router import audit_actor, require_permission
+from app.modules.auth.router import audit_actor, get_current_user, require_permission
 from app.modules.common import paginate
 from app.modules.dingtalk.client import DingTalkClient, DingTalkClientError, DingTalkCredentials
+from app.modules.dingtalk.sync_runtime import guarded_sync, recover_interrupted_sync_jobs
 from app.schemas import (
     ApiEnvelope,
-    ApprovalInstanceRead,
     ApprovalDiagnosisItem,
     ApprovalDiagnosisResult,
-    ApprovalParsePreview,
+    ApprovalInstanceRead,
     ApprovalModifiedResyncRequest,
     ApprovalModifiedResyncResult,
+    ApprovalParsePreview,
     ApprovalReparseRequest,
     ApprovalReparseResult,
     ApprovalTemplateCreate,
@@ -90,6 +91,8 @@ router = APIRouter(
     dependencies=[Depends(require_permission("dingtalk.view"))],
 )
 
+MANUAL_APPROVAL_MATCH_CUTOFF_DATE = datetime(2026, 9, 30, tzinfo=ZoneInfo("Asia/Shanghai")).date()
+
 AUTO_SYNC_TIMEZONE = ZoneInfo("Asia/Shanghai")
 AUTO_SYNC_DEPARTMENT_ROOT_ID = "1"
 AUTO_SYNC_DEPARTMENT_MAX_DEPTH = 8
@@ -104,7 +107,8 @@ DINGTALK_SYNC_JOB_TYPES = {
 }
 COMPLETED_APPROVAL_STATUSES = {"agree", "approved", "completed", "finish", "success"}
 PARSABLE_APPROVAL_STATUSES = COMPLETED_APPROVAL_STATUSES | {"running", "new"}
-RESYNC_PROCESSING_STATUSES = {"unparsed", "sync_conflict", "pending_classification", "pending_match"}
+RESYNC_PROCESSING_STATUSES = {"unparsed"}
+TERMINAL_NON_EXPENSE_STATUSES = {"terminated", "canceled", "cancelled", "cancel", "withdrawn", "refuse", "reject", "rejected", "refused", "deny"}
 
 
 class ApprovalSyncCanceled(Exception):
@@ -129,6 +133,7 @@ def template_read(session: Session, template: ApprovalTemplate) -> ApprovalTempl
         process_code=template.process_code,
         name=template.name,
         is_enabled=template.is_enabled,
+        is_preopening_expense=template.is_preopening_expense,
         mapping_status=template_mapping_status(session, template.id),
         last_sync_at=template.last_sync_at,
         raw_snapshot=template.raw_snapshot,
@@ -592,6 +597,9 @@ def update_template(
     if template is None:
         raise HTTPException(status_code=404, detail="Template not found")
     updates = payload.model_dump(exclude_unset=True)
+    if updates.get("is_preopening_expense") is not None and updates["is_preopening_expense"] != template.is_preopening_expense:
+        from app.modules.preopening.service import change_template_scope
+        change_template_scope(session, template, updates["is_preopening_expense"])
     for key, value in updates.items():
         setattr(template, key, value)
     write_audit_log(
@@ -1262,14 +1270,14 @@ def save_sample_approval_instance(
         return None
     instance = session.scalar(select(ApprovalInstance).where(ApprovalInstance.dingtalk_instance_id == instance_id))
     if instance is None:
-        instance = ApprovalInstance(template_id=template.id, dingtalk_instance_id=instance_id)
+        instance = ApprovalInstance(template_id=template.id, dingtalk_instance_id=instance_id, expense_scope="preopening" if template.is_preopening_expense else "operating")
         session.add(instance)
     instance.template_id = template.id
     instance.approval_no = parse_text(raw_instance.get("business_id") or raw_instance.get("businessId"))
     instance.department_name = department_name_from_raw(session, raw_instance)
     instance.applicant_name = applicant_name_from_raw(raw_instance)
     instance.applicant_user_id = parse_text(raw_instance.get("originator_userid") or raw_instance.get("originatorUserId"))
-    instance.approval_status = parse_text(raw_instance.get("result") or raw_instance.get("status")) or "unknown"
+    instance.approval_status = approval_source_status(raw_instance)
     instance.submit_at = DingTalkClient.parse_time(raw_instance.get("create_time") or raw_instance.get("createTime"))
     instance.approved_at = DingTalkClient.parse_time(raw_instance.get("finish_time") or raw_instance.get("finishTime"))
     instance.dingtalk_modified_at = DingTalkClient.parse_time(
@@ -1345,17 +1353,28 @@ def approval_instance_read(
     session: Session,
     instance: ApprovalInstance,
     stats: dict[str, Any] | None = None,
+    *,
+    compact: bool = False,
 ) -> ApprovalInstanceRead:
     stats = stats or approval_expense_stats_map(session, [instance.id]).get(instance.id, approval_expense_stats([], []))
+    if instance.processing_status == "manual_matched" and stats["processing_status"] not in {"matched", "partial_matched"}:
+        stats = {**stats, "processing_status": "manual_matched"}
 
+    payload = approval_raw_payload(instance)
+    title = parse_text(payload.get("title") or payload.get("titleName"))
+    applicant_name = instance.applicant_name
+    if not applicant_name and title and "提交的" in title:
+        applicant_name = title.split("提交的", 1)[0] or None
     return ApprovalInstanceRead(
+        title=title,
+        expense_scope=instance.expense_scope,
         id=instance.id,
         template_id=instance.template_id,
         dingtalk_instance_id=instance.dingtalk_instance_id,
         approval_no=instance.approval_no,
         store_id=instance.store_id,
         department_name=resolve_approval_department_name(session, instance),
-        applicant_name=instance.applicant_name,
+        applicant_name=applicant_name,
         applicant_user_id=instance.applicant_user_id,
         approval_status=instance.approval_status,
         parse_status=instance.parse_status,
@@ -1364,9 +1383,9 @@ def approval_instance_read(
         submit_at=instance.submit_at,
         approved_at=instance.approved_at,
         dingtalk_modified_at=instance.dingtalk_modified_at,
-        raw_payload=instance.raw_payload,
+        raw_payload=None if compact else instance.raw_payload,
         synced_job_id=instance.synced_job_id,
-        node_name_map=template_node_name_map(session, instance.template_id),
+        node_name_map={} if compact else template_node_name_map(session, instance.template_id),
         expense_item_count=stats["expense_item_count"],
         classified_expense_item_count=stats["classified_expense_item_count"],
         matched_expense_item_count=stats["matched_expense_item_count"],
@@ -2664,6 +2683,17 @@ def parse_decimal(value: Any) -> Decimal | None:
         return None
 
 
+def approval_amount_from_form(raw_instance: dict[str, Any], mapped: dict[str, Any]) -> Decimal | None:
+    amount = parse_decimal(mapped.get("amount"))
+    if amount is not None:
+        return amount
+    for label in ("汇总金额（元）", "汇总金额", "金额（元）", "金额(元)", "金额", "报销金额"):
+        amount = parse_decimal(find_form_value(raw_instance, label))
+        if amount is not None:
+            return amount
+    return None
+
+
 def parse_date(value: Any) -> datetime | None:
     if value in (None, ""):
         return None
@@ -3079,9 +3109,7 @@ def build_approval_parse_preview(
     amount = (
         payroll_amount_from_table(table_value)
         if template.name == "发薪审批-薪酬"
-        else parse_decimal(
-            mapped_or_form_value(mapped, raw_instance, "amount", "汇总金额（元）", "汇总金额", "金额", "报销金额")
-        )
+        else approval_amount_from_form(raw_instance, mapped)
     )
     expense_rows = expense_rows_from_table(table_value)
     payee_account = parse_text(
@@ -3124,7 +3152,7 @@ def build_approval_parse_preview(
     for row in rows:
         raw_category_l1 = parse_text(row.get("category_l1")) or category_l1
         raw_category_l2 = parse_text(row.get("category_l2")) or parse_text(mapped.get("category_l2"))
-        row_category_l1, row_category_l2 = resolve_expense_category_names(
+        row_category_l1, row_category_l2 = (None, None) if template.is_preopening_expense else resolve_expense_category_names(
             session,
             raw_category_l1,
             raw_category_l2,
@@ -3261,12 +3289,23 @@ def sync_expense_line(
     line_key: str,
     line_source_type: str,
 ) -> tuple[ExpenseItem, bool]:
+    if not session.scalar(select(ExpenseItem.id).where(ExpenseItem.approval_instance_id == instance.id).limit(1)):
+        template = session.get(ApprovalTemplate, instance.template_id)
+        instance.expense_scope = "preopening" if template and template.is_preopening_expense else "operating"
+    if instance.expense_scope == "preopening":
+        from app.models import PreopeningStore
+        state = session.get(PreopeningStore, store_id)
+        existing = session.scalar(select(ExpenseItem).where(ExpenseItem.source_document_id == source_document_id))
+        if state and state.status == "closed" and existing is not None:
+            return existing, False
+        category_l1 = category_l2 = None
     source_hash = stable_json_hash(snapshot)
     snapshot_json = json.dumps(snapshot, ensure_ascii=False, sort_keys=True)
     # ✅ 按 source_document_id 查询，实现幂等性
     item = session.scalar(select(ExpenseItem).where(ExpenseItem.source_document_id == source_document_id))
     if item is None:
         item = ExpenseItem(
+            expense_scope=instance.expense_scope,
             store_id=store_id,
             ledger_period=ledger_period,
             expense_date=expense_date,
@@ -3383,6 +3422,13 @@ def mark_removed_expense_lines(session: Session, instance: ApprovalInstance, act
         )
 
 
+def approval_source_status(raw_instance: dict[str, Any]) -> str:
+    status = parse_text(raw_instance.get("status"))
+    if status and status.lower() in TERMINAL_NON_EXPENSE_STATUSES:
+        return status
+    return parse_text(raw_instance.get("result") or status) or "unknown"
+
+
 def sync_real_instance(
     session: Session,
     template: ApprovalTemplate,
@@ -3392,6 +3438,24 @@ def sync_real_instance(
     instance_id = str(raw_instance.get("process_instance_id") or raw_instance.get("processInstanceId") or "")
     if not instance_id:
         return False
+    from app.models import PreopeningStore
+    sealed_instance = session.scalar(select(ApprovalInstance).where(ApprovalInstance.dingtalk_instance_id == instance_id))
+    if sealed_instance and sealed_instance.expense_scope == "preopening":
+        state = session.get(PreopeningStore, sealed_instance.store_id)
+        if state and state.status == "closed":
+            try:
+                previous = json.loads(sealed_instance.raw_payload or "{}")
+            except (ValueError, TypeError):
+                previous = {}
+            if not isinstance(previous, dict):
+                previous = {}
+            previous.pop("_fin_hub_parse", None)
+            if stable_json_hash(previous) != stable_json_hash(raw_instance):
+                for line in session.scalars(select(ExpenseItem).where(ExpenseItem.approval_instance_id == sealed_instance.id)):
+                    line.sync_conflict_status = "source_changed_after_sealed"
+            sealed_instance.raw_payload = json.dumps(raw_instance, ensure_ascii=False)
+            sealed_instance.synced_job_id = job.id
+            return True
     mapped = mapped_values_for_template(session, template.id, raw_instance)
 
     store_text = parse_text(
@@ -3420,9 +3484,7 @@ def sync_real_instance(
     amount = (
         payroll_amount_from_table(table_value)
         if template.name == "发薪审批-薪酬"
-        else parse_decimal(
-            mapped_or_form_value(mapped, raw_instance, "amount", "汇总金额（元）", "汇总金额", "金额", "报销金额")
-        )
+        else approval_amount_from_form(raw_instance, mapped)
     )
     expense_rows = expense_rows_from_table(table_value)
     voucher_items = [
@@ -3467,7 +3529,7 @@ def sync_real_instance(
     instance.department_name = department_name_from_raw(session, raw_instance, store)
     instance.applicant_name = applicant_name_from_raw(raw_instance)
     instance.applicant_user_id = parse_text(raw_instance.get("originator_userid") or raw_instance.get("originatorUserId"))
-    instance.approval_status = parse_text(raw_instance.get("result") or raw_instance.get("status")) or "unknown"
+    instance.approval_status = approval_source_status(raw_instance)
     instance.submit_at = DingTalkClient.parse_time(raw_instance.get("create_time") or raw_instance.get("createTime"))
     instance.approved_at = DingTalkClient.parse_time(raw_instance.get("finish_time") or raw_instance.get("finishTime"))
     instance.dingtalk_modified_at = DingTalkClient.parse_time(
@@ -3478,6 +3540,13 @@ def sync_real_instance(
     session.flush()
     create_dingtalk_attachment_placeholders(session, "approval_instance", instance.id, voucher_items)
 
+    if instance.approval_status.lower() in TERMINAL_NON_EXPENSE_STATUSES:
+        instance.parse_status = "skipped"
+        if instance.processing_status != "manual_matched":
+            instance.processing_status = "unparsed"
+        instance.parse_error = None
+        instance.last_parsed_at = utc_now()
+        return True
     if store is None or expense_date is None:
         missing_fields = []
         if store is None:
@@ -3501,13 +3570,15 @@ def sync_real_instance(
             ensure_ascii=False,
         )
         instance.parse_status = "skipped"
-        instance.processing_status = "unparsed"
+        if instance.processing_status != "manual_matched":
+            instance.processing_status = "unparsed"
         instance.parse_error = f"Missing required fields: {', '.join(missing_fields)}"
         instance.last_parsed_at = utc_now()
         return False
     if instance.approval_status.lower() not in PARSABLE_APPROVAL_STATUSES:
         instance.parse_status = "skipped"
-        instance.processing_status = "unparsed"
+        if instance.processing_status != "manual_matched":
+            instance.processing_status = "unparsed"
         instance.parse_error = f"Approval status is not parsable: {instance.approval_status}"
         instance.last_parsed_at = utc_now()
         return False
@@ -3519,7 +3590,8 @@ def sync_real_instance(
     approval_total = amount or sum((Decimal(row["amount"]) for row in [*expense_rows, *installment_rows]), Decimal("0.00"))
     if approval_total <= 0:
         instance.parse_status = "skipped"
-        instance.processing_status = "unparsed"
+        if instance.processing_status != "manual_matched":
+            instance.processing_status = "unparsed"
         instance.parse_error = "Unable to resolve approval amount"
         instance.last_parsed_at = utc_now()
         return False
@@ -3535,6 +3607,12 @@ def sync_real_instance(
             "line_source_type": "whole_approval",
         }
     ]
+    if template.is_preopening_expense:
+        from app.models import PreopeningStore
+        state = session.get(PreopeningStore, store.id)
+        if state and state.status == "closed":
+            # Raw payload has been updated by sync; keep sealed expense lines intact.
+            return True
     created_expense_ids: list[str] = []
     active_source_document_ids: set[str] = set()
     for line_no, row in enumerate(rows_to_create, start=1):
@@ -3715,6 +3793,8 @@ def parse_auto_sync_resume_state(
     except HTTPException:
         return None
     cursors = parse_sync_cursors(json.dumps({"cursors": payload.get("cursors", {})}))
+    if not cursors:
+        return None
     return start_at, end_at, cursors
 
 
@@ -3777,6 +3857,8 @@ def approval_needs_detail_resync(instance: ApprovalInstance) -> bool:
     5. 解析被跳过（缺少必填字段）
     6. ✅ 上次同步超过 N 天（可能有后续修改）
     """
+    if instance.approval_status.lower() in TERMINAL_NON_EXPENSE_STATUSES:
+        return False
     if instance.approval_status.lower() not in COMPLETED_APPROVAL_STATUSES:
         return True
     if instance.store_id is None:
@@ -3801,6 +3883,7 @@ def ensure_sync_job_not_canceled(session: Session, job: SyncJob) -> None:
         raise ApprovalSyncCanceled
 
 
+@guarded_sync
 def run_approval_sync(
     session: Session,
     *,
@@ -3869,6 +3952,7 @@ def run_approval_sync(
                         and should_skip_stable_approval(existing_instance, sync_window_days=30)
                     ):
                         template_skipped_existing += 1
+                        session.commit()
                         continue
                     try:
                         raw_instance = client.get_process_instance(instance_id)
@@ -3877,6 +3961,7 @@ def run_approval_sync(
                             raise
                         template_skipped_missing += 1
                         skipped_missing_instance_ids.append(instance_id)
+                        session.commit()
                         continue
                     raw_instance.setdefault("process_instance_id", instance_id)
                     if sync_real_instance(session, template, job, raw_instance):
@@ -3930,13 +4015,14 @@ def run_approval_sync(
         templates_by_id = {template.id: template for template in templates}
         # ✅ 改进：批量加载待重试审批，避免一次性加载所有数据到内存
         BATCH_SIZE = 1000
-        offset = 0
+        last_id = ""
         while True:
             retry_instances = list(
                 session.scalars(
                     select(ApprovalInstance)
                     .where(ApprovalInstance.template_id.in_(templates_by_id.keys()))
-                    .offset(offset)
+                    .where(ApprovalInstance.id > last_id)
+                    .order_by(ApprovalInstance.id.asc())
                     .limit(BATCH_SIZE)
                 )
             )
@@ -3948,6 +4034,9 @@ def run_approval_sync(
             for instance in retry_instances:
                 ensure_sync_job_not_canceled(session, job)
                 if instance.dingtalk_instance_id in handled_instance_ids or not approval_needs_detail_resync(instance):
+                    continue
+                if (skip_existing and instance.parse_error and instance.last_parsed_at
+                        and instance.last_parsed_at > utc_now() - timedelta(hours=24)):
                     continue
                 # ✅ 再次获取排他锁，防止并发修改
                 instance = session.scalar(
@@ -3967,6 +4056,7 @@ def run_approval_sync(
                         raise
                     retry_skipped_missing += 1
                     skipped_missing_instance_ids.append(instance.dingtalk_instance_id)
+                    session.commit()
                     continue
                 raw_instance.setdefault("process_instance_id", instance.dingtalk_instance_id)
                 if sync_real_instance(session, templates_by_id[instance.template_id], job, raw_instance):
@@ -3977,7 +4067,7 @@ def run_approval_sync(
                 # ✅ 立即提交
                 session.commit()
 
-            offset += BATCH_SIZE
+            last_id = retry_instances[-1].id
 
     if retry_refreshed_count or retry_skipped_missing:
         template_summaries.append({
@@ -3990,11 +4080,16 @@ def run_approval_sync(
         job.status = SyncJobStatus.FAILED.value
         job.error_message = "DingTalk approval sync is incomplete; resume is required before advancing the sync window"
     else:
-        job.status = SyncJobStatus.SUCCEEDED.value if job.failed_count == 0 else SyncJobStatus.FAILED.value
+        # Source approvals are saved even when their expense fields cannot be parsed.
+        job.status = SyncJobStatus.SUCCEEDED.value
+        if job.failed_count:
+            job.error_message = f"审批拉取已完成，{job.failed_count} 条费用解析异常；错误已保留，将单独重试，不影响后续增量同步"
     job.finished_at = utc_now()
     job.raw_summary = json.dumps(
         {
             "templates": template_summaries,
+            "pull_completed": not bool(incomplete_cursors),
+            "parse_failed_count": job.failed_count,
             "skipped_missing_approval_count": len(skipped_missing_instance_ids),
             "skipped_missing_instance_ids": skipped_missing_instance_ids[:100],
             "skipped_missing_process_codes": sorted(set(skipped_missing_process_codes)),
@@ -4041,6 +4136,7 @@ def update_auto_sync_setting(
     return ApiEnvelope(data=setting)
 
 
+@guarded_sync
 def execute_auto_sync(
     session: Session,
     setting: DingTalkAutoSyncSetting,
@@ -4175,7 +4271,7 @@ def execute_auto_sync(
                 resume_cursors=resume_cursors,
             )
             approval_sync_summary = json.loads(job.raw_summary) if job.raw_summary else None
-            if job.status == SyncJobStatus.SUCCEEDED.value and not job.next_cursor:
+            if not job.next_cursor:
                 setting.approval_watermark_at = end_at
                 setting.approval_resume_state = None
             else:
@@ -4216,6 +4312,7 @@ def execute_auto_sync(
         setting.last_status = job.status
         setting.last_error = job.error_message
     except Exception as exc:
+        session.rollback()
         job.status = SyncJobStatus.FAILED.value
         job.error_message = str(getattr(exc, "detail", exc))
         job.finished_at = utc_now()
@@ -4274,6 +4371,7 @@ def execute_auto_sync(
 
 
 def run_due_auto_sync_jobs(session: Session) -> list[DingTalkAutoSyncRunResult]:
+    recover_interrupted_sync_jobs(session)
     now = utc_now()
     settings_rows = list(
         session.scalars(
@@ -4768,17 +4866,113 @@ def list_sync_jobs(
     return ApiEnvelope(data=Page(items=items, total=total, page=page, page_size=page_size))
 
 
+def approval_submit_local_date(instance: ApprovalInstance) -> date | None:
+    if instance.submit_at is None:
+        return None
+    submit_at = instance.submit_at
+    if submit_at.tzinfo is None:
+        submit_at = submit_at.replace(tzinfo=UTC)
+    return submit_at.astimezone(ZoneInfo("Asia/Shanghai")).date()
+
+
+@router.post("/approval-instances/{approval_id}/mark-matched", response_model=ApiEnvelope[ApprovalInstanceRead])
+def mark_approval_instance_matched(
+    approval_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_permission("dingtalk.view")),
+) -> ApiEnvelope[ApprovalInstanceRead]:
+    ensure_permission(session, current_user, "reconciliation.manage")
+    instance = session.get(ApprovalInstance, approval_id)
+    if instance is None:
+        raise HTTPException(status_code=404, detail="Approval instance not found")
+    if instance.store_id:
+        ensure_store_access(session, current_user, instance.store_id)
+    submit_date = approval_submit_local_date(instance)
+    if submit_date is None:
+        raise HTTPException(status_code=422, detail="审批单缺少申请日期，无法手动标记已匹配")
+    if submit_date >= MANUAL_APPROVAL_MATCH_CUTOFF_DATE:
+        raise HTTPException(status_code=422, detail="仅支持申请日期为2026年9月30日前的审批单手动标记已匹配")
+    instance.processing_status = "manual_matched"
+    instance.updated_at = utc_now()
+    write_audit_log(
+        session,
+        actor=audit_actor(current_user),
+        action="dingtalk.approval.manual_mark_matched",
+        resource_type="approval_instance",
+        resource_id=instance.id,
+        summary=f"手动标记审批单已匹配：{instance.approval_no or instance.dingtalk_instance_id}",
+        metadata={"approval_no": instance.approval_no, "submit_date": submit_date.isoformat()},
+    )
+    session.commit()
+    session.refresh(instance)
+    return ApiEnvelope(data=approval_instance_read(session, instance))
+
+
+@router.post("/approval-instances/{approval_id}/unmark-matched", response_model=ApiEnvelope[ApprovalInstanceRead])
+def unmark_approval_instance_matched(
+    approval_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_permission("dingtalk.view")),
+) -> ApiEnvelope[ApprovalInstanceRead]:
+    ensure_permission(session, current_user, "reconciliation.manage")
+    instance = session.get(ApprovalInstance, approval_id)
+    if instance is None:
+        raise HTTPException(status_code=404, detail="Approval instance not found")
+    if instance.store_id:
+        ensure_store_access(session, current_user, instance.store_id)
+    if instance.processing_status != "manual_matched":
+        raise HTTPException(status_code=409, detail="仅支持撤销手动已匹配标记，实际对账记录请先解除对账")
+    instance.processing_status = "unmatched"
+    instance.updated_at = utc_now()
+    write_audit_log(
+        session,
+        actor=audit_actor(current_user),
+        action="dingtalk.approval.manual_unmark_matched",
+        resource_type="approval_instance",
+        resource_id=instance.id,
+        summary=f"撤销审批单手动已匹配标记：{instance.approval_no or instance.dingtalk_instance_id}",
+        metadata={"approval_no": instance.approval_no},
+    )
+    session.commit()
+    session.refresh(instance)
+    return ApiEnvelope(data=approval_instance_read(session, instance))
+
+
+@router.get("/approval-instances/{approval_id}", response_model=ApiEnvelope[ApprovalInstanceRead])
+def read_approval_instance(
+    approval_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+):
+    instance = session.get(ApprovalInstance, approval_id)
+    if instance is None:
+        raise HTTPException(404, "Approval instance not found")
+    if instance.store_id:
+        ensure_store_access(session, current_user, instance.store_id)
+    else:
+        ensure_permission(session, current_user, "dingtalk.view")
+    return ApiEnvelope(data=approval_instance_read(session, instance))
+
+
 @router.get("/approval-instances", response_model=ApiEnvelope[Page[ApprovalInstanceRead]])
 def list_approval_instances(
     template_id: str | None = None,
     store_id: str | None = None,
     ledger_period: str | None = None,
     processing_status: str | None = None,
+    keyword: str | None = None,
+    submit_date_start: date | None = None,
+    submit_date_end: date | None = None,
+    approval_status: list[str] | None = Query(default=None),
     include_matched: bool = False,
+    compact: bool = False,
+    match_status: str | None = None,
     page: int = 1,
     page_size: int = 50,
     session: Session = Depends(get_session),
 ) -> ApiEnvelope[Page[ApprovalInstanceRead]]:
+    page = max(page, 1)
+    page_size = min(max(page_size, 1), 200)
     query = select(ApprovalInstance).join(
         ApprovalTemplate,
         ApprovalInstance.template_id == ApprovalTemplate.id,
@@ -4787,11 +4981,35 @@ def list_approval_instances(
     ).order_by(
         ApprovalInstance.submit_at.desc().nullslast(),
         ApprovalInstance.created_at.desc(),
+        ApprovalInstance.id.desc(),
     )
     if template_id:
         query = query.where(ApprovalInstance.template_id == template_id)
     if store_id:
         query = query.where(ApprovalInstance.store_id == store_id)
+    if keyword and keyword.strip():
+        search = keyword.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        query = query.where(or_(
+            *(column.ilike(f"%{search}%", escape="\\") for column in (
+                ApprovalInstance.approval_no,
+                ApprovalInstance.dingtalk_instance_id,
+                ApprovalInstance.applicant_name,
+                ApprovalInstance.applicant_user_id,
+                ApprovalInstance.department_name,
+                ApprovalTemplate.name,
+            ))
+        ))
+    if approval_status:
+        status_groups = {
+            "已通过": ["approved", "agree"],
+            "已完成": ["completed"],
+            "已撤销": ["terminated"],
+            "已取消": ["canceled", "cancelled"],
+            "已拒绝": ["rejected", "refuse", "refused"],
+            "审批中": ["running", "new"],
+        }
+        statuses = [raw for status in approval_status for raw in status_groups.get(status, [status.lower()])]
+        query = query.where(func.lower(ApprovalInstance.approval_status).in_(statuses))
     if ledger_period:
         period_start = datetime.strptime(f"{ledger_period}-01", "%Y-%m-%d")
         next_month = period_start.replace(year=period_start.year + 1, month=1) if period_start.month == 12 else period_start.replace(month=period_start.month + 1)
@@ -4799,13 +5017,24 @@ def list_approval_instances(
             ApprovalInstance.submit_at >= period_start,
             ApprovalInstance.submit_at < next_month,
         )
+    if submit_date_start and submit_date_end and submit_date_start > submit_date_end:
+        raise HTTPException(status_code=422, detail="申请日期开始日期不能晚于结束日期")
+    if submit_date_start:
+        query = query.where(ApprovalInstance.submit_at >= datetime.combine(submit_date_start, time.min))
+    if submit_date_end:
+        query = query.where(ApprovalInstance.submit_at < datetime.combine(submit_date_end + timedelta(days=1), time.min))
     if processing_status:
         query = query.where(ApprovalInstance.processing_status == processing_status)
+    if match_status:
+        groups = {"已匹配": ["matched", "manual_matched", "partial_matched"], "部分匹配": ["partial_matched"],
+                  "未匹配": ["unparsed", "pending_classification", "pending_match", "unmatched", "sync_conflict"]}
+        query = query.where(ApprovalInstance.processing_status.in_(groups.get(match_status, [match_status])))
+
     items, total = paginate(session, query, page, page_size)
     stats_by_approval_id = approval_expense_stats_map(session, [item.id for item in items])
     return ApiEnvelope(
         data=Page(
-            items=[approval_instance_read(session, item, stats_by_approval_id.get(item.id)) for item in items],
+            items=[approval_instance_read(session, item, stats_by_approval_id.get(item.id), compact=compact) for item in items],
             total=total,
             page=page,
             page_size=page_size,

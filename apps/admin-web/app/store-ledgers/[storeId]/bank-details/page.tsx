@@ -19,7 +19,7 @@ const specialLabels: Record<string, string> = {
   shareholder_dividend: "股东分红",
   shareholder_capital: "股东注资",
   other_income_expense: "其他收支",
-  counter_refund: "对退款",
+  counter_refund: "退款",
   loan_repayment: "借还款",
 };
 

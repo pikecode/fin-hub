@@ -103,6 +103,17 @@ def test_store_ledger_workspace_returns_period_metrics(client: TestClient, sessi
     assert len(workspace["revenue_records"]) == 1
     assert len(workspace["approval_instances"]) == 0
     assert len(workspace["revenue_matches"]) == 1
+    report_response = client.get(f"/api/store-ledgers/{store_id}/report?period=2026-08")
+    assert report_response.status_code == 200
+    report = report_response.json()["data"]
+    assert report["metrics"] == workspace["metrics"]
+    assert report["store"] == workspace["store"]
+    assert report["selected_ledger"] == workspace["selected_ledger"]
+    assert report["close_check"] is None
+    for field in ("bank_transactions", "revenue_records", "approval_instances", "revenue_matches"):
+        assert report[field] == []
+    assert_batch_profit_matches_monthly(session, store_id)
+
 
 
 def test_store_ledger_workspace_defaults_to_latest_period(client: TestClient) -> None:
@@ -225,6 +236,7 @@ def test_store_ledger_workspace_excludes_whole_approval_summary_when_line_items_
     )
     assert approval_read["expense_item_count"] == 2
     assert approval_read["total_expense_amount"] == "100.00"
+    assert_batch_profit_matches_monthly(session, store_id)
 
 
 def test_store_ledger_workspace_deduplicates_multiple_matches_for_one_expense_detail(
@@ -305,6 +317,7 @@ def test_store_ledger_workspace_deduplicates_multiple_matches_for_one_expense_de
     assert august_workspace["metrics"]["approval_accounting_amount"] == "500.00"
     assert august_workspace["metrics"]["expense_category_summary"][0]["amount"] == "500.00"
     assert september_workspace["metrics"]["expense_amount"] == "0.00"
+    assert_batch_profit_matches_monthly(session, store_id)
 
 
 def test_store_ledger_workspace_counts_all_approval_lines_when_whole_approval_is_matched(
@@ -416,6 +429,7 @@ def test_store_ledger_workspace_counts_all_approval_lines_when_whole_approval_is
     assert summary["食材成本 / 干货"]["amount"] == "2714.00"
     assert summary["食材成本 / 豆腐、卤豆腐、午餐肉"]["amount"] == "78.00"
     assert summary["食材成本 / 甜品区"]["amount"] == "184.00"
+    assert_batch_profit_matches_monthly(session, store_id)
 
 
 def test_store_ledger_workspace_calculates_gross_profit_from_food_cost(
@@ -553,6 +567,7 @@ def test_store_ledger_workspace_calculates_gross_profit_from_food_cost(
     assert "食材成本 / 肉类" in category_names
     assert "运营支出 / 物料采购" in category_names
     assert "未分类" not in category_names
+    assert_batch_profit_matches_monthly(session, store_id)
 
 
 def test_store_ledger_workspace_excludes_prepaid_kuailv_food_cost(
@@ -697,6 +712,7 @@ def test_store_ledger_workspace_excludes_prepaid_kuailv_food_cost(
     assert "食材成本 / 肉类" in category_names
     assert "门店预充值 / 快驴充值" not in category_names
     assert "备用金/借款" not in category_names
+    assert_batch_profit_matches_monthly(session, store_id)
 
 
 def test_kuailv_purchase_entry_counts_as_food_cost_expense(
@@ -831,3 +847,31 @@ def test_kuailv_purchase_can_edit_and_delete_with_independent_entry_period(clien
         f"/api/expense-items/kuailv-purchases?store_id={store_id}&ledger_period=2026-09"
     )
     assert list_response.json()["data"] == []
+
+
+def assert_batch_profit_matches_monthly(session, store_id):
+    from app.models import Ledger
+    from app.modules.store_ledgers.router import calculate_store_ledger_profit, calculate_store_ledger_profits
+    periods = list(session.scalars(select(Ledger.period).where(Ledger.store_id == store_id)))
+    periods.extend(["2025-01", "2027-01"])
+    actual = calculate_store_ledger_profits(session, store_id, periods)
+    expected = {period: calculate_store_ledger_profit(session, store_id, period) for period in periods}
+    assert actual == expected
+
+
+def test_batch_profit_queries_do_not_grow_with_month_count(client, session):
+    from sqlalchemy import event
+    from app.modules.store_ledgers.router import calculate_store_ledger_profits
+    store_id = client.post("/api/stores", json={"name": "批量利润查询测试店"}).json()["data"]["id"]
+    statements = []
+    connection = session.connection()
+    def count_query(*args):
+        statements.append(args[2])
+    event.listen(connection, "before_cursor_execute", count_query)
+    try:
+        periods = [f"{year}-{month:02d}" for year in (2025, 2026) for month in range(1, 13)]
+        result = calculate_store_ledger_profits(session, store_id, periods)
+    finally:
+        event.remove(connection, "before_cursor_execute", count_query)
+    assert result == {period: Decimal("0.00") for period in periods}
+    assert len(statements) <= 5

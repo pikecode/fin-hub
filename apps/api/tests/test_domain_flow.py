@@ -824,6 +824,13 @@ def test_reconciliation_candidates_can_list_store_approvals_without_bank_transac
     assert len(data["candidates"]) == 1
     assert data["candidates"][0]["approval_instance"]["approval_no"] == "202608319900"
     assert data["candidates"][0]["expense_item"]["amount"] == "388.00"
+    compact = client.get(f"/api/matches/reconciliation/candidates?store_id={store_id}&approval_only=true&compact=true")
+    assert compact.status_code == 200
+    full_candidate = data["candidates"][0]
+    compact_candidate = compact.json()["data"]["candidates"][0]
+    assert compact_candidate["approval_instance"]["raw_payload"] is None
+    for key in ("expense_item", "score", "remaining_amount", "display_fields", "reason"):
+        assert compact_candidate[key] == full_candidate[key]
 
 
 def test_reconciliation_candidate_backfill_uses_template_business_amount_mapping(

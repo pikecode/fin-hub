@@ -16,7 +16,7 @@ import type { Store } from "@fin-hub/shared-types";
 import { getMyStores } from "../lib/referenceData";
 import { confirmLeaveIfNeeded } from "./navigationGuard";
 
-type StoreLedgerTabKey = "overview" | "report" | "dividend" | "bank" | "bankDetails" | "approvals" | "revenue" | "revenueMatching" | "matching" | "kuailvPurchase" | "majorExpenseVouchers";
+type StoreLedgerTabKey = "preopening" | "overview" | "report" | "dividend" | "bank" | "bankDetails" | "approvals" | "revenue" | "revenueMatching" | "matching" | "kuailvPurchase" | "majorExpenseVouchers";
 
 interface StoreLedgerWorkspaceNavProps {
   storeId: string;
@@ -33,6 +33,7 @@ interface StoreLedgerWorkspaceNavProps {
 
 const tabItems: Array<{ key: StoreLedgerTabKey; label: string; icon: any }> = [
   { key: "overview", label: "总览", icon: <DashboardOutlined /> },
+  { key: "preopening", label: "筹建费用", icon: <FileTextOutlined /> },
   { key: "report", label: "财务报表", icon: <FileTextOutlined /> },
   { key: "dividend", label: "分红管理", icon: <GiftOutlined /> },
   { key: "bank", label: "银行流水", icon: <BankOutlined /> },
@@ -46,6 +47,7 @@ const tabItems: Array<{ key: StoreLedgerTabKey; label: string; icon: any }> = [
 ];
 
 function modulePath(storeId: string, key: StoreLedgerTabKey, period?: string) {
+  if (key === "preopening") return `/store-ledgers/${storeId}/preopening`;
   if (key === "overview") {
     const params = period ? `?period=${encodeURIComponent(period)}` : "";
     return `/store-ledgers/${storeId}${params}`;
@@ -116,7 +118,7 @@ export function StoreLedgerWorkspaceNav({
     () => stores.map((store) => ({ label: store.name, value: store.id })),
     [stores],
   );
-  const canChangePeriod = activeKey !== "bank" && activeKey !== "matching" && activeKey !== "revenueMatching";
+  const canChangePeriod = activeKey !== "preopening" && activeKey !== "bank" && activeKey !== "matching" && activeKey !== "revenueMatching";
 
   useEffect(() => {
     let ignore = false;

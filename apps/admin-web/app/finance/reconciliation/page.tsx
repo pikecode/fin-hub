@@ -336,6 +336,8 @@ export default function FinanceReconciliationPage() {
   const [approvalExpenseItemsById, setApprovalExpenseItemsById] = useState<Record<string, ExpenseItem[]>>({});
   const [approvalAttachmentsByExpenseItemId, setApprovalAttachmentsByExpenseItemId] = useState<Record<string, ApprovalAttachmentState>>({});
   const [attachmentPreviewUrls, setAttachmentPreviewUrls] = useState<Record<string, string>>({});
+  const [confirmDetailLoadError, setConfirmDetailLoadError] = useState<string | null>(null);
+  const [categoryValidationMessage, setCategoryValidationMessage] = useState<string | null>(null);
   const [confirmDetailCategoryDrafts, setConfirmDetailCategoryDrafts] = useState<Record<string, DetailCategoryDraft>>({});
   const [editingDetailCategoryDrafts, setEditingDetailCategoryDrafts] = useState<Record<string, DetailCategoryDraft>>({});
   const [selectedConfirmExpenseItemIds, setSelectedConfirmExpenseItemIds] = useState<string[]>([]);
@@ -625,6 +627,7 @@ export default function FinanceReconciliationPage() {
     const params = new URLSearchParams({
       store_id: storeId,
       approval_only: "true",
+      compact: "true",
       page_size: "100",
     });
     if (transaction) params.set("bank_transaction_id", transaction.id);
@@ -828,8 +831,14 @@ export default function FinanceReconciliationPage() {
     }
     async function loadDetailExpenseItems(currentApprovalId: string) {
       try {
-        const page = await fetchApprovalExpenseItems(currentApprovalId);
-        if (!ignore) setDetailExpenseItems(page.items);
+        const [page, approval] = await Promise.all([
+          fetchApprovalExpenseItems(currentApprovalId),
+          apiClient.dingtalk.readApprovalInstance(currentApprovalId),
+        ]);
+        if (!ignore) {
+          setDetailExpenseItems(page.items);
+          setDetailRecord((record) => record?.approval_instance?.id === currentApprovalId ? { ...record, approval_instance: approval } : record);
+        }
       } catch (error) {
         if (!ignore) {
           setDetailExpenseItems([]);
@@ -881,6 +890,7 @@ export default function FinanceReconciliationPage() {
         const params = new URLSearchParams({
           store_id: selectedStoreId,
           approval_only: "true",
+          compact: "true",
           page_size: "100",
           bank_transaction_id: transaction.id,
         });
@@ -1075,6 +1085,7 @@ export default function FinanceReconciliationPage() {
       accounting_month: undefined, // 去掉默认值，用户必须手动选择
       bank_occurred: true,
     });
+    setConfirmDetailLoadError(null);
     setConfirmExpenseItems([selectedCandidate.expense_item]);
     setSelectedConfirmExpenseItemIds([selectedCandidate.expense_item.id]);
     setIsConfirmOpen(true);
@@ -1085,24 +1096,39 @@ export default function FinanceReconciliationPage() {
       const page = await fetchApprovalExpenseItems(approvalId);
       setConfirmExpenseItems(page.items);
     } catch (error) {
+      setConfirmExpenseItems([]);
+      setConfirmDetailLoadError("审批费用明细加载失败，请关闭弹窗后重试，暂时无法确认匹配。");
       message.error(error instanceof Error ? error.message : "无法加载审批费用明细");
     } finally {
       setIsExpenseItemsLoading(false);
     }
   }
 
+  function validateConfirmCategories() {
+    if (!selectedCandidate || isExpenseItemsLoading || confirmDetailLoadError) return false;
+    const selectedItem = selectedCandidate.expense_item;
+    const items = [...new Map([selectedItem, ...confirmExpenseItems].map((item) => [item.id, item])).values()];
+    const parentOnlyItems = items.filter((item) => confirmCategoryPathForExpenseItem(item)?.length === 1);
+    if (parentOnlyItems.length) {
+      setCategoryValidationMessage(`以下费用明细仅选择了一级分类：${parentOnlyItems.map((item) => item.description || "费用明细").join("、")}。一级分类不能用于确认匹配，请在这些明细的分类选择框中选择二级分类后再确认。`);
+      return false;
+    }
+    if (!confirmCategoryPathForExpenseItem(selectedItem)?.length) {
+      setCategoryValidationMessage("当前匹配的费用明细尚未选择费用分类，请选择二级分类后再确认匹配。");
+      return false;
+    }
+    return true;
+  }
+
   async function submitConfirm(values: ConfirmValues) {
     if (!selectedTransaction || !selectedCandidate || !selectedStoreId) return;
     const accountingPeriod = values.accounting_month?.format("YYYY-MM");
     if (!accountingPeriod) return;
+    if (!validateConfirmCategories()) return;
     setIsSaving(true);
     try {
       const selectedExpenseItem = selectedCandidate.expense_item;
       const categoryPath = confirmCategoryPathForExpenseItem(selectedExpenseItem);
-      if (!categoryPath?.length) {
-        message.warning("请先在审批费用明细中选择费用分类，未分类不能确认匹配");
-        return;
-      }
       const categoryPayload = categoryPayloadFromPath(categoryPath);
       const match = await apiClient.matches.create({
         bank_transaction_id: selectedTransaction.id,
@@ -1157,6 +1183,10 @@ export default function FinanceReconciliationPage() {
 
   async function submitEdit(values: EditValues) {
     if (!editingRecord || !selectedStoreId) return;
+    if (Object.values(editingDetailCategoryDrafts).some((draft) => draft.category_path?.length === 1)) {
+      message.warning("费用明细存在仅选择一级分类的项目，请补充二级分类后再保存");
+      return;
+    }
     setIsSaving(true);
     try {
       await apiClient.matches.updateReconciliationRecord(editingRecord.match.id, {
@@ -2231,11 +2261,13 @@ export default function FinanceReconciliationPage() {
         open={isConfirmOpen}
         destroyOnHidden
         onCancel={() => setIsConfirmOpen(false)}
-        onOk={() => confirmForm.submit()}
+        onOk={() => { if (validateConfirmCategories()) confirmForm.submit(); }}
         okText="确认匹配"
         confirmLoading={isSaving}
+        okButtonProps={{ disabled: isExpenseItemsLoading || Boolean(confirmDetailLoadError) }}
         width={980}
       >
+        {confirmDetailLoadError ? <Alert type="error" showIcon message={confirmDetailLoadError} /> : null}
         <Form form={confirmForm} layout="vertical" onFinish={submitConfirm}>
           <div className="reconciliation-confirm-summary">
             <div className="reconciliation-confirm-summary__item">
@@ -2310,7 +2342,7 @@ export default function FinanceReconciliationPage() {
                         placeholder="选择分类"
                         size="large"
                         popupClassName="reconciliation-confirm-category-popup"
-                        status={confirmCategoryMissing(record) ? "error" : undefined}
+                        status={(confirmCategoryPathForExpenseItem(record)?.length ?? 0) < 2 ? "error" : undefined}
                         showSearch
                         changeOnSelect={false}
                         disabled={isSaving}
@@ -2555,6 +2587,15 @@ export default function FinanceReconciliationPage() {
           <Alert type="info" showIcon message="这条记录没有关联钉钉审批详情" />
         )}
       </Drawer>
+      <Modal
+        title="无法确认匹配"
+        open={Boolean(categoryValidationMessage)}
+        onCancel={() => setCategoryValidationMessage(null)}
+        footer={<Button type="primary" onClick={() => setCategoryValidationMessage(null)}>返回选择分类</Button>}
+        zIndex={1100}
+      >
+        <Alert type="warning" showIcon message="请选择二级费用分类" description={categoryValidationMessage} />
+      </Modal>
     </AppShell>
   );
 }

@@ -312,7 +312,7 @@ SPECIAL_TYPE_LABELS = {
     "shareholder_dividend": "股东分红",
     "shareholder_capital": "股东注资",
     "other_income_expense": "其他收支",
-    "counter_refund": "对退款",
+    "counter_refund": "退款",
     "loan_repayment": "借还款",
 }
 
@@ -583,6 +583,8 @@ def update_bank_transaction(
     transaction = session.get(BankTransaction, transaction_id)
     if transaction is None:
         raise HTTPException(status_code=404, detail="Bank transaction not found")
+    from app.modules.preopening.service import protect_bank
+    protect_bank(session, transaction.id)
     ensure_store_access(session, current_user, transaction.store_id)
     has_expense_match = session.scalar(
         select(ExpenseBankMatch).where(ExpenseBankMatch.bank_transaction_id == transaction_id).limit(1)
@@ -721,6 +723,8 @@ def delete_bank_transaction(
     transaction = session.get(BankTransaction, transaction_id)
     if transaction is None:
         raise HTTPException(status_code=404, detail="Bank transaction not found")
+    from app.modules.preopening.service import protect_bank
+    protect_bank(session, transaction.id)
     ensure_store_access(session, current_user, transaction.store_id)
     if Decimal(transaction.matched_amount or 0) > 0 or transaction.special_type is not None:
         raise HTTPException(status_code=409, detail="Bank transaction already matched")

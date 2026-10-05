@@ -435,6 +435,10 @@ class ExpenseItem(Base):
         ),
     )
 
+    expense_scope: Mapped[str] = mapped_column(String(16), default="operating", server_default="operating", nullable=False)
+    preopening_category_id: Mapped[str | None] = mapped_column(ForeignKey("preopening_categories.id"))
+    preopening_category_l1: Mapped[str | None] = mapped_column(String(80))
+    preopening_category_l2: Mapped[str | None] = mapped_column(String(80))
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
     store_id: Mapped[str | None] = mapped_column(ForeignKey("stores.id"))
     ledger_period: Mapped[str | None] = mapped_column(String(7))
@@ -556,6 +560,7 @@ class ExpenseBankMatch(Base):
         UniqueConstraint("expense_item_id", "bank_transaction_id", name="uq_expense_bank_match"),
     )
 
+    expense_scope: Mapped[str] = mapped_column(String(16), default="operating", server_default="operating", nullable=False)
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
     expense_item_id: Mapped[str] = mapped_column(ForeignKey("expense_items.id"), nullable=False)
     bank_transaction_id: Mapped[str] = mapped_column(ForeignKey("bank_transactions.id"), nullable=False)
@@ -699,6 +704,7 @@ class ApprovalTemplate(Base):
     __tablename__ = "approval_templates"
     __table_args__ = (UniqueConstraint("process_code", name="uq_approval_templates_process_code"),)
 
+    is_preopening_expense: Mapped[bool] = mapped_column(default=False, server_default=text("false"), nullable=False)
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
     process_code: Mapped[str] = mapped_column(String(160), nullable=False)
     name: Mapped[str] = mapped_column(String(160), nullable=False)
@@ -815,6 +821,7 @@ class ApprovalInstance(Base):
         Index("ix_approval_instances_template_status", "template_id", "approval_status"),
     )
 
+    expense_scope: Mapped[str] = mapped_column(String(16), default="operating", server_default="operating", nullable=False)
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
     template_id: Mapped[str] = mapped_column(ForeignKey("approval_templates.id"), nullable=False)
     dingtalk_instance_id: Mapped[str] = mapped_column(String(160), nullable=False)
@@ -837,3 +844,22 @@ class ApprovalInstance(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=utc_now, onupdate=utc_now, nullable=False
     )
+
+
+class PreopeningCategory(Base):
+    __tablename__ = "preopening_categories"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(80), unique=True, nullable=False)
+    parent_id: Mapped[str | None] = mapped_column(ForeignKey("preopening_categories.id"))
+    status: Mapped[str] = mapped_column(String(16), default="active", nullable=False)
+    sort_order: Mapped[int] = mapped_column(default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
+
+
+class PreopeningStore(Base):
+    __tablename__ = "preopening_stores"
+    store_id: Mapped[str] = mapped_column(ForeignKey("stores.id"), primary_key=True)
+    status: Mapped[str] = mapped_column(String(16), default="open", nullable=False)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime)
+    closed_by: Mapped[str | None] = mapped_column(String(80))

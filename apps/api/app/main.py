@@ -8,9 +8,9 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.core.database import SessionLocal
+from app.core.logging import get_logger, init_logging
 from app.core.runtime_checks import validate_production_startup
 from app.core.sentry import init_sentry
-from app.core.logging import get_logger, init_logging
 from app.middleware.rate_limit import create_rate_limit_middleware
 from app.middleware.request_logging import create_request_logging_middleware
 from app.middleware.security_headers import create_security_headers_middleware
@@ -28,6 +28,7 @@ from app.modules.health.router import router as health_router
 from app.modules.ledgers.router import router as ledgers_router
 from app.modules.matching.router import router as matching_router
 from app.modules.metrics.router import router as metrics_router
+from app.modules.preopening.router import router as preopening_router
 from app.modules.reports.router import router as reports_router
 from app.modules.revenue.router import channels_router as revenue_channels_router
 from app.modules.revenue.router import router as revenue_router
@@ -58,7 +59,7 @@ def _run_due_auto_sync_jobs_once() -> None:
 def should_start_background_jobs() -> bool:
     if "PYTEST_CURRENT_TEST" in os.environ:
         return False
-    return settings.app_env in {"local", "production"}
+    return settings.app_env == "production"
 
 
 @asynccontextmanager
@@ -126,6 +127,7 @@ def create_app() -> FastAPI:
     app.include_router(bank_balance_router, prefix="/api")
     app.include_router(matching_router, prefix="/api")
     app.include_router(dingtalk_router, prefix="/api")
+    app.include_router(preopening_router, prefix="/api")
     app.include_router(reports_router, prefix="/api")
     app.include_router(dividend_router, prefix="/api")
     app.include_router(metrics_router, prefix="/api")

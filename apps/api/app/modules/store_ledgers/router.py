@@ -3,7 +3,7 @@ from decimal import Decimal
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, defer
 
 from app.core.database import get_session
 from app.models import (
@@ -101,6 +101,7 @@ def confirmed_accounting_expense_rows(session: Session, store_id: str, period: s
                 ApprovalInstance.store_id == store_id,
                 ExpenseBankMatch.status == MatchStatus.CONFIRMED.value,
                 ExpenseBankMatch.accounting_period == period,
+                ExpenseItem.expense_scope == "operating",
                 ExpenseItem.source != REVENUE_FEE_SOURCE,
             )
             .distinct()
@@ -121,6 +122,7 @@ def confirmed_accounting_expense_rows(session: Session, store_id: str, period: s
                 ApprovalInstance.id.in_(confirmed_approval_ids),
                 ExpenseItem.store_id == store_id,
                 ApprovalInstance.store_id == store_id,
+                ExpenseItem.expense_scope == "operating",
                 ExpenseItem.source != REVENUE_FEE_SOURCE,
             )
         ).all()
@@ -137,6 +139,7 @@ def confirmed_accounting_expense_rows(session: Session, store_id: str, period: s
             ExpenseItem.store_id == store_id,
             ExpenseBankMatch.status == MatchStatus.CONFIRMED.value,
             ExpenseBankMatch.accounting_period == period,
+            ExpenseItem.expense_scope == "operating",
             ExpenseItem.source != REVENUE_FEE_SOURCE,
         )
     ).all()
@@ -163,6 +166,64 @@ def calculate_store_ledger_profit(session: Session, store_id: str, period: str) 
     return income_amount - expense_amount
 
 
+
+def calculate_store_ledger_profits(session: Session, store_id: str, periods: list[str]) -> dict[str, Decimal]:
+    """Batch the same original-approval accounting used by the monthly report."""
+    totals = {period: Decimal("0.00") for period in periods}
+    if not periods:
+        return totals
+    for period, amount in session.execute(select(
+        RevenueRecord.ledger_period, func.sum(RevenueRecord.gross_amount)
+    ).where(RevenueRecord.store_id == store_id, RevenueRecord.ledger_period.in_(periods))
+      .group_by(RevenueRecord.ledger_period)):
+        totals[period] = decimal_sum(amount)
+    assignments = session.execute(select(ExpenseBankMatch.accounting_period, ApprovalInstance.id)
+        .join(ExpenseItem, ExpenseBankMatch.expense_item_id == ExpenseItem.id)
+        .join(ApprovalInstance, approval_expense_join_condition())
+        .where(ExpenseItem.store_id == store_id, ApprovalInstance.store_id == store_id,
+               ExpenseBankMatch.status == MatchStatus.CONFIRMED.value,
+               ExpenseBankMatch.accounting_period.in_(periods),
+               ExpenseItem.expense_scope == "operating", ExpenseItem.source != REVENUE_FEE_SOURCE)
+        .distinct()).all()
+    periods_by_approval: dict[str, set[str]] = {}
+    for period, approval_id in assignments:
+        periods_by_approval.setdefault(approval_id, set()).add(period)
+    seen: set[tuple[str, str]] = set()
+
+    def subtract(period, expense_id, l1, l2, amount):
+        key = (period, expense_id)
+        if key not in seen:
+            seen.add(key)
+            if not is_non_operating_expense(l1, l2):
+                totals[period] -= decimal_sum(amount)
+
+    if periods_by_approval:
+        rows = session.execute(select(ApprovalInstance.id, ExpenseItem.id,
+            ExpenseItem.category_l1, ExpenseItem.category_l2, ExpenseItem.amount)
+            .join(ApprovalInstance, approval_expense_join_condition())
+            .where(ApprovalInstance.id.in_(periods_by_approval), ExpenseItem.store_id == store_id,
+                   ApprovalInstance.store_id == store_id, ExpenseItem.expense_scope == "operating",
+                   ExpenseItem.source != REVENUE_FEE_SOURCE))
+        for approval_id, expense_id, l1, l2, amount in rows:
+            for period in periods_by_approval[approval_id]:
+                subtract(period, expense_id, l1, l2, amount)
+    for period, expense_id, l1, l2, amount in session.execute(select(
+        ExpenseBankMatch.accounting_period, ExpenseItem.id, ExpenseItem.category_l1,
+        ExpenseItem.category_l2, ExpenseItem.amount)
+        .join(ExpenseBankMatch, ExpenseBankMatch.expense_item_id == ExpenseItem.id)
+        .where(ExpenseItem.store_id == store_id, ExpenseBankMatch.status == MatchStatus.CONFIRMED.value,
+               ExpenseBankMatch.accounting_period.in_(periods), ExpenseItem.expense_scope == "operating",
+               ExpenseItem.source != REVENUE_FEE_SOURCE)):
+        subtract(period, expense_id, l1, l2, amount)
+    for period, source, l1, l2, amount in session.execute(select(
+        ExpenseItem.ledger_period, ExpenseItem.source, ExpenseItem.category_l1,
+        ExpenseItem.category_l2, ExpenseItem.amount)
+        .where(ExpenseItem.store_id == store_id, ExpenseItem.ledger_period.in_(periods),
+               ExpenseItem.source.in_([REVENUE_FEE_SOURCE, KUAILV_PURCHASE_SOURCE]))):
+        if source == REVENUE_FEE_SOURCE or not is_non_operating_expense(l1, l2):
+            totals[period] -= decimal_sum(amount)
+    return totals
+
 def latest_period(ledgers: list[Ledger], requested_period: str | None) -> str:
     if requested_period:
         return requested_period
@@ -177,6 +238,7 @@ def read_store_ledger_workspace(
     period: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}$"),
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
+    include_details: bool = True,
 ) -> ApiEnvelope[StoreLedgerWorkspaceRead]:
     ensure_permission(session, current_user, "stores.view")
     ensure_store_access(session, current_user, store_id)
@@ -393,6 +455,7 @@ def read_store_ledger_workspace(
     approval_instances = list(
         session.scalars(
             select(ApprovalInstance)
+            .options(*([] if include_details else [defer(ApprovalInstance.raw_payload)]))
             .where(
                 ApprovalInstance.store_id == store_id,
                 ApprovalInstance.submit_at >= period_start,
@@ -560,44 +623,49 @@ def read_store_ledger_workspace(
                 "record_count": row[4],
             }
         )
-    bank_transactions = list(
-        session.scalars(
-            select(BankTransaction)
-            .where(BankTransaction.store_id == store_id, BankTransaction.ledger_period == selected_period)
-            .order_by(BankTransaction.occurred_at.desc())
-        )
-    )
-    revenue_records = list(
-        session.scalars(
-            select(RevenueRecord)
-            .where(
-                RevenueRecord.store_id == store_id,
-                RevenueRecord.revenue_date >= period_start_date,
-                RevenueRecord.revenue_date < next_start_date,
+    bank_transactions = []
+    revenue_records = []
+    approval_reads = []
+    revenue_match_reads = []
+    if include_details:
+        bank_transactions = list(
+            session.scalars(
+                select(BankTransaction)
+                .where(BankTransaction.store_id == store_id, BankTransaction.ledger_period == selected_period)
+                .order_by(BankTransaction.occurred_at.desc())
             )
-            .order_by(RevenueRecord.revenue_date.desc(), RevenueRecord.created_at.desc())
         )
-    )
-    approval_reads = [
-        approval_instance_read(session, item, approval_stats_by_id.get(item.id))
-        for item in approval_instances
-    ]
-    revenue_matches = list(
-        session.scalars(
-            select(RevenueBankMatch)
-            .join(BankTransaction, RevenueBankMatch.bank_transaction_id == BankTransaction.id)
-            .where(BankTransaction.store_id == store_id, BankTransaction.ledger_period == selected_period)
-            .order_by(RevenueBankMatch.created_at.desc())
+        revenue_records = list(
+            session.scalars(
+                select(RevenueRecord)
+                .where(
+                    RevenueRecord.store_id == store_id,
+                    RevenueRecord.revenue_date >= period_start_date,
+                    RevenueRecord.revenue_date < next_start_date,
+                )
+                .order_by(RevenueRecord.revenue_date.desc(), RevenueRecord.created_at.desc())
+            )
         )
-    )
-    revenue_match_record_ids = revenue_match_record_ids_map(
-        session,
-        [match.id for match in revenue_matches],
-    )
-    revenue_match_reads = [
-        revenue_match_response(session, match, revenue_match_record_ids.get(match.id, []))
-        for match in revenue_matches
-    ]
+        approval_reads = [
+            approval_instance_read(session, item, approval_stats_by_id.get(item.id))
+            for item in approval_instances
+        ]
+        revenue_matches = list(
+            session.scalars(
+                select(RevenueBankMatch)
+                .join(BankTransaction, RevenueBankMatch.bank_transaction_id == BankTransaction.id)
+                .where(BankTransaction.store_id == store_id, BankTransaction.ledger_period == selected_period)
+                .order_by(RevenueBankMatch.created_at.desc())
+            )
+        )
+        revenue_match_record_ids = revenue_match_record_ids_map(
+            session,
+            [match.id for match in revenue_matches],
+        )
+        revenue_match_reads = [
+            revenue_match_response(session, match, revenue_match_record_ids.get(match.id, []))
+            for match in revenue_matches
+        ]
 
     return ApiEnvelope(
         data=StoreLedgerWorkspaceRead(
@@ -605,7 +673,7 @@ def read_store_ledger_workspace(
             period=selected_period,
             ledgers=ledgers,
             selected_ledger=selected_ledger,
-            close_check=build_close_check(session, selected_ledger) if selected_ledger else None,
+            close_check=build_close_check(session, selected_ledger) if include_details and selected_ledger else None,
             metrics=StoreLedgerWorkspaceMetrics(
                 revenue_record_count=revenue_record_count or 0,
                 revenue_income_amount=income_amount,
@@ -657,3 +725,13 @@ def read_store_ledger_workspace(
             revenue_matches=revenue_match_reads,
         )
     )
+
+
+@router.get("/{store_id}/report", response_model=ApiEnvelope[StoreLedgerWorkspaceRead])
+def read_store_financial_report(
+    store_id: str,
+    period: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}$"),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+):
+    return read_store_ledger_workspace(store_id, period, session, current_user, include_details=False)

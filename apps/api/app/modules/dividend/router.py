@@ -22,7 +22,7 @@ from app.models import (
 from app.modules.auth.permissions import ensure_permission, ensure_store_access
 from app.modules.auth.router import audit_actor, get_current_user, require_roles
 from app.modules.audit.service import write_audit_log
-from app.modules.store_ledgers.router import calculate_store_ledger_profit
+from app.modules.store_ledgers.router import calculate_store_ledger_profit, calculate_store_ledger_profits
 from app.schemas import (
     ApiEnvelope,
     DividendEntryRead,
@@ -68,11 +68,11 @@ def net_profit(session: Session, store: Store, period: str, month: DividendMonth
     return calculate_store_ledger_profit(session, store.id, period).quantize(MONEY)
 
 
-def month_read(session: Session, store: Store, month: DividendMonth, historical_profit: Decimal, historical_distribution: Decimal, cumulative_capital: Decimal) -> DividendMonthRead:
-    entries = list(session.scalars(select(DividendEntry).where(DividendEntry.month_id == month.id).order_by(DividendEntry.created_at.asc())))
+def month_read(session: Session, store: Store, month: DividendMonth, historical_profit: Decimal, historical_distribution: Decimal, cumulative_capital: Decimal, *, preloaded_entries=None, report_profit=None) -> DividendMonthRead:
+    entries = preloaded_entries if preloaded_entries is not None else list(session.scalars(select(DividendEntry).where(DividendEntry.month_id == month.id).order_by(DividendEntry.created_at.asc())))
     distribution = sum((Decimal(item.amount) for item in entries if item.entry_type == "distribution"), Decimal("0.00"))
     capital = sum((Decimal(item.amount) for item in entries if item.entry_type == "capital"), Decimal("0.00"))
-    profit = net_profit(session, store, month.period, month)
+    profit = (Decimal(month.manual_net_profit) if month.manual_net_profit is not None else report_profit).quantize(MONEY) if report_profit is not None else net_profit(session, store, month.period, month)
     total_profit = historical_profit + profit
     total_distribution = historical_distribution + distribution
     total_capital = cumulative_capital + capital
@@ -101,11 +101,22 @@ def available_periods(session: Session, store: Store, selected_period: str) -> l
 def history_rows(session: Session, store: Store, selected_period: str) -> list[DividendMonthRead]:
     ordered = sorted(available_periods(session, store, selected_period))
     months = {month.period: month for month in session.scalars(select(DividendMonth).where(DividendMonth.store_id == store.id)).all()}
+    for period in ordered:
+        if period not in months:
+            months[period] = DividendMonth(store_id=store.id, period=period)
+            session.add(months[period])
+    session.flush()
+    profits = calculate_store_ledger_profits(session, store.id, ordered)
+    entries_by_month = {}
+    for entry in session.scalars(select(DividendEntry).where(
+        DividendEntry.month_id.in_([month.id for month in months.values()])
+    ).order_by(DividendEntry.created_at.asc())):
+        entries_by_month.setdefault(entry.month_id, []).append(entry)
     result: list[DividendMonthRead] = []
     total_profit = total_distribution = total_capital = Decimal("0.00")
     for period in ordered:
-        month = months.get(period) or month_row(session, store, period)
-        row = month_read(session, store, month, total_profit, total_distribution, total_capital)
+        month = months[period]
+        row = month_read(session, store, month, total_profit, total_distribution, total_capital, preloaded_entries=entries_by_month.get(month.id, []), report_profit=profits[period])
         total_profit = row.historical_profit
         total_distribution = row.historical_distribution
         total_capital = row.cumulative_capital

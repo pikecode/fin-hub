@@ -26,7 +26,7 @@ import {
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import dayjs from "dayjs";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   Store,
   ApprovalTemplate,
@@ -358,6 +358,7 @@ function approvalPayload(instance: ApprovalInstance) {
 }
 
 function approvalTitle(instance: ApprovalInstance) {
+  if (instance.title) return instance.title;
   const payload = approvalPayload(instance);
   const title = payload?.title ?? payload?.titleName;
   return typeof title === "string" ? title : "";
@@ -628,18 +629,33 @@ export default function DingTalkPage() {
   const [templateNodes, setTemplateNodes] = useState<ApprovalTemplateNode[]>([]);
   const [fieldCandidates, setFieldCandidates] = useState<TemplateFieldCandidate[]>([]);
   const [syncJobs, setSyncJobs] = useState<SyncJob[]>([]);
+  const previousRunningSyncIds = useRef<Set<string>>(new Set());
   const [approvalInstances, setApprovalInstances] = useState<ApprovalInstance[]>([]);
+  const [instancePage, setInstancePage] = useState(1);
+  const [instancePageSize, setInstancePageSize] = useState(20);
+  const [instanceTotal, setInstanceTotal] = useState(0);
+  const [instanceLoading, setInstanceLoading] = useState(false);
+  const [instanceSearch, setInstanceSearch] = useState("");
+  const [instanceKeyword, setInstanceKeyword] = useState("");
+  const [instanceStatusFilters, setInstanceStatusFilters] = useState<string[]>([]);
+  const [instanceReload, setInstanceReload] = useState(0);
+  const instanceRequest = useRef(0);
   const [stores, setStores] = useState<Store[]>([]);
   const [departmentPreview, setDepartmentPreview] = useState<DingTalkDepartmentSyncPreview | null>(null);
   const [syncReadiness, setSyncReadiness] = useState<DingTalkSyncReadiness | null>(null);
   const [activeTabKey, setActiveTabKey] = useState<DingTalkTabKey>("auto-sync");
   const [loadedTabKeys, setLoadedTabKeys] = useState<DingTalkTabKey[]>([]);
   const [selectedTemplate, setSelectedTemplate] = useState<ApprovalTemplate | null>(null);
+  const [templateSampleApproval, setTemplateSampleApproval] = useState<ApprovalInstance | null>(null);
   const [instanceTemplateFilterId, setInstanceTemplateFilterId] = useState<string | null>(null);
+  const [instanceStoreFilterId, setInstanceStoreFilterId] = useState<string | null>(null);
   const [selectedInstance, setSelectedInstance] = useState<ApprovalInstance | null>(null);
+  const instanceDetailRequest = useRef(0);
+  const [instanceDetailLoading, setInstanceDetailLoading] = useState(false);
   const [selectedInstanceAttachments, setSelectedInstanceAttachments] = useState<Attachment[]>([]);
   const [imagePreview, setImagePreview] = useState<ImagePreviewState | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [pendingExpenseScope, setPendingExpenseScope] = useState<{ template: ApprovalTemplate; enabled: boolean } | null>(null);
   const [isStartingApprovalSync, setIsStartingApprovalSync] = useState(false);
   const [isTemplateModalOpen, setIsTemplateModalOpen] = useState(false);
   const [isMappingDrawerOpen, setIsMappingDrawerOpen] = useState(false);
@@ -717,16 +733,14 @@ export default function DingTalkPage() {
     [syncJobs],
   );
   const selectedTemplateSampleInstance = selectedTemplate
-    ? approvalInstances.find((instance) => instance.template_id === selectedTemplate.id)
+    ? templateSampleApproval?.template_id === selectedTemplate.id
+      ? templateSampleApproval
+      : approvalInstances.find((instance) => instance.template_id === selectedTemplate.id)
     : undefined;
   const instanceTemplateFilter = instanceTemplateFilterId
     ? templates.find((template) => template.id === instanceTemplateFilterId) ?? null
     : null;
-  const displayedApprovalInstances = useMemo(() => {
-    return instanceTemplateFilterId
-      ? approvalInstances.filter((instance) => instance.template_id === instanceTemplateFilterId)
-      : approvalInstances;
-  }, [instanceTemplateFilterId, approvalInstances]);
+  const displayedApprovalInstances = approvalInstances;
   const approvalAuditColumns = useMemo(
     () => [
       {
@@ -793,30 +807,7 @@ export default function DingTalkPage() {
       ),
     [syncJobs],
   );
-  const approvalStatusFilters = useMemo(
-    () => {
-      const filters = new Map<string, { text: string; value: string }>();
-      approvalInstances.forEach((item) => {
-        if (!item.approval_status) return;
-        const meta = approvalStatusMeta(item.approval_status);
-        filters.set(meta.label, { text: meta.label, value: meta.label });
-      });
-      return Array.from(filters.values());
-    },
-    [approvalInstances],
-  );
-  const templateNameFilters = useMemo(
-    () => tableFilters(approvalInstances.map((item) => templateNameById.get(item.template_id))),
-    [approvalInstances, templateNameById],
-  );
-  const applicantFilters = useMemo(
-    () => tableFilters(approvalInstances.map((item) => applicantDisplayName(item))),
-    [approvalInstances],
-  );
-  const departmentFilters = useMemo(
-    () => tableFilters(approvalInstances.map((item) => approvalDepartmentName(item))),
-    [approvalInstances],
-  );
+  const approvalStatusFilters = ["已通过", "已完成", "已撤销", "已取消", "已拒绝", "审批中"].map((label) => ({ text: label, value: label }));
 
   useEffect(() => {
     return () => {
@@ -860,7 +851,7 @@ export default function DingTalkPage() {
         apiClient.dingtalk.listSyncJobs(`?page=${page}&page_size=${pageSize}`),
       ),
       apiClient.dingtalk.readSyncReadiness(),
-      apiClient.stores.list("?page_size=500"),
+      loadAllDingTalkPages((page, pageSize) => apiClient.stores.list(`?page=${page}&page_size=${pageSize}`), 200),
     ]);
     const [configResult, autoSyncResult, jobResult, readinessResult, storeResult] = results;
     const errors: string[] = [];
@@ -890,7 +881,7 @@ export default function DingTalkPage() {
     }
 
     if (storeResult.status === "fulfilled") {
-      setStores(storeResult.value.items);
+      setStores(storeResult.value);
     } else {
       errors.push(dingtalkPageErrorMessage(storeResult.reason, "无法读取门店列表"));
     }
@@ -965,6 +956,7 @@ export default function DingTalkPage() {
 
   async function loadInstancesTab(force = false) {
     if (!force && loadedTabKeys.includes("instances")) return;
+    if (force) setInstanceReload((value) => value + 1);
     setIsLoading(true);
     setErrorMessage(null);
     const results = await Promise.allSettled([
@@ -973,11 +965,8 @@ export default function DingTalkPage() {
       loadAllDingTalkPages((page, pageSize) =>
         apiClient.dingtalk.listSyncJobs(`?page=${page}&page_size=${pageSize}`),
       ),
-      loadAllDingTalkPages((page, pageSize) =>
-        apiClient.dingtalk.listApprovalInstances(`?page=${page}&page_size=${pageSize}`),
-      ),
     ]);
-    const [configResult, templateResult, jobResult, instanceResult] = results;
+    const [configResult, templateResult, jobResult] = results;
     const errors: string[] = [];
 
     if (configResult.status === "fulfilled") {
@@ -996,12 +985,6 @@ export default function DingTalkPage() {
     } else {
       errors.push(dingtalkPageErrorMessage(jobResult.reason, "无法读取同步任务"));
     }
-    if (instanceResult.status === "fulfilled") {
-      setApprovalInstances(instanceResult.value);
-    } else {
-      errors.push(dingtalkPageErrorMessage(instanceResult.reason, "无法读取审批列表"));
-    }
-
     if (errors.length) {
       setErrorMessage(Array.from(new Set(errors)).join("；"));
     } else {
@@ -1010,6 +993,32 @@ export default function DingTalkPage() {
     setIsLoading(false);
   }
 
+  useEffect(() => {
+    if (activeTabKey !== "instances") return;
+    const request = ++instanceRequest.current;
+    let disposed = false;
+    setInstanceLoading(true);
+    setErrorMessage(null);
+    setApprovalInstances([]);
+    const query = new URLSearchParams({ page: String(instancePage), page_size: String(instancePageSize), compact: "true" });
+    if (instanceTemplateFilterId) query.set("template_id", instanceTemplateFilterId);
+    if (instanceStoreFilterId) query.set("store_id", instanceStoreFilterId);
+    if (instanceKeyword.trim()) query.set("keyword", instanceKeyword.trim());
+    instanceStatusFilters.forEach((status) => query.append("approval_status", status));
+    apiClient.dingtalk.listApprovalInstances(`?${query}`).then((result) => {
+      if (disposed || request !== instanceRequest.current) return;
+      setInstanceTotal(result.total);
+      const lastPage = Math.max(1, Math.ceil(result.total / instancePageSize));
+      if (instancePage > lastPage) { setInstancePage(lastPage); return; }
+      setApprovalInstances(result.items);
+    }).catch((error) => {
+      if (!disposed && request === instanceRequest.current) setErrorMessage(dingtalkPageErrorMessage(error, "无法读取审批列表"));
+    }).finally(() => {
+      if (!disposed && request === instanceRequest.current) setInstanceLoading(false);
+    });
+    return () => { disposed = true; };
+  }, [activeTabKey, instancePage, instancePageSize, instanceTemplateFilterId, instanceStoreFilterId, instanceKeyword, instanceStatusFilters, instanceReload]);
+
   function handleTabChange(key: string) {
     const nextKey = key as DingTalkTabKey;
     setActiveTabKey(nextKey);
@@ -1017,6 +1026,18 @@ export default function DingTalkPage() {
     if (nextKey === "templates") void loadTemplatesTab();
     if (nextKey === "instances") void loadInstancesTab();
   }
+
+  useEffect(() => {
+    const runningIds = new Set(syncJobs.filter((job) => job.status === "running").map((job) => job.id));
+    const finished = syncJobs.some((job) => previousRunningSyncIds.current.has(job.id) && job.status !== "running");
+    previousRunningSyncIds.current = runningIds;
+    if (!finished) return;
+    if (activeTabKey === "instances") {
+      void loadInstancesTab(true);
+    } else {
+      setLoadedTabKeys((keys) => keys.filter((key) => key !== "instances"));
+    }
+  }, [syncJobs]);
 
   useEffect(() => {
     if (!hasRunningSyncJob) return;
@@ -1225,6 +1246,7 @@ export default function DingTalkPage() {
 
   async function changeInstanceTemplateFilter(templateId?: string) {
     setInstanceTemplateFilterId(templateId ?? null);
+    setInstancePage(1);
     setErrorMessage(null);
   }
 
@@ -1391,14 +1413,16 @@ export default function DingTalkPage() {
     setSelectedTemplate(template);
     setIsLoading(true);
     try {
-      const [data, candidates, nodes] = await Promise.all([
+      const [data, candidates, nodes, sample] = await Promise.all([
         apiClient.dingtalk.listMappings(template.id),
         apiClient.dingtalk.listFieldCandidates(template.id),
         apiClient.dingtalk.listTemplateNodes(template.id),
+        apiClient.dingtalk.listApprovalInstances(`?template_id=${encodeURIComponent(template.id)}&page_size=1`),
       ]);
       setMappings(data);
       setFieldCandidates(candidates);
       setTemplateNodes(nodes);
+      setTemplateSampleApproval(sample.items[0] ?? null);
       updateTemplateMappingStatus(template.id, data.some(isBusinessMapping) ? "mapped" : "unmapped");
       return data;
     } catch (error) {
@@ -1422,13 +1446,8 @@ export default function DingTalkPage() {
     try {
       const result = await apiClient.dingtalk.pullTemplateSampleApproval(template.id);
       setFieldCandidates(result.field_candidates);
-      if (result.instance) {
-        setApprovalInstances((items) => {
-          const index = items.findIndex((item) => item.id === result.instance?.id);
-          if (index < 0) return [result.instance!, ...items];
-          return items.map((item) => (item.id === result.instance?.id ? result.instance! : item));
-        });
-      }
+      if (result.instance) setTemplateSampleApproval(result.instance);
+      if (result.instance && activeTabKey === "instances") setInstanceReload((value) => value + 1);
       if (result.pulled_count > 0) {
         message.success("已拉取一条真实审批样例，钉钉字段下拉已刷新");
       } else {
@@ -1557,13 +1576,20 @@ export default function DingTalkPage() {
   async function openInstanceDetail(instance: ApprovalInstance) {
     setSelectedInstance(instance);
     setSelectedInstanceAttachments([]);
+    const request = ++instanceDetailRequest.current;
+    setInstanceDetailLoading(true);
     try {
-      const data = await apiClient.attachments.list(
-        `?resource_type=approval_instance&resource_id=${encodeURIComponent(instance.id)}&page_size=50`,
-      );
+      const [detail, data] = await Promise.all([
+        apiClient.dingtalk.readApprovalInstance(instance.id),
+        apiClient.attachments.list(`?resource_type=approval_instance&resource_id=${encodeURIComponent(instance.id)}&page_size=50`),
+      ]);
+      if (request !== instanceDetailRequest.current) return;
+      setSelectedInstance((current) => current?.id === instance.id ? detail : current);
       setSelectedInstanceAttachments(data.items);
     } catch (error) {
-      setErrorMessage(dingtalkPageErrorMessage(error, "无法读取审批详情"));
+      if (request === instanceDetailRequest.current) setErrorMessage(dingtalkPageErrorMessage(error, "无法读取审批详情"));
+    } finally {
+      if (request === instanceDetailRequest.current) setInstanceDetailLoading(false);
     }
   }
 
@@ -1641,6 +1667,13 @@ export default function DingTalkPage() {
           onChange={(checked) => updateTemplateEnabled(record, checked)}
         />
       ),
+    },
+    {
+      key: "is_preopening_expense",
+      title: "是否是筹建费用",
+      width: 150,
+      render: (_, record) => <Switch checked={record.is_preopening_expense ?? false} checkedChildren="是" unCheckedChildren="否" loading={isLoading}
+        onChange={(checked) => setPendingExpenseScope({ template: record, enabled: checked })} />,
     },
     {
       key: "last_sync_at",
@@ -1877,6 +1910,7 @@ export default function DingTalkPage() {
     },
   ];
   const instanceColumns: EnterpriseTableColumn<ApprovalInstance>[] = [
+    { key: "expense_scope", title: "费用归属", width: 100, render: (_, record) => <Tag color={record.expense_scope === "preopening" ? "blue" : "default"}>{record.expense_scope === "preopening" ? "筹建费用" : "日常费用"}</Tag> },
     {
       key: "approval_no",
       title: "审批编号",
@@ -1896,8 +1930,6 @@ export default function DingTalkPage() {
       key: "template_name",
       title: "模板名称",
       width: 180,
-      filters: templateNameFilters,
-      onFilter: (value, record) => templateNameById.get(record.template_id) === value,
       render: (_, record) => templateNameById.get(record.template_id) || "-",
     },
     {
@@ -1905,8 +1937,6 @@ export default function DingTalkPage() {
       title: "申请人",
       dataIndex: "applicant_name",
       width: 150,
-      filters: applicantFilters,
-      onFilter: (value, record) => applicantDisplayName(record) === value,
       render: (_, record) => (
         <Space direction="vertical" size={0}>
           <Typography.Text>{applicantDisplayName(record)}</Typography.Text>
@@ -1922,8 +1952,6 @@ export default function DingTalkPage() {
       key: "department_name",
       title: "部门",
       width: 220,
-      filters: departmentFilters,
-      onFilter: (value, record) => approvalDepartmentName(record) === value,
       render: (_, record) => approvalDepartmentName(record),
     },
     {
@@ -1931,7 +1959,7 @@ export default function DingTalkPage() {
       title: "状态",
       dataIndex: "approval_status",
       filters: approvalStatusFilters,
-      onFilter: (value, record) => approvalStatusMeta(record.approval_status).label === value,
+      filteredValue: instanceStatusFilters,
       render: (value) => {
         const meta = approvalStatusMeta(value);
         return <Tag color={meta.color}>{meta.label}</Tag>;
@@ -2316,7 +2344,28 @@ export default function DingTalkPage() {
                 <Card
                   title={instanceTemplateFilter ? `${instanceTemplateFilter.name} 审批列表` : "审批实例快照"}
                   extra={
-                    <Space>
+                    <Space wrap>
+                      <Select
+                        allowClear
+                        showSearch
+                        placeholder="全部门店"
+                        value={instanceStoreFilterId ?? undefined}
+                        optionFilterProp="label"
+                        style={{ width: 240 }}
+                        options={stores.map((store) => ({ label: store.name, value: store.id }))}
+                        onChange={(value) => {
+                          setInstanceStoreFilterId(value ?? null);
+                          setInstancePage(1);
+                        }}
+                      />
+                      <Input.Search
+                        placeholder="审批编号 / 申请人 / 部门"
+                        allowClear
+                        value={instanceSearch}
+                        onChange={(event) => { setInstanceSearch(event.target.value); if (!event.target.value) { setInstanceKeyword(""); setInstancePage(1); } }}
+                        onSearch={(value) => { setInstanceKeyword(value); setInstancePage(1); }}
+                        style={{ width: 260 }}
+                      />
                       <Select
                         allowClear
                         showSearch
@@ -2334,6 +2383,9 @@ export default function DingTalkPage() {
                       <Button onClick={() => setIsApprovalAuditModalOpen(true)}>
                         诊断/重解析
                       </Button>
+                      <Button onClick={() => void loadInstancesTab(true)} loading={isLoading}>
+                        刷新列表
+                      </Button>
                       <Button type="primary" onClick={openSyncModal} loading={isLoading}>
                         按时间范围同步审批单
                       </Button>
@@ -2342,12 +2394,12 @@ export default function DingTalkPage() {
                 >
                   <Space wrap className="dashboard-alert">
                     {instanceTemplateFilter ? <Tag color="blue">当前模板 {instanceTemplateFilter.name}</Tag> : <Tag>全部模板</Tag>}
-                    <Tag>本地实例 {displayedApprovalInstances.length}</Tag>
+                    <Tag>符合条件 {instanceTotal} 条</Tag>
                     <Tag color="green">
-                      已通过{" "}
+                      当前页已通过{" "}
                       {
                         displayedApprovalInstances.filter((item) =>
-                          ["APPROVED", "AGREE", "COMPLETED"].includes(item.approval_status.toUpperCase()),
+                          ["APPROVED", "AGREE"].includes(item.approval_status.toUpperCase()),
                         ).length
                       }
                     </Tag>
@@ -2367,10 +2419,16 @@ export default function DingTalkPage() {
                   ) : null}
                   <EnterpriseTable<ApprovalInstance>
                     rowKey="id"
-                    loading={isLoading}
+                    loading={instanceLoading}
                     columns={instanceColumns}
                     dataSource={displayedApprovalInstances}
-                    pagination={{ defaultPageSize: 8, showSizeChanger: true }}
+                    pagination={{ current: instancePage, pageSize: instancePageSize, total: instanceTotal, showSizeChanger: true, pageSizeOptions: [20, 50, 100, 200], showTotal: (total) => `共 ${total} 条` }}
+                    onChange={(pagination, filters, _sorter, extra) => {
+                      const statuses = (filters.approval_status ?? []).map(String);
+                      setInstanceStatusFilters((current) => JSON.stringify(current) === JSON.stringify(statuses) ? current : statuses);
+                      setInstancePageSize(pagination.pageSize ?? instancePageSize);
+                      setInstancePage(extra.action === "filter" || pagination.pageSize !== instancePageSize ? 1 : pagination.current ?? 1);
+                    }}
                     showDensityToggle
                     showColumnSettings
                     fixedColumns={{ left: ["approval_no"], right: ["actions"] }}
@@ -2486,6 +2544,7 @@ export default function DingTalkPage() {
       <Drawer
         title={selectedInstance ? approvalTitle(selectedInstance) || selectedInstance.approval_no || "审批实例详情" : "审批实例详情"}
         open={Boolean(selectedInstance)}
+        loading={instanceDetailLoading}
         onClose={() => setSelectedInstance(null)}
         extra={
           selectedInstance ? (
@@ -2888,6 +2947,21 @@ export default function DingTalkPage() {
             <Switch />
           </Form.Item>
         </Form>
+      </Modal>
+      <Modal title="确认修改模板费用归属？" open={!!pendingExpenseScope} confirmLoading={isLoading}
+        onCancel={() => { if (!isLoading) setPendingExpenseScope(null); }}
+        onOk={async () => {
+          if (!pendingExpenseScope) return;
+          setIsLoading(true);
+          try {
+            const updated = await apiClient.dingtalk.updateTemplate(pendingExpenseScope.template.id, { is_preopening_expense: pendingExpenseScope.enabled });
+            setTemplates((items) => items.map((item) => item.id === updated.id ? updated : item));
+            setPendingExpenseScope(null);
+            message.success("费用归属已更新");
+          } catch (error) { message.error(error instanceof Error ? error.message : "更新失败"); }
+          finally { setIsLoading(false); }
+        }}>
+        该模板下未匹配的审批单将进入{pendingExpenseScope?.enabled ? "筹建" : "日常"}费用流程，原有费用分类需要重新选择。已占用或已封账的单据会阻止此操作。
       </Modal>
     </AppShell>
   );

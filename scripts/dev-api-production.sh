@@ -27,6 +27,7 @@ trap cleanup EXIT INT TERM
 
 if ! nc -z 127.0.0.1 "$DB_PORT" 2>/dev/null || ! nc -z 127.0.0.1 "$REDIS_PORT" 2>/dev/null; then
   ssh -N -o ExitOnForwardFailure=yes \
+    -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o TCPKeepAlive=yes \
     -L "$DB_PORT:127.0.0.1:$DB_PORT" \
     -L "$REDIS_PORT:127.0.0.1:$REDIS_PORT" \
     fin-hub-server &
@@ -35,6 +36,11 @@ if ! nc -z 127.0.0.1 "$DB_PORT" 2>/dev/null || ! nc -z 127.0.0.1 "$REDIS_PORT" 2
 fi
 
 DB_PASSWORD="$(ssh fin-hub-server "sed -n 's/^POSTGRES_PASSWORD=//p' /opt/fin-hub/.env.production")"
+API_SECRET_KEY="$(ssh fin-hub-server 'docker exec docker-api-1 printenv SECRET_KEY')"
+if [ -z "$API_SECRET_KEY" ]; then
+  echo "Production API encryption key is unavailable; cannot decrypt shared DingTalk credentials" >&2
+  exit 1
+fi
 DB_PASSWORD_URLENCODED="$(.venv/bin/python -c 'import sys; from urllib.parse import quote; print(quote(sys.argv[1], safe=""))' "$DB_PASSWORD")"
 DATABASE_URL="postgresql+psycopg://finhub:${DB_PASSWORD_URLENCODED}@127.0.0.1:${DB_PORT}/finhub"
 
@@ -98,6 +104,7 @@ echo
 
 cd "$API_DIR"
 DATABASE_URL="postgresql+psycopg://finhub:${DB_PASSWORD_URLENCODED}@127.0.0.1:${DB_PORT}/finhub" \
+SECRET_KEY="$API_SECRET_KEY" \
 REDIS_URL="redis://127.0.0.1:${REDIS_PORT}/0" \
 DINGTALK_SYNC_MODE=real \
 .venv/bin/uvicorn app.main:app --reload --host 0.0.0.0 --port "$API_PORT"

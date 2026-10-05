@@ -1,9 +1,10 @@
 "use client";
 
-import { Alert, Button, Card, DatePicker, Descriptions, Drawer, Empty, Image, Input, Modal, Space, Table, Tag, Typography, message, Select } from "antd";
+import { Alert, Button, Card, DatePicker, Descriptions, Drawer, Empty, Image, Input, Modal, Select, Space, Table, Tag, Tooltip, Typography, message } from "antd";
 import dayjs from "dayjs";
+import zhCN from "antd/locale/zh_CN";
 import { useParams } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ApprovalInstance, ApprovalTemplate, Attachment, Store } from "@fin-hub/shared-types";
 import { AppShell } from "../../../components/AppShell";
 import { EnterpriseTable } from "../../../components/EnterpriseTable";
@@ -40,7 +41,8 @@ type ImagePreviewState = {
   url: string;
 };
 
-const APPROVAL_LIST_PAGE_SIZE = 500;
+const APPROVAL_LIST_PAGE_SIZE = 20;
+const MANUAL_MATCH_CUTOFF_DATE = "2026-09-30";
 
 function formatBeijingDateTime(value?: string | null) {
   if (!value) return "-";
@@ -58,6 +60,19 @@ function formatBeijingDateTime(value?: string | null) {
     .replace(/\//g, "-");
 }
 
+function formatBeijingDate(value?: string | null) {
+  const formatted = formatBeijingDateTime(value);
+  return formatted === "-" ? "" : formatted.slice(0, 10);
+}
+
+function manualMarkDisabledReason(instance: ApprovalInstance) {
+  const submitDate = formatBeijingDate(instance.submit_at);
+  if (!submitDate) return "审批单缺少申请日期，无法手动标记";
+  if (submitDate >= MANUAL_MATCH_CUTOFF_DATE) return "仅支持申请日期为2026年9月30日前的审批单手动标记已匹配";
+  return "";
+}
+
+
 function approvalPayload(instance: ApprovalInstance) {
   if (!instance.raw_payload) return null;
   try {
@@ -68,6 +83,7 @@ function approvalPayload(instance: ApprovalInstance) {
 }
 
 function approvalTitle(instance: ApprovalInstance) {
+  if (instance.title) return instance.title;
   const payload = approvalPayload(instance);
   const title = payload?.title ?? payload?.titleName;
   if (typeof title === "string" && title) return title;
@@ -116,6 +132,7 @@ function approvalMatchStatusMeta(status?: string | null) {
   const normalized = (status || "").toLowerCase();
   const statusMap: Record<string, { label: string; color: string }> = {
     matched: { label: "已匹配", color: "green" },
+    manual_matched: { label: "已匹配", color: "green" },
     partial_matched: { label: "已匹配", color: "green" },
     pending_match: { label: "未匹配", color: "gold" },
     pending_classification: { label: "未匹配", color: "gold" },
@@ -273,23 +290,6 @@ function tableFiltersToSelectOptions(filters: Array<{ text: string; value: strin
   return filters.map((filter) => ({ label: filter.text, value: filter.value }));
 }
 
-async function loadAllApprovalPages<T>(
-  loader: (page: number, pageSize: number) => Promise<{ items: T[]; total: number }>,
-  pageSize = APPROVAL_LIST_PAGE_SIZE,
-) {
-  const items: T[] = [];
-  let page = 1;
-  let total = Number.POSITIVE_INFINITY;
-  while (items.length < total) {
-    const result = await loader(page, pageSize);
-    items.push(...result.items);
-    total = result.total;
-    if (result.items.length < pageSize) break;
-    page += 1;
-  }
-  return items;
-}
-
 export default function StoreLedgerApprovalsPage() {
   const params = useParams<{ storeId: string }>();
   const searchParams = useClientSearchParams();
@@ -301,15 +301,31 @@ export default function StoreLedgerApprovalsPage() {
   const [detailAttachments, setDetailAttachments] = useState<Attachment[]>([]);
   const [imagePreview, setImagePreview] = useState<ImagePreviewState | null>(null);
   const [keyword, setKeyword] = useState("");
+  const [searchKeyword, setSearchKeyword] = useState("");
+  const [approvalPage, setApprovalPage] = useState(1);
+  const [approvalPageSize, setApprovalPageSize] = useState(APPROVAL_LIST_PAGE_SIZE);
+  const [approvalTotal, setApprovalTotal] = useState(0);
+  const [approvalReload, setApprovalReload] = useState(0);
+  const detailRequest = useRef(0);
+  const [isDetailLoading, setIsDetailLoading] = useState(false);
+
+  const [applicationDateRange, setApplicationDateRange] = useState<SyncDateRange | null>(null);
   const [templateFilter, setTemplateFilter] = useState<string>();
   const [approvalStatusFilter, setApprovalStatusFilter] = useState<string>();
   const [matchStatusFilter, setMatchStatusFilter] = useState<string>();
   const [isLoading, setIsLoading] = useState(true);
   const [isApprovalLoading, setIsApprovalLoading] = useState(false);
   const [isStoreSyncing, setIsStoreSyncing] = useState(false);
+  const [selectedApprovalIds, setSelectedApprovalIds] = useState<React.Key[]>([]);
+  const [batchAction, setBatchAction] = useState<"mark" | "unmark" | null>(null);
+  const [batchProgress, setBatchProgress] = useState<{ done: number; total: number } | null>(null);
+  const [pendingMarkApproval, setPendingMarkApproval] = useState<ApprovalInstance | null>(null);
+  const [markingApprovalId, setMarkingApprovalId] = useState<string | null>(null);
   const [isSyncModalOpen, setIsSyncModalOpen] = useState(false);
   const [syncDateRange, setSyncDateRange] = useState<SyncDateRange | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  useEffect(() => { setSelectedApprovalIds([]); }, [storeId]);
 
   useEffect(() => {
     let ignore = false;
@@ -339,14 +355,26 @@ export default function StoreLedgerApprovalsPage() {
     async function loadApprovals() {
       if (!storeId) return;
       setIsApprovalLoading(true);
+      setApprovals([]);
+      setSelectedApprovalIds([]);
       setErrorMessage(null);
       try {
-        const approvalPage = await loadAllApprovalPages((page, pageSize) => {
-          const params = new URLSearchParams({ store_id: storeId, page: String(page), page_size: String(pageSize) });
-          return apiClient.dingtalk.listApprovalInstances(`?${params.toString()}`);
-        });
+        const query = new URLSearchParams({ store_id: storeId, page: String(approvalPage), page_size: String(approvalPageSize), compact: "true" });
+        if (searchKeyword.trim()) query.set("keyword", searchKeyword.trim());
+        if (applicationDateRange) {
+          query.set("submit_date_start", applicationDateRange[0].format("YYYY-MM-DD"));
+          query.set("submit_date_end", applicationDateRange[1].format("YYYY-MM-DD"));
+        }
+        if (templateFilter) query.set("template_id", templateFilter);
+        if (approvalStatusFilter) query.set("approval_status", approvalStatusFilter);
+        if (matchStatusFilter) query.set("match_status", matchStatusFilter);
+        const result = await apiClient.dingtalk.listApprovalInstances(`?${query}`);
         if (!ignore) {
-          setApprovals(approvalPage);
+          setApprovalTotal(result.total);
+          const lastPage = Math.max(1, Math.ceil(result.total / approvalPageSize));
+          if (approvalPage > lastPage) { setApprovalPage(lastPage); return; }
+          setApprovals(result.items);
+          setSelectedApprovalIds([]);
         }
       } catch (error) {
         if (!ignore) setErrorMessage(error instanceof Error ? error.message : "无法加载审批单");
@@ -358,58 +386,15 @@ export default function StoreLedgerApprovalsPage() {
     return () => {
       ignore = true;
     };
-  }, [keyword, storeId]);
+  }, [searchKeyword, storeId, approvalPage, approvalPageSize, templateFilter, approvalStatusFilter, matchStatusFilter, applicationDateRange, approvalReload]);
 
   const templateNameById = useMemo(
     () => new Map(templates.map((template) => [template.id, template.name])),
     [templates],
   );
-  const templateNameFilters = useMemo(
-    () => uniqueSelectOptions(approvals.map((approval) => templateNameById.get(approval.template_id))),
-    [approvals, templateNameById],
-  );
-  const applicantFilters = useMemo(
-    () => uniqueSelectOptions(approvals.map((approval) => applicantDisplayName(approval))),
-    [approvals],
-  );
-  const departmentFilters = useMemo(
-    () => uniqueSelectOptions(approvals.map((approval) => approvalDepartmentName(approval))),
-    [approvals],
-  );
-  const approvalStatusFilters = useMemo(
-    () => uniqueSelectOptions(approvals.map((approval) => approvalStatusMeta(approval.approval_status).label)),
-    [approvals],
-  );
-  const approvalMatchStatusFilters = useMemo(
-    () => uniqueSelectOptions(approvals.map((approval) => approvalMatchStatusMeta(approval.processing_status).label)),
-    [approvals],
-  );
-  const templateSelectOptions = useMemo(() => tableFiltersToSelectOptions(templateNameFilters), [templateNameFilters]);
-  const approvalStatusSelectOptions = useMemo(() => tableFiltersToSelectOptions(approvalStatusFilters), [approvalStatusFilters]);
-  const approvalMatchStatusSelectOptions = useMemo(() => tableFiltersToSelectOptions(approvalMatchStatusFilters), [approvalMatchStatusFilters]);
-  const filteredApprovals = approvals.filter((approval) => {
-    const value = keyword.trim().toLowerCase();
-    const templateName = templateNameById.get(approval.template_id) || "-";
-    const approvalStatusLabel = approvalStatusMeta(approval.approval_status).label;
-    const matchStatusLabel = approvalMatchStatusMeta(approval.processing_status).label;
-    if (templateFilter && templateName !== templateFilter) return false;
-    if (approvalStatusFilter && approvalStatusLabel !== approvalStatusFilter) return false;
-    if (matchStatusFilter && matchStatusLabel !== matchStatusFilter) return false;
-    if (!value) return true;
-    return [
-      approval.approval_no,
-      approval.dingtalk_instance_id,
-      approval.applicant_name,
-      approval.applicant_user_id,
-      approval.department_name,
-      approval.approval_status,
-      approvalStatusLabel,
-      matchStatusLabel,
-      templateName,
-    ]
-      .filter(Boolean)
-      .some((text) => String(text).toLowerCase().includes(value));
-  });
+  const templateSelectOptions = templates.filter((item) => item.is_enabled).map((item) => ({ label: item.name, value: item.id }));
+  const approvalStatusSelectOptions = ["已通过", "已完成", "已撤销", "已取消", "已拒绝", "审批中"].map((value) => ({ label: value, value }));
+  const approvalMatchStatusSelectOptions = ["已匹配", "未匹配"].map((value) => ({ label: value, value }));
 
   async function syncApprovalsByModifiedTime() {
     const range = syncDateRange;
@@ -427,11 +412,7 @@ export default function StoreLedgerApprovalsPage() {
         started_by: "store-ledger",
       });
       setIsSyncModalOpen(false);
-      const approvalPage = await loadAllApprovalPages((page, pageSize) => {
-        const params = new URLSearchParams({ store_id: storeId, page: String(page), page_size: String(pageSize) });
-        return apiClient.dingtalk.listApprovalInstances(`?${params.toString()}`);
-      });
-      setApprovals(approvalPage);
+      setApprovalReload((value) => value + 1);
       message.success(`同步完成：处理 ${result.processed_count} 条，更新 ${result.updated_count} 条`);
     } catch (error) {
       const nextError = error instanceof Error ? error.message : "无法同步审批单";
@@ -474,12 +455,21 @@ export default function StoreLedgerApprovalsPage() {
 
   async function openApprovalDetail(approval: ApprovalInstance) {
     setSelectedApproval(approval);
+    setIsDetailLoading(true);
+    const request = ++detailRequest.current;
     try {
-      const attachmentPage = await apiClient.attachments.list(`?resource_type=approval_instance&resource_id=${encodeURIComponent(approval.id)}&page_size=100`);
+      setDetailAttachments([]);
+      const [detail, attachmentPage] = await Promise.all([
+        apiClient.dingtalk.readApprovalInstance(approval.id),
+        apiClient.attachments.list(`?resource_type=approval_instance&resource_id=${encodeURIComponent(approval.id)}&page_size=100`),
+      ]);
+      if (request !== detailRequest.current) return;
+      setSelectedApproval((current) => current?.id === approval.id ? detail : current);
       setDetailAttachments(attachmentPage.items);
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "无法加载审批单详情");
+      if (request === detailRequest.current) setErrorMessage(error instanceof Error ? error.message : "无法加载审批单详情");
     } finally {
+      if (request === detailRequest.current) setIsDetailLoading(false);
     }
   }
 
@@ -493,6 +483,74 @@ export default function StoreLedgerApprovalsPage() {
       window.open(data.url, "_blank", "noopener,noreferrer");
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "无法获取钉钉附件链接");
+    }
+  }
+
+  async function executeMarkApprovalMatched(approval: ApprovalInstance) {
+    setMarkingApprovalId(approval.id);
+    setErrorMessage(null);
+    try {
+      const updated = await (approval.processing_status === "manual_matched"
+        ? apiClient.dingtalk.unmarkApprovalInstanceMatched(approval.id)
+        : apiClient.dingtalk.markApprovalInstanceMatched(approval.id));
+      setApprovals((items) => items.map((item) => (item.id === updated.id ? updated : item)));
+      if (selectedApproval?.id === updated.id) setSelectedApproval(updated);
+      setApprovalReload((value) => value + 1);
+      setPendingMarkApproval(null);
+      message.success(approval.processing_status === "manual_matched" ? "已撤销标记，恢复未匹配" : "已标记为已匹配");
+    } catch (error) {
+      const nextError = error instanceof Error ? error.message : "标记已匹配失败";
+      setErrorMessage(nextError);
+      message.error(nextError);
+    } finally {
+      setMarkingApprovalId(null);
+    }
+  }
+
+  function confirmMarkApprovalMatched(approval: ApprovalInstance) {
+    const reason = approval.processing_status === "manual_matched" ? "" : manualMarkDisabledReason(approval);
+    if (reason) {
+      setErrorMessage(reason);
+      message.warning(reason);
+      return;
+    }
+    setPendingMarkApproval(approval);
+  }
+
+  const batchCandidates = approvals.filter((approval) => selectedApprovalIds.includes(approval.id) && (
+    batchAction === "unmark"
+      ? approval.processing_status === "manual_matched"
+      : !manualMarkDisabledReason(approval) && !["matched", "manual_matched", "partial_matched"].includes(approval.processing_status)
+  ));
+
+  async function executeBatchAction() {
+    if (!batchAction || batchProgress) return;
+    const candidates = [...batchCandidates];
+    const successfulIds = new Set<string>();
+    const failures: string[] = [];
+    setErrorMessage(null);
+    setBatchProgress({ done: 0, total: candidates.length });
+    try {
+      for (const approval of candidates) {
+        try {
+          const updated = await (batchAction === "mark"
+            ? apiClient.dingtalk.markApprovalInstanceMatched(approval.id)
+            : apiClient.dingtalk.unmarkApprovalInstanceMatched(approval.id));
+          successfulIds.add(approval.id);
+          setApprovals((items) => items.map((item) => item.id === updated.id ? updated : item));
+          setSelectedApproval((item) => item?.id === updated.id ? updated : item);
+        } catch (error) {
+          failures.push(`${approval.approval_no || approval.id}：${error instanceof Error ? error.message : "操作失败"}`);
+        }
+        setBatchProgress((progress) => progress ? { ...progress, done: progress.done + 1 } : progress);
+      }
+      setSelectedApprovalIds((ids) => ids.filter((id) => !successfulIds.has(String(id))));
+      if (failures.length) setErrorMessage(`成功 ${successfulIds.size} 条，失败 ${failures.length} 条。${failures.join("；")}`);
+      else message.success(`已完成 ${successfulIds.size} 条操作`);
+      setApprovalReload((value) => value + 1);
+      setBatchAction(null);
+    } finally {
+      setBatchProgress(null);
     }
   }
 
@@ -517,8 +575,6 @@ export default function StoreLedgerApprovalsPage() {
       title: "模板名称",
       width: 160,
       ellipsis: true,
-      filters: templateNameFilters,
-      onFilter: (value, record) => templateNameById.get(record.template_id) === value,
       render: (_, record) => {
         const templateName = templateNameById.get(record.template_id) || "-";
         return <Typography.Text ellipsis={{ tooltip: templateName }}>{templateName}</Typography.Text>;
@@ -529,8 +585,6 @@ export default function StoreLedgerApprovalsPage() {
       title: "申请人",
       dataIndex: "applicant_name",
       width: 120,
-      filters: applicantFilters,
-      onFilter: (value, record) => applicantDisplayName(record) === value,
       render: (_, record) => (
         <Space direction="vertical" size={0}>
           <Typography.Text>{applicantDisplayName(record)}</Typography.Text>
@@ -547,8 +601,6 @@ export default function StoreLedgerApprovalsPage() {
       title: "部门",
       width: 150,
       ellipsis: true,
-      filters: departmentFilters,
-      onFilter: (value, record) => approvalDepartmentName(record) === value,
       render: (_, record) => {
         const departmentName = approvalDepartmentName(record);
         return <Typography.Text ellipsis={{ tooltip: departmentName }}>{departmentName}</Typography.Text>;
@@ -559,8 +611,6 @@ export default function StoreLedgerApprovalsPage() {
       title: "状态",
       dataIndex: "approval_status",
       width: 90,
-      filters: approvalStatusFilters,
-      onFilter: (value, record) => approvalStatusMeta(record.approval_status).label === value,
       render: (value: string) => {
         const meta = approvalStatusMeta(value);
         return <Tag color={meta.color}>{meta.label}</Tag>;
@@ -571,8 +621,6 @@ export default function StoreLedgerApprovalsPage() {
       title: "匹配状态",
       dataIndex: "processing_status",
       width: 100,
-      filters: approvalMatchStatusFilters,
-      onFilter: (value, record) => approvalMatchStatusMeta(record.processing_status).label === value,
       render: (value: string | null | undefined) => {
         const meta = approvalMatchStatusMeta(value);
         return <Tag color={meta.color}>{meta.label}</Tag>;
@@ -584,13 +632,42 @@ export default function StoreLedgerApprovalsPage() {
       key: "actions",
       title: "操作",
       fixed: "right",
-      width: 90,
+      width: 190,
       className: "table-action-column",
-      render: (_, record) => (
-        <Button type="link" onClick={() => openApprovalDetail(record)}>
-          详情
-        </Button>
-      ),
+      render: (_, record) => {
+        const isMatched = approvalMatchStatusMeta(record.processing_status).label === "已匹配";
+        const disabledReason = manualMarkDisabledReason(record);
+        const markButton = (
+          <Button
+            type="link"
+            size="small"
+            loading={markingApprovalId === record.id}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              confirmMarkApprovalMatched(record);
+            }}
+          >
+            {record.processing_status === "manual_matched" ? "撤销标记" : "标记已匹配"}
+          </Button>
+        );
+        return (
+          <Space size={4}>
+            <Button
+              type="link"
+              size="small"
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                openApprovalDetail(record);
+              }}
+            >
+              详情
+            </Button>
+            {record.processing_status === "manual_matched" ? markButton : isMatched ? null : disabledReason ? <Tooltip title={disabledReason}><span>{markButton}</span></Tooltip> : markButton}
+          </Space>
+        );
+      },
     },
   ];
   return (
@@ -610,11 +687,21 @@ export default function StoreLedgerApprovalsPage() {
         loading={isLoading}
         extra={
           <Space size={8} wrap>
+            <DatePicker.RangePicker
+              locale={zhCN.DatePicker}
+              value={applicationDateRange}
+              format="YYYY-MM-DD"
+              placeholder={["申请开始日期", "申请结束日期"]}
+              allowClear
+              onChange={(dates) => { setApplicationDateRange(dates as SyncDateRange | null); setApprovalPage(1); }}
+              style={{ width: 280 }}
+            />
             <Input.Search
               allowClear
               placeholder="搜索编号、申请人、部门"
               value={keyword}
-              onChange={(event) => setKeyword(event.target.value)}
+              onChange={(event) => { setKeyword(event.target.value); if (!event.target.value) { setSearchKeyword(""); setApprovalPage(1); } }}
+              onSearch={(value) => { setSearchKeyword(value); setApprovalPage(1); }}
               style={{ width: 220 }}
             />
             <Select
@@ -624,7 +711,7 @@ export default function StoreLedgerApprovalsPage() {
               placeholder="模板"
               value={templateFilter}
               options={templateSelectOptions}
-              onChange={setTemplateFilter}
+              onChange={(value) => { setTemplateFilter(value); setApprovalPage(1); }}
               style={{ width: 180 }}
             />
             <Select
@@ -632,7 +719,7 @@ export default function StoreLedgerApprovalsPage() {
               placeholder="状态"
               value={approvalStatusFilter}
               options={approvalStatusSelectOptions}
-              onChange={setApprovalStatusFilter}
+              onChange={(value) => { setApprovalStatusFilter(value); setApprovalPage(1); }}
               style={{ width: 110 }}
             />
             <Select
@@ -640,7 +727,7 @@ export default function StoreLedgerApprovalsPage() {
               placeholder="匹配状态"
               value={matchStatusFilter}
               options={approvalMatchStatusSelectOptions}
-              onChange={setMatchStatusFilter}
+              onChange={(value) => { setMatchStatusFilter(value); setApprovalPage(1); }}
               style={{ width: 130 }}
             />
             <Button type="primary" loading={isStoreSyncing} onClick={openSyncModal}>
@@ -649,14 +736,21 @@ export default function StoreLedgerApprovalsPage() {
           </Space>
         }
       >
-        {filteredApprovals.length || isApprovalLoading ? (
+        <Space wrap style={{ marginBottom: 16 }}>
+          <Typography.Text type="secondary">已选择 {selectedApprovalIds.length} 条</Typography.Text>
+          <Button disabled={!selectedApprovalIds.length || Boolean(batchProgress)} onClick={() => setBatchAction("mark")}>批量标记已匹配</Button>
+          <Button disabled={!selectedApprovalIds.length || Boolean(batchProgress)} onClick={() => setBatchAction("unmark")}>批量撤销标记</Button>
+          {selectedApprovalIds.length ? <Button type="link" disabled={Boolean(batchProgress)} onClick={() => setSelectedApprovalIds([])}>取消选择</Button> : null}
+        </Space>
+        {approvalTotal || isApprovalLoading ? (
           <EnterpriseTable<ApprovalInstance>
+            rowSelection={{ selectedRowKeys: selectedApprovalIds, onChange: setSelectedApprovalIds, getCheckboxProps: () => ({ disabled: Boolean(batchProgress) }) }}
             rowKey="id"
             loading={isLoading || isApprovalLoading}
             columns={columns}
-            dataSource={filteredApprovals}
+            dataSource={approvals}
             onRow={(record) => ({ onDoubleClick: () => openApprovalDetail(record) })}
-            pagination={{ defaultPageSize: 8, showSizeChanger: true }}
+            pagination={{ current: approvalPage, pageSize: approvalPageSize, total: approvalTotal, showSizeChanger: true, pageSizeOptions: [20, 50, 100, 200], showTotal: (total) => `共 ${total} 条`, onChange: (page, size) => { setApprovalPageSize(size); setApprovalPage(size !== approvalPageSize ? 1 : page); } }}
             showDensityToggle
             showColumnSettings
             fixedColumns={{ left: ["approval_no"], right: ["actions"] }}
@@ -706,6 +800,7 @@ export default function StoreLedgerApprovalsPage() {
       <Drawer
         title={selectedApproval ? approvalTitle(selectedApproval) || selectedApproval.approval_no || "审批实例详情" : "审批实例详情"}
         open={Boolean(selectedApproval)}
+        loading={isDetailLoading}
         onClose={() => setSelectedApproval(null)}
         extra={selectedApproval ? <Button onClick={() => setSelectedApproval(null)}>关闭</Button> : null}
         width={1080}
@@ -861,6 +956,34 @@ export default function StoreLedgerApprovalsPage() {
           </Space>
         ) : null}
       </Drawer>
+      <Modal
+        title={batchAction === "unmark" ? "批量撤销已匹配标记" : "批量标记已匹配"}
+        open={Boolean(batchAction)}
+        okText={batchProgress ? `处理中 ${batchProgress.done}/${batchProgress.total}` : "确认"}
+        cancelText="取消"
+        confirmLoading={Boolean(batchProgress)}
+        okButtonProps={{ disabled: !batchCandidates.length }}
+        cancelButtonProps={{ disabled: Boolean(batchProgress) }}
+        closable={!batchProgress}
+        maskClosable={!batchProgress}
+        onCancel={() => { if (!batchProgress) setBatchAction(null); }}
+        onOk={() => void executeBatchAction()}
+      >
+        <Typography.Paragraph>已选择 {selectedApprovalIds.length} 条，可操作 {batchCandidates.length} 条，其余 {selectedApprovalIds.length - batchCandidates.length} 条将跳过。</Typography.Paragraph>
+        <Typography.Paragraph type="secondary">{batchAction === "unmark" ? "仅撤销手动已匹配标记，实际银行流水对账记录不支持此操作。" : "仅处理申请日期为2026年9月30日前、未匹配的审批单。"}</Typography.Paragraph>
+      </Modal>
+      <Modal
+        title={pendingMarkApproval?.processing_status === "manual_matched" ? "确认撤销已匹配标记？" : "确认标记为已匹配？"}
+        open={Boolean(pendingMarkApproval)}
+        okText="确认"
+        cancelText="取消"
+        confirmLoading={Boolean(markingApprovalId)}
+        onCancel={() => { if (!markingApprovalId) setPendingMarkApproval(null); }}
+        onOk={() => { if (pendingMarkApproval && !markingApprovalId) void executeMarkApprovalMatched(pendingMarkApproval); }}
+      >
+        <Typography.Paragraph>确认将审批单 {pendingMarkApproval?.approval_no || ""} {pendingMarkApproval?.processing_status === "manual_matched" ? "恢复为未匹配？" : "标记为已匹配？"}</Typography.Paragraph>
+        <Typography.Paragraph type="secondary">该操作仅修改审批单匹配状态，不会生成银行流水匹配记录。</Typography.Paragraph>
+      </Modal>
       <Modal
         title={imagePreview?.title || "图片预览"}
         open={Boolean(imagePreview)}

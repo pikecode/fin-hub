@@ -678,6 +678,29 @@ def test_single_channel_revenue_match_allows_bank_amount_difference(client: Test
     bank = client.get(f"/api/bank-transactions?store_id={store_id}&direction=income").json()["data"]["items"]
     assert bank[0]["matched_amount"] == "120.00"
 
+    # Revoking and confirming the same range must not hit the unique range key.
+    revoked = client.post(f"/api/matches/revenue/{match['id']}/unmatch")
+    assert revoked.status_code == 200, revoked.text
+    for _ in range(2):
+        restored = client.post("/api/matches/revenue/batch", json={
+            "bank_transaction_id": bank_id,
+            "revenue_record_ids": [record_id],
+            "amount": "120.00",
+            "accounting_period": "2026-08",
+        })
+        assert restored.status_code == 201, restored.text
+        row = restored.json()["data"][0]
+        assert row["id"] == match["id"]
+        assert row["status"] == "confirmed"
+        assert row["revenue_record_ids"] == [record_id]
+        banks = client.get(f"/api/bank-transactions?store_id={store_id}&direction=income").json()["data"]["items"]
+        assert banks[0]["matched_amount"] == "120.00"
+        duplicate = client.post("/api/matches/revenue/batch", json={
+            "bank_transaction_id": bank_id, "revenue_record_ids": [record_id], "amount": "120.00",
+        })
+        assert duplicate.status_code == 409
+        assert client.post(f"/api/matches/revenue/{match['id']}/unmatch").status_code == 200
+
 
 def test_list_revenue_matches_filters_by_store_and_period(client: TestClient) -> None:
     store_a = client.post("/api/stores", json={"name": "蘑说收入匹配筛选店 A"}).json()["data"]["id"]

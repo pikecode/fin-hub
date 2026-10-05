@@ -422,6 +422,8 @@ def update_expense_item(
     if item is None:
         raise HTTPException(status_code=404, detail="Expense item not found")
 
+    if item.expense_scope == "preopening":
+        raise HTTPException(409, "筹建费用请在筹建费用页面维护")
     ensure_open_ledger(session, item.store_id, item.ledger_period)
     changes = payload.model_dump(exclude_unset=True)
     for field, value in changes.items():

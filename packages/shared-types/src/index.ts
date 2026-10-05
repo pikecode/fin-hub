@@ -364,6 +364,10 @@ export interface ShareholderLoginResponse {
 }
 
 export interface ExpenseItem {
+  expense_scope?: "operating" | "preopening";
+  preopening_category_id?: string | null;
+  preopening_category_l1?: string | null;
+  preopening_category_l2?: string | null;
   id: string;
   store_id: string;
   ledger_period: string;
@@ -805,6 +809,7 @@ export interface DingTalkAutoSyncRunResult {
 }
 
 export interface ApprovalTemplate {
+  is_preopening_expense?: boolean;
   id: string;
   process_code: string;
   name: string;
@@ -817,12 +822,14 @@ export interface ApprovalTemplate {
 }
 
 export interface ApprovalTemplateCreate {
+  is_preopening_expense?: boolean;
   process_code: string;
   name: string;
   is_enabled?: boolean;
 }
 
 export interface ApprovalTemplateUpdate {
+  is_preopening_expense?: boolean;
   name?: string | null;
   is_enabled?: boolean | null;
 }
@@ -1144,6 +1151,8 @@ export interface BankImportPreviewResult {
 }
 
 export interface ApprovalInstance {
+  title?: string | null;
+  expense_scope?: "operating" | "preopening";
   id: string;
   template_id: string;
   dingtalk_instance_id: string;

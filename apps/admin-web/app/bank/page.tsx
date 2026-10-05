@@ -72,7 +72,7 @@ const bankSpecialTypeLabels: Record<Exclude<NonNullable<BankTransactionCreate["s
   shareholder_dividend: "股东分红",
   shareholder_capital: "股东注资",
   other_income_expense: "其他收支",
-  counter_refund: "对退款",
+  counter_refund: "退款",
   loan_repayment: "借还款",
 };
 
@@ -400,6 +400,8 @@ export default function BankPage() {
   const [balancePassword, setBalancePassword] = useState("");
   const [isBalanceSaving, setIsBalanceSaving] = useState(false);
   const [editingTransaction, setEditingTransaction] = useState<BankTransaction | null>(null);
+  const [transactionError, setTransactionError] = useState<string | null>(null);
+  const transactionSubmitRef = useRef(false);
   const [pendingSpecialTransaction, setPendingSpecialTransaction] = useState<{
     values: BankFormValues;
     duplicatesConfirmed: boolean;
@@ -600,6 +602,7 @@ export default function BankPage() {
   }, [defaultOccurredRange, filterForm, initialFilters]);
 
   function openCreateModal() {
+    setTransactionError(null);
     setEditingTransaction(null);
     form.resetFields();
     if (queryStoreId && queryLedgerPeriod) {
@@ -616,6 +619,7 @@ export default function BankPage() {
   }
 
   function openEditModal(transaction: BankTransaction) {
+    setTransactionError(null);
     setEditingTransaction(transaction);
     form.setFieldsValue({
       ledger_key: `${transaction.store_id}|${transaction.ledger_period}`,
@@ -632,26 +636,34 @@ export default function BankPage() {
   }
 
   async function submitTransaction(values: BankFormValues, specialConfirmed = false, duplicatesConfirmed = false) {
-    if (!values.occurred_at) {
+    if (transactionSubmitRef.current) return;
+    setTransactionError(null);
+    if (!values.occurred_at?.isValid()) {
+      setTransactionError("请选择有效的发生日期");
       message.warning("请选择发生时间");
       return;
     }
     if (!values.counterparty_name?.trim()) {
+      setTransactionError("请填写对方户名");
       message.warning("请填写对方户名");
       return;
     }
     const amount = normalizePastedAmount(values.amount);
     if (!amount) {
+      setTransactionError("请填写有效金额");
       message.warning("请填写有效金额");
       return;
     }
     const [formStoreId, formPeriod] = (values.ledger_key ?? "").split("|");
     const storeId = formStoreId || queryStoreId;
-    const period = formPeriod || queryLedgerPeriod;
-    if (!storeId || !period) {
+    const period = formPeriod || queryLedgerPeriod || values.occurred_at.format("YYYY-MM");
+    if (!storeId) {
+      setTransactionError("请选择流水归属门店");
       message.warning("缺少门店，无法保存流水");
       return;
     }
+    transactionSubmitRef.current = true;
+    setIsLoading(true);
     try {
       const payload: BankTransactionCreate = {
         store_id: storeId,
@@ -679,7 +691,6 @@ export default function BankPage() {
         setPendingSpecialTransaction({ values, duplicatesConfirmed });
         return;
       }
-      setIsLoading(true);
       if (editingTransaction) {
         const isMatched = Number(editingTransaction.matched_amount || 0) > 0;
         try {
@@ -729,8 +740,11 @@ export default function BankPage() {
         );
         return;
       }
-      message.error(error instanceof Error ? error.message : "操作失败");
+      const errorText = error instanceof Error ? error.message : "操作失败";
+      setTransactionError(errorText);
+      message.error(errorText);
     } finally {
+      transactionSubmitRef.current = false;
       setIsLoading(false);
     }
   }
@@ -752,6 +766,7 @@ export default function BankPage() {
       await submitTransaction(values);
     } catch (error) {
       if (error && typeof error === "object" && "errorFields" in error) {
+        setTransactionError("请先完善流水信息");
         message.warning("请先完善流水信息");
         return;
       }
@@ -1471,7 +1486,7 @@ export default function BankPage() {
                   { label: "股东分红", value: "shareholder_dividend" },
                   { label: "股东注资", value: "shareholder_capital" },
                   { label: "其他收支", value: "other_income_expense" },
-                  { label: "对退款", value: "counter_refund" },
+                  { label: "退款", value: "counter_refund" },
                   { label: "借还款", value: "loan_repayment" },
                 ]}
               />
@@ -1551,6 +1566,7 @@ export default function BankPage() {
         confirmLoading={isLoading}
       >
         <Form form={form} layout="vertical" onFinish={submitTransaction}>
+          {transactionError && <Alert type="error" showIcon message={transactionError} style={{ marginBottom: 16 }} />}
           {queryStoreId ? (
             <Alert type="info" showIcon message={`流水归属门店：${currentStoreLedgerLabel}`} style={{ marginBottom: 16 }} />
           ) : (
@@ -1613,7 +1629,7 @@ export default function BankPage() {
                       disabled={disabled}
                       onChange={(event) => setFieldsValue({ special_type: event.target.checked ? "counter_refund" : null })}
                     >
-                      对退款
+                      退款
                     </Checkbox>
                     <Checkbox
                       checked={specialType === "loan_repayment"}

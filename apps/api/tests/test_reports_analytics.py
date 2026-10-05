@@ -123,3 +123,29 @@ def test_financial_analytics_template_detail_includes_line_item_sources(
     assert len(data["approval_instances"]) == 1
     assert len(data["expense_items"]) == 1
     assert data["expense_items"][0]["description"] == "从表格行同步的费用"
+
+
+def test_report_expense_details_follow_confirmed_month_and_exclude_pending_rows(client, session):
+    from app.models import ExpenseBankMatch
+
+    store_id = client.post('/api/stores', json={'name': '报表导出口径店'}).json()['data']['id']
+    matched = ExpenseItem(store_id=store_id, ledger_period='2026-08', description='八月审批九月入账',
+                          amount=Decimal('50'), category_l1='食材成本', category_l2='鸡', source='manual')
+    pending = ExpenseItem(store_id=store_id, ledger_period='2026-09', description='未对账未分类',
+                          amount=Decimal('999'), source='manual')
+    fee = ExpenseItem(store_id=store_id, ledger_period='2026-09', description='渠道手续费',
+                      amount=Decimal('20'), category_l1='手续费', category_l2='美团手续费', source='revenue_fee')
+    purchase = ExpenseItem(store_id=store_id, ledger_period='2026-09', description='快驴采购',
+                           amount=Decimal('30'), category_l1='食材成本', category_l2='快驴采购', source='kuailv_purchase')
+    bank = BankTransaction(store_id=store_id, ledger_period='2026-09', occurred_at=datetime(2026,9,1), direction='expense', amount=Decimal('50'))
+    session.add_all([matched, pending, fee, purchase, bank]);session.flush()
+    session.add(ExpenseBankMatch(bank_transaction_id=bank.id, expense_item_id=matched.id, amount=Decimal('50'), accounting_period='2026-09', status='confirmed'))
+    session.commit()
+    params = {'detail_type':'report_expense', 'store_id':store_id, 'period_start':'2026-09', 'period_end':'2026-09'}
+    response = client.get('/api/reports/analytics/details', params=params)
+    assert response.status_code == 200
+    rows = response.json()['data']['expense_items']
+    assert {row['description'] for row in rows} == {'八月审批九月入账', '渠道手续费', '快驴采购'}
+    assert sum(Decimal(row['amount']) for row in rows) == Decimal('100')
+    params['category_l2'] = '鸡'
+    assert [row['id'] for row in client.get('/api/reports/analytics/details', params=params).json()['data']['expense_items']] == [matched.id]

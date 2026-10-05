@@ -27,7 +27,7 @@ def approval_expense_stats(
         )
     confirmed_match_amount = sum(confirmed_match_amount_by_item.values(), Decimal("0.00"))
     candidate_match_count = sum(1 for match in matches if match.status == MatchStatus.CANDIDATE.value)
-    classified_count = sum(1 for item in expense_items if item.category_l1 or item.category_l2)
+    classified_count = sum(1 for item in expense_items if item.category_l1 or item.category_l2 or item.preopening_category_id)
     matched_item_count = sum(
         1
         for item in expense_items
@@ -135,7 +135,8 @@ def refresh_approval_processing_status(
     if instance is None:
         return None
     stats = approval_expense_stats_map(session, [approval_id]).get(approval_id, approval_expense_stats([], []))
-    instance.processing_status = stats["processing_status"]
+    if instance.processing_status != "manual_matched":
+        instance.processing_status = stats["processing_status"]
     if stats["expense_item_count"] > 0 and instance.parse_status in {None, "unparsed", "skipped"}:
         instance.parse_status = "parsed"
         instance.parse_error = None

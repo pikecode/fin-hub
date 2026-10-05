@@ -96,7 +96,16 @@ function parseRevenueEntryRows(text: string) {
   let cell = "";
   let inQuotes = false;
   const source = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-  const delimiter = source.includes("\t") ? "\t" : ",";
+  // A column copied from a spreadsheet can contain thousands separators but no tabs.
+  // Only treat commas as CSV separators when the rows are not single amounts.
+  const headerWords = Object.values(revenueEntryHeaders).concat(["收入日期", "收入", "金额", "营业额", "流水", "手续费"]);
+  const lines = source.split("\n").map(normalizePastedCell).filter(Boolean);
+  const amountLines = lines.filter((line, index) => index !== 0 || !headerWords.includes(line));
+  const isAmountColumn = amountLines.length > 0 && amountLines.every((line) =>
+    /^[￥¥]?\s*[+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?$/.test(line)
+      || /^\([￥¥]?\s*(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?\)$/.test(line),
+  );
+  const delimiter = source.includes("\t") ? "\t" : isAmountColumn ? null : ",";
 
   for (let index = 0; index < source.length; index += 1) {
     const char = source[index];
@@ -128,7 +137,6 @@ function parseRevenueEntryRows(text: string) {
   row.push(normalizePastedCell(cell));
   if (row.some((item) => item.trim())) rows.push(row);
   if (!rows.length) return [];
-  const headerWords = Object.values(revenueEntryHeaders).concat(["收入日期", "收入", "金额", "营业额", "流水", "手续费"]);
   const firstCells = rows[0].map((cell) => normalizePastedCell(cell));
   const hasHeader = firstCells.some((cell) => headerWords.includes(cell));
   return hasHeader ? rows.slice(1) : rows;
@@ -637,8 +645,9 @@ export default function RevenuePage() {
                 if (!amount || amount === text.trim()) return;
                 event.preventDefault();
                 const updated = [...rows];
-                updated[index][field] = amount;
+                updated[index] = { ...updated[index], [field]: amount };
                 setRows(updated);
+                setIsBatchEditDirty(true);
                 message.success("已清理金额格式");
                 return;
               }
