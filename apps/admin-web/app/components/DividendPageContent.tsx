@@ -16,8 +16,8 @@ import { useClientSearchParams } from "../lib/searchParams";
 
 dayjs.locale("zh-cn");
 
-function money(value: string) {
-  return formatMoney(value);
+function money(value: string | null) {
+  return value === null ? "待录入" : formatMoney(value);
 }
 
 const ALL_STORES = "__all__";
@@ -43,7 +43,7 @@ function mergeMonths(rows: Array<DividendWorkspace["current"]>) {
     capital_amount: addValues(...rows.map((row) => row.capital_amount)),
     historical_profit: addValues(...rows.map((row) => row.historical_profit)),
     historical_distribution: addValues(...rows.map((row) => row.historical_distribution)),
-    remaining_undistributed: addValues(...rows.map((row) => row.remaining_undistributed)),
+    remaining_undistributed: rows.some((row) => row.remaining_undistributed === null) ? null : addValues(...rows.map((row) => row.remaining_undistributed ?? "0")),
     cumulative_capital: addValues(...rows.map((row) => row.cumulative_capital)),
     suggested_distribution: addValues(...rows.map((row) => row.suggested_distribution)),
     reference_ratio: "—",
@@ -80,6 +80,8 @@ export function DividendPageContent({ embeddedStoreId }: { embeddedStoreId?: str
   const isEmbedded = Boolean(embeddedStoreId);
   const storeId = embeddedStoreId ?? searchParams.get("store_id") ?? "";
   const period = searchParams.get("period") ?? dayjs().format("YYYY-MM");
+  const [manualMonthBalance, setManualMonthBalance] = useState("0");
+  const [manualEditing, setManualEditing] = useState(false);
   const [stores, setStores] = useState<Store[]>([]);
   const [workspace, setWorkspace] = useState<DividendWorkspace | null>(null);
   const [loading, setLoading] = useState(true);
@@ -162,17 +164,29 @@ export function DividendPageContent({ embeddedStoreId }: { embeddedStoreId?: str
   ];
   const historyColumns = [
     { title: "月份", dataIndex: "period", render: (value: string) => formatPeriod(value) },
-    { title: "净利润", dataIndex: "net_profit", render: (value: string, record: DividendWorkspace["history"][number]) => <Space size={6}>{money(value)}{record.profit_source === "manual" ? <Tag color="blue">手工补录</Tag> : null}</Space> },
+    { title: "净利润", dataIndex: "net_profit", render: (value: string, record: DividendWorkspace["history"][number]) => <Space size={6}>{record.profit_source === "manual" && record.manual_net_profit == null ? "待录入" : money(value)}{record.profit_source === "manual" ? <Tag color="blue">手工补录</Tag> : null}</Space> },
     { title: "本月分配利润", dataIndex: "distribution_amount", render: (value: string) => money(value) },
     { title: "本月注资", dataIndex: "capital_amount", render: (value: string) => money(value) },
-    { title: "期末剩余未分配", dataIndex: "remaining_undistributed", render: (value: string) => <Typography.Text type={Number(value) >= 0 ? "success" : "danger"}>{money(value)}</Typography.Text> },
+    { title: "期末剩余未分配", dataIndex: "remaining_undistributed", render: (value: string | null) => <Typography.Text type={value === null ? "secondary" : Number(value) >= 0 ? "success" : "danger"}>{money(value)}</Typography.Text> },
     { title: "状态", render: (_: unknown, record: DividendWorkspace["history"][number]) => <Space size={4}>{record.no_distribution && record.no_capital ? <Tag color="green">无需补录</Tag> : record.locked && (record.distribution_amount !== "0.00" || record.capital_amount !== "0.00") ? <Tag color="blue">期初补录</Tag> : <Tag>未补录</Tag>}{record.locked ? <Tag color="orange">已锁定</Tag> : <Tag color="green">未锁定</Tag>}</Space> },
-    { title: "操作", render: (_: unknown, record: DividendWorkspace["history"][number]) => <Space size={4} wrap><Dropdown menu={{ items: [{ key: "distribution", label: "补录分配", onClick: () => openEntryModal("distribution", record.period) }, { key: "capital", label: "补录注资", onClick: () => openEntryModal("capital", record.period) }], }} disabled={isAllStores || record.locked}><Button type="link" size="small" disabled={isAllStores || record.locked || actionLoading === `${record.period}:both`}>✎ 补录</Button></Dropdown>{!record.locked ? <Button type="link" size="small" loading={actionLoading === `${record.period}:both`} disabled={isAllStores} onClick={() => void markNoEntryBoth(record.period)}>{record.no_distribution && record.no_capital ? "撤销标记" : "标无需补录"}</Button> : null}{!record.locked ? <Button type="link" size="small" loading={actionLoading === `${record.period}:lock`} disabled={isAllStores} onClick={() => void lockPeriod(record.period)}>锁定</Button> : null}<Button type="link" size="small" onClick={() => void openAudit()}>◷ 留痕</Button></Space> },
+    { title: "操作", render: (_: unknown, record: DividendWorkspace["history"][number]) => <Space size={4} wrap><Dropdown menu={{ items: [{ key: "distribution", label: "补录分配", onClick: () => openEntryModal("distribution", record.period) }, { key: "capital", label: "补录注资", onClick: () => openEntryModal("capital", record.period) }, ...(record.period <= "2026-10" ? [{ key: "manual", label: record.period < "2026-10" ? "录入净利润及期末余额" : "录入期末余额", onClick: () => openManualAmounts(record) }] : [])], }} disabled={isAllStores || record.locked}><Button type="link" size="small" disabled={isAllStores || record.locked || actionLoading === `${record.period}:both`}>✎ 补录</Button></Dropdown>{!record.locked ? <Button type="link" size="small" loading={actionLoading === `${record.period}:both`} disabled={isAllStores} onClick={() => void markNoEntryBoth(record.period)}>{record.no_distribution && record.no_capital ? "撤销标记" : "标无需补录"}</Button> : null}{!record.locked ? <Button type="link" size="small" loading={actionLoading === `${record.period}:lock`} disabled={isAllStores} onClick={() => void lockPeriod(record.period)}>锁定</Button> : null}<Button type="link" size="small" onClick={() => void openAudit()}>◷ 留痕</Button></Space> },
   ];
   const expandedRowRender = (record: DividendWorkspace["history"][number]) => <Space direction="vertical" style={{ width: "100%" }}><Typography.Text strong>分红明细</Typography.Text><Table rowKey="id" size="small" pagination={false} columns={entryColumns} dataSource={record.entries.filter((item) => item.entry_type === "distribution")} locale={{ emptyText: "暂无分红明细" }} /><Typography.Text strong>注资明细</Typography.Text><Table rowKey="id" size="small" pagination={false} columns={entryColumns} dataSource={record.entries.filter((item) => item.entry_type === "capital")} locale={{ emptyText: "暂无注资明细" }} /></Space>;
 
+  function openManualAmounts(record: DividendWorkspace["current"]) {
+    if (isAllStores || record.locked) return;
+    setManualEditing(true);
+    setManualMonthPeriod(dayjs(`${record.period}-01`));
+    setManualMonthProfit(record.manual_net_profit ?? "0");
+    setManualMonthBalance(record.manual_remaining_undistributed ?? "0");
+    setManualMonthError(null);
+    setManualMonthOpen(true);
+  }
+
   function openManualMonth() {
     if (!workspace || isAllStores) return;
+    setManualEditing(false);
+    setManualMonthBalance("0");
     setManualMonthPeriod(null);
     setManualMonthProfit("0");
     setManualMonthError(null);
@@ -187,21 +201,25 @@ export function DividendPageContent({ embeddedStoreId }: { embeddedStoreId?: str
     const targetPeriod = manualMonthPeriod.format("YYYY-MM");
     const available = new Set(workspace.available_periods ?? []);
     const exists = available.has(targetPeriod) || workspace.history.some((row) => row.period === targetPeriod);
-    if (exists) {
+    if (exists && !manualEditing) {
       setManualMonthError("该月份已存在，不能重复录入");
       return;
     }
-    if (!/^-?\d+(\.\d{1,2})?$/.test(manualMonthProfit.trim())) {
-      setManualMonthError("请输入有效的净利润金额");
+    if (targetPeriod > "2026-10") {
+      setManualMonthError("2026年11月起按公式计算，不支持人工录入");
+      return;
+    }
+    if (!/^-?\d+(\.\d{1,2})?$/.test(manualMonthBalance.trim()) || (targetPeriod < "2026-10" && !/^-?\d+(\.\d{1,2})?$/.test(manualMonthProfit.trim()))) {
+      setManualMonthError("请输入有效金额，最多两位小数");
       return;
     }
     setManualMonthError(null);
     setManualMonthSaving(true);
     try {
-      await apiClient.dividends.updateMonth(workspace.store.id, targetPeriod, { manual_net_profit: manualMonthProfit.trim() });
+      await apiClient.dividends.updateMonth(workspace.store.id, targetPeriod, { ...(targetPeriod < "2026-10" ? { manual_net_profit: manualMonthProfit.trim() } : {}), manual_remaining_undistributed: manualMonthBalance.trim() });
       setWorkspace(await apiClient.dividends.workspace(workspace.store.id, period));
       setManualMonthOpen(false);
-      message.success("历史月份已添加，可在列表操作中补录分配和注资");
+      message.success(manualEditing ? "手工金额已保存" : "历史月份已添加，可继续补录分配和注资");
     } catch (reason) {
       message.error(reason instanceof Error ? reason.message : "历史月份保存失败");
     } finally {
@@ -388,10 +406,10 @@ export function DividendPageContent({ embeddedStoreId }: { embeddedStoreId?: str
       </Form>
     </Card>
     {loading ? <Card loading style={{ minHeight: 360 }} /> : current && workspace ? <>
-      <Alert type="info" showIcon closable message={`系统 ${period} 上线；历史明细按月份记录分配和注资，保存后可锁定，线下确无分红或注资的月份可标记无需补录。`} style={{ marginBottom: 16 }} />
+      <Alert type="info" showIcon closable message={`2026年9月及以前净利润和期末余额人工录入；10月净利润取财务报表、期末余额人工录入；11月起承接10月余额按公式计算。`} style={{ marginBottom: 16 }} />
       <div className="store-ledger-report-metrics">
-        {[['本月净利润', current.net_profit], ['本月分配利润', current.distribution_amount], ['本月注资', current.capital_amount], ['剩余未分配利润', current.remaining_undistributed], ['历史总利润', current.historical_profit], ['历史已分配利润', current.historical_distribution], ['累计注资', current.cumulative_capital]].map(([title, value]) => <Card key={String(title)}><Statistic title={title} value={money(String(value))} valueStyle={{ color: String(title) === '剩余未分配利润' && Number(value) >= 0 ? '#389e0d' : undefined }} /></Card>)}
-        <Card><Statistic title="分红比例参考" value={`${current.reference_ratio}%`} /><Typography.Text type="secondary">建议分配额 {money(current.suggested_distribution)}</Typography.Text><Button size="small" style={{ marginLeft: 8 }} onClick={openArchive} disabled={isAllStores}>设置</Button></Card>
+        {[['本月净利润', current.net_profit], ['本月分配利润', current.distribution_amount], ['本月注资', current.capital_amount], ['剩余未分配利润', current.remaining_undistributed], ['历史总利润', current.historical_profit], ['历史已分配利润', current.historical_distribution], ['累计注资', current.cumulative_capital]].map(([title, value]) => <Card key={String(title)}><Statistic title={title} value={money(value === null || (title === "本月净利润" && period < "2026-10" && current.manual_net_profit == null && !isAllStores) ? null : String(value))} valueStyle={{ color: String(title) === '剩余未分配利润' && Number(value) >= 0 ? '#389e0d' : undefined }} />{!isAllStores && !current.locked && ((title === "本月净利润" && period < "2026-10") || (title === "剩余未分配利润" && period <= "2026-10")) ? <Button size="small" style={{ marginTop: 8 }} onClick={() => openManualAmounts(current)}>录入</Button> : null}</Card>)}
+        <Card><Statistic title="分红比例参考" value={`${current.reference_ratio}%`} /><Typography.Text type="secondary">{period < "2026-10" ? "历史分配金额人工录入" : `建议分配额 ${money(current.suggested_distribution)}`}</Typography.Text><Button size="small" style={{ marginLeft: 8 }} onClick={openArchive} disabled={isAllStores}>设置</Button></Card>
         <Card><Typography.Text type="secondary">月份锁定状态</Typography.Text><div style={{ marginTop: 16 }}><Tag color={current.locked ? 'orange' : 'green'}>{current.locked ? '🔒 已锁定' : '♧ 未锁定'}</Tag><Button size="small" onClick={() => current.locked ? setUnlockOpen(true) : void lockPeriod(period)} disabled={isAllStores} style={{ marginLeft: 8 }}>{current.locked ? '解锁' : '锁定'}</Button></div></Card>
       </div>
       <Card title={`近 12 个月净利润 vs 分配利润 · ${workspace.store.name}`} style={{ marginTop: 16, marginBottom: 16 }}>
@@ -400,16 +418,17 @@ export function DividendPageContent({ embeddedStoreId }: { embeddedStoreId?: str
       </Card>
       <Card title={`历史月份明细（展开行查看股东明细与留痕） · ${workspace.store.name}`} extra={<Button type="primary" onClick={openManualMonth} disabled={isAllStores}>＋ 补录历史月份</Button>} style={{ marginBottom: 16 }}><Table rowKey="id" loading={loading} columns={historyColumns} dataSource={workspace.history} expandable={{ expandedRowRender }} pagination={false} scroll={{ x: 1180 }} /></Card>
     </> : <Card><Empty description={storeId ? "暂无分红数据" : "暂无可用门店"} /></Card>}
-    <Modal title="补录历史月份" open={manualMonthOpen} onCancel={() => setManualMonthOpen(false)} onOk={() => void saveManualMonth()} confirmLoading={manualMonthSaving} okText="保存" cancelText="取消" width={520}>
-      <Alert type="info" showIcon message="该月份不是财务账期，不会写入财务报表；保存后可在历史明细中继续补录分配和注资。" style={{ marginBottom: 18 }} />
+    <Modal title={manualEditing ? "录入历史金额" : "补录历史月份"} open={manualMonthOpen} onCancel={() => setManualMonthOpen(false)} onOk={() => void saveManualMonth()} confirmLoading={manualMonthSaving} okText="保存" cancelText="取消" width={520}>
+      <Alert type="info" showIcon message="手工金额仅用于分红管理，不写入财务报表。10月期末余额作为11月起公式计算的期初余额，注资不计入未分配利润。" style={{ marginBottom: 18 }} />
       {manualMonthError ? <Alert type="error" showIcon message={manualMonthError} style={{ marginBottom: 18 }} /> : null}
       <Form layout="vertical">
-        <Form.Item label="月份" required><DatePicker picker="month" locale={zhCN.DatePicker} format="YYYY年MM月" value={manualMonthPeriod} allowClear={false} onChange={setManualMonthPeriod} style={{ width: "100%" }} /></Form.Item>
-        <Form.Item label="净利润（元）" required extra="亏损月份请输入负数"><InputNumber stringMode precision={2} value={manualMonthProfit} onChange={(value) => setManualMonthProfit(value ?? "0")} style={{ width: "100%" }} /></Form.Item>
+        <Form.Item label="月份" required><DatePicker picker="month" locale={zhCN.DatePicker} format="YYYY年MM月" value={manualMonthPeriod} disabled={manualEditing} disabledDate={(date) => date.format("YYYY-MM") > "2026-10"} allowClear={false} onChange={setManualMonthPeriod} style={{ width: "100%" }} /></Form.Item>
+        {(!manualMonthPeriod || manualMonthPeriod.format("YYYY-MM") < "2026-10") ? <Form.Item label="净利润（元）" required extra="亏损月份请输入负数"><InputNumber stringMode precision={2} value={manualMonthProfit} onChange={(value) => setManualMonthProfit(value ?? "0")} style={{ width: "100%" }} /></Form.Item> : null}
+        <Form.Item label="期末剩余未分配利润（元）" required extra="独立人工录入，不根据当月分配或注资自动调整"><InputNumber stringMode precision={2} value={manualMonthBalance} onChange={(value) => setManualMonthBalance(value ?? "0")} style={{ width: "100%" }} /></Form.Item>
       </Form>
     </Modal>
     <Modal title={`录入本月${entryType === "distribution" ? "分配利润" : "注资"} · ${workspace?.store.name ?? ""} · ${formatPeriod(entryPeriod)}`} open={entryModalOpen} onCancel={() => setEntryModalOpen(false)} onOk={() => void saveEntries()} confirmLoading={entrySaving} okText="保存" cancelText="取消" width={760} styles={{ body: { paddingTop: 4 } }}>
-      <Alert type="info" showIcon message={entryType === "distribution" ? `建议分配额 ${money(current?.suggested_distribution ?? "0")}（本月净利润 × 分红比例），可修改` : "请输入本月股东注资总额，可按持股比例重推明细"} style={{ marginBottom: 18 }} />
+      <Alert type="info" showIcon message={entryType === "distribution" ? entryPeriod < "2026-10" ? "请输入该历史月份实际分配金额" : `建议分配额 ${money(current?.suggested_distribution ?? "0")}（本月净利润 × 分红比例），可修改` : "请输入本月股东注资总额，可按持股比例重推明细"} style={{ marginBottom: 18 }} />
       <Typography.Text style={{ display: "block", marginBottom: 8, fontSize: 16 }}> {entryType === "distribution" ? "分配总额（元）" : "注资总额（元）"}</Typography.Text>
       <Space style={{ display: "flex", marginBottom: 18 }}><InputNumber size="large" min={0} precision={2} value={Number(entryTotal || 0)} onChange={(value) => setEntryTotal(String(value ?? 0))} style={{ width: 330 }} /><Button size="large" onClick={redistributeEntries}>按持股比例重推明细</Button></Space>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 150px 1fr", gap: 0, background: "#fafafa", borderRadius: 8, padding: "13px 12px", fontWeight: 600, fontSize: 16 }}><span>股东</span><span>持股比例</span><span>{entryType === "distribution" ? "分红金额（元）" : "注资金额（元）"}</span></div>

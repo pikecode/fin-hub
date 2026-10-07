@@ -273,6 +273,7 @@ class DividendEntryRead(BaseModel):
 
 class DividendMonthUpdate(BaseModel):
     manual_net_profit: Decimal | None = None
+    manual_remaining_undistributed: Decimal | None = None
     reference_ratio: Decimal | None = Field(default=None, ge=0, le=100)
     distribution: list[DividendEntryInput] | None = None
     capital: list[DividendEntryInput] | None = None
@@ -286,12 +287,13 @@ class DividendMonthRead(BaseModel):
     period: str
     net_profit: Decimal
     manual_net_profit: Decimal | None = None
+    manual_remaining_undistributed: Decimal | None = None
     profit_source: str
     distribution_amount: Decimal
     capital_amount: Decimal
     historical_profit: Decimal
     historical_distribution: Decimal
-    remaining_undistributed: Decimal
+    remaining_undistributed: Decimal | None
     cumulative_capital: Decimal
     reference_ratio: Decimal
     suggested_distribution: Decimal

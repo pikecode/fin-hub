@@ -265,8 +265,9 @@ class DividendMonth(Base):
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
     store_id: Mapped[str] = mapped_column(ForeignKey("stores.id", ondelete="CASCADE"), nullable=False)
     period: Mapped[str] = mapped_column(String(7), nullable=False)
-    # 非账期历史月份允许手工补录净利润；有对应账期时仍以财务报表计算值为准。
+    # 2026-10 前净利润手工录入，2026-10 起使用财务报表。
     manual_net_profit: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+    manual_remaining_undistributed: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
     reference_ratio: Mapped[Decimal] = mapped_column(Numeric(7, 4), default=60, nullable=False)
     no_distribution: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     no_capital: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)

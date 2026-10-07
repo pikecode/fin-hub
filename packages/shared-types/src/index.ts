@@ -1457,12 +1457,13 @@ export interface DividendMonth {
   period: string;
   net_profit: string;
   manual_net_profit?: string | null;
+  manual_remaining_undistributed?: string | null;
   profit_source: "report" | "manual";
   distribution_amount: string;
   capital_amount: string;
   historical_profit: string;
   historical_distribution: string;
-  remaining_undistributed: string;
+  remaining_undistributed: string | null;
   cumulative_capital: string;
   reference_ratio: string;
   suggested_distribution: string;
