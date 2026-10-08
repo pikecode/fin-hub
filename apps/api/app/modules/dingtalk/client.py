@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from time import sleep
+from time import sleep, monotonic
+from threading import Lock
+from hashlib import sha256
+from math import isfinite
 from typing import Any
 
 import httpx
@@ -20,6 +23,11 @@ class DingTalkCredentials:
     app_secret: str
 
 
+# Process-local only: credentials and tokens never enter sync summaries or disk.
+_token_cache: dict[tuple[str, str, str, str], tuple[str, float]] = {}
+_token_cache_lock = Lock()
+
+
 class DingTalkClient:
     def __init__(
         self,
@@ -33,17 +41,48 @@ class DingTalkClient:
         self.oapi_base_url = (oapi_base_url or settings.dingtalk_oapi_base_url).rstrip("/")
         self.timeout = timeout
 
-    def get_access_token(self) -> str:
-        response = httpx.post(
-            f"{self.api_base_url}/v1.0/oauth2/accessToken",
-            json={"appKey": self.credentials.app_key, "appSecret": self.credentials.app_secret},
-            timeout=self.timeout,
-        )
-        data = self._read_json(response)
-        token = data.get("accessToken") or data.get("access_token")
-        if not token:
-            raise DingTalkClientError(f"DingTalk access token missing: {data}")
-        return str(token)
+    def _token_cache_key(self) -> tuple[str, str, str, str]:
+        return (self.api_base_url, self.oapi_base_url, self.credentials.app_key,
+                sha256(self.credentials.app_secret.encode()).hexdigest())
+
+    def invalidate_access_token(self, token: str) -> None:
+        with _token_cache_lock:
+            key = self._token_cache_key()
+            cached = _token_cache.get(key)
+            if cached and cached[0] == token:
+                _token_cache.pop(key, None)
+
+    def get_access_token(self, *, force_refresh: bool = False) -> str:
+        with _token_cache_lock:
+            key = self._token_cache_key()
+            cached = _token_cache.get(key)
+            if not force_refresh and cached and cached[1] > monotonic():
+                return cached[0]
+            response = httpx.post(
+                f"{self.api_base_url}/v1.0/oauth2/accessToken",
+                json={"appKey": self.credentials.app_key, "appSecret": self.credentials.app_secret},
+                timeout=self.timeout,
+            )
+            data = self._read_json(response)
+            token = data.get("accessToken") or data.get("access_token")
+            if not token:
+                raise DingTalkClientError("DingTalk access token missing")
+            try:
+                ttl = float(data.get("expireIn", data.get("expires_in", 0)))
+            except (TypeError, ValueError):
+                ttl = 0
+            # Refresh before the remote expiry; missing/invalid TTL is not cached.
+            lifetime = max(0, ttl - min(60, ttl * 0.1)) if isfinite(ttl) else 0
+            _token_cache.pop(key, None)
+            if lifetime > 0:
+                now = monotonic()
+                for old_key, entry in list(_token_cache.items()):
+                    if entry[1] <= now:
+                        _token_cache.pop(old_key, None)
+                if len(_token_cache) >= 64:
+                    _token_cache.pop(next(iter(_token_cache)))
+                _token_cache[key] = (str(token), now + lifetime)
+            return str(token)
 
     def list_processes_by_user(self, user_id: str, offset: int = 0, size: int = 100) -> list[dict[str, Any]]:
         page_size = min(max(size, 1), 100)
@@ -104,6 +143,27 @@ class DingTalkClient:
             raise DingTalkClientError(f"DingTalk approval instance missing: {data}")
         return result
 
+    def _request_api_json(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+        for attempt in range(2):
+            token = self.get_access_token()
+            request = httpx.post if method == "POST" else httpx.get
+            response = request(
+                f"{self.api_base_url}{path}",
+                headers={"x-acs-dingtalk-access-token": token},
+                timeout=self.timeout, **kwargs,
+            )
+            try:
+                error_code = str(response.json().get("code", ""))
+            except (ValueError, AttributeError):
+                error_code = ""
+            if attempt == 0 and (response.status_code == 401 or error_code in {
+                "InvalidAccessToken", "AccessTokenExpired", "InvalidAuthentication", "InvalidToken",
+            }):
+                self.invalidate_access_token(token)
+                continue
+            return self._read_json(response)
+        raise DingTalkClientError("DingTalk authentication failed")
+
     def forecast_process_nodes(
         self,
         process_code: str,
@@ -111,36 +171,21 @@ class DingTalkClient:
         dept_id: str,
         form_component_values: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        token = self.get_access_token()
-        response = httpx.post(
-            f"{self.api_base_url}/v1.0/workflow/processes/forecast",
-            headers={"x-acs-dingtalk-access-token": token},
-            json={
-                "processCode": process_code,
-                "userId": user_id,
-                "deptId": dept_id,
-                "formComponentValues": form_component_values or [],
-            },
-            timeout=self.timeout,
-        )
-        data = self._read_json(response)
+        data = self._request_api_json("POST", "/v1.0/workflow/processes/forecast", json={
+            "processCode": process_code, "userId": user_id, "deptId": dept_id,
+            "formComponentValues": form_component_values or [],
+        })
         result = data.get("result") or data
         if not isinstance(result, dict):
-            raise DingTalkClientError(f"DingTalk approval process nodes missing: {data}")
+            raise DingTalkClientError("DingTalk approval process nodes missing")
         return result
 
     def get_drive_download_url(self, space_id: str, file_id: str, union_id: str) -> str:
-        token = self.get_access_token()
-        response = httpx.get(
-            f"{self.api_base_url}/v1.0/drive/spaces/{space_id}/files/{file_id}/downloadInfos",
-            headers={"x-acs-dingtalk-access-token": token},
-            params={"unionId": union_id},
-            timeout=self.timeout,
-        )
-        data = self._read_json(response)
+        data = self._request_api_json("GET", f"/v1.0/drive/spaces/{space_id}/files/{file_id}/downloadInfos",
+                                      params={"unionId": union_id})
         url = data.get("downloadUrl") or data.get("download_url") or data.get("url")
         if not url:
-            raise DingTalkClientError(f"DingTalk drive download URL missing: {data}")
+            raise DingTalkClientError("DingTalk drive download URL missing")
         return str(url)
 
     @staticmethod
@@ -184,6 +229,11 @@ class DingTalkClient:
 
             errmsg = data.get("errmsg") or data.get("sub_msg") or f"DingTalk API error: {data}"
             last_error = DingTalkClientError(errmsg)
+
+            # A revoked/expired token is refreshed once, independently of QPS retry.
+            if str(errcode) in {"40014", "42001", "40001"} and attempt == 0:
+                self.invalidate_access_token(token)
+                continue
 
             # 针对 90002 (QPS 限流) 错误的特殊处理
             if str(errcode) == "90002" and attempt < 2:

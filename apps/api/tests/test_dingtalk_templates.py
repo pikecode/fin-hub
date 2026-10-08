@@ -2359,7 +2359,8 @@ def test_real_approval_sync_creates_one_expense_per_approval_line_and_resolves_s
     assert incrementally_synced_items[0]["category_l1"] == "人工分类"
     assert incrementally_synced_items[0]["sync_conflict_status"] == "none"
     assert incrementally_synced_items[1]["amount"] == "260.00"
-    assert incrementally_synced_items[1]["sync_conflict_status"] == "source_changed"
+    # The unmatched source amount was safely applied, so it is not a conflict.
+    assert incrementally_synced_items[1]["sync_conflict_status"] == "none"
 
 
 def test_real_approval_sync_creates_installment_expense_lines(client: TestClient, monkeypatch) -> None:

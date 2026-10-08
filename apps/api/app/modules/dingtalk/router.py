@@ -357,7 +357,7 @@ def test_connection(
 ) -> ApiEnvelope[dict[str, str]]:
     config = get_or_create_config(session)
     try:
-        token = dingtalk_client(config).get_access_token()
+        token = dingtalk_client(config).get_access_token(force_refresh=True)
     except DingTalkClientError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     write_audit_log(
@@ -616,7 +616,7 @@ def update_template(
     return ApiEnvelope(data=template_read(session, template))
 
 
-def sync_templates_core(session: Session) -> dict[str, int]:
+def sync_templates_core(session: Session, *, sync_nodes: bool = True, enabled_nodes_only: bool = False) -> dict[str, int]:
     config = get_or_create_config(session)
     dingtalk: DingTalkClient | None = None
     skipped_disabled = 0
@@ -656,6 +656,7 @@ def sync_templates_core(session: Session) -> dict[str, int]:
     node_created = 0
     node_updated = 0
     node_failed = 0
+    node_attempted = 0
     for process_code, name, raw_snapshot in samples:
         template = session.scalar(
             select(ApprovalTemplate).where(ApprovalTemplate.process_code == process_code)
@@ -677,7 +678,8 @@ def sync_templates_core(session: Session) -> dict[str, int]:
             template.raw_snapshot = raw_snapshot
             template.last_sync_at = now
         session.flush()
-        if dingtalk is not None and config.admin_user_id:
+        if sync_nodes and dingtalk is not None and config.admin_user_id and (not enabled_nodes_only or template.is_enabled):
+            node_attempted += 1
             dept_id = forecast_dept_id_for_template_sync(session)
             try:
                 forecast = dingtalk.forecast_process_nodes(process_code, config.admin_user_id, dept_id)
@@ -698,7 +700,30 @@ def sync_templates_core(session: Session) -> dict[str, int]:
         "node_created": node_created,
         "node_updated": node_updated,
         "node_failed": node_failed,
+        "node_attempted": node_attempted,
+        "node_skipped": len(samples) - node_attempted,
     }
+
+
+def automatic_template_node_refresh_due(session: Session) -> bool:
+    """Retry even unavailable node forecasts daily, without retrying them every hour."""
+    summaries = session.scalars(select(SyncJob.raw_summary).where(
+        SyncJob.job_type == "dingtalk_auto_sync",
+        SyncJob.finished_at >= utc_now() - timedelta(hours=24),
+        SyncJob.raw_summary.is_not(None),
+    ))
+    for raw_summary in summaries:
+        try:
+            summary = json.loads(raw_summary)
+        except (ValueError, TypeError):
+            continue
+        nodes = summary.get("template_sync") if isinstance(summary, dict) else None
+        if isinstance(nodes, dict) and (
+            nodes.get("node_attempted", 0) or nodes.get("node_created", 0)
+            or nodes.get("node_updated", 0) or nodes.get("node_failed", 0)
+        ):
+            return False
+    return True
 
 
 def dingtalk_template_is_active(item: dict[str, Any]) -> bool:
@@ -1566,14 +1591,21 @@ def build_department_tree(
 ) -> list[DingTalkDepartmentRead]:
     rows: list[DingTalkDepartmentRead] = []
     seen: set[str] = set()
+    children_by_department: dict[str, list[dict[str, Any]]] = {}
+
+    def children_for(dept_id: str) -> list[dict[str, Any]]:
+        # The lookahead used to identify stores and the recursive walk share
+        # this snapshot, including empty leaf results. Cache only this pull.
+        if dept_id not in children_by_department:
+            children_by_department[dept_id] = client.list_child_departments(dept_id)
+            sleep(0.15)
+        return children_by_department[dept_id]
 
     def walk(dept_id: str, parent_path: str, depth: int) -> None:
         if dept_id in seen or depth >= max_depth:
             return
         seen.add(dept_id)
-        children = client.list_child_departments(dept_id)
-        # 添加延迟避免触发钉钉 QPS 限流（90002 错误）
-        sleep(0.15)
+        children = children_for(dept_id)
         for child in children:
             child_depth = depth + 1
             child_id = department_id(child)
@@ -1581,9 +1613,7 @@ def build_department_tree(
             if not child_id or not name:
                 continue
             path = department_path(child, parent_path)
-            grandchildren = client.list_child_departments(child_id) if depth < max_depth else []
-            # 添加延迟避免触发钉钉 QPS 限流
-            sleep(0.15)
+            grandchildren = children_for(child_id) if depth < max_depth else []
             child_names = [
                 str(item.get("name") or item.get("dept_name") or item.get("deptName") or "")
                 for item in grandchildren
@@ -3020,27 +3050,34 @@ def store_from_dingtalk_department(session: Session, value: str | None) -> Store
     stripped = value.strip()
     if not stripped:
         return None
-    department = session.scalar(
-        select(DingTalkDepartmentModel)
-        .where(
+    # Department IDs and full paths are unambiguous. A shared child name
+    # (for example 前厅) must never select an arbitrary store.
+    departments = list(session.scalars(select(DingTalkDepartmentModel).where(
+        DingTalkDepartmentModel.is_active.is_(True),
+        or_(DingTalkDepartmentModel.dept_id == stripped,
+            DingTalkDepartmentModel.path == stripped),
+    )))
+    if not departments:
+        departments = list(session.scalars(select(DingTalkDepartmentModel).where(
             DingTalkDepartmentModel.is_active.is_(True),
-            DingTalkDepartmentModel.is_store_candidate.is_(True),
-            or_(
-                DingTalkDepartmentModel.dept_id == stripped,
-                DingTalkDepartmentModel.name == stripped,
-                DingTalkDepartmentModel.path == stripped,
-            ),
-        )
-        .order_by(DingTalkDepartmentModel.store_id.is_(None), DingTalkDepartmentModel.depth.desc())
-        .limit(1)
-    )
-    if department is None:
-        return None
-    if department.store_id:
-        store = session.get(Store, department.store_id)
-        if store is not None:
-            return store
-    return session.scalar(select(Store).where(Store.dingtalk_dept_id == department.dept_id))
+            DingTalkDepartmentModel.name == stripped,
+        )))
+    stores = {}
+    for department in departments:
+        visited = set()
+        while department is not None and department.dept_id not in visited:
+            visited.add(department.dept_id)
+            store = session.get(Store, department.store_id) if department.store_id else None
+            if store is None:
+                store = session.scalar(select(Store).where(Store.dingtalk_dept_id == department.dept_id))
+            if store is not None:
+                stores[store.id] = store
+                break
+            department = session.scalar(select(DingTalkDepartmentModel).where(
+                DingTalkDepartmentModel.dept_id == department.parent_id,
+                DingTalkDepartmentModel.is_active.is_(True),
+            )) if department.parent_id else None
+    return next(iter(stores.values())) if len(stores) == 1 else None
 
 
 def resolve_store(session: Session, value: str | None) -> Store | None:
@@ -3084,7 +3121,7 @@ def build_approval_parse_preview(
             raw_instance = {}
     mapped = mapped_values_for_template(session, template.id, raw_instance)
     store_text = parse_text(
-        mapped_or_form_value(mapped, raw_instance, "store", "支出门店", "门店", "费用门店", "所属门店")
+        mapped_or_form_value(mapped, raw_instance, "store", "支出门店", "门店", "费用门店", "所属门店", "报销门店")
     ) or parse_text(mapped.get("store_name"))
     originator_dept_id = parse_text(raw_instance.get("originator_dept_id") or raw_instance.get("originatorDeptId"))
     originator_dept_name = parse_text(raw_instance.get("originator_dept_name") or raw_instance.get("originatorDeptName"))
@@ -3339,18 +3376,8 @@ def sync_expense_line(
 
     # ✅ 已存在的支出行：处理更新或冲突检测
     matched = expense_has_bank_match(session, item)
-    if item.source_sync_hash and item.source_sync_hash != source_hash:
-        # 源数据变化了
-        item.sync_conflict_status = (
-            "amount_changed_after_matched"
-            if matched and str(item.amount) != snapshot["amount"]
-            else "source_changed"
-        )
-    elif item.sync_conflict_status in {None, "source_removed"}:
-        # 恢复正常状态
-        item.sync_conflict_status = "none"
-
-    # ✅ 选择性更新：保护用户手动编辑的字段
+    # A changed source is only a conflict when its values cannot be applied.
+    # Re-evaluate on every refresh so resolved conflicts do not remain forever.
     protected_fields = edited_fields(item)
     source_updates = {
         "store_id": store_id,
@@ -3369,6 +3396,28 @@ def sync_expense_line(
         "payee_account_type": parse_text(payee_snapshot.get("payee_account_type")),
         "payee_account_verify_status": parse_text(payee_snapshot.get("payee_account_verify_status")),
     }
+    try:
+        previous_snapshot = json.loads(item.source_snapshot_json or "{}")
+    except (ValueError, TypeError):
+        previous_snapshot = {}
+    if not isinstance(previous_snapshot, dict):
+        previous_snapshot = {}
+    def source_field_changed(field: str) -> bool:
+        if field.startswith("payee_") and field != "payee_account":
+            return (previous_snapshot.get("payee_snapshot") or {}).get(field) != payee_snapshot.get(field)
+        return previous_snapshot.get(field) != snapshot.get(field)
+    # Classification is a local accounting decision. Once manually classified,
+    # a different source category is not a sync conflict and must not overwrite it.
+    conflict_protected_fields = protected_fields - {"category_l1", "category_l2", "preopening_category_id"}
+    blocked_fields = conflict_protected_fields | ({"amount", "store_id", "ledger_period"} if matched else set())
+    conflicts = {field for field in blocked_fields if field in source_updates
+                 and getattr(item, field) != source_updates[field]
+                 and (field not in protected_fields or source_field_changed(field)
+                      or item.sync_conflict_status in {"source_changed", "amount_changed_after_matched"})}
+    item.sync_conflict_status = (
+        "amount_changed_after_matched" if matched and "amount" in conflicts
+        else "source_changed" if conflicts else "none"
+    )
     for field, value in source_updates.items():
         if field in protected_fields:
             # 用户编辑过，不覆盖
@@ -3459,7 +3508,7 @@ def sync_real_instance(
     mapped = mapped_values_for_template(session, template.id, raw_instance)
 
     store_text = parse_text(
-        mapped_or_form_value(mapped, raw_instance, "store", "支出门店", "门店", "费用门店", "所属门店")
+        mapped_or_form_value(mapped, raw_instance, "store", "支出门店", "门店", "费用门店", "所属门店", "报销门店")
     ) or parse_text(mapped.get("store_name"))
     originator_dept_id = parse_text(raw_instance.get("originator_dept_id") or raw_instance.get("originatorDeptId"))
     originator_dept_name = parse_text(raw_instance.get("originator_dept_name") or raw_instance.get("originatorDeptName"))
@@ -3873,6 +3922,19 @@ def approval_needs_detail_resync(instance: ApprovalInstance) -> bool:
     return isinstance(parsed, dict) and parsed.get("expense_parse_status") == "skipped"
 
 
+def approval_detail_refresh_due(instance: ApprovalInstance) -> bool:
+    """Pending approvals stay live; finished approvals/errors refresh at most daily."""
+    if instance.approval_status.lower() in TERMINAL_NON_EXPENSE_STATUSES:
+        return False
+    if instance.approval_status.lower() not in COMPLETED_APPROVAL_STATUSES:
+        return True
+    if instance.last_parsed_at and instance.last_parsed_at > utc_now() - timedelta(hours=24):
+        return False
+    if not approval_needs_detail_resync(instance) and should_skip_stable_approval(instance, sync_window_days=30):
+        return False
+    return True
+
+
 def ensure_sync_job_not_canceled(session: Session, job: SyncJob) -> None:
     session.flush()
     session.refresh(job)
@@ -3895,6 +3957,8 @@ def run_approval_sync(
     resume_cursors: dict[str, int] | None = None,
 ) -> set[str]:
     template_summaries: list[dict[str, Any]] = []
+    detail_fetched_count = 0
+    detail_skipped_count = 0
     incomplete_cursors: dict[str, int] = {}
     handled_instance_ids: set[str] = set()
     skipped_missing_instance_ids: list[str] = []
@@ -3948,13 +4012,14 @@ def run_approval_sync(
                     if (
                         skip_existing
                         and existing_instance is not None
-                        and not approval_needs_detail_resync(existing_instance)
-                        and should_skip_stable_approval(existing_instance, sync_window_days=30)
+                        and not approval_detail_refresh_due(existing_instance)
                     ):
                         template_skipped_existing += 1
+                        detail_skipped_count += 1
                         session.commit()
                         continue
                     try:
+                        detail_fetched_count += 1
                         raw_instance = client.get_process_instance(instance_id)
                     except DingTalkClientError as exc:
                         if not is_missing_dingtalk_approval_error(exc):
@@ -4035,8 +4100,8 @@ def run_approval_sync(
                 ensure_sync_job_not_canceled(session, job)
                 if instance.dingtalk_instance_id in handled_instance_ids or not approval_needs_detail_resync(instance):
                     continue
-                if (skip_existing and instance.parse_error and instance.last_parsed_at
-                        and instance.last_parsed_at > utc_now() - timedelta(hours=24)):
+                if skip_existing and not approval_detail_refresh_due(instance):
+                    detail_skipped_count += 1
                     continue
                 # ✅ 再次获取排他锁，防止并发修改
                 instance = session.scalar(
@@ -4050,6 +4115,7 @@ def run_approval_sync(
                 job.processed_count += 1
                 retry_refreshed_count += 1
                 try:
+                    detail_fetched_count += 1
                     raw_instance = client.get_process_instance(instance.dingtalk_instance_id)
                 except DingTalkClientError as exc:
                     if not is_missing_dingtalk_approval_error(exc):
@@ -4090,6 +4156,8 @@ def run_approval_sync(
             "templates": template_summaries,
             "pull_completed": not bool(incomplete_cursors),
             "parse_failed_count": job.failed_count,
+            "detail_fetched_count": detail_fetched_count,
+            "detail_skipped_count": detail_skipped_count,
             "skipped_missing_approval_count": len(skipped_missing_instance_ids),
             "skipped_missing_instance_ids": skipped_missing_instance_ids[:100],
             "skipped_missing_process_codes": sorted(set(skipped_missing_process_codes)),
@@ -4213,7 +4281,10 @@ def execute_auto_sync(
 
         if setting.sync_templates:
             update_progress("templates_sync", "running")
-            template_sync = sync_templates_core(session)
+            # Discover renamed/new templates hourly, but forecast enabled nodes daily.
+            template_sync = sync_templates_core(
+                session, sync_nodes=automatic_template_node_refresh_due(session), enabled_nodes_only=True,
+            )
             session.flush()
             update_progress("templates_sync", "succeeded", **template_sync)
 
@@ -4323,6 +4394,7 @@ def execute_auto_sync(
         failed_summary = {
             "error": job.error_message,
             "progress": progress,
+            "template_sync": template_sync,
             "failed_templates": {},  # 记录各模板的失败详情
         }
 

@@ -13,7 +13,7 @@ from app.models import DingTalkAutoSyncSetting, SyncJob, utc_now
 from app.modules.audit.service import write_audit_log
 
 SYNC_LOCK_KEY = 2026093001
-SYNC_JOB_TYPES = {"dingtalk_auto_sync", "dingtalk_approval_sync", "dingtalk_store_approval_sync"}
+SYNC_JOB_TYPES = {"dingtalk_auto_sync", "dingtalk_approval_sync", "dingtalk_store_approval_sync", "dingtalk_approval_backfill"}
 _lease_held: ContextVar[bool] = ContextVar("dingtalk_sync_lease", default=False)
 
 
