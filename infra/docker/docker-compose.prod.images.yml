@@ -70,8 +70,11 @@ services:
     logging: *default-logging
     ports:
       - "80:80"
+      - "443:443"
     volumes:
       - ../nginx/fin-hub.conf:/etc/nginx/conf.d/default.conf:ro
+      - ../site/moshuo:/usr/share/nginx/html/moshuo:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
     depends_on:
       - admin-web
       - api

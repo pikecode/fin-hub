@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="蘑说品牌首页。珍惜自然馈赠，认真对待每一餐。">
+  <meta name="theme-color" content="#203e35">
+  <title>蘑说 · 自然有味，生活有光</title>
+  <style>
+    :root{color-scheme:light;--green:#203e35;--muted:#68736a;--paper:#f8f7f2;--line:#dedfd5}
+    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--paper);color:var(--green);font-family:"PingFang SC","Microsoft YaHei",sans-serif;-webkit-font-smoothing:antialiased}
+    a{color:inherit;text-decoration:none}a:focus-visible{outline:2px solid #a37b45;outline-offset:6px}header,main,footer{width:min(1200px,calc(100% - 96px));margin:auto}
+    header{height:110px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line)}.brand{display:flex;align-items:center;gap:14px}.mark{width:40px;height:40px}.name{font-size:27px;font-weight:650;letter-spacing:5px}.brand small{display:block;font-size:9px;letter-spacing:4px;margin-top:3px}nav{display:flex;gap:34px;font-size:13px;color:var(--muted)}
+    .hero{display:grid;grid-template-columns:1.1fr 1fr;gap:70px;align-items:center;padding:76px 0 68px}.eyebrow{font-size:11px;letter-spacing:4px;color:#8c785b;margin:0 0 28px}h1{font-size:clamp(42px,5vw,68px);line-height:1.35;letter-spacing:3px;font-weight:500;margin:0 0 26px}.intro{font-size:15px;line-height:2;color:var(--muted);margin:0;max-width:400px}.hero-link{display:inline-flex;gap:34px;align-items:center;border-bottom:1px solid #8b978b;padding:12px 0;margin-top:28px;font-size:13px}
+    .art{position:relative;background:#e7eade;border-radius:200px 200px 18px 18px;overflow:hidden;aspect-ratio:1/1.04}.art svg{width:100%;height:100%;display:block}.art-label{position:absolute;bottom:27px;left:0;right:0;text-align:center;font-size:10px;letter-spacing:4px;color:#52624a}
+    .about{border-top:1px solid var(--line);padding:36px 0 46px;display:grid;grid-template-columns:1fr 2fr;gap:70px}.about h2{font-size:21px;font-weight:500;letter-spacing:2px;margin:0 0 12px}.about .eyebrow{margin:0}.values{display:grid;grid-template-columns:repeat(3,1fr);gap:30px}.number{font-size:11px;color:#9a8870;letter-spacing:2px}.values h3{font-size:16px;font-weight:500;margin:12px 0}.values p{font-size:13px;line-height:1.9;color:var(--muted);margin:0}
+    footer{border-top:1px solid var(--line);padding:25px 0 30px;display:flex;align-items:center;justify-content:space-between;gap:16px;color:var(--muted);font-size:12px}footer a:hover{color:var(--green);text-decoration:underline}
+    @media(max-width:760px){header,main,footer{width:calc(100% - 40px)}header{height:86px}.name{font-size:23px}nav{gap:20px}.hero{grid-template-columns:1fr;gap:40px;padding:46px 0}.hero h1{font-size:44px}.art{max-width:440px;width:100%;margin:auto;aspect-ratio:1/0.88}.about{grid-template-columns:1fr;gap:28px}.values{gap:18px}footer{align-items:flex-start;flex-direction:column;font-size:11px}}
+    @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+  </style>
+</head>
+<body>
+  <header>
+    <a class="brand" href="/" aria-label="蘑说首页">
+      <svg class="mark" viewBox="0 0 48 48" fill="none" aria-hidden="true"><path d="M6 27C6 15 14 7 24 7s18 8 18 20H6Z" stroke="currentColor" stroke-width="2"/><path d="M19 27v10c0 6 10 6 10 0V27M13 32h22" stroke="currentColor" stroke-width="2"/><path d="M17 17h.1M29 14h.1M33 22h.1" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></svg>
+      <span class="name">蘑说<small>MOSHUO</small></span>
+    </a>
+    <nav aria-label="主导航"><a href="#about">关于蘑说</a><a href="#values">品牌理念</a></nav>
+  </header>
+  <main>
+    <section class="hero" aria-labelledby="hero-title">
+      <div><p class="eyebrow">MOSHUO · A TASTE OF NATURE</p><h1 id="hero-title">自然有味，<br>生活有光。</h1><p class="intro">珍惜自然的馈赠，认真对待每一餐。<br>让鲜美走进日常，让相聚多一点温暖。</p><a class="hero-link" href="#about">认识蘑说 <span aria-hidden="true">↗</span></a></div>
+      <div class="art">
+        <svg viewBox="0 0 500 520" role="img" aria-label="暖阳下的蘑菇与枝叶插画">
+          <defs><linearGradient id="cap" x2="0.8" y2="1"><stop stop-color="#b49770"/><stop offset="1" stop-color="#846a4a"/></linearGradient><linearGradient id="stem" x2="1" y2="0"><stop stop-color="#d4c9ad"/><stop offset=".5" stop-color="#f3eddb"/><stop offset="1" stop-color="#c2b395"/></linearGradient></defs>
+          <circle cx="335" cy="140" r="84" fill="#f6f0d9"/>
+          <path d="M0 385Q120 335 250 384T500 365V520H0Z" fill="#d8ddcc"/>
+          <ellipse cx="264" cy="419" rx="148" ry="18" fill="#aeb8a0" opacity=".35"/>
+          <g stroke="#53664b" stroke-width="3" fill="#8e9e7c"><path d="M97 421Q83 326 117 262" fill="none"/><path d="M93 360Q47 360 46 325Q83 320 93 360ZM97 331Q136 328 145 294Q107 286 97 331ZM106 290Q77 278 86 248Q117 252 106 290Z"/><path d="M405 418Q430 367 415 310" fill="none"/><path d="M421 372Q459 361 458 335Q424 336 421 372ZM418 342Q389 333 389 307Q420 307 418 342Z"/></g>
+          <path d="M227 245Q240 329 216 398Q207 427 253 427Q292 427 280 395Q256 330 273 245Z" fill="url(#stem)"/>
+          <path d="M125 261Q139 143 248 143Q361 147 377 261Q250 296 125 261Z" fill="url(#cap)"/>
+          <ellipse cx="251" cy="261" rx="126" ry="21" fill="#d9c5a3"/><path d="M148 265Q251 285 354 265" fill="none" stroke="#b29c78" stroke-width="2"/>
+          <g fill="#dfcbaa" opacity=".6"><ellipse cx="208" cy="190" rx="13" ry="7" transform="rotate(-22 208 190)"/><ellipse cx="289" cy="178" rx="11" ry="6"/><ellipse cx="323" cy="227" rx="13" ry="7"/><ellipse cx="173" cy="230" rx="8" ry="5"/></g>
+          <path d="M326 363L322 418Q320 432 342 433Q360 433 355 417L346 363Z" fill="url(#stem)"/>
+          <path d="M285 367Q291 307 335 307Q380 308 389 367Q338 386 285 367Z" fill="#ad8963"/><ellipse cx="337" cy="367" rx="52" ry="10" fill="#dec6a6"/>
+        </svg>
+        <span class="art-label">源于自然 · 回归日常</span>
+      </div>
+    </section>
+    <section class="about" id="about" aria-labelledby="about-title">
+      <div><h2 id="about-title">把日常，过得有滋有味。</h2><p class="eyebrow">OUR PHILOSOPHY</p></div>
+      <div class="values" id="values"><article><span class="number">01 / 自然</span><h3>珍惜每一份食材</h3><p>从自然汲取灵感，<br>发现食材本来的鲜美。</p></article><article><span class="number">02 / 用心</span><h3>认真对待每一餐</h3><p>以细致与专注，<br>回应日常里的期待。</p></article><article><span class="number">03 / 相聚</span><h3>留住温暖的时刻</h3><p>一餐一聚，一味一情，<br>让美好发生在餐桌旁。</p></article></div>
+    </section>
+  </main>
+  <footer><span>© 蘑说 MOSHUO · moshuo.fun</span><a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">粤ICP备2026152670号-1</a></footer>
+</body>
+</html>
