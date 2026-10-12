@@ -32,6 +32,7 @@ from app.schemas import (
     KuailvPurchaseUpdate,
     MajorExpenseVoucherCreate,
     MajorExpenseVoucherRead,
+    MajorExpenseVoucherUpdate,
     Page,
 )
 
@@ -347,6 +348,57 @@ def create_major_expense_voucher(
     session.commit()
     session.refresh(item)
     return ApiEnvelope(data=major_expense_voucher_read(session, item))
+
+
+def ensure_major_expense_voucher(session: Session, item_id: str) -> ExpenseItem:
+    item = session.get(ExpenseItem, item_id)
+    if item is None or item.source != MAJOR_EXPENSE_VOUCHER_SOURCE:
+        raise HTTPException(status_code=404, detail="主要支出凭证不存在")
+    return item
+
+
+@router.patch("/major-expense-vouchers/{item_id}", response_model=ApiEnvelope[MajorExpenseVoucherRead])
+def update_major_expense_voucher(
+    item_id: str,
+    payload: MajorExpenseVoucherUpdate,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_permission("reconciliation.manage")),
+) -> ApiEnvelope[MajorExpenseVoucherRead]:
+    item = ensure_major_expense_voucher(session, item_id)
+    ensure_open_ledger(session, item.store_id, item.ledger_period)
+    ensure_open_or_create_ledger(session, item.store_id, payload.ledger_period)
+    before = major_expense_voucher_read(session, item).model_dump(mode="json")
+    item.ledger_period = payload.ledger_period
+    item.description = payload.expense_name
+    item.amount = Decimal("0.00")
+    item.source_snapshot_json = json.dumps({"display_amount": str(payload.display_amount)}, ensure_ascii=False)
+    item.remark = payload.remark
+    write_audit_log(session, actor=audit_actor(current_user), action="major_expense_voucher.update",
+                    resource_type="expense_item", resource_id=item.id,
+                    summary=f"编辑主要支出凭证：{payload.expense_name}",
+                    metadata={"before": before, "after": payload.model_dump(mode="json")})
+    session.commit()
+    session.refresh(item)
+    return ApiEnvelope(data=major_expense_voucher_read(session, item))
+
+
+@router.delete("/major-expense-vouchers/{item_id}", response_model=ApiEnvelope[dict[str, bool]])
+def delete_major_expense_voucher(
+    item_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_permission("reconciliation.manage")),
+) -> ApiEnvelope[dict[str, bool]]:
+    item = ensure_major_expense_voucher(session, item_id)
+    ensure_open_ledger(session, item.store_id, item.ledger_period)
+    before = major_expense_voucher_read(session, item).model_dump(mode="json")
+    session.query(Attachment).filter(Attachment.resource_type == "expense_item",
+                                     Attachment.resource_id == item.id).delete(synchronize_session=False)
+    write_audit_log(session, actor=audit_actor(current_user), action="major_expense_voucher.delete",
+                    resource_type="expense_item", resource_id=item.id,
+                    summary=f"删除主要支出凭证：{item.description}", metadata={"before": before})
+    session.delete(item)
+    session.commit()
+    return ApiEnvelope(data={"ok": True})
 
 
 def ensure_kuailv_purchase(session: Session, item_id: str) -> ExpenseItem:

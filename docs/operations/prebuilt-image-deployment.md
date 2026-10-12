@@ -1,5 +1,7 @@
 # 预构建镜像部署方案
 
+> 日常小改动默认使用 [增量部署操作流程](incremental-deployment.md)。本页用于依赖或基础镜像变化等完整构建场景，现有脚本不会自动选择受影响服务。
+
 当前生产服务器资源有限，不适合在服务器上执行 `docker compose build`。尤其是 `admin-web` 的 Next.js 生产构建会下载 Node 依赖、构建页面、执行 lint/typecheck，容易把 SSH 和 HTTP 一起拖慢甚至卡死。
 
 新的部署方式把发布拆成两步：
@@ -66,3 +68,5 @@ ssh fin-hub-server 'cd /opt/fin-hub && scripts/deploy-prod-images.sh'
 - 后台管理端统一请求同域 `/api`，由本地开发代理或线上 Nginx 转发，不再依赖 `NEXT_PUBLIC_API_BASE_URL` 构建时变量。
 - 生产镜像建议使用 git SHA 或版本号作为 tag，避免只用 `latest` 导致无法回滚。
 - 旧脚本 `scripts/deploy-prod.sh` 会在服务器 build，仅作为兼容方案保留。
+- 多域名部署后，检查使用 `https://fin.moshuo.fun/api/health`，或本机请求设置 `Host: fin.moshuo.fun`，避免裸 127.0.0.1 命中品牌首页。
+- `deploy-prod-images.sh` 包含旧镜像全局清理行为，保留回滚镜像或服务器运行其他项目时设置 `PRUNE_OLD_IMAGES=false`，清理独立安排。

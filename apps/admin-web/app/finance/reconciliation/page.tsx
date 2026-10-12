@@ -4,6 +4,8 @@ import {
   Alert,
   Button,
   Card,
+  Col,
+  Row,
   Cascader,
   DatePicker,
   Drawer,
@@ -317,6 +319,7 @@ export default function FinanceReconciliationPage() {
   const [candidates, setCandidates] = useState<ReconciliationExpenseCandidate[]>([]);
   const [records, setRecords] = useState<ReconciliationRecord[]>([]);
   const [kuailvPurchases, setKuailvPurchases] = useState<KuailvPurchase[]>([]);
+  const [editingMajorExpenseVoucher, setEditingMajorExpenseVoucher] = useState<MajorExpenseVoucher | null>(null);
   const [majorExpenseVouchers, setMajorExpenseVouchers] = useState<MajorExpenseVoucher[]>([]);
   const [voucherRecord, setVoucherRecord] = useState<VoucherRecord | null>(null);
   const [editingKuailvPurchase, setEditingKuailvPurchase] = useState<KuailvPurchase | null>(null);
@@ -357,6 +360,7 @@ export default function FinanceReconciliationPage() {
   const [editForm] = Form.useForm<EditValues>();
   const [kuailvForm] = Form.useForm<KuailvPurchaseValues>();
   const [majorExpenseVoucherForm] = Form.useForm<MajorExpenseVoucherValues>();
+  const [majorExpenseVoucherEditForm] = Form.useForm<MajorExpenseVoucherValues>();
   // 预加载缓存：transactionId -> candidates
   const [candidatesCache, setCandidatesCache] = useState<Map<string, ReconciliationExpenseCandidate[]>>(new Map());
   const [preloadingTransactionIds, setPreloadingTransactionIds] = useState<Set<string>>(new Set());
@@ -723,7 +727,7 @@ export default function FinanceReconciliationPage() {
     }
   }
 
-  async function submitMajorExpenseVoucher(values: MajorExpenseVoucherValues) {
+  async function submitMajorExpenseVoucher(values: MajorExpenseVoucherValues, editingRecord: MajorExpenseVoucher | null = null) {
     if (!selectedStoreId) {
       message.warning("请先选择门店");
       return;
@@ -739,13 +743,16 @@ export default function FinanceReconciliationPage() {
     const files = (values.attachments ?? []).flatMap((item) => (item.originFileObj ? [item.originFileObj] : []));
     setIsMajorExpenseVoucherLoading(true);
     try {
-      const voucher = await apiClient.expenseItems.majorExpenseVouchers.create({
-        store_id: selectedStoreId,
+      const payload = {
         ledger_period: values.ledger_period.format("YYYY-MM"),
         expense_name: values.expense_name.trim(),
         display_amount: values.display_amount || "0",
         remark: values.remark || null,
-      });
+      };
+      const voucher = editingRecord
+        ? await apiClient.expenseItems.majorExpenseVouchers.update(editingRecord.id, payload)
+        : await apiClient.expenseItems.majorExpenseVouchers.create({ store_id: selectedStoreId, ...payload });
+      if (editingRecord) setEditingMajorExpenseVoucher(voucher);
       await Promise.all(
         files.map((file) => {
           const payload = new FormData();
@@ -753,9 +760,13 @@ export default function FinanceReconciliationPage() {
           return apiClient.attachments.upload("expense_item", voucher.id, payload);
         }),
       );
-      message.success("主要支出凭证已录入");
-      majorExpenseVoucherForm.resetFields();
-      majorExpenseVoucherForm.setFieldsValue({ ledger_period: dayjs(`${selectedLedgerPeriod}-01`) });
+      message.success(editingRecord ? "主要支出凭证已更新" : "主要支出凭证已录入");
+      if (editingRecord) cancelMajorExpenseVoucherEdit();
+      setApprovalAttachmentsByExpenseItemId((current) => { const next = { ...current }; delete next[voucher.id]; return next; });
+      if (!editingRecord) {
+        majorExpenseVoucherForm.resetFields();
+        majorExpenseVoucherForm.setFieldsValue({ ledger_period: dayjs(`${selectedLedgerPeriod}-01`) });
+      }
       await loadMajorExpenseVouchers(selectedStoreId);
     } catch (error) {
       message.error(error instanceof Error ? error.message : "主要支出凭证录入失败");
@@ -763,6 +774,42 @@ export default function FinanceReconciliationPage() {
       setIsMajorExpenseVoucherLoading(false);
     }
   }
+
+  function cancelMajorExpenseVoucherEdit() {
+    setEditingMajorExpenseVoucher(null);
+    majorExpenseVoucherEditForm.resetFields();
+  }
+
+  function openEditMajorExpenseVoucher(record: MajorExpenseVoucher) {
+    setEditingMajorExpenseVoucher(record);
+    majorExpenseVoucherEditForm.setFieldsValue({
+      expense_name: record.expense_name,
+      ledger_period: dayjs(`${record.ledger_period}-01`),
+      display_amount: record.display_amount,
+      remark: record.remark ?? undefined,
+      attachments: [],
+    });
+
+  }
+
+  async function deleteMajorExpenseVoucher(record: MajorExpenseVoucher) {
+    setIsMajorExpenseVoucherLoading(true);
+    try {
+      await apiClient.expenseItems.majorExpenseVouchers.delete(record.id);
+      if (editingMajorExpenseVoucher?.id === record.id) cancelMajorExpenseVoucherEdit();
+      if (voucherRecord?.id === record.id) setVoucherRecord(null);
+      message.success("主要支出凭证已删除");
+      await loadMajorExpenseVouchers(selectedStoreId!);
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "主要支出凭证删除失败");
+    } finally {
+      setIsMajorExpenseVoucherLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    cancelMajorExpenseVoucherEdit();
+  }, [selectedStoreId, selectedLedgerPeriod]);
 
   function openEditKuailvPurchase(record: KuailvPurchase) {
     setEditingKuailvPurchase(record);
@@ -1473,6 +1520,18 @@ export default function FinanceReconciliationPage() {
       width: 170,
       render: (value) => formatDateTime(value),
     },
+    {
+      title: "操作",
+      width: 155,
+      render: (_, record) => (
+        <Space size={4}>
+          <Button type="link" size="small" icon={<EditOutlined />} disabled={isMajorExpenseVoucherLoading} onClick={() => openEditMajorExpenseVoucher(record)}>编辑</Button>
+          <Popconfirm title="删除这条主要支出凭证？" description="记录和关联附件将从列表移除，删除后不可恢复。" okText="删除" cancelText="取消" onConfirm={() => deleteMajorExpenseVoucher(record)} disabled={isMajorExpenseVoucherLoading}>
+            <Button type="link" size="small" danger icon={<DeleteOutlined />} disabled={isMajorExpenseVoucherLoading}>删除</Button>
+          </Popconfirm>
+        </Space>
+      ),
+    },
   ];
 
   const kuailvPurchaseColumns: ColumnsType<KuailvPurchase> = [
@@ -1862,7 +1921,7 @@ export default function FinanceReconciliationPage() {
                   </div>
                 </Card>
 
-                <Card size="small" title="录入主要支出凭证" className="data-table-card kuailv-purchase-form-card">
+                <Card id="major-expense-voucher-form" size="small" title="录入主要支出凭证" className="data-table-card kuailv-purchase-form-card">
                   <Alert
                     type="info"
                     showIcon
@@ -2595,6 +2654,50 @@ export default function FinanceReconciliationPage() {
         zIndex={1100}
       >
         <Alert type="warning" showIcon message="请选择二级费用分类" description={categoryValidationMessage} />
+      </Modal>
+      <Modal
+        title="编辑主要支出凭证"
+        open={Boolean(editingMajorExpenseVoucher)}
+        width={720}
+        forceRender
+        maskClosable={false}
+        closable={!isMajorExpenseVoucherLoading}
+        keyboard={!isMajorExpenseVoucherLoading}
+        onCancel={() => { if (!isMajorExpenseVoucherLoading) cancelMajorExpenseVoucherEdit(); }}
+        footer={[
+          <Button key="cancel" disabled={isMajorExpenseVoucherLoading} onClick={cancelMajorExpenseVoucherEdit}>取消</Button>,
+          <Button key="save" type="primary" loading={isMajorExpenseVoucherLoading} onClick={() => majorExpenseVoucherEditForm.submit()}>保存修改</Button>,
+        ]}
+      >
+        <Form form={majorExpenseVoucherEditForm} layout="vertical" onFinish={(values) => void submitMajorExpenseVoucher(values, editingMajorExpenseVoucher)} style={{ marginTop: 20 }}>
+          <Form.Item label="费用名称" name="expense_name" rules={[{ required: true, whitespace: true, message: "请输入费用名称" }]}>
+            <Input placeholder="例如：房租合同、工资凭证" maxLength={120} />
+          </Form.Item>
+          <Row gutter={20}>
+            <Col xs={24} sm={12}>
+              <Form.Item label="所属账期月份" name="ledger_period" rules={[{ required: true, message: "请选择所属账期月份" }]}>
+                <DatePicker picker="month" allowClear={false} locale={zhCN.DatePicker} style={{ width: "100%" }} />
+              </Form.Item>
+            </Col>
+            <Col xs={24} sm={12}>
+              <Form.Item label="总金额（仅展示，不计入报表）" name="display_amount" rules={[{ required: true, message: "请输入总金额" }]}>
+                <Input prefix="¥" placeholder="0.00" />
+              </Form.Item>
+            </Col>
+          </Row>
+          {editingMajorExpenseVoucher && editingMajorExpenseVoucher.attachment_count > 0 ? (
+            <div style={{ marginBottom: 20, padding: "10px 14px", background: "#f5f7fa", borderRadius: 8 }}>
+              <Space style={{ width: "100%", justifyContent: "space-between" }}>
+                <Typography.Text type="secondary">原有附件 · {editingMajorExpenseVoucher.attachment_count} 份</Typography.Text>
+                <Button type="link" onClick={() => openMajorExpenseVoucherModal(editingMajorExpenseVoucher)}>查看附件</Button>
+              </Space>
+            </div>
+          ) : null}
+          <Form.Item label="追加附件" name="attachments" valuePropName="fileList" getValueFromEvent={(event) => event?.fileList} extra="附件可选，保存后保留原有附件">
+            <Upload beforeUpload={() => false} multiple><Button icon={<UploadOutlined />}>选择附件</Button></Upload>
+          </Form.Item>
+          <Form.Item label="备注" name="remark"><Input.TextArea rows={3} placeholder="可选" /></Form.Item>
+        </Form>
       </Modal>
     </AppShell>
   );

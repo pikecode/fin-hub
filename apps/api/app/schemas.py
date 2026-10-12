@@ -500,6 +500,13 @@ class MajorExpenseVoucherCreate(BaseModel):
     remark: str | None = None
 
 
+class MajorExpenseVoucherUpdate(BaseModel):
+    ledger_period: str = Field(pattern=r"^\d{4}-\d{2}$")
+    expense_name: str = Field(min_length=1, max_length=120)
+    display_amount: Decimal = Field(ge=0)
+    remark: str | None = None
+
+
 class MajorExpenseVoucherRead(BaseModel):
     id: str
     store_id: str

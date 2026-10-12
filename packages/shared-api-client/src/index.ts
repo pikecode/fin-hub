@@ -394,6 +394,13 @@ export function createApiClient(options: ApiClientOptions) {
           }),
       },
       majorExpenseVouchers: {
+        update: (id: string, payload: Omit<MajorExpenseVoucherCreate, "store_id">) =>
+          request<MajorExpenseVoucher>(`/api/expense-items/major-expense-vouchers/${id}`, {
+            method: "PATCH",
+            body: JSON.stringify(payload),
+          }),
+        delete: (id: string) =>
+          request<{ ok: boolean }>(`/api/expense-items/major-expense-vouchers/${id}`, { method: "DELETE" }),
         list: (params = "") => request<MajorExpenseVoucher[]>(`/api/expense-items/major-expense-vouchers${params}`),
         create: (payload: MajorExpenseVoucherCreate) =>
           request<MajorExpenseVoucher>("/api/expense-items/major-expense-vouchers", {

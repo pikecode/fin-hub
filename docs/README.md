@@ -5,6 +5,7 @@
 ## 必读入口
 
 - [生产部署指南](operations/production-deployment.md)
+- [增量部署操作流程（后续默认）](operations/incremental-deployment.md)
 - [交付验收与发布检查](operations/preflight-and-release-checklist.md)
 - [脚本说明](runbooks/scripts.md)
 - [API 服务说明](runbooks/api-service.md)
