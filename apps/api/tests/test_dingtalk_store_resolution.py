@@ -110,3 +110,61 @@ def test_manual_categories_preserved_without_stale_or_new_conflict(session):
     sync.sync_expense_line(session, **args)
     assert (item.category_l1, item.category_l2) == ('食材成本', '鸡')
     assert item.sync_conflict_status == 'none'
+
+
+def test_pending_zero_amount_recovers_when_source_amount_is_filled(session):
+    from sqlalchemy import select
+    from app.models import SyncJob, ExpenseItem
+    store = Store(name='待补金额门店')
+    template = ApprovalTemplate(name='食材报销', process_code='pending-amount', is_enabled=True)
+    job = SyncJob(job_type='dingtalk_auto_sync', status='running')
+    session.add_all([store, template, job]); session.flush()
+    raw = {'process_instance_id': 'pending-amount-instance', 'status': 'RUNNING',
+           'create_time': '2026-10-01 10:00:00', 'form_component_values': [
+               {'name': '支出门店', 'value': store.name}, {'name': '金额', 'value': '0'}]}
+    assert sync.sync_real_instance(session, template, job, raw)
+    instance = session.scalar(select(ApprovalInstance).where(ApprovalInstance.dingtalk_instance_id == 'pending-amount-instance'))
+    assert instance.parse_status == 'pending_amount'
+    assert instance.parse_error is None
+    assert sync.approval_needs_detail_resync(instance)
+    assert sync.approval_detail_refresh_due(instance)
+    assert not list(session.scalars(select(ExpenseItem).where(ExpenseItem.approval_instance_id == instance.id)))
+    raw['form_component_values'][1]['value'] = '123.45'
+    assert sync.sync_real_instance(session, template, job, raw)
+    assert instance.parse_status == 'parsed'
+    assert instance.parse_error is None
+    items = list(session.scalars(select(ExpenseItem).where(ExpenseItem.approval_instance_id == instance.id)))
+    assert len(items) == 1 and items[0].amount == Decimal('123.45')
+    raw['form_component_values'][1]['value'] = '0'
+    raw['result'] = 'agree'
+    assert not sync.sync_real_instance(session, template, job, raw)
+    assert instance.parse_error == 'Unable to resolve approval amount'
+
+
+def test_sync_parse_error_details_preserve_snapshot_and_support_old_jobs(client, session):
+    import json
+    from app.models import SyncJob
+    template = ApprovalTemplate(name='异常模板', process_code='parse-issue-test')
+    job = SyncJob(job_type='dingtalk_approval_sync', status='succeeded', failed_count=1)
+    session.add_all([template, job]); session.flush()
+    instance = ApprovalInstance(template_id=template.id, dingtalk_instance_id='parse-issue-instance',
+        approval_no='20261011-test', approval_status='agree', synced_job_id=job.id,
+        parse_error='Missing required fields: store', parse_status='skipped',
+        raw_payload=json.dumps({'_fin_hub_parse': {'store_text': '财务部'}}))
+    session.add(instance); session.commit()
+    url=f'/api/dingtalk/sync-jobs/{job.id}/parse-errors'
+    response=client.get(url)
+    assert response.status_code == 200
+    data=response.json()['data']
+    assert data['historical_snapshot'] is False
+    assert data['items'][0]['source_store'] == '财务部'
+    assert data['items'][0]['reason'] == '无法识别所属门店'
+    assert '明确费用所属门店' in data['items'][0]['suggestion']
+    snapshot=data['items']
+    job.raw_summary=json.dumps({'approval_sync': {'parse_errors': snapshot}})
+    instance.parse_error=None
+    session.commit()
+    data=client.get(url).json()['data']
+    assert data['historical_snapshot'] is True
+    assert data['items'] == snapshot
+    assert client.get('/api/dingtalk/sync-jobs/nonexistent/parse-errors').status_code == 404

@@ -1791,7 +1791,8 @@ def test_auto_sync_advances_approval_watermark_to_completed_window_with_overlap(
     first_watermark = setting.approval_watermark_at
     second_response = client.post("/api/dingtalk/auto-sync/run")
     assert second_response.status_code == 201
-    assert windows[1][0] == int((first_watermark - timedelta(days=setting.approval_overlap_days)).timestamp() * 1000)
+    from datetime import UTC
+    assert windows[1][0] == int((first_watermark - timedelta(days=setting.approval_overlap_days)).replace(tzinfo=UTC).timestamp() * 1000)
 
 
 def test_auto_sync_failure_keeps_approval_watermark_and_window_for_retry(

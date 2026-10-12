@@ -202,3 +202,41 @@ def test_department_depth_limit_still_preserves_store_detection(monkeypatch):
     assert [r.dept_id for r in rows]==['a','b','store']
     assert rows[-1].is_store_candidate
     assert client.list_child_departments.call_count==4
+
+@pytest.mark.parametrize('now, expected', [
+    ('2026-10-09T13:00:00', '2026-10-09T16:00:00'),
+    ('2026-10-09T16:00:00', '2026-10-10T16:00:00'),
+    ('2026-10-09T17:00:00', '2026-10-10T16:00:00'),
+])
+def test_auto_sync_runs_at_daily_beijing_midnight(monkeypatch, now, expected):
+    from datetime import datetime
+    from app.models import DingTalkAutoSyncSetting
+    monkeypatch.setattr(sync, 'utc_now', lambda: datetime.fromisoformat(now))
+    setting = DingTalkAutoSyncSetting(scheduled_time='00:00', interval_minutes=60,
+                                     last_run_at=datetime.fromisoformat(now))
+    sync.refresh_auto_sync_next_run(setting)
+    assert setting.next_run_at == datetime.fromisoformat(expected)
+
+
+def test_long_approval_query_splits_and_resumes_without_losing_empty_windows(monkeypatch):
+    client = DingTalkClient(DingTalkCredentials('key', 'secret'))
+    span = 120 * 24 * 60 * 60 * 1000
+    calls = []
+    def fetch(code, start, end, cursor, size):
+        calls.append((start, end, cursor))
+        if start == 0:
+            return [], None
+        if start == span:
+            return (['middle'], 10) if cursor == 0 else (['middle-last'], None)
+        return ['last'], None
+    monkeypatch.setattr(client, '_list_process_instance_ids_page', fetch)
+    ids, cursor = client.list_process_instance_ids('proc', 0, span*3+1)
+    assert ids == ['middle'] and cursor == 10**12+10
+    ids, cursor = client.list_process_instance_ids('proc', 0, span*3+1, cursor=cursor)
+    assert ids == ['middle-last'] and cursor == 2*10**12
+    ids, cursor = client.list_process_instance_ids('proc', 0, span*3+1, cursor=cursor)
+    assert ids == ['last'] and cursor == 3*10**12
+    ids, cursor = client.list_process_instance_ids('proc', 0, span*3+1, cursor=cursor)
+    assert ids == ['last'] and cursor is None
+    assert all(end-start <= span for start,end,_ in calls)
+    assert calls[2][2] == 10

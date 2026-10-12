@@ -268,9 +268,7 @@ def get_or_create_auto_sync_setting(session: Session) -> DingTalkAutoSyncSetting
 
 
 def refresh_auto_sync_next_run(setting: DingTalkAutoSyncSetting) -> None:
-    if setting.last_run_at and setting.interval_minutes > 0:
-        setting.next_run_at = setting.last_run_at + timedelta(minutes=setting.interval_minutes)
-        return
+    # 按北京时间每天执行一次；旧 interval_minutes 字段仅保留兼容。
     hour, minute = map(int, (setting.scheduled_time or "02:00").split(":"))
     now_utc = utc_now().replace(tzinfo=UTC)
     now_local = now_utc.astimezone(AUTO_SYNC_TIMEZONE)
@@ -1884,8 +1882,8 @@ def pull_template_sample_approval(
     try:
         ids, _next_cursor = client.list_process_instance_ids(
             template.process_code,
-            int(start_at.timestamp() * 1000),
-            int(end_at.timestamp() * 1000),
+            int(start_at.replace(tzinfo=UTC).timestamp() * 1000),
+            int(end_at.replace(tzinfo=UTC).timestamp() * 1000),
             cursor=0,
             size=1,
         )
@@ -3631,19 +3629,25 @@ def sync_real_instance(
         instance.parse_error = f"Approval status is not parsable: {instance.approval_status}"
         instance.last_parsed_at = utc_now()
         return False
-    period = expense_date.strftime("%Y-%m")
-    if session.scalar(select(Ledger).where(Ledger.store_id == store.id, Ledger.period == period)) is None:
-        session.add(Ledger(store_id=store.id, period=period))
-        session.flush()
-
     approval_total = amount or sum((Decimal(row["amount"]) for row in [*expense_rows, *installment_rows]), Decimal("0.00"))
     if approval_total <= 0:
+        if approval_total == 0 and instance.approval_status.lower() in {"running", "new"}:
+            instance.parse_status = "pending_amount"
+            if instance.processing_status != "manual_matched":
+                instance.processing_status = "unparsed"
+            instance.parse_error = None
+            instance.last_parsed_at = utc_now()
+            return True
         instance.parse_status = "skipped"
         if instance.processing_status != "manual_matched":
             instance.processing_status = "unparsed"
         instance.parse_error = "Unable to resolve approval amount"
         instance.last_parsed_at = utc_now()
         return False
+    period = expense_date.strftime("%Y-%m")
+    if session.scalar(select(Ledger).where(Ledger.store_id == store.id, Ledger.period == period)) is None:
+        session.add(Ledger(store_id=store.id, period=period))
+        session.flush()
     rows_to_create = expense_rows or installment_rows or [
         {
             "description": parse_text(raw_instance.get("title") or raw_instance.get("titleName"))
@@ -3778,6 +3782,35 @@ def serialize_sync_cursors(cursors: dict[str, int]) -> str | None:
     if not cursors:
         return None
     return json.dumps({"cursors": cursors}, ensure_ascii=False, sort_keys=True)
+
+
+def sync_job_parse_errors(session: Session, job_id: str) -> list[dict[str, Any]]:
+    rows = session.execute(
+        select(ApprovalInstance, ApprovalTemplate.name)
+        .join(ApprovalTemplate, ApprovalInstance.template_id == ApprovalTemplate.id)
+        .where(ApprovalInstance.synced_job_id == job_id, ApprovalInstance.parse_error.is_not(None))
+        .order_by(ApprovalInstance.approval_no)
+    ).all()
+    items = []
+    for instance, template_name in rows:
+        raw = approval_raw_payload(instance)
+        parsed = raw.get("_fin_hub_parse") or {}
+        error = instance.parse_error or ""
+        if error == "Unable to resolve approval amount":
+            reason, suggestion = "无法取得有效报销金额（金额缺失或不大于零）", "请在钉钉核对汇总金额及明细金额，补齐后重新同步。"
+        elif error.startswith("Missing required fields:"):
+            missing = error.split(":", 1)[1]
+            fields = [label for key, label in (("store", "所属门店"), ("expense_date", "费用日期")) if key in missing]
+            reason = f"无法识别{'、'.join(fields)}"
+            suggestion = "请核对审批单门店与同步门店是否一致，并检查日期及模板字段配置；财务部、采购部等需明确费用所属门店。"
+        elif error.startswith("Approval status is not parsable:"):
+            reason, suggestion = "审批状态不支持生成费用", "请核对审批状态；撤销或拒绝的单据不应计入费用。"
+        else:
+            reason, suggestion = "费用数据解析异常", "请检查审批单字段及模板解析配置。"
+        items.append({"approval_id": instance.id, "approval_no": instance.approval_no or instance.dingtalk_instance_id,
+                      "template_name": template_name, "source_store": parsed.get("store_text") or instance.department_name,
+                      "reason": reason, "suggestion": suggestion, "raw_error": error})
+    return items
 
 
 def normalize_sync_datetime(value: datetime) -> datetime:
@@ -3984,8 +4017,8 @@ def run_approval_sync(
                 try:
                     ids, next_cursor = client.list_process_instance_ids(
                         template.process_code,
-                        int(start_at.timestamp() * 1000),
-                        int(end_at.timestamp() * 1000),
+                        int(start_at.replace(tzinfo=UTC).timestamp() * 1000),
+                        int(end_at.replace(tzinfo=UTC).timestamp() * 1000),
                         cursor=cursor,
                         size=page_size,
                     )
@@ -4156,6 +4189,7 @@ def run_approval_sync(
             "templates": template_summaries,
             "pull_completed": not bool(incomplete_cursors),
             "parse_failed_count": job.failed_count,
+            "parse_errors": sync_job_parse_errors(session, job.id),
             "detail_fetched_count": detail_fetched_count,
             "detail_skipped_count": detail_skipped_count,
             "skipped_missing_approval_count": len(skipped_missing_instance_ids),
@@ -4919,6 +4953,28 @@ def cancel_sync_job(
     session.commit()
     session.refresh(job)
     return ApiEnvelope(data=job)
+
+
+@router.get("/sync-jobs/{job_id}/parse-errors", response_model=ApiEnvelope[dict[str, Any]])
+def read_sync_job_parse_errors(
+    job_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_permission("dingtalk.view")),
+) -> ApiEnvelope[dict[str, Any]]:
+    job = session.get(SyncJob, job_id)
+    if job is None or not job.job_type.startswith("dingtalk_"):
+        raise HTTPException(status_code=404, detail="同步任务不存在")
+    try:
+        summary = json.loads(job.raw_summary or "{}")
+    except (ValueError, TypeError):
+        summary = {}
+    summary = summary if isinstance(summary, dict) else {}
+    approval_summary = summary.get("approval_sync")
+    if isinstance(approval_summary, dict):
+        summary = approval_summary
+    snapshot = summary.get("parse_errors")
+    return ApiEnvelope(data={"items": snapshot if isinstance(snapshot, list) else sync_job_parse_errors(session, job.id),
+                             "historical_snapshot": isinstance(snapshot, list)})
 
 
 @router.get("/sync-jobs", response_model=ApiEnvelope[Page[SyncJobRead]])

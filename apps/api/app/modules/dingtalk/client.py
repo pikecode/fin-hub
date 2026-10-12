@@ -117,6 +117,34 @@ class DingTalkClient:
         cursor: int = 0,
         size: int = 20,
     ) -> tuple[list[str], int | None]:
+        # 钉钉单次列表查询最多 120 天，复合游标保留分段位置。
+        window_ms = 120 * 24 * 60 * 60 * 1000
+        cursor_base = 10**12
+        window_index, page_cursor = divmod(cursor, cursor_base)
+        if start_time_ms >= end_time_ms:
+            raise DingTalkClientError("审批查询结束时间必须晚于开始时间")
+        while start_time_ms + window_index * window_ms < end_time_ms:
+            window_start = start_time_ms + window_index * window_ms
+            window_end = min(window_start + window_ms, end_time_ms)
+            ids, next_cursor = self._list_process_instance_ids_page(
+                process_code, window_start, window_end, page_cursor, size
+            )
+            if next_cursor:
+                return ids, window_index * cursor_base + next_cursor
+            window_index += 1
+            page_cursor = 0
+            if ids:
+                return ids, window_index * cursor_base if window_end < end_time_ms else None
+        return [], None
+
+    def _list_process_instance_ids_page(
+        self,
+        process_code: str,
+        start_time_ms: int,
+        end_time_ms: int,
+        cursor: int,
+        size: int,
+    ) -> tuple[list[str], int | None]:
         page_size = min(max(size, 1), 10)
         data = self._post_oapi_json(
             "/topapi/processinstance/listids",

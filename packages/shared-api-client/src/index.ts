@@ -712,6 +712,10 @@ export function createApiClient(options: ApiClientOptions) {
           method: "POST",
         }),
       listSyncJobs: (params = "") => request<Page<SyncJob>>(`/api/dingtalk/sync-jobs${params}`),
+      readSyncJobParseErrors: (jobId: string) => request<{
+        items: { approval_id: string; approval_no: string; template_name: string; source_store: string | null; reason: string; suggestion: string; raw_error: string }[];
+        historical_snapshot: boolean;
+      }>(`/api/dingtalk/sync-jobs/${encodeURIComponent(jobId)}/parse-errors`),
       readApprovalInstance: (id: string) => request<ApprovalInstance>(`/api/dingtalk/approval-instances/${encodeURIComponent(id)}`),
       listApprovalInstances: (params = "") =>
         request<Page<ApprovalInstance>>(`/api/dingtalk/approval-instances${params}`),

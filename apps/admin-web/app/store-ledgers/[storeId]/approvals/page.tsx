@@ -621,7 +621,8 @@ export default function StoreLedgerApprovalsPage() {
       title: "匹配状态",
       dataIndex: "processing_status",
       width: 100,
-      render: (value: string | null | undefined) => {
+      render: (value: string | null | undefined, record) => {
+        if (record.parse_status === "pending_amount") return <Tag color="gold">待补充金额</Tag>;
         const meta = approvalMatchStatusMeta(value);
         return <Tag color={meta.color}>{meta.label}</Tag>;
       },

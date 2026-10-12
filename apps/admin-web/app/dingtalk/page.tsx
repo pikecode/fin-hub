@@ -469,6 +469,25 @@ function syncJobTypeLabel(type: string) {
   return labels[type] ?? type;
 }
 
+function syncErrorSummary(error: string) {
+  if (/90002|最大qps|请求被暂时限制/.test(error)) return "钉钉接口暂时限流，本次同步未完成，可稍后重试。";
+  return error.length > 100 ? `${error.slice(0, 100)}…` : error;
+}
+
+function SyncErrorDetails({ error }: { error: string }) {
+  return (
+    <div style={{ width: "100%", minWidth: 0, maxWidth: "100%", overflowWrap: "anywhere", whiteSpace: "normal" }}>
+      <Typography.Text type="danger">{syncErrorSummary(error)}</Typography.Text>
+      <details style={{ marginTop: 8 }}>
+        <summary style={{ color: "#64748b", cursor: "pointer", fontSize: 12 }}>查看完整错误</summary>
+        <Typography.Paragraph copyable={{ text: error }} style={{ margin: "8px 0 0", padding: 12, background: "#fff7f7", borderRadius: 6, fontSize: 12, maxHeight: 180, overflowY: "auto", overflowWrap: "anywhere", whiteSpace: "pre-wrap" }}>
+          {error}
+        </Typography.Paragraph>
+      </details>
+    </div>
+  );
+}
+
 function parseSyncJobSummary(job: SyncJob): Record<string, any> | null {
   if (!job.raw_summary) return null;
   try {
@@ -622,6 +641,24 @@ function parseApprovalNumberList(value: string) {
 }
 
 export default function DingTalkPage() {
+  const [parseErrorJob, setParseErrorJob] = useState<SyncJob | null>(null);
+  const [parseErrorDetails, setParseErrorDetails] = useState<Awaited<ReturnType<typeof apiClient.dingtalk.readSyncJobParseErrors>> | null>(null);
+  const [parseErrorsLoading, setParseErrorsLoading] = useState(false);
+  const [parseErrorsRequestError, setParseErrorsRequestError] = useState<string | null>(null);
+
+  async function showParseErrors(job: SyncJob) {
+    setParseErrorJob(job);
+    setParseErrorDetails(null);
+    setParseErrorsRequestError(null);
+    setParseErrorsLoading(true);
+    try {
+      setParseErrorDetails(await apiClient.dingtalk.readSyncJobParseErrors(job.id));
+    } catch (error) {
+      setParseErrorsRequestError(dingtalkPageErrorMessage(error, "无法加载解析异常明细"));
+    } finally {
+      setParseErrorsLoading(false);
+    }
+  }
   const [config, setConfig] = useState<DingTalkConfig | null>(null);
   const [autoSyncSetting, setAutoSyncSetting] = useState<DingTalkAutoSyncSetting | null>(null);
   const [templates, setTemplates] = useState<ApprovalTemplate[]>([]);
@@ -768,7 +805,8 @@ export default function DingTalkPage() {
         dataIndex: "processing_status",
         title: "匹配状态",
         width: 110,
-        render: (value: string | null | undefined) => {
+        render: (value: string | null | undefined, record: { parse_status?: string | null }) => {
+          if (record.parse_status === "pending_amount") return <Tag color="gold">待补充金额</Tag>;
           const meta = approvalMatchStatusMeta(value);
           return <Tag color={meta.color}>{meta.label}</Tag>;
         },
@@ -1143,7 +1181,7 @@ export default function DingTalkPage() {
       if (loadedTabKeys.includes("templates")) await loadTemplatesTab(true);
       if (loadedTabKeys.includes("instances")) await loadInstancesTab(true);
       if (result.job.status === "failed") {
-        message.error(result.job.error_message || "自动同步执行失败");
+        message.error(syncErrorSummary(result.job.error_message || "自动同步执行失败"));
       } else {
         message.success(
           `自动同步完成：审批处理 ${result.job.processed_count} 条，成功 ${result.job.success_count} 条，失败 ${result.job.failed_count} 条`,
@@ -1213,7 +1251,7 @@ export default function DingTalkPage() {
     }
     syncForm.setFieldsValue({
       template_id: instanceTemplateFilterId ?? selectedTemplate?.id,
-      start_at: dayjs().subtract(365, "day"),
+      start_at: dayjs().subtract(30, "day"),
       end_at: undefined,
       sync_to_now: true,
       skip_existing: true,
@@ -1227,7 +1265,7 @@ export default function DingTalkPage() {
     }
     syncForm.setFieldsValue({
       template_id: undefined,
-      start_at: dayjs().subtract(365, "day"),
+      start_at: dayjs().subtract(30, "day"),
       end_at: undefined,
       sync_to_now: true,
       skip_existing: true,
@@ -1881,14 +1919,18 @@ export default function DingTalkPage() {
     { key: "success_count", title: "成功", dataIndex: "success_count", width: 72 },
     { key: "failed_count", title: "失败", dataIndex: "failed_count", width: 72 },
     {
+      key: "parse_errors", title: "解析异常", width: 130,
+      render: (_, record) => record.failed_count > 0 && (record.error_message?.includes("费用解析异常") || Number(parseSyncJobSummary(record)?.parse_failed_count || parseSyncJobSummary(record)?.approval_sync?.parse_failed_count) > 0)
+        ? <Button type="link" disabled={parseErrorsLoading} onClick={() => void showParseErrors(record)}>查看解析异常</Button>
+        : "-",
+    },
+    {
       key: "error_message",
       title: "结果",
       width: 260,
       render: (_, record) =>
         record.error_message ? (
-          <Typography.Text type="danger" ellipsis={{ tooltip: record.error_message }}>
-            {record.error_message}
-          </Typography.Text>
+          <SyncErrorDetails error={record.error_message} />
         ) : (
           renderSyncJobSummary(record)
         ),
@@ -1960,9 +2002,9 @@ export default function DingTalkPage() {
       dataIndex: "approval_status",
       filters: approvalStatusFilters,
       filteredValue: instanceStatusFilters,
-      render: (value) => {
+      render: (value, record) => {
         const meta = approvalStatusMeta(value);
-        return <Tag color={meta.color}>{meta.label}</Tag>;
+        return <Space size={4}><Tag color={meta.color}>{meta.label}</Tag>{record.parse_status === "pending_amount" ? <Tag color="gold">待补充金额</Tag> : null}</Space>;
       },
     },
     { key: "submit_at", title: "提交时间", dataIndex: "submit_at", render: (value) => value?.replace("T", " ").slice(0, 16) || "-" },
@@ -2001,7 +2043,7 @@ export default function DingTalkPage() {
       }
     >
       {errorMessage ? (
-        <Alert className="dashboard-alert" message={errorMessage} type="warning" showIcon />
+        <Alert className="dashboard-alert" message={syncErrorSummary(errorMessage)} description={<SyncErrorDetails error={errorMessage} />} type="warning" showIcon style={{ minWidth: 0, overflow: "hidden" }} />
       ) : null}
       {activeSyncJob ? (
         <Alert
@@ -2169,8 +2211,11 @@ export default function DingTalkPage() {
                       <Tag>
                         下次计划 {formatBeijingDateTime(autoSyncSetting?.next_run_at)}
                       </Tag>
-                      {autoSyncSetting?.last_error ? <Tag color="red">{autoSyncSetting.last_error}</Tag> : null}
                     </Space>
+
+                    {autoSyncSetting?.last_error ? (
+                      <Alert type="error" showIcon message="上次自动同步未完成" description={<SyncErrorDetails error={autoSyncSetting.last_error} />} style={{ minWidth: 0, overflow: "hidden" }} />
+                    ) : null}
 
                     <Alert
                       type="info"
@@ -2704,6 +2749,21 @@ export default function DingTalkPage() {
           </Space>
         ) : null}
       </Drawer>
+      <Modal title="费用解析异常明细" open={Boolean(parseErrorJob)} onCancel={() => setParseErrorJob(null)} footer={null} width={1100}>
+        <Space direction="vertical" size={16} style={{ width: "100%", minWidth: 0 }}>
+          <Typography.Text type="secondary">执行时间：{formatBeijingDateTime(parseErrorJob?.created_at)}。审批原始数据已保存，以下问题需要核对后再同步。</Typography.Text>
+          {parseErrorsRequestError ? <Alert type="error" showIcon message={parseErrorsRequestError} action={<Button onClick={() => parseErrorJob && void showParseErrors(parseErrorJob)}>重试</Button>} /> : null}
+          {parseErrorDetails && !parseErrorDetails.historical_snapshot ? <Alert type="info" showIcon message="此历史任务未保存异常快照，以下为仍关联该任务的当前异常；已修复或再次同步的记录可能不再显示。" /> : null}
+          <Table rowKey="approval_id" loading={parseErrorsLoading} dataSource={parseErrorDetails?.items || []} pagination={{ defaultPageSize: 10, showSizeChanger: true }} scroll={{ x: 950 }} locale={{ emptyText: parseErrorsRequestError ? "异常明细加载失败" : "暂无可查看的解析异常" }}
+            columns={[
+              { title: "审批编号", dataIndex: "approval_no", width: 220, render: (value) => <Typography.Text copyable>{value}</Typography.Text> },
+              { title: "审批模板", dataIndex: "template_name", width: 150 },
+              { title: "原始门店 / 部门", dataIndex: "source_store", width: 180, render: (value) => <span style={{ overflowWrap: "anywhere" }}>{value || "未填写"}</span> },
+              { title: "异常原因", dataIndex: "reason", width: 200, render: (value) => <Typography.Text type="danger" style={{ overflowWrap: "anywhere" }}>{value}</Typography.Text> },
+              { title: "处理建议", dataIndex: "suggestion", width: 260, render: (value) => <span style={{ overflowWrap: "anywhere" }}>{value}</span> },
+            ]} />
+        </Space>
+      </Modal>
       <Modal
         title={imagePreview?.title || "图片预览"}
         open={Boolean(imagePreview)}
