@@ -213,3 +213,45 @@ def test_local_development_does_not_run_shared_database_scheduler(monkeypatch):
     assert should_start_background_jobs() is False
     monkeypatch.setattr(settings, "app_env", "production")
     assert should_start_background_jobs() is True
+
+
+def test_department_rate_limit_uses_snapshot_continues_and_retries(session, monkeypatch):
+    from fastapi import HTTPException
+    from app.models import DingTalkDepartment
+    _, setting = template_and_setting(session)
+    setting.sync_departments = True
+    session.add(DingTalkDepartment(dept_id='1', name='已有部门', path='已有部门', is_active=True))
+    session.commit()
+    monkeypatch.setattr(sync, 'pull_departments_core', Mock(side_effect=HTTPException(502, 'subcode=90002,busy')))
+    stores_sync = Mock()
+    monkeypatch.setattr(sync, 'sync_departments_to_stores_core', stores_sync)
+    def approval_success(session, *, job, **kwargs):
+        job.status = 'succeeded'
+        job.finished_at = utc_now()
+        job.raw_summary = json.dumps({'pull_completed': True})
+        session.commit()
+    approvals = Mock(side_effect=approval_success)
+    monkeypatch.setattr(sync, 'run_approval_sync', approvals)
+    for expected in (1, 2, 3, 3):
+        result = sync.execute_auto_sync(session, setting, started_by='test')
+        summary = json.loads(result.job.raw_summary)
+        assert summary['retry_count'] == expected, result.job.error_message
+        assert result.job.status == 'failed'
+        assert setting.approval_watermark_at == result.job.request_end_at
+    assert approvals.call_count == 4
+    stores_sync.assert_not_called()
+    assert setting.next_run_at > utc_now() + timedelta(hours=1)
+
+
+def test_department_failure_without_snapshot_stops_approvals(session, monkeypatch):
+    from fastapi import HTTPException
+    _, setting = template_and_setting(session)
+    setting.sync_departments = True
+    session.commit()
+    monkeypatch.setattr(sync, 'pull_departments_core', Mock(side_effect=HTTPException(502, 'subcode=90002,busy')))
+    approvals = Mock()
+    monkeypatch.setattr(sync, 'run_approval_sync', approvals)
+    result = sync.execute_auto_sync(session, setting, started_by='test')
+    assert result.job.status == 'failed'
+    assert json.loads(result.job.raw_summary)['retry_count'] == 1, result.job.error_message
+    approvals.assert_not_called()

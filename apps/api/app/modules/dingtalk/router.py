@@ -259,7 +259,7 @@ def get_or_create_auto_sync_setting(session: Session) -> DingTalkAutoSyncSetting
     setting = session.scalar(select(DingTalkAutoSyncSetting).order_by(DingTalkAutoSyncSetting.created_at.asc()))
     if setting is None:
         # 默认时间设置为 02:15，避开整点时刻的钉钉 API 限流高峰
-        setting = DingTalkAutoSyncSetting(scheduled_time="02:15", window_days=120, max_pages=500)
+        setting = DingTalkAutoSyncSetting(scheduled_time="02:17", window_days=120, max_pages=500)
         refresh_auto_sync_next_run(setting)
         session.add(setting)
         session.commit()
@@ -3471,9 +3471,42 @@ def mark_removed_expense_lines(session: Session, instance: ApprovalInstance, act
 
 def approval_source_status(raw_instance: dict[str, Any]) -> str:
     status = parse_text(raw_instance.get("status"))
-    if status and status.lower() in TERMINAL_NON_EXPENSE_STATUSES:
+    if status and status.lower() in (TERMINAL_NON_EXPENSE_STATUSES | {"running", "new"}):
         return status
     return parse_text(raw_instance.get("result") or status) or "unknown"
+
+
+
+def parsed_revision_for_approval(session: Session, instance: ApprovalInstance, raw: dict[str, Any]) -> ApprovalInstance | None:
+    """Only explicit, reciprocal DingTalk revision links may suppress an original.
+
+    Never merge by business number alone, or suppress a record with existing
+    expenses: that requires a separate reconciliation of financial history.
+    """
+    linked_ids = raw.get("attached_process_instance_ids")
+    if not isinstance(linked_ids, list) or not linked_ids or not instance.approval_no:
+        return None
+    if session.scalar(select(ExpenseItem.id).where(or_(
+        ExpenseItem.approval_instance_id == instance.id,
+        ExpenseItem.source_document_id == instance.dingtalk_instance_id,
+        ExpenseItem.source_document_id.like(f"{instance.dingtalk_instance_id}:%"),
+    )).limit(1)):
+        return None
+    for revised in session.scalars(select(ApprovalInstance).where(
+        ApprovalInstance.dingtalk_instance_id.in_([x for x in linked_ids if isinstance(x, str)]),
+        ApprovalInstance.approval_no == instance.approval_no,
+        ApprovalInstance.template_id == instance.template_id,
+        ApprovalInstance.parse_status == "parsed",
+        ApprovalInstance.parse_error.is_(None),
+    )):
+        revised_raw = approval_raw_payload(revised)
+        if (revised_raw.get("main_process_instance_id") == instance.dingtalk_instance_id
+                and str(revised_raw.get("biz_action", "")).upper() == "MODIFY"
+                and approval_source_status(revised_raw).lower() in COMPLETED_APPROVAL_STATUSES
+                and session.scalar(select(ExpenseItem.id).where(
+                    ExpenseItem.approval_instance_id == revised.id).limit(1))):
+            return revised
+    return None
 
 
 def sync_real_instance(
@@ -3593,6 +3626,19 @@ def sync_real_instance(
             instance.processing_status = "unparsed"
         instance.parse_error = None
         instance.last_parsed_at = utc_now()
+        return True
+    revision = parsed_revision_for_approval(session, instance, raw_instance)
+    if revision is not None:
+        instance.parse_status = "superseded"
+        instance.parse_error = None
+        if instance.processing_status != "manual_matched":
+            instance.processing_status = "unparsed"
+        instance.last_parsed_at = utc_now()
+        instance.raw_payload = json.dumps({**raw_instance, "_fin_hub_parse": {
+            "store_text": store_text, "superseded_by": revision.id,
+            "superseded_by_dingtalk_id": revision.dingtalk_instance_id,
+            "expense_parse_status": "superseded", "created_expense_ids": [],
+        }}, ensure_ascii=False)
         return True
     if store is None or expense_date is None:
         missing_fields = []
@@ -4245,6 +4291,15 @@ def execute_auto_sync(
     *,
     started_by: str,
 ) -> DingTalkAutoSyncRunResult:
+    previous_retry_count = 0
+    if setting.last_job_id:
+        previous_job = session.get(SyncJob, setting.last_job_id)
+        if previous_job and previous_job.finished_at and utc_now() - previous_job.finished_at < timedelta(hours=6):
+            try:
+                previous_retry_count = int(json.loads(previous_job.raw_summary or "{}").get("retry_count", 0))
+            except (ValueError, TypeError, AttributeError):
+                pass
+    stage_warnings: list[str] = []
     job = SyncJob(
         job_type="dingtalk_auto_sync",
         status=SyncJobStatus.RUNNING.value,
@@ -4297,21 +4352,32 @@ def execute_auto_sync(
                 root_dept_id=setting.root_dept_id,
                 max_depth=setting.max_depth,
             )
-            department_pull = pull_departments_core(
-                session,
-                root_dept_id=setting.root_dept_id,
-                max_depth=setting.max_depth,
-            )
-            update_progress("departments_pull", "succeeded", pulled_count=department_pull.pulled_count)
-            update_progress("stores_sync", "running")
-            department_sync = sync_departments_to_stores_core(session)
-            update_progress(
-                "stores_sync",
-                "succeeded",
-                created_count=department_sync.created_count,
-                updated_count=department_sync.updated_count,
-                skipped_count=department_sync.skipped_count,
-            )
+            try:
+                department_pull = pull_departments_core(
+                    session,
+                    root_dept_id=setting.root_dept_id,
+                    max_depth=setting.max_depth,
+                )
+                update_progress("departments_pull", "succeeded", pulled_count=department_pull.pulled_count)
+                update_progress("stores_sync", "running")
+                department_sync = sync_departments_to_stores_core(session)
+                update_progress(
+                    "stores_sync",
+                    "succeeded",
+                    created_count=department_sync.created_count,
+                    updated_count=department_sync.updated_count,
+                    skipped_count=department_sync.skipped_count,
+                )
+            except HTTPException as exc:
+                # Fetch completes before local upserts: a remote failure leaves the
+                # last complete department snapshot intact. Never sync partial data.
+                if exc.status_code != 502 or not session.scalar(
+                    select(DingTalkDepartmentModel.id).where(DingTalkDepartmentModel.is_active.is_(True)).limit(1)
+                ):
+                    raise
+                warning = f"部门刷新失败，沿用已有部门数据继续审批同步：{exc.detail}"
+                stage_warnings.append(warning)
+                update_progress("departments_pull", "warning", error=warning, using_cached_departments=True)
 
         if setting.sync_templates:
             update_progress("templates_sync", "running")
@@ -4398,8 +4464,14 @@ def execute_auto_sync(
             job.status = SyncJobStatus.SUCCEEDED.value
             job.finished_at = utc_now()
 
+        if stage_warnings:
+            job.status = SyncJobStatus.FAILED.value
+            job.error_message = "；".join(stage_warnings + ([job.error_message] if job.error_message else []))
+            job.finished_at = utc_now()
+
         job.raw_summary = json.dumps(
             {
+                "stage_warnings": stage_warnings,
                 "department_pull": department_pull_summary(department_pull),
                 "department_sync": {
                     "created_count": department_sync.created_count,
@@ -4455,6 +4527,20 @@ def execute_auto_sync(
     setting.last_run_at = utc_now()
     setting.last_job_id = job.id
     refresh_auto_sync_next_run(setting)
+    # Bounded compensation for transport throttling only; ordinary daily
+    # scheduling and data-parse warnings must not become periodic retries.
+    summary = json.loads(job.raw_summary or "{}")
+    throttled = DingTalkClient.is_rate_limit_error(None, job.error_message or "")
+    retry_count = previous_retry_count
+    if throttled and retry_count < 3:
+        retry_count += 1
+        setting.next_run_at = utc_now() + timedelta(minutes=(15, 30, 60)[retry_count - 1])
+        summary["retry_scheduled_at"] = setting.next_run_at.isoformat()
+    elif not throttled:
+        retry_count = 0
+    summary["retry_count"] = retry_count
+    summary["rate_limited"] = throttled
+    job.raw_summary = json.dumps(summary, ensure_ascii=False)
     write_audit_log(
         session,
         actor=started_by,

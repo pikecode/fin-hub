@@ -806,6 +806,7 @@ export default function DingTalkPage() {
         title: "匹配状态",
         width: 110,
         render: (value: string | null | undefined, record: { parse_status?: string | null }) => {
+          if (record.parse_status === "superseded") return <Tag>已修订替代</Tag>;
           if (record.parse_status === "pending_amount") return <Tag color="gold">待补充金额</Tag>;
           const meta = approvalMatchStatusMeta(value);
           return <Tag color={meta.color}>{meta.label}</Tag>;
@@ -2004,7 +2005,7 @@ export default function DingTalkPage() {
       filteredValue: instanceStatusFilters,
       render: (value, record) => {
         const meta = approvalStatusMeta(value);
-        return <Space size={4}><Tag color={meta.color}>{meta.label}</Tag>{record.parse_status === "pending_amount" ? <Tag color="gold">待补充金额</Tag> : null}</Space>;
+        return <Space size={4}><Tag color={meta.color}>{meta.label}</Tag>{record.parse_status === "pending_amount" ? <Tag color="gold">待补充金额</Tag> : record.parse_status === "superseded" ? <Tag>已修订替代</Tag> : null}</Space>;
       },
     },
     { key: "submit_at", title: "提交时间", dataIndex: "submit_at", render: (value) => value?.replace("T", " ").slice(0, 16) || "-" },

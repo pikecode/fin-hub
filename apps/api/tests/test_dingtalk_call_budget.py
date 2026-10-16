@@ -240,3 +240,36 @@ def test_long_approval_query_splits_and_resumes_without_losing_empty_windows(mon
     assert ids == ['last'] and cursor is None
     assert all(end-start <= span for start,end,_ in calls)
     assert calls[2][2] == 10
+
+
+@pytest.mark.parametrize('code,message', [
+    (90002, 'busy'), (90018, 'busy'),
+    (88, 'ding talk error[subcode=90002,submsg=busy]'),
+])
+def test_rate_limit_wrapped_codes_retry(monkeypatch, code, message):
+    client = DingTalkClient(DingTalkCredentials('key', 'secret'))
+    monkeypatch.setattr(client, 'get_access_token', lambda: 'token')
+    posts = Mock(side_effect=[response('https://example.com', {'errcode': code, 'errmsg': message}),
+                              response('https://example.com', {'errcode': 0, 'result': []})])
+    waits = Mock()
+    monkeypatch.setattr(client_module.httpx, 'post', posts)
+    monkeypatch.setattr(client_module, 'sleep', waits)
+    client.list_child_departments()
+    assert posts.call_count == 2
+    assert 2.5 <= waits.call_args.args[0] <= 3.5
+
+
+def test_rate_limit_retry_bounded_and_other_errors_not_retried(monkeypatch):
+    client = DingTalkClient(DingTalkCredentials('key', 'secret'))
+    monkeypatch.setattr(client, 'get_access_token', lambda: 'token')
+    posts = Mock(return_value=response('https://example.com', {'errcode': 88, 'errmsg': 'subcode=90002,busy'}))
+    monkeypatch.setattr(client_module.httpx, 'post', posts)
+    monkeypatch.setattr(client_module, 'sleep', Mock())
+    with pytest.raises(client_module.DingTalkClientError):
+        client.list_child_departments()
+    assert posts.call_count == 6
+    posts.reset_mock()
+    posts.return_value = response('https://example.com', {'errcode': 88, 'errmsg': 'permission denied'})
+    with pytest.raises(client_module.DingTalkClientError):
+        client.list_child_departments()
+    assert posts.call_count == 1

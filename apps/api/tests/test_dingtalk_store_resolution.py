@@ -137,6 +137,7 @@ def test_pending_zero_amount_recovers_when_source_amount_is_filled(session):
     assert len(items) == 1 and items[0].amount == Decimal('123.45')
     raw['form_component_values'][1]['value'] = '0'
     raw['result'] = 'agree'
+    raw['status'] = 'COMPLETED'
     assert not sync.sync_real_instance(session, template, job, raw)
     assert instance.parse_error == 'Unable to resolve approval amount'
 
@@ -168,3 +169,53 @@ def test_sync_parse_error_details_preserve_snapshot_and_support_old_jobs(client,
     assert data['historical_snapshot'] is True
     assert data['items'] == snapshot
     assert client.get('/api/dingtalk/sync-jobs/nonexistent/parse-errors').status_code == 404
+
+
+def test_running_result_agree_keeps_zero_amount_pending(session):
+    from sqlalchemy import select
+    from app.models import SyncJob, ExpenseItem
+    store = Store(name='流程未结束门店')
+    template = ApprovalTemplate(name='食材报销', process_code='running-result')
+    job = SyncJob(job_type='dingtalk_approval_reparse', status='running')
+    session.add_all([store, template, job]); session.flush()
+    raw = {'process_instance_id': 'running-result', 'status': 'RUNNING', 'result': 'agree',
+           'create_time': '2026-10-15 10:00:00', 'form_component_values': [
+               {'name': '支出门店', 'value': store.name}, {'name': '金额', 'value': '0'}]}
+    assert sync.sync_real_instance(session, template, job, raw)
+    instance = session.scalar(select(ApprovalInstance).where(ApprovalInstance.dingtalk_instance_id == 'running-result'))
+    assert instance.approval_status.lower() == 'running'
+    assert instance.parse_status == 'pending_amount' and instance.parse_error is None
+    assert sync.approval_detail_refresh_due(instance)
+    assert not list(session.scalars(select(ExpenseItem).where(ExpenseItem.approval_instance_id == instance.id)))
+    raw['status'] = 'COMPLETED'
+    assert not sync.sync_real_instance(session, template, job, raw)
+    assert instance.parse_error == 'Unable to resolve approval amount'
+
+
+def test_explicit_parsed_revision_supersedes_original_without_duplicate_cost(session):
+    import json
+    from sqlalchemy import select
+    from app.models import SyncJob, ExpenseItem
+    store = Store(name='修订归属门店')
+    template = ApprovalTemplate(name='日常报销', process_code='revision')
+    job = SyncJob(job_type='dingtalk_approval_reparse', status='running')
+    session.add_all([store, template, job]); session.flush()
+    original = {'process_instance_id': 'original', 'business_id': 'same-no', 'status': 'COMPLETED', 'result': 'agree',
+                'attached_process_instance_ids': ['revised'], 'create_time': '2026-06-29 10:00:00',
+                'form_component_values': [{'name': '支出门店', 'value': '采购部'}, {'name': '金额', 'value': '100'}]}
+    revised = {**original, 'process_instance_id': 'revised', 'main_process_instance_id': 'original',
+               'biz_action': 'MODIFY', 'attached_process_instance_ids': [],
+               'form_component_values': [{'name': '支出门店', 'value': store.name}, {'name': '金额', 'value': '100'}]}
+    assert sync.sync_real_instance(session, template, job, revised)
+    session.flush()
+    assert sync.sync_real_instance(session, template, job, original)
+    source = session.scalar(select(ApprovalInstance).where(ApprovalInstance.dingtalk_instance_id == 'original'))
+    assert source.parse_status == 'superseded' and source.parse_error is None
+    assert json.loads(source.raw_payload)['_fin_hub_parse']['superseded_by_dingtalk_id'] == 'revised'
+    assert not list(session.scalars(select(ExpenseItem).where(ExpenseItem.approval_instance_id == source.id)))
+    # A same-number/attached record alone is insufficient: reciprocal revision proof is required.
+    target = session.scalar(select(ApprovalInstance).where(ApprovalInstance.dingtalk_instance_id == 'revised'))
+    bad = json.loads(target.raw_payload); bad.pop('main_process_instance_id'); target.raw_payload = json.dumps(bad)
+    session.flush()
+    assert not sync.sync_real_instance(session, template, job, original)
+    assert source.parse_error == 'Missing required fields: store'

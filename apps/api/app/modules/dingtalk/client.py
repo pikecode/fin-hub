@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from time import sleep, monotonic
 from threading import Lock
 from hashlib import sha256
+from random import uniform
 from math import isfinite
 from typing import Any
 
@@ -240,9 +241,16 @@ class DingTalkClient:
             raise DingTalkClientError("DingTalk response is not a JSON object")
         return data
 
+    @staticmethod
+    def is_rate_limit_error(code: Any, message: str = "") -> bool:
+        import re
+        return str(code) in {"90002", "90018"} or bool(
+            re.search(r"(?:subcode|errcode)\s*[=:]\s*(?:90002|90018)\b", message, re.I)
+        )
+
     def _post_oapi_json(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         last_error: DingTalkClientError | None = None
-        for attempt in range(3):
+        for attempt in range(6):
             token = self.get_access_token()
             response = httpx.post(
                 f"{self.oapi_base_url}{path}",
@@ -256,6 +264,8 @@ class DingTalkClient:
                 return data
 
             errmsg = data.get("errmsg") or data.get("sub_msg") or f"DingTalk API error: {data}"
+            if self.is_rate_limit_error(errcode, errmsg) and not self.is_rate_limit_error(None, errmsg):
+                errmsg = f"errcode={errcode}: {errmsg}"
             last_error = DingTalkClientError(errmsg)
 
             # A revoked/expired token is refreshed once, independently of QPS retry.
@@ -264,17 +274,15 @@ class DingTalkClient:
                 continue
 
             # 针对 90002 (QPS 限流) 错误的特殊处理
-            if str(errcode) == "90002" and attempt < 2:
+            if self.is_rate_limit_error(errcode, errmsg) and attempt < 5:
                 # 尝试从错误消息中解析限流结束时间
                 wait_time = self._parse_rate_limit_wait_time(errmsg)
-                if wait_time is None:
-                    # 如果无法解析，使用指数退避策略
-                    wait_time = min(5.0 * (2 ** attempt), 60.0)
-                sleep(wait_time)
+                wait_time = min(30.0, max(wait_time or 0, 2.0 * (2 ** attempt)))
+                sleep(wait_time + uniform(0.5, 1.5))
                 continue
 
             # 其他错误或最后一次重试失败，直接抛出
-            if attempt == 2 or str(errcode) != "90002":
+            if attempt == 5 or not self.is_rate_limit_error(errcode, errmsg):
                 break
 
         if last_error is not None:
