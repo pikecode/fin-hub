@@ -287,6 +287,18 @@ export default function RevenuePage() {
       });
   }, [channels, records]);
   const recordChannelNames = useMemo(() => new Set(records.map((record) => record.channel)), [records]);
+  const monthlyTotals = useMemo(() => batchEditRows.reduce((total, row) => {
+    if (isRevenueEntryRowEmpty(row)) return total;
+    const gross = Number(row.gross_amount || 0);
+    const net = Number(row.net_amount || row.gross_amount || 0);
+    if (!Number.isFinite(gross) || !Number.isFinite(net)) return total;
+    return {
+      grossCents: total.grossCents + Math.round(gross * 100),
+      netCents: total.netCents + Math.round(net * 100),
+      feeCents: total.feeCents + Math.round(Number(calculateFee(gross, net)) * 100),
+    };
+  }, { grossCents: 0, netCents: 0, feeCents: 0 }), [batchEditRows]);
+
   const batchEditColumns = useMemo(() => buildEntryColumns(batchEditRows, setBatchEditRows, isEditing), [batchEditRows, focusedEntryCell, isEditing]);
   const hasUnsavedBatchEdit = isEditing && isBatchEditDirty;
 
@@ -809,9 +821,14 @@ export default function RevenuePage() {
                     </Button>
                   </div>
                   <div className="revenue-channel-card__amount">
+                    <Typography.Text type="secondary" className="revenue-channel-card__metric-label">经营收入</Typography.Text>
                     <MoneyDisplay value={summary.grossAmount} size="large" />
                   </div>
-                  <Space size={20} style={{ marginTop: 10 }}>
+                  <div className="revenue-channel-card__net">
+                    <Typography.Text type="secondary">实收金额</Typography.Text>
+                    <MoneyDisplay value={summary.netAmount} />
+                  </div>
+                  <div className="revenue-channel-card__fee-metrics">
                     <Statistic title="手续费" value={summary.feeAmount} precision={2} prefix="¥" />
                     <Statistic
                       title="手续费率"
@@ -819,7 +836,7 @@ export default function RevenuePage() {
                       precision={2}
                       suffix="%"
                     />
-                  </Space>
+                  </div>
                 </Card>
               );
             })}
@@ -893,6 +910,24 @@ export default function RevenuePage() {
             pagination={false}
             scroll={{ x: 980 }}
             className="revenue-entry-table"
+            summary={() => selectedChannel ? (
+              <Table.Summary fixed="top">
+                <Table.Summary.Row className="revenue-monthly-summary">
+                  <Table.Summary.Cell index={0}>
+                    <Typography.Text strong>月统计</Typography.Text>
+                    <div className="revenue-monthly-summary__period">{activeLedgerPeriod}</div>
+                  </Table.Summary.Cell>
+                  <Table.Summary.Cell index={1}><MoneyDisplay value={monthlyTotals.grossCents / 100} /></Table.Summary.Cell>
+                  <Table.Summary.Cell index={2}><MoneyDisplay value={monthlyTotals.netCents / 100} /></Table.Summary.Cell>
+                  <Table.Summary.Cell index={3}>{isEditing ? <Tag color="processing">编辑预览</Tag> : "—"}</Table.Summary.Cell>
+                  <Table.Summary.Cell index={4} align="right"><MoneyDisplay value={monthlyTotals.feeCents / 100} /></Table.Summary.Cell>
+                  <Table.Summary.Cell index={5} align="right">
+                    {calculateFeeRate(monthlyTotals.grossCents, monthlyTotals.feeCents)}
+                  </Table.Summary.Cell>
+                  <Table.Summary.Cell index={6} />
+                </Table.Summary.Row>
+              </Table.Summary>
+            ) : undefined}
             sticky
           />
         </Card>

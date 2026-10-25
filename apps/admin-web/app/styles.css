@@ -3778,6 +3778,53 @@ select,
   line-height: 1.15;
 }
 
+.revenue-channel-card__metric-label.ant-typography {
+  margin-bottom: 5px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.revenue-channel-card__net {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid rgba(100, 116, 139, 0.15);
+  font-size: 12px;
+}
+
+.revenue-channel-card__fee-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.revenue-channel-card__fee-metrics .ant-statistic-title {
+  font-size: 12px;
+}
+
+.revenue-channel-card__fee-metrics .ant-statistic-content {
+  font-size: 16px;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.revenue-entry-table .revenue-monthly-summary > td {
+  background: #edf8f5;
+  border-bottom: 1px solid #c6e8de;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.revenue-monthly-summary__period {
+  margin-top: 2px;
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 400;
+}
+
 .revenue-detail-edit-button.ant-btn-primary {
   border-color: var(--primary-600);
   background: linear-gradient(180deg, var(--primary-500) 0%, var(--primary-600) 100%);
