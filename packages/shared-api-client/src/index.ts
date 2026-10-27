@@ -1,4 +1,8 @@
+import type { ApprovalAccountingPlan } from "@fin-hub/shared-types";
+import type { DividendOpeningBalance, DividendOpeningUpdate } from "@fin-hub/shared-types";
+import type { FinancialReportSupplement, FinancialReportAppendix, DividendFundingSetting } from "@fin-hub/shared-types";
 import type {
+  BankPaymentSettlementList, BankPaymentSettlementDetail, BankPaymentSettlementCandidate,
   ApiEnvelope,
   ApprovalInstance,
   ApprovalDiagnosisResult,
@@ -460,6 +464,15 @@ export function createApiClient(options: ApiClientOptions) {
           method: "POST",
         }),
     },
+    bankPaymentSettlements: {
+      list: (storeId: string, status = "pending", page = 1, pageSize = 12) =>
+        request<BankPaymentSettlementList>(`/api/bank-payment-settlements?${new URLSearchParams({ store_id: storeId, status, page: String(page), page_size: String(pageSize) })}`),
+      detail: (id: string) => request<BankPaymentSettlementDetail>(`/api/bank-payment-settlements/${id}`),
+      candidates: (id: string, search = "") => request<BankPaymentSettlementCandidate[]>(`/api/bank-payment-settlements/${id}/candidates?${new URLSearchParams({counterparty_name: search})}`),
+      add: (id: string, ids: string[]) => request<BankPaymentSettlementDetail>(`/api/bank-payment-settlements/${id}/links`, { method: "POST", body: JSON.stringify({ bank_transaction_ids: ids }) }),
+      remove: (id: string, linkId: string) => request<BankPaymentSettlementDetail>(`/api/bank-payment-settlements/${id}/links/${linkId}`, { method: "DELETE" }),
+      complete: (id: string, remark: string, confirmDifference: boolean) => request<BankPaymentSettlementDetail>(`/api/bank-payment-settlements/${id}/complete`, { method: "POST", body: JSON.stringify({ remark, confirm_difference: confirmDifference }) }),
+    },
     bankTransactions: {
       list: (params = "") => request<Page<BankTransaction>>(`/api/bank-transactions${params}`),
       summary: (params = "") => request<BankTransactionSummary>(`/api/bank-transactions/summary${params}`),
@@ -529,6 +542,7 @@ export function createApiClient(options: ApiClientOptions) {
         }),
     },
     matches: {
+      approvalAccounting: (approvalId: string) => request<ApprovalAccountingPlan>(`/api/matches/approval-accounting/${encodeURIComponent(approvalId)}`),
       list: (params = "") => request<Page<ExpenseBankMatch>>(`/api/matches${params}`),
       create: (payload: MatchCreate) =>
         request<ExpenseBankMatch>("/api/matches", {
@@ -723,6 +737,10 @@ export function createApiClient(options: ApiClientOptions) {
         items: { approval_id: string; approval_no: string; template_name: string; source_store: string | null; reason: string; suggestion: string; raw_error: string }[];
         historical_snapshot: boolean;
       }>(`/api/dingtalk/sync-jobs/${encodeURIComponent(jobId)}/parse-errors`),
+      updateApprovalStore: (id: string, payload: { store_id: string | null; reason: string }) =>
+        request<ApprovalInstance>(`/api/dingtalk/approval-instances/${encodeURIComponent(id)}/store`, {
+          method: "PATCH", body: JSON.stringify(payload),
+        }),
       readApprovalInstance: (id: string) => request<ApprovalInstance>(`/api/dingtalk/approval-instances/${encodeURIComponent(id)}`),
       listApprovalInstances: (params = "") =>
         request<Page<ApprovalInstance>>(`/api/dingtalk/approval-instances${params}`),
@@ -736,6 +754,9 @@ export function createApiClient(options: ApiClientOptions) {
         }),
     },
     reports: {
+      financialSupplement: (storeId: string, period: string) => request<FinancialReportSupplement>(`/api/reports/financial-supplement?store_id=${encodeURIComponent(storeId)}&period=${encodeURIComponent(period)}`),
+      updateFinancialTarget: (storeId: string, period: string, revenueTarget: string | null) => request<FinancialReportSupplement>(`/api/reports/financial-target?store_id=${encodeURIComponent(storeId)}&period=${encodeURIComponent(period)}`, { method: "PATCH", body: JSON.stringify({ revenue_target: revenueTarget }) }),
+      financialAppendix: (storeId: string, period: string) => request<FinancialReportAppendix>(`/api/reports/financial-appendix?store_id=${encodeURIComponent(storeId)}&period=${encodeURIComponent(period)}`),
       analytics: (params = "") => request<FinancialAnalyticsReport>(`/api/reports/analytics${params}`),
       analyticsDetails: (params = "") =>
         request<FinancialAnalyticsDetailReport>(`/api/reports/analytics/details${params}`),
@@ -763,6 +784,11 @@ export function createApiClient(options: ApiClientOptions) {
         ),
     },
     dividends: {
+      openingBalance: (storeId: string) => request<DividendOpeningBalance>(`/api/dividends/opening/${encodeURIComponent(storeId)}`),
+      saveOpeningBalance: (storeId: string, payload: DividendOpeningUpdate) => request<DividendOpeningBalance>(`/api/dividends/opening/${encodeURIComponent(storeId)}`, { method: "PUT", body: JSON.stringify(payload) }),
+      openingHistory: (storeId: string) => request<AuditLog[]>(`/api/dividends/opening/${encodeURIComponent(storeId)}/history`),
+      fundingSettings: (storeId: string) => request<DividendFundingSetting>(`/api/dividends/stores/${encodeURIComponent(storeId)}/funding-settings`),
+      updateFundingSettings: (storeId: string, payload: { preopening_investment: string; preopening_expense_override: string | null }) => request<DividendFundingSetting>(`/api/dividends/stores/${encodeURIComponent(storeId)}/funding-settings`, { method: "PATCH", body: JSON.stringify(payload) }),
       workspace: (storeId: string, period: string) =>
         request<DividendWorkspace>(`/api/dividends/workspace?store_id=${encodeURIComponent(storeId)}&period=${encodeURIComponent(period)}`),
       createShareholder: (payload: Omit<DividendShareholder, "id" | "status" | "created_at" | "updated_at">) =>

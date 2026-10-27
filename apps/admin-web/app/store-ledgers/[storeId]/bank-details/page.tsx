@@ -127,11 +127,11 @@ export default function StoreLedgerBankDetailsPage() {
     { title: "发生日期", dataIndex: "occurred_at", width: 130, render: dateText },
     { title: "类型", dataIndex: "direction", width: 90, render: (value: string) => <Tag color={value === "income" ? "green" : "red"}>{value === "income" ? "收入" : "支出"}</Tag> },
     { title: "金额", dataIndex: "amount", width: 140, align: "right", render: (value: string) => <Typography.Text strong>{formatMoney(value)}</Typography.Text> },
-    { title: "对方户名", dataIndex: "counterparty_name", render: (value: string | null) => value || "—" },
-    { title: "流水备注", dataIndex: "summary", ellipsis: true, render: (value: string | null) => value || "—" },
     { title: "流水属性", dataIndex: "special_type", width: 110, render: (value: string | null) => value ? <Tag color="orange">{specialLabels[value] ?? value}</Tag> : <Tag>普通流水</Tag> },
     { title: "关联状态", width: 100, render: (_: unknown, record) => record.special_type || Number(record.matched_amount) > 0 ? <Tag color="green">已关联</Tag> : <Tag>未关联</Tag> },
     { title: "操作", width: 100, render: (_: unknown, record) => <Button type="link" onClick={() => void openDetail(record)}>查看业务</Button> },
+    { title: "对方户名", dataIndex: "counterparty_name", width: 170, ellipsis: true, render: (value: string | null) => value || "—" },
+    { title: "流水备注", dataIndex: "summary", width: 220, ellipsis: true, render: (value: string | null) => value || "—" },
   ], []);
 
   const current = detail?.transaction;

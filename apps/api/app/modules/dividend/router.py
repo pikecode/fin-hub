@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_session
 from app.models import (
+    DividendOpeningBalance,
     DividendEntry,
     DividendMonth,
     DividendShareholder,
@@ -34,6 +35,8 @@ from app.schemas import (
     DividendShareholderUpdate,
     DividendWorkspaceRead,
 )
+
+from app.modules.dividend.opening import configured_history, opening_read, ensure_month_mutable, lock_store as lock_dividend_store, valid_period
 
 router = APIRouter(prefix="/dividends", tags=["dividends"])
 MONEY = Decimal("0.01")
@@ -96,6 +99,9 @@ def month_read(session: Session, store: Store, month: DividendMonth, historical_
 def available_periods(session: Session, store: Store, selected_period: str) -> list[str]:
     periods = set(session.scalars(select(Ledger.period).where(Ledger.store_id == store.id)).all())
     periods.update(session.scalars(select(DividendMonth.period).where(DividendMonth.store_id == store.id)).all())
+    opening = session.get(DividendOpeningBalance, store.id)
+    if opening:
+        periods.add(opening.start_period)
     periods.add(selected_period)
     return sorted(periods, reverse=True)
 
@@ -147,17 +153,25 @@ def history_rows(session: Session, store: Store, selected_period: str) -> list[D
 def read_workspace(store_id: str, period: str, session: Session = Depends(get_session), current_user: User = Depends(get_current_user)) -> ApiEnvelope[DividendWorkspaceRead]:
     store = ensure_store(session, store_id, current_user)
     shareholders = list(session.scalars(select(DividendShareholder).where(DividendShareholder.store_id == store_id).order_by(DividendShareholder.status.asc(), DividendShareholder.created_at.asc())))
-    current = month_row(session, store, period)
-    history = history_rows(session, store, period)
+    valid_period(period)
+    opening = opening_read(session, store_id)
+    history = configured_history(session, store_id, period) if opening.configured else None
+    if history is None:
+        month_row(session, store, period)
+        history = history_rows(session, store, period)
+        session.commit()
     current = next(row for row in history if row.period == period)
-    session.commit()
+    warnings = []
+    if not opening.configured:
+        warnings.append("尚未确认期初数据，暂沿用原有历史口径；请通过录入历史数据选择起始月份。")
+    elif current.excluded_from_calculation:
+        warnings.append(f"当前月份早于数据隔离月份 {opening.start_period}，记录仅供查看，不参与累计计算。")
     return ApiEnvelope(data=DividendWorkspaceRead(
-        store=store,
-        period=period,
+        store=store, period=period,
         shareholders=[DividendShareholderRead.model_validate(item) for item in shareholders],
-        current=current,
-        history=history,
-        available_periods=available_periods(session, store, period),
+        current=current, history=sorted(history, key=lambda item: item.period, reverse=True),
+        available_periods=sorted(set(available_periods(session, store, period)) | {row.period for row in history}, reverse=True),
+        opening=opening, funding={field: opening.model_dump(mode="json")[field] for field in ("preopening_investment", "preopening_expense_override", "preopening_expense_amount", "preopening_expense_source")}, warnings=warnings,
     ))
 
 
@@ -206,7 +220,10 @@ def update_month(store_id: str, period: str, payload: DividendMonthUpdate, sessi
     store = ensure_store(session, store_id, current_user)
     if not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", period):
         raise HTTPException(status_code=422, detail="月份格式必须为YYYY-MM")
+    opening = ensure_month_mutable(session, store_id, period)
     changes = payload.model_dump(exclude_unset=True)
+    if opening and any(field in changes for field in ("manual_net_profit", "manual_remaining_undistributed")):
+        raise HTTPException(422, "已设置期初数据，净利润由报表计算；历史余额请从期初入口维护")
     if "manual_net_profit" in changes and period >= "2026-10":
         raise HTTPException(status_code=422, detail="2026年10月起净利润由财务报表计算，不支持人工录入")
     if "manual_remaining_undistributed" in changes and period > "2026-10":
@@ -261,6 +278,7 @@ def update_month(store_id: str, period: str, payload: DividendMonthUpdate, sessi
 @router.post("/months/{store_id}/{period}/lock", response_model=ApiEnvelope[DividendWorkspaceRead])
 def lock_month(store_id: str, period: str, session: Session = Depends(get_session), current_user: User = Depends(require_admin)) -> ApiEnvelope[DividendWorkspaceRead]:
     store = ensure_store(session, store_id, current_user)
+    ensure_month_mutable(session, store_id, period)
     month = month_row(session, store, period)
     month.locked = True
     month.locked_at = utc_now()
@@ -275,6 +293,8 @@ def unlock_month(store_id: str, period: str, reason: str, session: Session = Dep
     if not reason.strip():
         raise HTTPException(status_code=422, detail="解锁原因不能为空")
     store = ensure_store(session, store_id, current_user)
+    valid_period(period)
+    lock_dividend_store(session, store_id)
     month = month_row(session, store, period)
     month.locked = False
     write_audit_log(session, actor=audit_actor(current_user), action="dividend_month.unlock", resource_type="dividend_month", resource_id=month.id, summary=f"解锁分红月份：{period}", metadata={"reason": reason})

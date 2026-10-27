@@ -1,12 +1,14 @@
+from app.modules.matching import accounting
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session, defer
+from sqlalchemy.orm import Session, defer, aliased
 
+from app.modules.bank.unpaid import protect_payment_bank, completed_payments, reserved_payment_bank_ids, mutation_lock
 from app.core.database import get_session
 from app.models import (
     ApprovalInstance,
@@ -306,8 +308,14 @@ def refresh_bank_matched_amount(session: Session, bank_transaction: BankTransact
 
 def approval_expense_join_condition():
     return or_(
-        ExpenseItem.source_document_id == ApprovalInstance.dingtalk_instance_id,
-        ExpenseItem.source_document_id.like(ApprovalInstance.dingtalk_instance_id + ":%"),
+        ExpenseItem.approval_instance_id == ApprovalInstance.id,
+        and_(
+            ExpenseItem.approval_instance_id.is_(None),
+            or_(
+                ExpenseItem.source_document_id == ApprovalInstance.dingtalk_instance_id,
+                ExpenseItem.source_document_id.like(ApprovalInstance.dingtalk_instance_id + ":%"),
+            ),
+        ),
     )
 
 
@@ -573,7 +581,7 @@ def revenue_records_for_match(
     if not payload.revenue_record_ids:
         return list(
             session.scalars(
-                select(RevenueRecord).where(
+                select(RevenueRecord).where(RevenueRecord.is_bank_direct.is_(False),
                     RevenueRecord.store_id == bank_transaction.store_id,
                     RevenueRecord.channel == payload.channel,
                     RevenueRecord.revenue_date >= payload.revenue_start_date,
@@ -585,7 +593,7 @@ def revenue_records_for_match(
         raise HTTPException(status_code=422, detail="Revenue record IDs must be unique")
     records = list(
         session.scalars(
-            select(RevenueRecord).where(RevenueRecord.id.in_(payload.revenue_record_ids))
+            select(RevenueRecord).where(RevenueRecord.is_bank_direct.is_(False), RevenueRecord.id.in_(payload.revenue_record_ids))
         )
     )
     records_by_id = {record.id: record for record in records}
@@ -676,7 +684,8 @@ def create_revenue_match_candidate(
     ensure_store_access(session, current_user, bank_transaction.store_id)
     if bank_transaction.direction != "income":
         raise HTTPException(status_code=409, detail="Bank transaction is not income")
-    if bank_transaction.special_type is not None:
+    protect_payment_bank(session, bank_transaction.id, matching=True)
+    if bank_transaction.special_type is not None or bank_transaction.direct_posting_type is not None:
         raise HTTPException(status_code=409, detail="Special bank transactions cannot be matched")
     if bank_transaction.ledger_period:
         ledger = session.scalar(
@@ -768,7 +777,8 @@ def create_revenue_match_batch(
     ensure_store_access(session, current_user, bank_transaction.store_id)
     if bank_transaction.direction != "income":
         raise HTTPException(status_code=409, detail="Bank transaction is not income")
-    if bank_transaction.special_type is not None:
+    protect_payment_bank(session, bank_transaction.id, matching=True)
+    if bank_transaction.special_type is not None or bank_transaction.direct_posting_type is not None:
         raise HTTPException(status_code=409, detail="Special bank transactions cannot be matched")
     if bank_transaction.ledger_period:
         ledger = session.scalar(
@@ -794,7 +804,7 @@ def create_revenue_match_batch(
 
     records = list(
         session.scalars(
-            select(RevenueRecord).where(RevenueRecord.id.in_(payload.revenue_record_ids))
+            select(RevenueRecord).where(RevenueRecord.is_bank_direct.is_(False), RevenueRecord.id.in_(payload.revenue_record_ids))
         )
     )
     records_by_id = {record.id: record for record in records}
@@ -1095,6 +1105,16 @@ def unmatch_revenue_match(
     return ApiEnvelope(data=revenue_match_response(session, match))
 
 
+@router.get("/approval-accounting/{approval_id}")
+def read_approval_accounting(approval_id: str, session: Session = Depends(get_session), current_user: User = Depends(get_current_user)):
+    ensure_permission(session, current_user, "reconciliation.view")
+    approval = session.get(ApprovalInstance, approval_id)
+    if approval is None:
+        raise HTTPException(404, "审批单不存在")
+    ensure_store_access(session, current_user, approval.store_id)
+    return ApiEnvelope(data=accounting.read_plan(session, approval_id))
+
+
 @router.post("", response_model=ApiEnvelope[MatchRead], status_code=201)
 def create_match_candidate(
     payload: MatchCreate,
@@ -1105,6 +1125,8 @@ def create_match_candidate(
     expense_item = session.get(ExpenseItem, payload.expense_item_id)
     if expense_item is None:
         raise HTTPException(status_code=404, detail="Expense item not found")
+    if expense_item.source == "bank_direct":
+        raise HTTPException(status_code=409, detail="银行直接入账费用无需再次匹配")
     ensure_store_access(session, current_user, expense_item.store_id)
     bank_transaction = session.get(BankTransaction, payload.bank_transaction_id)
     if bank_transaction is None:
@@ -1114,7 +1136,8 @@ def create_match_candidate(
     ensure_store_access(session, current_user, bank_transaction.store_id)
     if bank_transaction.direction != "expense":
         raise HTTPException(status_code=409, detail="Bank transaction is not expense")
-    if bank_transaction.special_type is not None:
+    protect_payment_bank(session, bank_transaction.id, matching=True)
+    if bank_transaction.special_type is not None or bank_transaction.direct_posting_type is not None:
         raise HTTPException(status_code=409, detail="Special bank transactions cannot be matched")
     if bank_transaction.ledger_period:
         ledger = session.scalar(
@@ -1127,6 +1150,7 @@ def create_match_candidate(
             raise HTTPException(status_code=409, detail="Ledger is closed")
     if expense_item.store_id != bank_transaction.store_id:
         raise HTTPException(status_code=409, detail="Store mismatch")
+    accounting.protect_expense_changes(session, expense_item, {key: value for key, value in {'category_l1': payload.category_l1, 'category_l2': payload.category_l2}.items() if value is not None})
     existing_match = session.scalar(
         select(ExpenseBankMatch).where(
             ExpenseBankMatch.expense_item_id == payload.expense_item_id,
@@ -1156,8 +1180,9 @@ def create_match_candidate(
             },
         )
         ensure_approval_expense_category_selected(session, expense_item)
-        for key, value in payload.model_dump(exclude={"category_l1", "category_l2"}).items():
+        for key, value in payload.model_dump(exclude={"category_l1", "category_l2", "accounting_allocations", "accounting_version"}).items():
             setattr(existing_match, key, value)
+        accounting.prepare_candidate(session, existing_match, expense_item, payload.accounting_allocations, payload.accounting_version)
         existing_match.status = MatchStatus.CANDIDATE.value
         existing_match.confirmed_by = None
         existing_match.confirmed_at = None
@@ -1170,7 +1195,7 @@ def create_match_candidate(
     # 银行流水归属账期仍保留在 bank_transaction.ledger_period 字段中，可追溯
     # if payload.accounting_period and bank_transaction.ledger_period and payload.accounting_period != bank_transaction.ledger_period:
     #     raise HTTPException(status_code=409, detail="Accounting period does not match bank transaction period")
-    payload_data = payload.model_dump(exclude={"category_l1", "category_l2"})
+    payload_data = payload.model_dump(exclude={"category_l1", "category_l2", "accounting_allocations", "accounting_version"})
     payload_category_l1, payload_category_l2 = normalized_expense_category_payload(
         payload.category_l1,
         payload.category_l2,
@@ -1192,6 +1217,7 @@ def create_match_candidate(
     )
     ensure_approval_expense_category_selected(session, expense_item)
     match = ExpenseBankMatch(**payload_data, status=MatchStatus.CANDIDATE.value)
+    accounting.prepare_candidate(session, match, expense_item, payload.accounting_allocations, payload.accounting_version)
     session.add(match)
     session.flush()
     refresh_approval_processing_status(session, expense_item.approval_instance_id)
@@ -1221,7 +1247,8 @@ def auto_suggest_matches(
     current_user: User = Depends(get_current_user),
 ) -> ApiEnvelope[AutoMatchResult]:
     ensure_permission(session, current_user, "reconciliation.manage")
-    expense_query = select(ExpenseItem).where(
+    mutation_lock(session)
+    expense_query = select(ExpenseItem).where(ExpenseItem.source != "bank_direct",
         ExpenseItem.payment_status.in_(
             [ExpensePaymentStatus.UNPAID.value, ExpensePaymentStatus.PARTIAL_PAID.value]
         )
@@ -1229,6 +1256,9 @@ def auto_suggest_matches(
     bank_query = select(BankTransaction).where(
         BankTransaction.direction == "expense",
         BankTransaction.special_type.is_(None),
+        BankTransaction.is_archived.is_(False),
+        BankTransaction.id.not_in(reserved_payment_bank_ids()),
+        BankTransaction.direct_posting_type.is_(None),
     )
     if store_id:
         ensure_store_access(session, current_user, store_id)
@@ -1537,12 +1567,18 @@ def list_reconciliation_records(
     status: str = MatchStatus.CONFIRMED.value,
     accounting_period: str | None = None,
     store_id: str | None = None,
+    amount: Decimal | None = Query(default=None, ge=0),
+    approval_no: str | None = None,
+    occurred_start: date | None = None,
+    occurred_end: date | None = None,
     page: int = 1,
     page_size: int = 50,
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> ApiEnvelope[Page[ReconciliationRecord]]:
     ensure_permission(session, current_user, "reconciliation.view")
+    if occurred_start and occurred_end and occurred_start > occurred_end:
+        raise HTTPException(status_code=422, detail="开始日期不能晚于结束日期")
     query = (
         select(ExpenseBankMatch, BankTransaction, ExpenseItem, ApprovalInstance, ApprovalTemplate)
         .join(BankTransaction, ExpenseBankMatch.bank_transaction_id == BankTransaction.id)
@@ -1558,6 +1594,7 @@ def list_reconciliation_records(
         query = query.where(
             or_(
                 ExpenseBankMatch.accounting_period == accounting_period,
+                ExpenseItem.approval_instance_id.in_(select(accounting.ApprovalAccountingAllocation.approval_id).where(accounting.ApprovalAccountingAllocation.period == accounting_period)),
                 BankTransaction.ledger_period == accounting_period,
                 ExpenseItem.ledger_period == accounting_period,
             )
@@ -1567,6 +1604,28 @@ def list_reconciliation_records(
         query = query.where(ExpenseItem.store_id == store_id)
     else:
         query = query.where(scoped_store_condition(session, current_user, ExpenseItem.store_id))
+
+    if amount is not None:
+        query = query.where(ExpenseBankMatch.amount == amount)
+    if approval_no and approval_no.strip():
+        query = query.where(ApprovalInstance.approval_no.contains(approval_no.strip(), autoescape=True))
+    if occurred_start or occurred_end:
+        from app.models import BankPaymentSettlement, BankPaymentSettlementLink
+        real = aliased(BankTransaction)
+        settled_ids = select(BankPaymentSettlement.source_bank_transaction_id).where(BankPaymentSettlement.status == "completed")
+        real_sources = select(BankPaymentSettlement.source_bank_transaction_id).join(
+            BankPaymentSettlementLink, BankPaymentSettlementLink.settlement_id == BankPaymentSettlement.id).join(
+            real, real.id == BankPaymentSettlementLink.bank_transaction_id).where(BankPaymentSettlement.status == "completed")
+        ordinary = [BankTransaction.id.not_in(settled_ids)]
+        if occurred_start:
+            since = datetime.combine(occurred_start, datetime.min.time())
+            ordinary.append(BankTransaction.occurred_at >= since)
+            real_sources = real_sources.where(real.occurred_at >= since)
+        if occurred_end:
+            until = datetime.combine(occurred_end, datetime.min.time()) + timedelta(days=1)
+            ordinary.append(BankTransaction.occurred_at < until)
+            real_sources = real_sources.where(real.occurred_at < until)
+        query = query.where(or_(and_(*ordinary), BankTransaction.id.in_(real_sources)))
 
     page = max(page, 1)
     page_size = min(max(page_size, 1), 200)
@@ -1590,9 +1649,12 @@ def list_reconciliation_records(
         )
         for current_template_id in template_ids
     }
+    settled = completed_payments(session, [bank.id for _, bank, _, _, _ in rows])
+    accounting.annotate_matches(session, [row[0] for row in rows])
     records = [
         ReconciliationRecord(
             match=match,
+            settled_bank_transactions=settled.get(bank_transaction.id, []),
             bank_transaction=bank_transaction,
             expense_item=expense,
             approval_instance=approval_instance_response(
@@ -1621,6 +1683,7 @@ def update_reconciliation_record(
     match = session.get(ExpenseBankMatch, match_id)
     if match is None:
         raise HTTPException(status_code=404, detail="Match not found")
+    protect_payment_bank(session, match.bank_transaction_id, matching=True)
     if match.expense_scope != "operating":
         raise HTTPException(409, "筹建记录请在筹建费用页面操作")
     if match.status != MatchStatus.CONFIRMED.value:
@@ -1659,6 +1722,13 @@ def update_reconciliation_record(
     }
     if other_expense_store_ids and other_expense_store_ids != {target_expense.store_id}:
         raise HTTPException(status_code=409, detail="Bank transaction already matched to another store")
+    accounting.ensure_periods_open(session, old_expense, [match.accounting_period] if match.accounting_period else [])
+    accounting.prepare_candidate(session, match, target_expense, payload.accounting_allocations, payload.accounting_version)
+    if payload.accounting_allocations is None and payload.accounting_period and payload.accounting_period != match.accounting_period:
+        approval = accounting.approval_for_item(session, target_expense)
+        if approval and accounting.read_plan(session, approval.id)['configured']:
+            raise HTTPException(409, "审批单使用账期分配，请在入账方案中修改各月份和金额")
+    accounting.apply_plan(session, match, target_expense, audit_actor(current_user))
     match.expense_item_id = target_expense.id
     match.amount = target_amount
     match.accounting_period = target_period
@@ -1708,6 +1778,7 @@ def update_reconciliation_record(
     )
     session.commit()
     session.refresh(match)
+    accounting.annotate_matches(session, [match])
     return ApiEnvelope(data=match)
 
 
@@ -1724,6 +1795,7 @@ def unmatch_reconciliation_record(
     match = session.get(ExpenseBankMatch, match_id)
     if match is None:
         raise HTTPException(status_code=404, detail="Match not found")
+    protect_payment_bank(session, match.bank_transaction_id, matching=True)
     if match.expense_scope != "operating":
         raise HTTPException(409, "筹建记录请在筹建费用页面操作")
     if match.status != MatchStatus.CONFIRMED.value:
@@ -1736,6 +1808,7 @@ def unmatch_reconciliation_record(
     ensure_store_access(session, current_user, bank_transaction.store_id)
     ensure_store_access(session, current_user, expense_item.store_id)
 
+    accounting.ensure_periods_open(session, expense_item, [match.accounting_period] if match.accounting_period else [])
     match.status = MatchStatus.REJECTED.value
     match.reason = f"{match.reason}\n解除匹配" if match.reason else "解除匹配"
 
@@ -1774,6 +1847,7 @@ def confirm_match(
     match = session.get(ExpenseBankMatch, match_id)
     if match is None:
         raise HTTPException(status_code=404, detail="Match not found")
+    protect_payment_bank(session, match.bank_transaction_id, matching=True)
     if match.expense_scope != "operating":
         raise HTTPException(409, "筹建记录请在筹建费用页面操作")
     expense_item = session.get(ExpenseItem, match.expense_item_id)
@@ -1795,6 +1869,7 @@ def confirm_match(
     confirmed_expense_amount = confirmed_expense_match_amount(session, expense_item.id, exclude_match_id=match.id)
     confirmed_bank_amount = confirmed_bank_match_amount(session, bank_transaction.id, exclude_match_id=match.id)
     ensure_approval_expense_category_selected(session, expense_item)
+    accounting.apply_plan(session, match, expense_item, audit_actor(current_user, operator))
     match.status = MatchStatus.CONFIRMED.value
     match.confirmed_by = operator
     match.confirmed_at = utc_now()
@@ -1821,6 +1896,7 @@ def confirm_match(
     )
     session.commit()
     session.refresh(match)
+    accounting.annotate_matches(session, [match])
     return ApiEnvelope(data=match)
 
 
@@ -1834,6 +1910,7 @@ def reject_match(
     match = session.get(ExpenseBankMatch, match_id)
     if match is None:
         raise HTTPException(status_code=404, detail="Match not found")
+    protect_payment_bank(session, match.bank_transaction_id, matching=True)
     if match.expense_scope != "operating":
         raise HTTPException(409, "筹建记录请在筹建费用页面操作")
     expense_item = session.get(ExpenseItem, match.expense_item_id)

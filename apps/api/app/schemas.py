@@ -281,11 +281,42 @@ class DividendMonthUpdate(BaseModel):
     no_capital: bool | None = None
 
 
+class DividendOpeningUpdate(BaseModel):
+    start_period: str = Field(pattern=r"^\d{4}-(0[1-9]|1[0-2])$")
+    opening_remaining: Decimal = Field(max_digits=14, decimal_places=2)
+    historical_profit: Decimal = Field(max_digits=14, decimal_places=2)
+    historical_distribution: Decimal = Field(ge=0, max_digits=14, decimal_places=2)
+    operating_capital: Decimal = Field(ge=0, max_digits=14, decimal_places=2)
+    preopening_investment: Decimal = Field(ge=0, max_digits=14, decimal_places=2)
+    preopening_expense_override: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=2)
+    version: int = Field(ge=0)
+    reason: str = Field(min_length=1, max_length=1000)
+
+
+class DividendOpeningRead(BaseModel):
+    configured: bool
+    start_period: str | None = None
+    opening_remaining: Decimal | None = None
+    historical_profit: Decimal | None = None
+    historical_distribution: Decimal | None = None
+    operating_capital: Decimal | None = None
+    preopening_investment: Decimal = Decimal("0.00")
+    preopening_expense_override: Decimal | None = None
+    preopening_expense_amount: Decimal = Decimal("0.00")
+    preopening_expense_source: str = "report"
+    version: int = 0
+    reason: str | None = None
+    updated_by: str | None = None
+    updated_at: datetime | None = None
+
+
 class DividendMonthRead(BaseModel):
     id: str
     store_id: str
     period: str
     net_profit: Decimal
+    available_profit: Decimal | None = None
+    excluded_from_calculation: bool = False
     manual_net_profit: Decimal | None = None
     manual_remaining_undistributed: Decimal | None = None
     profit_source: str
@@ -310,6 +341,8 @@ class DividendWorkspaceRead(BaseModel):
     shareholders: list[DividendShareholderRead]
     current: DividendMonthRead
     history: list[DividendMonthRead]
+    opening: DividendOpeningRead | None = None
+    funding: dict[str, str | None] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
 
 
@@ -356,6 +389,7 @@ class RevenueRecordUpdate(BaseModel):
 
 
 class RevenueRecordRead(RevenueRecordCreate):
+    is_bank_direct: bool = False
     model_config = ConfigDict(from_attributes=True)
 
     id: str
@@ -599,6 +633,7 @@ class BankTransactionCreate(BaseModel):
     summary: str | None = None
     bank_serial_no: str | None = None
     payment_status: str = Field(default="paid", pattern=r"^(paid|unpaid|unreceived)$")
+    direct_posting_type: str | None = Field(default=None, pattern=r"^(bank_interest|bank_fee|bank_sms_fee|bank_other_expense)$")
     special_type: str | None = Field(default=None, pattern=r"^(current_account|shareholder_dividend|shareholder_capital|other_income_expense|counter_refund|loan_repayment)$")
     allow_duplicates: bool = Field(default=False, exclude=True)
 
@@ -636,11 +671,14 @@ class BankTransactionUpdate(BaseModel):
     summary: str | None = None
     bank_serial_no: str | None = None
     payment_status: str | None = Field(default=None, pattern=r"^(paid|unpaid|unreceived)$")
+    direct_posting_type: str | None = Field(default=None, pattern=r"^(bank_interest|bank_fee|bank_sms_fee|bank_other_expense)$")
     special_type: str | None = Field(default=None, pattern=r"^(current_account|shareholder_dividend|shareholder_capital|other_income_expense|counter_refund|loan_repayment)$")
     allow_duplicates: bool = Field(default=False, exclude=True)
 
 
 class BankTransactionRead(BankTransactionCreate):
+    is_archived: bool = False
+    payment_settlement_status: str | None = None
     model_config = ConfigDict(from_attributes=True)
 
     id: str
@@ -737,10 +775,17 @@ class BankTransactionBatchDeleteResult(BaseModel):
     deleted_count: int
 
 
+class AccountingAllocationInput(BaseModel):
+    period: str = Field(pattern=r"^\d{4}-(0[1-9]|1[0-2])$")
+    amount: Decimal = Field(gt=0, max_digits=14, decimal_places=2)
+
+
 class MatchCreate(BaseModel):
     expense_item_id: str
     bank_transaction_id: str
     amount: Decimal = Field(gt=0)
+    accounting_allocations: list[AccountingAllocationInput] | None = Field(default=None, min_length=1, max_length=60)
+    accounting_version: int | None = Field(default=None, ge=0)
     accounting_period: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}$")
     bank_occurred: bool = True
     category_l1: str | None = None
@@ -1426,6 +1471,11 @@ class ApprovalModifiedResyncResult(BaseModel):
     job: SyncJobRead
 
 
+class ApprovalStoreUpdate(BaseModel):
+    store_id: str | None = None
+    reason: str = Field(min_length=1, max_length=1000)
+
+
 class ApprovalInstanceRead(BaseModel):
     title: str | None = None
     expense_scope: str = "operating"
@@ -1436,6 +1486,8 @@ class ApprovalInstanceRead(BaseModel):
     dingtalk_instance_id: str
     approval_no: str | None
     store_id: str | None
+    manual_store_id: str | None = None
+    store_override_reason: str | None = None
     department_name: str | None = None
     applicant_name: str | None
     applicant_user_id: str | None
@@ -1479,6 +1531,7 @@ class ReconciliationCandidateResult(BaseModel):
 
 
 class ReconciliationRecord(BaseModel):
+    settled_bank_transactions: list[BankTransactionRead] = Field(default_factory=list)
     match: MatchRead
     bank_transaction: BankTransactionRead
     expense_item: ExpenseItemRead
@@ -1490,6 +1543,8 @@ class ReconciliationRecord(BaseModel):
 class ReconciliationRecordUpdate(BaseModel):
     expense_item_id: str | None = None
     amount: Decimal | None = Field(default=None, gt=0)
+    accounting_allocations: list[AccountingAllocationInput] | None = Field(default=None, min_length=1, max_length=60)
+    accounting_version: int | None = Field(default=None, ge=0)
     accounting_period: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}$")
     bank_occurred: bool | None = None
     category_l1: str | None = None

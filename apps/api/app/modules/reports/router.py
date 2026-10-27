@@ -157,7 +157,7 @@ def build_report_summary(session: Session, ledger: Ledger, store: Store) -> Ledg
     )
     bank_income_amount = decimal_sum(
         session.scalar(
-            select(func.sum(BankTransaction.amount)).where(
+            select(func.sum(BankTransaction.amount)).where(BankTransaction.is_archived.is_(False),
                 BankTransaction.store_id == ledger.store_id,
                 BankTransaction.ledger_period == ledger.period,
                 BankTransaction.direction == "income",
@@ -193,6 +193,7 @@ def build_report_summary(session: Session, ledger: Ledger, store: Store) -> Ledg
             BankTransaction.store_id == ledger.store_id,
             BankTransaction.ledger_period == ledger.period,
             BankTransaction.matched_amount < BankTransaction.amount,
+            BankTransaction.direct_posting_type.is_(None),
         )
     )
     return LedgerReportSummary(
@@ -242,7 +243,7 @@ def read_ledger_export_rows(
         .order_by(ExpenseItem.expense_date.asc(), ExpenseItem.created_at.asc())
     ).all()
     bank_transactions = session.scalars(
-        select(BankTransaction)
+        select(BankTransaction).where(BankTransaction.is_archived.is_(False))
         .where(BankTransaction.store_id == store_id, BankTransaction.ledger_period == period)
         .order_by(BankTransaction.occurred_at.asc())
     ).all()
@@ -298,6 +299,8 @@ def build_revenue_channel_breakdown(
         bucket["net_amount"] = Decimal(bucket["net_amount"]) + Decimal(record.net_amount)
         bucket["fee_amount"] = Decimal(bucket["fee_amount"]) + Decimal(record.fee_amount)
         bucket["record_count"] = int(bucket["record_count"]) + 1
+        if record.is_bank_direct:
+            bucket["matched_amount"] = Decimal(bucket["matched_amount"]) + Decimal(record.net_amount)
 
     for match in revenue_matches:
         if match.status != MatchStatus.CONFIRMED.value:
@@ -445,11 +448,13 @@ def read_financial_analytics(
         operating_expense_category_condition(),
     )
     expense_query = apply_period_range(expense_query, ExpenseItem.ledger_period, period_start, period_end)
-    bank_query = select(BankTransaction).where(BankTransaction.store_id.in_(store_ids))
+    bank_query = select(BankTransaction).where(BankTransaction.is_archived.is_(False), BankTransaction.store_id.in_(store_ids))
     bank_query = apply_period_range(bank_query, BankTransaction.ledger_period, period_start, period_end)
 
     revenue_rows = session.scalars(revenue_query).all()
     expense_rows = session.scalars(expense_query).all()
+    from app.modules.matching.accounting import overlay_planned_expenses
+    expense_rows = overlay_planned_expenses(session, expense_rows, store_ids, period_start, period_end)
     bank_rows = session.scalars(bank_query).all()
     revenue_match_rows = session.execute(
         select(RevenueBankMatch, RevenueRecord)
@@ -490,7 +495,7 @@ def read_financial_analytics(
     unmatched_bank_rows = [
         transaction
         for transaction in bank_rows
-        if transaction.direction == "expense" and Decimal(transaction.amount) > Decimal(transaction.matched_amount or 0)
+        if transaction.direction == "expense" and transaction.direct_posting_type is None and Decimal(transaction.amount) > Decimal(transaction.matched_amount or 0)
     ]
     unmatched_bank_amount = sum(
         (Decimal(transaction.amount) - Decimal(transaction.matched_amount or 0) for transaction in unmatched_bank_rows),
@@ -800,7 +805,7 @@ def read_financial_analytics_details(
 
     expense_query = select(ExpenseItem).where(ExpenseItem.expense_scope == "operating", ExpenseItem.store_id.in_(store_ids))
     expense_query = apply_period_range(expense_query, ExpenseItem.ledger_period, period_start, period_end)
-    bank_query = select(BankTransaction).where(BankTransaction.store_id.in_(store_ids))
+    bank_query = select(BankTransaction).where(BankTransaction.is_archived.is_(False), BankTransaction.store_id.in_(store_ids))
     bank_query = apply_period_range(bank_query, BankTransaction.ledger_period, period_start, period_end)
     approval_query = select(ApprovalInstance).where(ApprovalInstance.store_id.in_(store_ids))
     approval_query = apply_datetime_period_range(approval_query, ApprovalInstance.submit_at, period_start, period_end)
@@ -818,6 +823,8 @@ def read_financial_analytics_details(
                 bank_query.where(
                     BankTransaction.direction == "expense",
                     BankTransaction.matched_amount < BankTransaction.amount,
+                BankTransaction.is_archived.is_(False),
+            BankTransaction.direct_posting_type.is_(None),
                 )
                 .order_by(BankTransaction.occurred_at.desc())
                 .limit(page_size)
@@ -943,6 +950,13 @@ def read_financial_analytics_details(
     else:
         raise HTTPException(status_code=422, detail="Unknown detail type")
 
+    if detail_type in {"category", "report_expense"}:
+        from app.modules.matching.accounting import overlay_planned_expenses
+        expense_items = overlay_planned_expenses(session, expense_items, store_ids, period_start, period_end, aggregate=True)
+        if category_l1:
+            expense_items = [item for item in expense_items if item.category_l1 == category_l1]
+        if category_l2:
+            expense_items = [item for item in expense_items if item.category_l2 == category_l2]
     expense_ids = [item.id for item in expense_items]
     voucher_counts = {
         resource_id: count
@@ -1190,11 +1204,12 @@ def read_ledger_detail(
         .limit(20)
     ).all()
     pending_bank_transactions = session.scalars(
-        select(BankTransaction)
+        select(BankTransaction).where(BankTransaction.is_archived.is_(False))
         .where(
             BankTransaction.store_id == store_id,
             BankTransaction.ledger_period == period,
             BankTransaction.matched_amount < BankTransaction.amount,
+            BankTransaction.direct_posting_type.is_(None),
         )
         .order_by(BankTransaction.occurred_at.desc())
         .limit(20)

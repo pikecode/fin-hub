@@ -325,11 +325,13 @@ def candidates(store_id: str, bank_transaction_id: str, session: SessionDep, use
     from types import SimpleNamespace
 
     from app.modules.matching.router import candidate_score
+    from app.modules.bank.unpaid import protect_payment_bank
 
     authorize(session, user, "reconciliation.view", store_id)
     bank = session.get(BankTransaction, bank_transaction_id)
     if not bank or bank.store_id != store_id:
         raise HTTPException(404, "当前门店流水不存在")
+    protect_payment_bank(session, bank.id, matching=True)
     data = workspace(store_id, session, user).data
     result = []
     for a in data["approvals"]:
@@ -356,6 +358,9 @@ def confirm(
     session: SessionDep,
     user: UserDep,
 ):
+    from app.modules.bank.unpaid import mutation_lock, protect_payment_bank
+
+    mutation_lock(session)
     authorize(session, user, "reconciliation.manage", store_id)
     state = lock_store(session, store_id)
     ensure_open(state)
@@ -369,6 +374,9 @@ def confirm(
     )
     if not approval or not bank:
         raise HTTPException(404, "审批单或流水不存在")
+    protect_payment_bank(session, bank.id, matching=True)
+    if bank.direct_posting_type:
+        raise HTTPException(409, "直接入账流水不能参与筹建对账")
     if approval.store_id != store_id or bank.store_id != store_id:
         raise HTTPException(409, "审批单和流水必须属于当前门店")
     if (
@@ -443,6 +451,9 @@ def unmatch(
     session: SessionDep,
     user: UserDep,
 ):
+    from app.modules.bank.unpaid import mutation_lock, protect_payment_bank
+
+    mutation_lock(session)
     authorize(session, user, "reconciliation.manage", store_id)
     ensure_open(lock_store(session, store_id))
     match = session.get(ExpenseBankMatch, match_id)
@@ -464,6 +475,7 @@ def unmatch(
         .where(BankTransaction.id == match.bank_transaction_id)
         .with_for_update()
     )
+    protect_payment_bank(session, bank.id, matching=True)
     match.status = "rejected"
     session.flush()
     bank.matched_amount = session.scalar(

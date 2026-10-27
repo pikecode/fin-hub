@@ -143,7 +143,14 @@ def confirmed_accounting_expense_rows(session: Session, store_id: str, period: s
             ExpenseItem.source != REVENUE_FEE_SOURCE,
         )
     ).all()
-    return dedupe_expense_rows([*approval_rows, *direct_rows])
+    automatic_bank_rows = session.execute(select(
+        ExpenseItem.id, ExpenseItem.category_l1, ExpenseItem.category_l2, ExpenseItem.amount,
+    ).where(ExpenseItem.store_id == store_id, ExpenseItem.ledger_period == period,
+            ExpenseItem.expense_scope == "operating", ExpenseItem.source == "bank_direct")).all()
+    from app.modules.matching.accounting import planned_rows_for_periods
+    owned, planned = planned_rows_for_periods(session, store_id, [period])
+    legacy = [row for row in [*approval_rows, *direct_rows] if row[0] not in owned]
+    return dedupe_expense_rows([*legacy, *automatic_bank_rows, *planned.get(period, [])])
 
 
 def calculate_store_ledger_profit(session: Session, store_id: str, period: str) -> Decimal:
@@ -188,9 +195,17 @@ def calculate_store_ledger_profits(session: Session, store_id: str, periods: lis
     periods_by_approval: dict[str, set[str]] = {}
     for period, approval_id in assignments:
         periods_by_approval.setdefault(approval_id, set()).add(period)
+    from app.modules.matching.accounting import planned_rows_for_periods
+    owned, allocated = planned_rows_for_periods(session, store_id, periods)
+    for period, rows in allocated.items():
+        for _, l1, l2, amount in rows:
+            if not is_non_operating_expense(l1, l2):
+                totals[period] -= decimal_sum(amount)
     seen: set[tuple[str, str]] = set()
 
     def subtract(period, expense_id, l1, l2, amount):
+        if expense_id in owned:
+            return
         key = (period, expense_id)
         if key not in seen:
             seen.add(key)
@@ -219,7 +234,7 @@ def calculate_store_ledger_profits(session: Session, store_id: str, periods: lis
         ExpenseItem.ledger_period, ExpenseItem.source, ExpenseItem.category_l1,
         ExpenseItem.category_l2, ExpenseItem.amount)
         .where(ExpenseItem.store_id == store_id, ExpenseItem.ledger_period.in_(periods),
-               ExpenseItem.source.in_([REVENUE_FEE_SOURCE, KUAILV_PURCHASE_SOURCE]))):
+               ExpenseItem.source.in_([REVENUE_FEE_SOURCE, KUAILV_PURCHASE_SOURCE, "bank_direct"]))):
         if source == REVENUE_FEE_SOURCE or not is_non_operating_expense(l1, l2):
             totals[period] -= decimal_sum(amount)
     return totals
@@ -433,12 +448,14 @@ def read_store_ledger_workspace(
     bank_transaction_count = session.scalar(
         select(func.count()).select_from(BankTransaction).where(
             BankTransaction.store_id == store_id,
+            BankTransaction.is_archived.is_(False),
             BankTransaction.ledger_period == selected_period,
         )
     )
     unmatched_bank_transaction_count = session.scalar(
         select(func.count()).select_from(BankTransaction).where(
             BankTransaction.store_id == store_id,
+            BankTransaction.is_archived.is_(False),
             BankTransaction.ledger_period == selected_period,
             func.coalesce(BankTransaction.matched_amount, 0) <= 0,
         )
@@ -447,6 +464,7 @@ def read_store_ledger_workspace(
         session.scalar(
             select(func.sum(BankTransaction.matched_amount)).where(
                 BankTransaction.store_id == store_id,
+                BankTransaction.is_archived.is_(False),
                 BankTransaction.ledger_period == selected_period,
                 BankTransaction.matched_amount > 0,
             )
@@ -574,6 +592,7 @@ def read_store_ledger_workspace(
             RevenueBankMatch.bank_transaction_id == BankTransaction.id,
         ).where(
             BankTransaction.store_id == store_id,
+            BankTransaction.is_archived.is_(False),
             BankTransaction.ledger_period == selected_period,
         )
     )
@@ -583,6 +602,7 @@ def read_store_ledger_workspace(
             RevenueBankMatch.bank_transaction_id == BankTransaction.id,
         ).where(
             BankTransaction.store_id == store_id,
+            BankTransaction.is_archived.is_(False),
             BankTransaction.ledger_period == selected_period,
             RevenueBankMatch.status == MatchStatus.CANDIDATE.value,
         )
@@ -599,6 +619,7 @@ def read_store_ledger_workspace(
             RevenueRecord.store_id == store_id,
             RevenueRecord.ledger_period == selected_period,
             BankTransaction.store_id == store_id,
+            BankTransaction.is_archived.is_(False),
             RevenueBankMatch.status == MatchStatus.CONFIRMED.value,
         )
         .group_by(RevenueRecord.channel)
@@ -631,7 +652,9 @@ def read_store_ledger_workspace(
         bank_transactions = list(
             session.scalars(
                 select(BankTransaction)
-                .where(BankTransaction.store_id == store_id, BankTransaction.ledger_period == selected_period)
+                .where(BankTransaction.store_id == store_id,
+                       BankTransaction.is_archived.is_(False),
+                       BankTransaction.ledger_period == selected_period)
                 .order_by(BankTransaction.occurred_at.desc())
             )
         )
@@ -654,7 +677,9 @@ def read_store_ledger_workspace(
             session.scalars(
                 select(RevenueBankMatch)
                 .join(BankTransaction, RevenueBankMatch.bank_transaction_id == BankTransaction.id)
-                .where(BankTransaction.store_id == store_id, BankTransaction.ledger_period == selected_period)
+                .where(BankTransaction.store_id == store_id,
+                       BankTransaction.is_archived.is_(False),
+                       BankTransaction.ledger_period == selected_period)
                 .order_by(RevenueBankMatch.created_at.desc())
             )
         )

@@ -50,6 +50,7 @@ from app.schemas import (
     ApprovalDiagnosisItem,
     ApprovalDiagnosisResult,
     ApprovalInstanceRead,
+    ApprovalStoreUpdate,
     ApprovalModifiedResyncRequest,
     ApprovalModifiedResyncResult,
     ApprovalParsePreview,
@@ -1396,6 +1397,8 @@ def approval_instance_read(
         dingtalk_instance_id=instance.dingtalk_instance_id,
         approval_no=instance.approval_no,
         store_id=instance.store_id,
+        manual_store_id=instance.manual_store_id,
+        store_override_reason=instance.store_override_reason,
         department_name=resolve_approval_department_name(session, instance),
         applicant_name=applicant_name,
         applicant_user_id=instance.applicant_user_id,
@@ -3128,6 +3131,8 @@ def build_approval_parse_preview(
         or resolve_store(session, originator_dept_id)
         or resolve_store(session, originator_dept_name)
     )
+    if instance.manual_store_id:
+        store = session.get(Store, instance.manual_store_id)
     description = parse_text(
         mapped_or_form_value(mapped, raw_instance, "description", "支出详情", "费用说明", "其他备注信息", "备注")
     ) or template.name
@@ -3519,7 +3524,7 @@ def sync_real_instance(
     if not instance_id:
         return False
     from app.models import PreopeningStore
-    sealed_instance = session.scalar(select(ApprovalInstance).where(ApprovalInstance.dingtalk_instance_id == instance_id))
+    sealed_instance = session.scalar(select(ApprovalInstance).where(ApprovalInstance.dingtalk_instance_id == instance_id).with_for_update())
     if sealed_instance and sealed_instance.expense_scope == "preopening":
         state = session.get(PreopeningStore, sealed_instance.store_id)
         if state and state.status == "closed":
@@ -3548,6 +3553,8 @@ def sync_real_instance(
         or resolve_store(session, originator_dept_id)
         or resolve_store(session, originator_dept_name)
     )
+    if sealed_instance and sealed_instance.manual_store_id:
+        store = session.get(Store, sealed_instance.manual_store_id)
     description = parse_text(
         mapped_or_form_value(mapped, raw_instance, "description", "支出详情", "费用说明", "其他备注信息", "备注")
     ) or template.name
@@ -5087,6 +5094,21 @@ def approval_submit_local_date(instance: ApprovalInstance) -> date | None:
     if submit_at.tzinfo is None:
         submit_at = submit_at.replace(tzinfo=UTC)
     return submit_at.astimezone(ZoneInfo("Asia/Shanghai")).date()
+
+
+@router.patch("/approval-instances/{approval_id}/store", response_model=ApiEnvelope[ApprovalInstanceRead])
+def update_approval_store(
+    approval_id: str,
+    payload: ApprovalStoreUpdate,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_permission("dingtalk.view")),
+):
+    from app.modules.dingtalk.store_override import change_approval_store
+
+    change_approval_store(session, current_user, approval_id, payload.store_id, payload.reason)
+    session.commit()
+    instance = session.get(ApprovalInstance, approval_id)
+    return ApiEnvelope(data=approval_instance_read(session, instance))
 
 
 @router.post("/approval-instances/{approval_id}/mark-matched", response_model=ApiEnvelope[ApprovalInstanceRead])

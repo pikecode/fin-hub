@@ -1,5 +1,7 @@
 "use client";
 
+import { ApprovalAccountingFields, accountingPayload, type AccountingFormValues } from "../../components/ApprovalAccountingFields";
+
 import {
   Alert,
   Button,
@@ -35,9 +37,9 @@ import zhCN from "antd/locale/zh_CN";
 import type { ColumnsType } from "antd/es/table";
 import type { UploadFile } from "antd/es/upload/interface";
 import { DeleteOutlined, EditOutlined, EyeOutlined, FileSearchOutlined, PaperClipOutlined, UploadOutlined } from "@ant-design/icons";
-import dayjs from "dayjs";
+import dayjs, { type Dayjs } from "dayjs";
 import "dayjs/locale/zh-cn";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   ApprovalInstance,
   Attachment,
@@ -67,12 +69,18 @@ type ApprovalLike = ReconciliationExpenseCandidate | ReconciliationRecord;
 type DingTalkField = Record<string, unknown>;
 type DingTalkTableRow = Record<string, unknown>;
 
+interface ReconciliationRecordFilters {
+  amount?: string;
+  approval_no?: string;
+  occurred_range?: [Dayjs, Dayjs];
+}
+
 interface CandidateFilters {
   template_id?: string;
   approval_no?: string;
 }
 
-interface ConfirmValues {
+interface ConfirmValues extends AccountingFormValues {
   amount?: string;
   accounting_month?: dayjs.Dayjs;
   bank_occurred?: boolean;
@@ -318,6 +326,12 @@ export default function FinanceReconciliationPage() {
   const [transactions, setTransactions] = useState<BankTransaction[]>([]);
   const [candidates, setCandidates] = useState<ReconciliationExpenseCandidate[]>([]);
   const [records, setRecords] = useState<ReconciliationRecord[]>([]);
+  const [recordTotal, setRecordTotal] = useState(0);
+  const [recordPage, setRecordPage] = useState(1);
+  const [isRecordLoading, setIsRecordLoading] = useState(false);
+  const [recordSearchForm] = Form.useForm<ReconciliationRecordFilters>();
+  const recordRequestRef = useRef(0);
+  const recordQueryRef = useRef<{ page: number; filters: ReconciliationRecordFilters }>({ page: 1, filters: {} });
   const [kuailvPurchases, setKuailvPurchases] = useState<KuailvPurchase[]>([]);
   const [editingMajorExpenseVoucher, setEditingMajorExpenseVoucher] = useState<MajorExpenseVoucher | null>(null);
   const [majorExpenseVouchers, setMajorExpenseVouchers] = useState<MajorExpenseVoucher[]>([]);
@@ -356,6 +370,11 @@ export default function FinanceReconciliationPage() {
   const [isSaving, setIsSaving] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [filterForm] = Form.useForm<CandidateFilters>();
+  const accountingRequestVersion = useRef(0);
+  const [confirmPlan, setConfirmPlan] = useState<{total:string; configured:boolean}>({total:'0',configured:false});
+  const [editPlan, setEditPlan] = useState<{total:string; configured:boolean}>({total:'0',configured:false});
+  const [editAccountingLoadError, setEditAccountingLoadError] = useState(false);
+  const [accountingError, setAccountingError] = useState<string | null>(null);
   const [confirmForm] = Form.useForm<ConfirmValues>();
   const [editForm] = Form.useForm<EditValues>();
   const [kuailvForm] = Form.useForm<KuailvPurchaseValues>();
@@ -572,6 +591,37 @@ export default function FinanceReconciliationPage() {
     }
   }
 
+  async function loadReconciliationRecords(storeId: string, page = recordQueryRef.current.page, filters = recordQueryRef.current.filters) {
+    const requestId = ++recordRequestRef.current;
+    recordQueryRef.current = { page, filters };
+    setIsRecordLoading(true);
+    setRecords([]);
+    try {
+      const params = new URLSearchParams({ store_id: storeId, page: String(page), page_size: "12" });
+      if (filters.amount?.trim()) params.set("amount", filters.amount.trim());
+      if (filters.approval_no?.trim()) params.set("approval_no", filters.approval_no.trim());
+      if (filters.occurred_range?.[0]) params.set("occurred_start", filters.occurred_range[0].format("YYYY-MM-DD"));
+      if (filters.occurred_range?.[1]) params.set("occurred_end", filters.occurred_range[1].format("YYYY-MM-DD"));
+      const result = await apiClient.matches.reconciliationRecords(`?${params.toString()}`);
+      if (requestId !== recordRequestRef.current) return;
+      const lastPage = Math.max(1, Math.ceil(result.total / 12));
+      if (page > lastPage) {
+        await loadReconciliationRecords(storeId, lastPage, filters);
+        return;
+      }
+      setRecords(result.items);
+      setRecordTotal(result.total);
+      setRecordPage(result.page);
+    } catch (error) {
+      if (requestId === recordRequestRef.current) {
+        setRecordTotal(0);
+        message.error(error instanceof Error ? error.message : "已对账记录查询失败");
+      }
+    } finally {
+      if (requestId === recordRequestRef.current) setIsRecordLoading(false);
+    }
+  }
+
   async function loadStoreWorkspace(storeId: string, transaction?: BankTransaction | null) {
     setIsLoading(true);
     setErrorMessage(null);
@@ -580,15 +630,13 @@ export default function FinanceReconciliationPage() {
     setPreloadingTransactionIds(new Set());
     try {
       const bankParams = new URLSearchParams({ store_id: storeId, direction: "expense", exclude_special: "true", page_size: "200" });
-      const recordParams = new URLSearchParams({ store_id: storeId, page_size: "100" });
-      const [bankPage, recordPage] = await Promise.all([
+      const [bankPage] = await Promise.all([
         apiClient.bankTransactions.list(`?${bankParams.toString()}`),
-        apiClient.matches.reconciliationRecords(`?${recordParams.toString()}`),
+        loadReconciliationRecords(storeId),
       ]);
       // A bank transaction can only be matched to one approval. Once matched,
       // it belongs in the reconciliation records tab rather than this queue.
       setTransactions(bankPage.items.filter((item) => Number(item.matched_amount || 0) <= 0));
-      setRecords(recordPage.items);
       setApprovalExpenseItemsById({});
       setTransactionPage(1);
       const nextTransaction = transaction && remainingAmount(transaction) > 0 ? transaction : null;
@@ -862,6 +910,10 @@ export default function FinanceReconciliationPage() {
   }, [editingKuailvPurchase, kuailvForm, majorExpenseVoucherForm, selectedLedgerPeriod]);
 
   useEffect(() => {
+    recordQueryRef.current = { page: 1, filters: {} };
+    recordSearchForm.resetFields();
+    setRecordTotal(0);
+    setRecordPage(1);
     if (selectedStoreId) {
       void loadStoreWorkspace(selectedStoreId);
       void loadKuailvPurchases(selectedStoreId);
@@ -1127,7 +1179,13 @@ export default function FinanceReconciliationPage() {
       message.warning("请先选择银行流水和审批单");
       return;
     }
+    const accountingRequest = ++accountingRequestVersion.current;
+    setIsExpenseItemsLoading(false);
+    setAccountingError(null);
+    setConfirmPlan({total: String(approvalTotalAmount(selectedCandidate)),configured:false});
+    confirmForm.resetFields();
     confirmForm.setFieldsValue({
+      multi_accounting: false, accounting_version: 0,
       amount: defaultMatchAmount.toFixed(2),
       accounting_month: undefined, // 去掉默认值，用户必须手动选择
       bank_occurred: true,
@@ -1140,14 +1198,21 @@ export default function FinanceReconciliationPage() {
     if (!approvalId) return;
     setIsExpenseItemsLoading(true);
     try {
-      const page = await fetchApprovalExpenseItems(approvalId);
+      const [page, plan] = await Promise.all([fetchApprovalExpenseItems(approvalId), apiClient.matches.approvalAccounting(approvalId)]);
+      if (accountingRequest !== accountingRequestVersion.current) return;
       setConfirmExpenseItems(page.items);
+      setConfirmPlan({ total: plan.approval_total, configured: plan.configured });
+      confirmForm.setFieldsValue({ multi_accounting: plan.allocations.length > 1, accounting_version: plan.version,
+        accounting_allocations: plan.allocations.map((row) => ({ month: dayjs(row.period+'-01'), amount: row.amount })),
+        ...(plan.allocations[0] ? {accounting_month:dayjs(plan.allocations[0].period+'-01')} : {}),
+      });
     } catch (error) {
+      if (accountingRequest !== accountingRequestVersion.current) return;
       setConfirmExpenseItems([]);
       setConfirmDetailLoadError("审批费用明细加载失败，请关闭弹窗后重试，暂时无法确认匹配。");
       message.error(error instanceof Error ? error.message : "无法加载审批费用明细");
     } finally {
-      setIsExpenseItemsLoading(false);
+      if (accountingRequest === accountingRequestVersion.current) setIsExpenseItemsLoading(false);
     }
   }
 
@@ -1169,8 +1234,9 @@ export default function FinanceReconciliationPage() {
 
   async function submitConfirm(values: ConfirmValues) {
     if (!selectedTransaction || !selectedCandidate || !selectedStoreId) return;
-    const accountingPeriod = values.accounting_month?.format("YYYY-MM");
-    if (!accountingPeriod) return;
+    const accountingPeriod = values.multi_accounting ? values.accounting_allocations?.[0]?.month?.format("YYYY-MM") : values.accounting_month?.format("YYYY-MM");
+    if (!accountingPeriod) { setAccountingError("请选择入账月份"); return; }
+    setAccountingError(null);
     if (!validateConfirmCategories()) return;
     setIsSaving(true);
     try {
@@ -1182,6 +1248,7 @@ export default function FinanceReconciliationPage() {
         expense_item_id: selectedExpenseItem.id,
         amount: values.amount || defaultMatchAmount.toFixed(2),
         accounting_period: accountingPeriod,
+        ...accountingPayload(values, confirmPlan.total, confirmPlan.configured),
         bank_occurred: values.bank_occurred ?? true,
         ...categoryPayload,
         confidence: selectedCandidate.score,
@@ -1202,6 +1269,7 @@ export default function FinanceReconciliationPage() {
       confirmForm.resetFields();
       await loadStoreWorkspace(selectedStoreId);
     } catch (error) {
+      setAccountingError(error instanceof Error ? error.message : "确认匹配失败");
       setErrorMessage(error instanceof Error ? error.message : "确认匹配失败");
     } finally {
       setIsSaving(false);
@@ -1209,10 +1277,19 @@ export default function FinanceReconciliationPage() {
   }
 
   function openEdit(record: ReconciliationRecord) {
+    const accountingRequest = ++accountingRequestVersion.current;
+    setIsExpenseItemsLoading(false);
+    setAccountingError(null);
+    setEditAccountingLoadError(false);
+    setEditPlan({total:record.approval_instance?.total_expense_amount || record.expense_item.amount,configured:Boolean(record.match.accounting_allocations?.length)});
     setEditingRecord(record);
+    editForm.resetFields();
     setEditExpenseItems([record.expense_item]);
     setSelectedEditExpenseItemIds([record.expense_item.id]);
     editForm.setFieldsValue({
+      multi_accounting: (record.match.accounting_allocations?.length || 0) > 1,
+      accounting_version: record.match.accounting_version ?? 0,
+      accounting_allocations: record.match.accounting_allocations?.map((row) => ({month:dayjs(row.period+'-01'),amount:row.amount})),
       expense_item_id: record.expense_item.id,
       amount: record.match.amount,
       accounting_month: dayjs(record.match.accounting_period || record.bank_transaction.ledger_period || record.bank_transaction.occurred_at.slice(0, 7)),
@@ -1222,14 +1299,20 @@ export default function FinanceReconciliationPage() {
     const approvalId = record.approval_instance?.id;
     if (!approvalId) return;
     setIsExpenseItemsLoading(true);
-    fetchApprovalExpenseItems(approvalId)
-      .then((page) => setEditExpenseItems(page.items))
-      .catch((error) => message.error(error instanceof Error ? error.message : "无法加载审批费用明细"))
-      .finally(() => setIsExpenseItemsLoading(false));
+    Promise.all([fetchApprovalExpenseItems(approvalId), apiClient.matches.approvalAccounting(approvalId)])
+      .then(([page,plan]) => {
+        if (accountingRequest !== accountingRequestVersion.current) return;
+        setEditExpenseItems(page.items); setEditPlan({total:plan.approval_total,configured:plan.configured});
+        editForm.setFieldsValue({ multi_accounting:plan.allocations.length>1, accounting_version:plan.version,
+          accounting_allocations:plan.allocations.map((row) => ({month:dayjs(row.period+'-01'),amount:row.amount})),
+          ...(plan.allocations[0] ? {accounting_month:dayjs(plan.allocations[0].period+'-01')} : {}), });
+      })
+      .catch((error) => { if (accountingRequest !== accountingRequestVersion.current) return; setEditAccountingLoadError(true); setAccountingError(error instanceof Error ? error.message : "无法加载审批费用明细，请关闭后重试"); })
+      .finally(() => { if (accountingRequest === accountingRequestVersion.current) setIsExpenseItemsLoading(false); });
   }
 
   async function submitEdit(values: EditValues) {
-    if (!editingRecord || !selectedStoreId) return;
+    if (!editingRecord || !selectedStoreId || isExpenseItemsLoading || editAccountingLoadError) return;
     if (Object.values(editingDetailCategoryDrafts).some((draft) => draft.category_path?.length === 1)) {
       message.warning("费用明细存在仅选择一级分类的项目，请补充二级分类后再保存");
       return;
@@ -1239,7 +1322,8 @@ export default function FinanceReconciliationPage() {
       await apiClient.matches.updateReconciliationRecord(editingRecord.match.id, {
         expense_item_id: values.expense_item_id || editingRecord.expense_item.id,
         amount: values.amount || editingRecord.match.amount,
-        accounting_period: values.accounting_month?.format("YYYY-MM") || editingRecord.match.accounting_period,
+        accounting_period: (values.multi_accounting ? values.accounting_allocations?.[0]?.month?.format("YYYY-MM") : values.accounting_month?.format("YYYY-MM")) || editingRecord.match.accounting_period,
+        ...accountingPayload(values, editPlan.total, editPlan.configured),
         bank_occurred: values.bank_occurred ?? true,
         reason: values.reason || null,
       });
@@ -1256,6 +1340,7 @@ export default function FinanceReconciliationPage() {
       editForm.resetFields();
       await loadStoreWorkspace(selectedStoreId);
     } catch (error) {
+      setAccountingError(error instanceof Error ? error.message : "更新失败");
       setErrorMessage(error instanceof Error ? error.message : "更新失败");
     } finally {
       setIsSaving(false);
@@ -1277,12 +1362,18 @@ export default function FinanceReconciliationPage() {
   }
 
   const recordColumns: ColumnsType<ReconciliationRecord> = [
-    { title: "入账月", dataIndex: ["match", "accounting_period"], width: 100, fixed: "left", render: (value) => value || "-" },
+    { title: "入账月", dataIndex: ["match", "accounting_period"], width: 170, fixed: "left", render: (value, record) => record.match.accounting_allocations?.length ? <Space direction="vertical" size={0}>{record.match.accounting_allocations.map((row) => <Typography.Text key={row.period}>{row.period} · {formatMoney(row.amount)}</Typography.Text>)}</Space> : value || "-" },
     { title: "匹配金额", dataIndex: ["match", "amount"], width: 110, align: "right", fixed: "left", render: (value: string) => formatMoney(value) },
     {
       title: "银行流水",
       width: 300,
-      render: (_, record) => (
+      render: (_, record) => record.settled_bank_transactions?.length ? (
+        <Space direction="vertical" size={4}>
+          <Tag color="green">实付已核对 · {record.settled_bank_transactions.length} 笔</Tag>
+          {record.settled_bank_transactions.map((bank) => <Typography.Text key={bank.id}>{dayjs(bank.occurred_at).format("YYYY-MM-DD")} · {bank.counterparty_name || "—"} · {formatMoney(bank.amount)}</Typography.Text>)}
+          <Typography.Text type="secondary">原未实付登记 {formatMoney(record.bank_transaction.amount)}</Typography.Text>
+        </Space>
+      ) : (
         <Space direction="vertical" size={2} style={{ width: "100%" }}>
           <Space size={6} wrap>
             <Typography.Text strong>{dayjs(record.bank_transaction.occurred_at).format("YYYY-MM-DD")}</Typography.Text>
@@ -1330,9 +1421,9 @@ export default function FinanceReconciliationPage() {
       render: (_, record) => (
         <Space size={4}>
           <Button size="small" onClick={() => setDetailRecord(record)}>明细</Button>
-          <Button size="small" onClick={() => openEdit(record)}>编辑</Button>
+          <Button size="small" disabled={Boolean(record.settled_bank_transactions?.length)} onClick={() => openEdit(record)}>编辑</Button>
           <Popconfirm title="解除匹配关系？" okText="解除" cancelText="取消" onConfirm={() => unmatch(record)}>
-            <Button size="small" danger>解除</Button>
+            <Button size="small" danger disabled={Boolean(record.settled_bank_transactions?.length)}>解除</Button>
           </Popconfirm>
         </Space>
       ),
@@ -1695,7 +1786,7 @@ export default function FinanceReconciliationPage() {
             <div className="reconciliation-summary-card__metrics">
               <Statistic title="银行流水" value={transactions.length} />
               <Statistic title="候选审批单" value={candidates.length} />
-              <Statistic title="已对账" value={records.length} />
+              <Statistic title="已对账" value={recordTotal} />
             </div>
           </div>
           <Space className="reconciliation-summary-card__actions">
@@ -2200,13 +2291,21 @@ export default function FinanceReconciliationPage() {
 	          },
 	          {
 	            key: "records",
-            label: `已对账记录 (${records.length})`,
+            label: `已对账记录 (${recordTotal})`,
             children: activeTabKey === "records" ? (
               <Card title="已对账记录" className="data-table-card reconciliation-record-card">
+                <Form form={recordSearchForm} layout="inline" className="table-filter-form" onFinish={(values) => selectedStoreId && void loadReconciliationRecords(selectedStoreId, 1, values)}>
+                  <Form.Item label="匹配金额" name="amount" rules={[{ validator: (_, value) => !value?.trim() || /^\d+(\.\d{1,2})?$/.test(value.trim()) ? Promise.resolve() : Promise.reject(new Error("请输入非负金额，最多两位小数")) }]}>
+                    <Input allowClear prefix="¥" placeholder="精确金额" style={{ width: 150 }} />
+                  </Form.Item>
+                  <Form.Item label="审批单号" name="approval_no"><Input allowClear placeholder="支持部分单号" style={{ width: 210 }} /></Form.Item>
+                  <Form.Item label="流水日期" name="occurred_range"><DatePicker.RangePicker locale={zhCN.DatePicker} format="YYYY-MM-DD" /></Form.Item>
+                  <Form.Item><Space><Button type="primary" htmlType="submit" loading={isRecordLoading}>查询</Button><Button disabled={isRecordLoading} onClick={() => { recordSearchForm.resetFields(); if (selectedStoreId) void loadReconciliationRecords(selectedStoreId, 1, {}); }}>重置</Button></Space></Form.Item>
+                </Form>
                 <Table
                   rowKey={(record) => record.match.id}
                   size="small"
-                  loading={isLoading}
+                  loading={isRecordLoading}
                   columns={recordColumns}
                   dataSource={records}
                   expandable={{
@@ -2217,7 +2316,7 @@ export default function FinanceReconciliationPage() {
                       }
                     },
                   }}
-                  pagination={{ pageSize: 12 }}
+                  pagination={{ current: recordPage, pageSize: 12, total: recordTotal, showSizeChanger: false, showTotal: (total) => `共 ${total} 条`, onChange: (page) => selectedStoreId && void loadReconciliationRecords(selectedStoreId, page) }}
                   scroll={{ x: 1290, y: "calc(100vh - 430px)" }}
                   sticky
                 />
@@ -2319,13 +2418,15 @@ export default function FinanceReconciliationPage() {
         className="reconciliation-confirm-modal"
         open={isConfirmOpen}
         destroyOnHidden
-        onCancel={() => setIsConfirmOpen(false)}
+        closable={!isSaving} maskClosable={!isSaving} keyboard={!isSaving}
+        onCancel={() => { if (!isSaving) { accountingRequestVersion.current++; setIsExpenseItemsLoading(false); setIsConfirmOpen(false); } }}
         onOk={() => { if (validateConfirmCategories()) confirmForm.submit(); }}
         okText="确认匹配"
         confirmLoading={isSaving}
         okButtonProps={{ disabled: isExpenseItemsLoading || Boolean(confirmDetailLoadError) }}
         width={980}
       >
+        {accountingError ? <Alert type="error" showIcon message={accountingError} style={{marginBottom:12}} /> : null}
         {confirmDetailLoadError ? <Alert type="error" showIcon message={confirmDetailLoadError} /> : null}
         <Form form={confirmForm} layout="vertical" onFinish={submitConfirm}>
           <div className="reconciliation-confirm-summary">
@@ -2437,9 +2538,7 @@ export default function FinanceReconciliationPage() {
             </Spin>
           </div>
           <div className="reconciliation-confirm-fields">
-            <Form.Item name="accounting_month" label="入账月份" rules={[{ required: true, message: "请选择入账月份" }]}>
-              <DatePicker picker="month" locale={zhCN.DatePicker} placeholder="请选择入账月份" style={{ width: "100%" }} />
-            </Form.Item>
+            <ApprovalAccountingFields approvalTotal={confirmPlan.total} configured={confirmPlan.configured} allowMultiple={Boolean(selectedCandidate?.approval_instance?.id)} disabled={isSaving || isExpenseItemsLoading} />
             <Form.Item name="amount" label="匹配金额" rules={[{ required: true, message: "请输入匹配金额" }]}>
               <Input disabled />
             </Form.Item>
@@ -2455,9 +2554,14 @@ export default function FinanceReconciliationPage() {
 
       <Modal
         title="编辑对账记录"
+        closable={!isSaving} maskClosable={!isSaving} keyboard={!isSaving}
+        okButtonProps={{ disabled: isExpenseItemsLoading || editAccountingLoadError }}
         open={Boolean(editingRecord)}
         destroyOnHidden
         onCancel={() => {
+          if (isSaving) return;
+          accountingRequestVersion.current++;
+          setIsExpenseItemsLoading(false);
           setEditingRecord(null);
           setEditExpenseItems([]);
         }}
@@ -2465,6 +2569,7 @@ export default function FinanceReconciliationPage() {
         confirmLoading={isSaving}
         width={900}
       >
+        {accountingError ? <Alert type="error" showIcon message={accountingError} style={{marginBottom:12}} /> : null}
         <Form form={editForm} layout="vertical" onFinish={submitEdit}>
           {editingRecord?.approval_instance ? (
             <Card size="small" title="审批费用明细" style={{ marginBottom: 16 }}>
@@ -2554,9 +2659,7 @@ export default function FinanceReconciliationPage() {
           <Form.Item name="amount" label="匹配金额" rules={[{ required: true }]}>
             <Input />
           </Form.Item>
-          <Form.Item name="accounting_month" label="入账月份" rules={[{ required: true }]}>
-            <DatePicker picker="month" locale={zhCN.DatePicker} style={{ width: "100%" }} />
-          </Form.Item>
+          <ApprovalAccountingFields approvalTotal={editPlan.total} configured={editPlan.configured} allowMultiple={Boolean(editingRecord?.approval_instance?.id)} disabled={isSaving || isExpenseItemsLoading} />
           <Form.Item name="bank_occurred" label="银行流水是否已发生" valuePropName="checked">
             <Switch checkedChildren="已发生" unCheckedChildren="未发生" />
           </Form.Item>

@@ -229,3 +229,33 @@ def test_sealed_sync_preserves_financial_data_with_invalid_previous_payload(sess
     assert approval.approval_status == "agree"
     assert [item.amount for item in items] == [Decimal(6000), Decimal(4000)]
     assert all(item.sync_conflict_status == "source_changed_after_sealed" for item in items)
+
+
+def test_preopening_cannot_use_payment_reserved_for_unpaid_settlement(client, session):
+    store, template, approval, items, banks = setup(session)
+    assert client.patch(
+        f"/api/dingtalk/templates/{template.id}", json={"is_preopening_expense": True}
+    ).status_code == 200
+    _, categories = create_categories(client)
+    banks[0].payment_status = "unpaid"
+    banks[1].payment_status = "paid"
+    session.commit()
+    base = f"/api/bank-payment-settlements/{banks[0].id}"
+    response = client.post(base + "/links", json={"bank_transaction_ids": [banks[1].id]})
+    assert response.status_code == 200, response.text
+    for bank in banks:
+        response = client.get(
+            f"/api/preopening/stores/{store.id}/candidates",
+            params={"bank_transaction_id": bank.id},
+        )
+        assert response.status_code == 409, response.text
+        response = client.post(
+            f"/api/preopening/stores/{store.id}/matches",
+            json={
+                "approval_id": approval.id,
+                "bank_transaction_id": bank.id,
+                "amount": "5000",
+                "categories": {item.id: categories[i] for i, item in enumerate(items)},
+            },
+        )
+        assert response.status_code == 409, response.text

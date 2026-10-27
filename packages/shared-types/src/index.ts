@@ -134,6 +134,7 @@ export interface SystemReadinessReport {
 }
 
 export interface RevenueRecord {
+  is_bank_direct?: boolean;
   id: string;
   store_id: string;
   ledger_period: string;
@@ -494,7 +495,11 @@ export interface MajorExpenseVoucherCreate {
 export type BankPaymentStatus = "paid" | "unpaid" | "unreceived";
 export type BankSpecialType = "current_account" | "shareholder_dividend" | "shareholder_capital" | "other_income_expense" | "counter_refund" | "loan_repayment";
 
+export type BankDirectPostingType = "bank_interest" | "bank_fee" | "bank_sms_fee" | "bank_other_expense";
+
 export interface BankTransaction {
+  is_archived?: boolean;
+  payment_settlement_status?: string | null;
   id: string;
   store_id: string;
   ledger_period: string;
@@ -506,6 +511,7 @@ export interface BankTransaction {
   summary?: string | null;
   bank_serial_no?: string | null;
   payment_status: BankPaymentStatus;
+  direct_posting_type?: BankDirectPostingType | null;
   special_type?: BankSpecialType | null;
   matched_amount: string;
   running_balance?: string | null;
@@ -559,6 +565,29 @@ export interface BankTransactionBusinessDetail {
   revenues: BankBusinessRevenue[];
 }
 
+export interface BankPaymentSettlementList {
+  items: BankTransaction[];
+  total: number;
+  registered_total: string;
+  linked_total: string;
+  page: number;
+  page_size: number;
+}
+export interface BankPaymentSettlementDetail {
+  source: BankTransaction;
+  status: "open" | "completed";
+  links: Array<{ id: string; transaction: BankTransaction }>;
+  registered_amount: string;
+  actual_amount: string;
+  difference: string;
+  remark?: string | null;
+  completed_at?: string | null;
+}
+export interface BankPaymentSettlementCandidate {
+  transaction: BankTransaction;
+  score: number;
+}
+
 export interface BankTransactionCreate {
   store_id: string;
   ledger_period?: string | null;
@@ -570,6 +599,7 @@ export interface BankTransactionCreate {
   summary?: string | null;
   bank_serial_no?: string | null;
   payment_status?: BankPaymentStatus;
+  direct_posting_type?: BankDirectPostingType | null;
   special_type?: BankSpecialType | null;
   allow_duplicates?: boolean;
 }
@@ -607,6 +637,7 @@ export interface BankTransactionUpdate {
   summary?: string | null;
   bank_serial_no?: string | null;
   payment_status?: BankPaymentStatus;
+  direct_posting_type?: BankDirectPostingType | null;
   special_type?: BankSpecialType | null;
   allow_duplicates?: boolean;
 }
@@ -648,6 +679,8 @@ export interface ExpenseBankMatch {
   expense_item_id: string;
   bank_transaction_id: string;
   amount: string;
+  accounting_allocations?: AccountingAllocation[] | null;
+  accounting_version?: number | null;
   accounting_period?: string | null;
   bank_occurred: boolean;
   status: MatchStatus;
@@ -663,6 +696,8 @@ export interface MatchCreate {
   expense_item_id: string;
   bank_transaction_id: string;
   amount: string;
+  accounting_allocations?: AccountingAllocation[] | null;
+  accounting_version?: number | null;
   accounting_period?: string | null;
   bank_occurred?: boolean;
   category_l1?: string | null;
@@ -674,6 +709,8 @@ export interface MatchCreate {
 export interface ReconciliationRecordUpdate {
   expense_item_id?: string | null;
   amount?: string | null;
+  accounting_allocations?: AccountingAllocation[] | null;
+  accounting_version?: number | null;
   accounting_period?: string | null;
   bank_occurred?: boolean | null;
   category_l1?: string | null;
@@ -705,6 +742,7 @@ export interface ReconciliationCandidateResult {
 }
 
 export interface ReconciliationRecord {
+  settled_bank_transactions?: BankTransaction[];
   match: ExpenseBankMatch;
   bank_transaction: BankTransaction;
   expense_item: ExpenseItem;
@@ -1158,6 +1196,8 @@ export interface ApprovalInstance {
   dingtalk_instance_id: string;
   approval_no?: string | null;
   store_id?: string | null;
+  manual_store_id?: string | null;
+  store_override_reason?: string | null;
   department_name?: string | null;
   applicant_name?: string | null;
   applicant_user_id?: string | null;
@@ -1456,6 +1496,8 @@ export interface DividendMonth {
   store_id: string;
   period: string;
   net_profit: string;
+  available_profit?: string | null;
+  excluded_from_calculation?: boolean;
   manual_net_profit?: string | null;
   manual_remaining_undistributed?: string | null;
   profit_source: "report" | "manual";
@@ -1480,6 +1522,9 @@ export interface DividendWorkspace {
   shareholders: DividendShareholder[];
   current: DividendMonth;
   history: DividendMonth[];
+  opening?: DividendOpeningBalance | null;
+  funding?: DividendFundingSetting;
+  warnings?: string[];
 }
 
 export interface LedgerSummary {
@@ -1506,4 +1551,78 @@ export interface CurrentUser {
   permissions: PermissionKey[];
   store_ids: string[];
   store_group_ids: string[];
+}
+
+export interface DividendFundingSetting {
+  preopening_investment: string;
+  preopening_expense_override: string | null;
+  preopening_expense_amount: string;
+  preopening_expense_source: "manual" | "report";
+}
+
+export interface FinancialReportSupplement extends DividendFundingSetting {
+  dividend_start_period?: string | null;
+  dividend_excluded?: boolean;
+  store_id: string;
+  period: string;
+  revenue_target: string | null;
+  bank_balance: { date: string; status: "ready" | "pending" | "missing_base"; amount: string | null };
+  remaining_undistributed: string | null;
+  distribution_amount: string;
+  capital_amount: string;
+  cumulative_capital: string;
+  cumulative_distribution: string;
+  total_capital: string;
+}
+
+export interface FinancialReportAppendix {
+  expense_items: (ExpenseItem & { application_date?: string | null })[];
+  rows: {
+    transaction: BankTransaction;
+    business: {
+      kind: "expense" | "income";
+      description: string;
+      application_date?: string | null;
+      approval_no?: string | null;
+      category_l1?: string | null;
+      category_l2?: string | null;
+      accounting_amount: string;
+      settlement_group?: string | null;
+      shared_accounting_amount?: boolean;
+      revenue_start?: string;
+      revenue_end?: string;
+      expense_details?: { description: string; amount: string; category_l1: string | null; category_l2: string | null }[];
+    }[];
+  }[];
+}
+
+
+export interface DividendOpeningBalance extends DividendFundingSetting {
+  configured: boolean;
+  start_period: string | null;
+  opening_remaining: string | null;
+  historical_profit: string | null;
+  historical_distribution: string | null;
+  operating_capital: string | null;
+  version: number;
+  reason?: string | null;
+  updated_by?: string | null;
+  updated_at?: string | null;
+}
+export interface DividendOpeningUpdate {
+  start_period: string;
+  opening_remaining: string;
+  historical_profit: string;
+  historical_distribution: string;
+  operating_capital: string;
+  preopening_investment: string;
+  preopening_expense_override: string | null;
+  version: number;
+  reason: string;
+}
+
+
+export interface AccountingAllocation { period: string; amount: string; }
+export interface ApprovalAccountingPlan {
+  approval_id: string; approval_total: string; configured: boolean; version: number; allocations: AccountingAllocation[];
 }

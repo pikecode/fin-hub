@@ -4695,3 +4695,49 @@ select,
 .store-financial-report__major-voucher-note-main .ant-typography {
   margin: 0;
 }
+
+/* Monthly financial report: restrained reading width, two to three metrics per row. */
+.store-financial-report-view { width: 100%; max-width: 1120px; margin-inline: auto; }
+.store-financial-report-view .report-summary { margin-bottom: 20px; border-color: #e2ebe8; border-radius: 14px; }
+.report-summary__grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; }
+.report-summary__grid--4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.report-summary__grid--1 { grid-template-columns: 1fr; }
+.report-summary__metric { padding: 18px 20px; border-radius: 10px; background: #f7faf9; min-width: 0; }
+.report-summary__metric strong { display: block; margin: 8px 0; color: #263e44; font-size: clamp(22px, 2.2vw, 30px); line-height: 1.4; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.report-summary__metric--primary { background: #eaf5ef; }
+.report-summary__metric--primary strong { color: #126c58; }
+.report-summary__metric--muted { padding-block: 12px; }
+.report-summary__metric--muted strong { font-size: 22px; }
+.report-summary__hint { display: block; font-size: 12px; }
+.report-summary--expense .report-summary__grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.report-summary--expense .report-summary__metric:first-child { grid-column: 1 / -1; }
+.store-financial-report-view .store-financial-report__hero { align-items: center; }
+@media (max-width: 760px) {
+  .report-summary__grid, .report-summary--expense .report-summary__grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .report-summary__metric { padding: 14px; }
+  .report-summary__grid--1 { grid-template-columns: 1fr; }
+  .store-financial-report-view .store-financial-report__grid { grid-template-columns: 1fr; }
+}
+
+/* Dividend balances are a compact monthly ledger rather than a wide dashboard. */
+.dividend-page { max-width: 1040px; margin-inline: auto; width: 100%; }
+.dividend-page .ant-card { border-radius: 10px; }
+.dividend-page .ant-card-head { min-height: 43px; padding-inline: 16px; }
+.dividend-page .ant-card-body { padding: 16px; }
+.dividend-page .ant-form-inline { row-gap: 10px; }
+.dividend-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.dividend-metrics > .ant-card { min-width: 0; min-height: 112px; }
+.dividend-metrics .ant-statistic-title { font-size: 13px; margin-bottom: 6px; }
+.dividend-metrics .ant-statistic-content { font-size: 23px; line-height: 1.4; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.dividend-metric-hint { display: block; margin-top: 6px; font-size: 11px; }
+.dividend-opening-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 18px; }
+@media (max-width: 720px) {
+  .dividend-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .dividend-metrics .ant-statistic-content { font-size: 20px; }
+  .dividend-opening-fields { grid-template-columns: 1fr; }
+}
+
+.approval-accounting-fields { grid-column: 1 / -1; border: 1px solid #e0e9e6; border-radius: 8px; padding: 14px; margin-bottom: 12px; }
+.approval-accounting-fields__row { display: grid; grid-template-columns: minmax(140px,1fr) minmax(160px,1fr) 56px; align-items: start; gap: 10px; }
+.approval-accounting-fields__row .ant-form-item { margin-bottom: 12px; }
+@media(max-width:600px) { .approval-accounting-fields__row { grid-template-columns: 1fr; gap: 0; } }

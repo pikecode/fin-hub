@@ -378,6 +378,8 @@ def update_revenue_channel(
     channel = session.get(RevenueChannel, channel_id)
     if channel is None:
         raise HTTPException(status_code=404, detail="Revenue channel not found")
+    if channel.name == "银行结息":
+        raise HTTPException(409, "银行结息为银行直接入账渠道，不能修改或删除")
     if channel.deleted_at is not None:
         raise HTTPException(status_code=409, detail="Revenue channel has been deleted")
 
@@ -425,6 +427,8 @@ def delete_revenue_channel(
     channel = session.get(RevenueChannel, channel_id)
     if channel is None:
         raise HTTPException(status_code=404, detail="Revenue channel not found")
+    if channel.name == "银行结息":
+        raise HTTPException(409, "银行结息为银行直接入账渠道，不能修改或删除")
     if channel.deleted_at is not None:
         return ApiEnvelope(data={"ok": True})
     channel_name = channel.name
@@ -477,6 +481,8 @@ def create_revenue_record(
 ) -> ApiEnvelope[RevenueRecordRead]:
     ensure_permission(session, current_user, "revenue.manage")
     ensure_store_access(session, current_user, payload.store_id)
+    if payload.channel == "银行结息":
+        raise HTTPException(409, "银行结息请在银行流水中选择直接入账")
     ensure_channel_for_store(session, payload.channel, payload.store_id)
     record = RevenueRecord(**normalize_revenue_assignment(session, payload.model_dump()))
     session.add(record)
@@ -515,10 +521,14 @@ def update_revenue_record(
     record = session.get(RevenueRecord, record_id)
     if record is None:
         raise HTTPException(status_code=404, detail="Revenue record not found")
+    if record.is_bank_direct:
+        raise HTTPException(409, "该收入由银行流水直接入账，请在银行流水中修改或删除")
     ensure_store_access(session, current_user, record.store_id)
     ensure_open_ledger(session, record.store_id, record.ledger_period)
 
     changes = payload.model_dump(exclude_unset=True)
+    if changes.get("channel") == "银行结息":
+        raise HTTPException(409, "银行结息请在银行流水中选择直接入账")
     target_store_id = changes.get("store_id", record.store_id)
     ensure_store_access(session, current_user, target_store_id)
     target_revenue_date = changes.get("revenue_date", record.revenue_date)
@@ -562,6 +572,8 @@ def delete_revenue_record(
     record = session.get(RevenueRecord, record_id)
     if record is None:
         raise HTTPException(status_code=404, detail="Revenue record not found")
+    if record.is_bank_direct:
+        raise HTTPException(409, "该收入由银行流水直接入账，请在银行流水中修改或删除")
     ensure_store_access(session, current_user, record.store_id)
     ensure_open_ledger(session, record.store_id, record.ledger_period)
     existing_exact_match = session.scalar(

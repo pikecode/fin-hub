@@ -811,7 +811,7 @@ export default function RevenuePage() {
                     <Button
                       size="small"
                       className={`revenue-channel-card__entry-button${isSelected && isEditing ? " revenue-channel-card__entry-button--active" : ""}`}
-                      disabled={isInactive}
+                      disabled={isInactive || summary.name === "银行结息"}
                       onClick={(event) => {
                         event.stopPropagation();
                         startChannelEntry(summary.name);
@@ -852,6 +852,8 @@ export default function RevenuePage() {
                 <Button
                   type={isEditing ? "default" : "primary"}
                   icon={isEditing ? undefined : <EditOutlined />}
+                  disabled={selectedChannel === "银行结息"}
+                  title={selectedChannel === "银行结息" ? "银行结息请在银行流水中修改" : undefined}
                   className={isEditing ? undefined : "revenue-detail-edit-button"}
                   onClick={() => {
                     if (isEditing) {

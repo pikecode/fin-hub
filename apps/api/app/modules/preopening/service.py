@@ -28,6 +28,9 @@ def ensure_open(state: PreopeningStore):
 
 
 def ensure_operating(session: Session, expense: ExpenseItem, bank: BankTransaction):
+    from app.modules.bank.unpaid import mutation_lock
+
+    mutation_lock(session)
     if expense.approval_instance_id:
         session.scalar(
             select(ApprovalInstance)

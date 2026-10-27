@@ -343,6 +343,7 @@ class RevenueRecord(Base):
     gross_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
     net_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
     fee_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=0, nullable=False)
+    is_bank_direct: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"), nullable=False)
     remark: Mapped[str | None] = mapped_column(String(240))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
@@ -528,6 +529,8 @@ class BankTransaction(Base):
     summary: Mapped[str | None] = mapped_column(String(240))
     bank_serial_no: Mapped[str | None] = mapped_column(String(120))
     payment_status: Mapped[str] = mapped_column(String(24), default=BankPaymentStatus.PAID.value, nullable=False)
+    is_archived: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"), nullable=False)
+    direct_posting_type: Mapped[str | None] = mapped_column(String(32))
     special_type: Mapped[str | None] = mapped_column(String(32))
     matched_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=0, nullable=False)
     import_job_id: Mapped[str | None] = mapped_column(ForeignKey("sync_jobs.id"))
@@ -535,6 +538,29 @@ class BankTransaction(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=utc_now, onupdate=utc_now, nullable=False
     )
+
+
+class BankPaymentSettlement(Base):
+    __tablename__ = "bank_payment_settlements"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    source_bank_transaction_id: Mapped[str] = mapped_column(ForeignKey("bank_transactions.id"), unique=True, nullable=False)
+    status: Mapped[str] = mapped_column(String(24), default="open", nullable=False)
+    registered_amount: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+    actual_amount: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+    remark: Mapped[str | None] = mapped_column(Text)
+    source_snapshot_json: Mapped[str | None] = mapped_column(Text)
+    completed_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+
+
+class BankPaymentSettlementLink(Base):
+    __tablename__ = "bank_payment_settlement_links"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    settlement_id: Mapped[str] = mapped_column(ForeignKey("bank_payment_settlements.id"), index=True, nullable=False)
+    bank_transaction_id: Mapped[str] = mapped_column(ForeignKey("bank_transactions.id"), unique=True, nullable=False)
+    created_by: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
 
 
 class BankBalanceCorrection(Base):
@@ -566,6 +592,20 @@ class ExpenseBankMatch(Base):
     expense_item_id: Mapped[str] = mapped_column(ForeignKey("expense_items.id"), nullable=False)
     bank_transaction_id: Mapped[str] = mapped_column(ForeignKey("bank_transactions.id"), nullable=False)
     amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    accounting_allocations_json: Mapped[str | None] = mapped_column(Text)
+    requested_accounting_version: Mapped[int | None] = mapped_column()
+
+    @property
+    def accounting_allocations(self):
+        import json
+        if hasattr(self, "_effective_allocations"):
+            return self._effective_allocations
+        return json.loads(self.accounting_allocations_json) if self.accounting_allocations_json else None
+
+    @property
+    def accounting_version(self):
+        return getattr(self, "_effective_accounting_version", self.requested_accounting_version)
+
     accounting_period: Mapped[str | None] = mapped_column(String(7))
     bank_occurred: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     status: Mapped[str] = mapped_column(String(24), default=MatchStatus.CANDIDATE.value, nullable=False)
@@ -828,6 +868,8 @@ class ApprovalInstance(Base):
     dingtalk_instance_id: Mapped[str] = mapped_column(String(160), nullable=False)
     approval_no: Mapped[str | None] = mapped_column(String(120))
     store_id: Mapped[str | None] = mapped_column(ForeignKey("stores.id"))
+    manual_store_id: Mapped[str | None] = mapped_column(ForeignKey("stores.id"))
+    store_override_reason: Mapped[str | None] = mapped_column(Text)
     department_name: Mapped[str | None] = mapped_column(String(240))
     applicant_name: Mapped[str | None] = mapped_column(String(80))
     applicant_user_id: Mapped[str | None] = mapped_column(String(120))
@@ -864,3 +906,50 @@ class PreopeningStore(Base):
     status: Mapped[str] = mapped_column(String(16), default="open", nullable=False)
     closed_at: Mapped[datetime | None] = mapped_column(DateTime)
     closed_by: Mapped[str | None] = mapped_column(String(80))
+
+
+class FinancialReportMonthSetting(Base):
+    __tablename__ = "financial_report_month_settings"
+    __table_args__ = (UniqueConstraint("store_id", "period", name="uq_report_setting_store_period"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    store_id: Mapped[str] = mapped_column(ForeignKey("stores.id"), nullable=False)
+    period: Mapped[str] = mapped_column(String(7), nullable=False)
+    revenue_target: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+
+
+class DividendFundingSetting(Base):
+    __tablename__ = "dividend_funding_settings"
+    store_id: Mapped[str] = mapped_column(ForeignKey("stores.id"), primary_key=True)
+    preopening_investment: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=0, server_default="0", nullable=False)
+    preopening_expense_override: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+
+
+class DividendOpeningBalance(Base):
+    __tablename__ = "dividend_opening_balances"
+    store_id: Mapped[str] = mapped_column(ForeignKey("stores.id"), primary_key=True)
+    start_period: Mapped[str] = mapped_column(String(7), nullable=False)
+    opening_remaining: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    historical_profit: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    historical_distribution: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    operating_capital: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    version: Mapped[int] = mapped_column(default=1, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_by: Mapped[str] = mapped_column(String(80), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
+
+
+class ApprovalAccountingPlan(Base):
+    __tablename__ = "approval_accounting_plans"
+    approval_id: Mapped[str] = mapped_column(ForeignKey("approval_instances.id"), primary_key=True)
+    version: Mapped[int] = mapped_column(default=1, nullable=False)
+    updated_by: Mapped[str] = mapped_column(String(80), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
+
+
+class ApprovalAccountingAllocation(Base):
+    __tablename__ = "approval_accounting_allocations"
+    __table_args__ = (UniqueConstraint("approval_id", "period", name="uq_approval_accounting_period"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    approval_id: Mapped[str] = mapped_column(ForeignKey("approval_accounting_plans.approval_id"), nullable=False)
+    period: Mapped[str] = mapped_column(String(7), index=True, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)

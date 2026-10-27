@@ -7,6 +7,9 @@ import { StatusBadge } from "./StatusBadge";
 export type BankTransactionViewColumn = ColumnsType<BankTransaction>[number] & { key: string };
 
 function bankMatchStatus(transaction: BankTransaction) {
+  if (transaction.payment_settlement_status === "open") return { label: "实付核对中", color: "warning" as const };
+  if (transaction.payment_settlement_status === "completed" && Number(transaction.matched_amount || 0) === 0 && !transaction.special_type) return { label: "已核对/待对账", color: "processing" as const };
+  if (transaction.direct_posting_type) return { label: "已直接入账", color: "success" as const };
   if (transaction.special_type) return { label: "已匹配", color: "success" as const };
   const matchedAmount = Number(transaction.matched_amount || 0);
   if (matchedAmount <= 0) return { label: "未匹配", color: "default" as const };
@@ -107,6 +110,13 @@ export function getBankTransactionViewColumns(): BankTransactionViewColumn[] {
         const status = bankPaymentStatusLabels[value || "paid"] ?? bankPaymentStatusLabels.paid;
         return <Tag color={status.color}>{status.label}</Tag>;
       },
+    },
+    {
+      key: "direct_posting_type",
+      title: "直接入账",
+      dataIndex: "direct_posting_type",
+      width: 130,
+      render: (value: string | null) => value ? <Tag color="cyan">{({ bank_interest: "银行结息", bank_fee: "银行手续费", bank_sms_fee: "银行短信费", bank_other_expense: "银行其他支出" } as Record<string, string>)[value] || value}</Tag> : "—",
     },
     {
       key: "special_type",

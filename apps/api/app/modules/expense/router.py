@@ -474,10 +474,14 @@ def update_expense_item(
     if item is None:
         raise HTTPException(status_code=404, detail="Expense item not found")
 
+    if item.source == "bank_direct":
+        raise HTTPException(409, "该费用由银行流水直接入账，请在银行流水中修改")
     if item.expense_scope == "preopening":
         raise HTTPException(409, "筹建费用请在筹建费用页面维护")
     ensure_open_ledger(session, item.store_id, item.ledger_period)
     changes = payload.model_dump(exclude_unset=True)
+    from app.modules.matching.accounting import protect_expense_changes
+    protect_expense_changes(session, item, changes)
     for field, value in changes.items():
         setattr(item, field, value)
     if item.source == "dingtalk" and changes:

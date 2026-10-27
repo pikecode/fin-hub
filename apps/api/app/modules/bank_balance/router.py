@@ -51,6 +51,8 @@ def calculate_bank_balance(session: Session, store_id: str) -> BankBalanceRead:
         session.scalars(
             select(BankTransaction).where(
                 BankTransaction.store_id == store_id,
+                BankTransaction.is_archived.is_(False),
+                BankTransaction.payment_status == "paid",
                 BankTransaction.occurred_at >= start,
             )
         )

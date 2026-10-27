@@ -30,6 +30,8 @@ from app.models import (
     User,
     utc_now,
 )
+from app.modules.bank.unpaid import protect_payment_bank, annotate_payment_status, completed_source_ids, reserved_payment_bank_ids, mutation_lock
+from app.modules.bank.direct_posting import sync_direct_posting, posting_key, validate_direct_posting, open_period, LABELS as DIRECT_POSTING_LABELS
 from app.modules.audit.service import write_audit_log
 from app.modules.auth.permissions import (
     ensure_permission,
@@ -91,6 +93,9 @@ def ensure_open_or_create_ledger(session: Session, store_id: str, period: str) -
 
 def normalize_bank_assignment(session: Session, payload: BankTransactionCreate) -> dict:
     data = payload.model_dump()
+    validate_direct_posting(data.get("direct_posting_type"), data["direction"], data.get("special_type"))
+    if data.get("direct_posting_type") and data["payment_status"] != "paid":
+        raise HTTPException(422, "直接入账仅支持已实付或已实收流水")
     if not data["store_id"]:
         raise HTTPException(status_code=422, detail="Store is required")
     if not data["ledger_period"]:
@@ -136,6 +141,7 @@ def list_bank_transactions(
         exclude_special=exclude_special,
     ).order_by(BankTransaction.occurred_at.desc())
     items, total = paginate(session, query, page, page_size)
+    annotate_payment_status(session, items)
     attach_running_balances(session, items)
     return ApiEnvelope(data=Page(items=items, total=total, page=page, page_size=page_size))
 
@@ -143,6 +149,8 @@ def list_bank_transactions(
 def attach_running_balances(session: Session, items: list[BankTransaction]) -> None:
     if not items:
         return
+    for item in items:
+        item.running_balance = None
     item_ids = {item.id for item in items}
     store_ids = sorted({item.store_id for item in items})
     for store_id in store_ids:
@@ -167,7 +175,7 @@ def attach_running_balances(session: Session, items: list[BankTransaction]) -> N
         transactions = list(
             session.scalars(
                 select(BankTransaction)
-                .where(BankTransaction.store_id == store_id, BankTransaction.occurred_at >= first_start)
+                .where(BankTransaction.store_id == store_id, BankTransaction.occurred_at >= first_start, BankTransaction.is_archived.is_(False), BankTransaction.payment_status == "paid")
                 .order_by(
                     BankTransaction.occurred_at.asc(),
                     BankTransaction.created_at.asc(),
@@ -221,6 +229,7 @@ def build_bank_transaction_query(
     query = query.where(BankTransaction.store_id.is_not(None), BankTransaction.ledger_period.is_not(None))
     if ledger_period:
         query = query.where(BankTransaction.ledger_period == ledger_period)
+    query = query.where(BankTransaction.is_archived.is_(False))
     if direction:
         query = query.where(BankTransaction.direction == direction)
     if special_type == "normal":
@@ -231,11 +240,13 @@ def build_bank_transaction_query(
         query = query.where(
             BankTransaction.matched_amount <= Decimal("0"),
             BankTransaction.special_type.is_(None),
+            BankTransaction.direct_posting_type.is_(None),
         )
     elif match_status == "matched":
         query = query.where(
             (BankTransaction.matched_amount > Decimal("0"))
             | BankTransaction.special_type.is_not(None)
+            | BankTransaction.direct_posting_type.is_not(None)
         )
     if amount is not None:
         query = query.where(BankTransaction.amount == amount)
@@ -248,7 +259,7 @@ def build_bank_transaction_query(
     if occurred_to:
         query = query.where(BankTransaction.occurred_at < occurred_to)
     if exclude_special:
-        query = query.where(BankTransaction.special_type.is_(None))
+        query = query.where(BankTransaction.special_type.is_(None), BankTransaction.direct_posting_type.is_(None), BankTransaction.id.not_in(reserved_payment_bank_ids()))
     return query
 
 
@@ -329,12 +340,18 @@ def bank_transaction_business_detail(
         raise HTTPException(status_code=404, detail="Bank transaction not found")
     ensure_store_access(session, current_user, transaction.store_id)
 
+    related_bank_ids = [transaction.id, *completed_source_ids(session, transaction.id)]
     expense_matches = list(session.scalars(select(ExpenseBankMatch).where(
-        ExpenseBankMatch.bank_transaction_id == transaction.id,
+        ExpenseBankMatch.bank_transaction_id.in_(related_bank_ids),
         ExpenseBankMatch.status == "confirmed",
     )))
     expense_ids = [item.expense_item_id for item in expense_matches]
     expenses = list(session.scalars(select(ExpenseItem).where(ExpenseItem.id.in_(expense_ids)))) if expense_ids else []
+    direct_expense = session.scalar(select(ExpenseItem).where(
+        ExpenseItem.source == "bank_direct", ExpenseItem.source_document_id == transaction.id))
+    if direct_expense is not None:
+        expenses.append(direct_expense)
+        expense_ids.append(direct_expense.id)
     expense_by_id = {item.id: item for item in expenses}
     approval_ids = {item.approval_instance_id for item in expenses if item.approval_instance_id}
     approvals = list(session.scalars(select(ApprovalInstance).where(ApprovalInstance.id.in_(approval_ids)))) if approval_ids else []
@@ -354,10 +371,7 @@ def bank_transaction_business_detail(
     for attachment in attachment_rows:
         attachments_by_item.setdefault(attachment.resource_id, []).append(attachment)
     expense_rows = []
-    for match in expense_matches:
-        item = expense_by_id.get(match.expense_item_id)
-        if item is None:
-            continue
+    for item in expenses:
         approval = approval_by_id.get(item.approval_instance_id or "")
         expense_rows.append(BankBusinessExpenseRead(
             expense_item_id=item.id,
@@ -398,7 +412,7 @@ def bank_transaction_business_detail(
         ))
     return ApiEnvelope(data=BankTransactionBusinessDetailRead(
         transaction=BankTransactionRead.model_validate(transaction),
-        special_label=SPECIAL_TYPE_LABELS.get(transaction.special_type or ""),
+        special_label=DIRECT_POSTING_LABELS.get(transaction.direct_posting_type or "") or SPECIAL_TYPE_LABELS.get(transaction.special_type or ""),
         remark=transaction.summary,
         expenses=expense_rows,
         revenues=revenue_rows,
@@ -420,6 +434,7 @@ def create_bank_transaction(
     transaction = BankTransaction(**normalize_bank_assignment(session, payload))
     session.add(transaction)
     session.flush()
+    sync_direct_posting(session, transaction)
     write_audit_log(
         session,
         actor=audit_actor(current_user),
@@ -467,6 +482,7 @@ def create_bank_transactions_batch(
 
     session.flush()
     for transaction in transactions:
+        sync_direct_posting(session, transaction)
         write_audit_log(
             session,
             actor=audit_actor(current_user),
@@ -580,10 +596,12 @@ def update_bank_transaction(
     current_user: User = Depends(get_current_user),
 ) -> ApiEnvelope[BankTransactionRead]:
     ensure_permission(session, current_user, "reconciliation.manage")
-    transaction = session.get(BankTransaction, transaction_id)
+    mutation_lock(session)
+    transaction = session.scalar(select(BankTransaction).where(BankTransaction.id == transaction_id).with_for_update())
     if transaction is None:
         raise HTTPException(status_code=404, detail="Bank transaction not found")
     from app.modules.preopening.service import protect_bank
+    protect_payment_bank(session, transaction.id)
     protect_bank(session, transaction.id)
     ensure_store_access(session, current_user, transaction.store_id)
     has_expense_match = session.scalar(
@@ -594,6 +612,7 @@ def update_bank_transaction(
     )
     is_matched = Decimal(transaction.matched_amount or 0) > 0 or has_expense_match or has_revenue_match
 
+    old_posting_key = posting_key(transaction)
     updates = payload.model_dump(exclude_unset=True)
     if is_matched and set(updates.keys()) - {"payment_status"}:
         raise HTTPException(status_code=409, detail="Bank transaction already matched and cannot be edited")
@@ -601,6 +620,12 @@ def update_bank_transaction(
         raise HTTPException(status_code=422, detail="Store is required")
     if "ledger_period" in updates and not updates["ledger_period"]:
         raise HTTPException(status_code=422, detail="Ledger period is required")
+    validate_direct_posting(updates.get("direct_posting_type", transaction.direct_posting_type),
+                            updates.get("direction", transaction.direction), updates.get("special_type", transaction.special_type))
+    if updates.get("direct_posting_type", transaction.direct_posting_type) and updates.get("payment_status", transaction.payment_status) != "paid":
+        raise HTTPException(422, "直接入账仅支持已实付或已实收流水")
+    if transaction.direct_posting_type:
+        open_period(session, transaction.store_id, transaction.occurred_at.strftime("%Y-%m"))
     target_store_id = updates.get("store_id", transaction.store_id)
     ensure_store_access(session, current_user, target_store_id)
     target_ledger_period = updates.get("ledger_period", transaction.ledger_period)
@@ -648,6 +673,8 @@ def update_bank_transaction(
             continue
         setattr(transaction, field, value)
 
+    session.flush()
+    sync_direct_posting(session, transaction, old_key=old_posting_key)
     write_audit_log(
         session,
         actor=audit_actor(current_user),
@@ -708,6 +735,8 @@ def delete_bank_transactions_batch(
                 "batch": True,
             },
         )
+        protect_payment_bank(session, transaction.id)
+        sync_direct_posting(session, transaction, deleting=True)
         session.delete(transaction)
     session.commit()
     return ApiEnvelope(data=BankTransactionBatchDeleteResult(deleted_count=len(transactions)))
@@ -724,6 +753,7 @@ def delete_bank_transaction(
     if transaction is None:
         raise HTTPException(status_code=404, detail="Bank transaction not found")
     from app.modules.preopening.service import protect_bank
+    protect_payment_bank(session, transaction.id)
     protect_bank(session, transaction.id)
     ensure_store_access(session, current_user, transaction.store_id)
     if Decimal(transaction.matched_amount or 0) > 0 or transaction.special_type is not None:
@@ -751,6 +781,7 @@ def delete_bank_transaction(
             "direction": transaction.direction,
         },
     )
+    sync_direct_posting(session, transaction, deleting=True)
     session.delete(transaction)
     session.commit()
     return ApiEnvelope(data=deleted)
@@ -1056,6 +1087,8 @@ def rollback_bank_import(
 
     deleted_count = len(transactions)
     for transaction in transactions:
+        protect_payment_bank(session, transaction.id)
+        sync_direct_posting(session, transaction, deleting=True)
         session.delete(transaction)
     job.status = SyncJobStatus.FAILED.value
     job.error_message = "Rolled back by operator"

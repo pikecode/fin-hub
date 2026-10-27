@@ -677,6 +677,40 @@ export default function DingTalkPage() {
   const [instanceStatusFilters, setInstanceStatusFilters] = useState<string[]>([]);
   const [instanceReload, setInstanceReload] = useState(0);
   const instanceRequest = useRef(0);
+  const [storeCorrection, setStoreCorrection] = useState<ApprovalInstance | null>(null);
+  const [storeCorrectionBusy, setStoreCorrectionBusy] = useState(false);
+  const [storeCorrectionError, setStoreCorrectionError] = useState<string | null>(null);
+  const [storeCorrectionForm] = Form.useForm<{ mode: "manual" | "automatic"; store_id?: string; reason: string }>();
+
+  function openStoreCorrection(record: ApprovalInstance) {
+    setStoreCorrectionError(null);
+    storeCorrectionForm.resetFields();
+    storeCorrectionForm.setFieldsValue({ mode: "manual", store_id: record.store_id || undefined, reason: "" });
+    setStoreCorrection(record);
+  }
+
+  async function saveStoreCorrection() {
+    if (!storeCorrection || storeCorrectionBusy) return;
+    const values = await storeCorrectionForm.validateFields().catch(() => null);
+    if (!values) return;
+    setStoreCorrectionBusy(true);
+    setStoreCorrectionError(null);
+    try {
+      const updated = await apiClient.dingtalk.updateApprovalStore(storeCorrection.id, {
+        store_id: values.mode === "automatic" ? null : values.store_id!, reason: values.reason.trim(),
+      });
+      setApprovalInstances((current) => current.map((item) => item.id === updated.id ? updated : item));
+      setSelectedInstance((current) => current?.id === updated.id ? updated : current);
+      setInstanceReload((current) => current + 1);
+      setStoreCorrection(null);
+      message.success(values.mode === "automatic" ? "已恢复自动关联门店" : "门店更正成功，后续同步将保留人工关联");
+    } catch (error) {
+      setStoreCorrectionError(error instanceof Error ? error.message : "门店更正失败，请重试");
+    } finally {
+      setStoreCorrectionBusy(false);
+    }
+  }
+
   const [stores, setStores] = useState<Store[]>([]);
   const [departmentPreview, setDepartmentPreview] = useState<DingTalkDepartmentSyncPreview | null>(null);
   const [syncReadiness, setSyncReadiness] = useState<DingTalkSyncReadiness | null>(null);
@@ -1976,6 +2010,13 @@ export default function DingTalkPage() {
       render: (_, record) => templateNameById.get(record.template_id) || "-",
     },
     {
+      key: "associated_store", title: "关联门店", width: 210,
+      render: (_, record) => <Space direction="vertical" size={2}>
+        <Typography.Text>{stores.find((store) => store.id === record.store_id)?.name || (record.store_id ? "门店未加载" : "未关联")}</Typography.Text>
+        {record.manual_store_id ? <Tag color="blue" title={record.store_override_reason || undefined}>人工关联</Tag> : null}
+      </Space>,
+    },
+    {
       key: "applicant_name",
       title: "申请人",
       dataIndex: "applicant_name",
@@ -2014,12 +2055,13 @@ export default function DingTalkPage() {
       key: "actions",
       title: "操作",
       fixed: "right",
-      width: 90,
+      width: 170,
       className: "table-action-column",
       render: (_, record) => (
-        <Button type="link" onClick={() => openInstanceDetail(record)}>
-          详情
-        </Button>
+        <Space size={0}>
+          <Button type="link" onClick={() => openInstanceDetail(record)}>详情</Button>
+          <Button type="link" onClick={() => openStoreCorrection(record)}>更正门店</Button>
+        </Space>
       ),
     },
   ];
@@ -2750,6 +2792,33 @@ export default function DingTalkPage() {
           </Space>
         ) : null}
       </Drawer>
+      <Modal title="更正审批单关联门店" open={Boolean(storeCorrection)} width={600}
+        confirmLoading={storeCorrectionBusy} okText="确认保存" cancelText="取消"
+        onOk={() => void saveStoreCorrection()} onCancel={() => { if (!storeCorrectionBusy) setStoreCorrection(null); }}
+        closable={!storeCorrectionBusy} maskClosable={!storeCorrectionBusy} keyboard={!storeCorrectionBusy}
+        cancelButtonProps={{ disabled: storeCorrectionBusy }}>
+        <Alert type="info" showIcon style={{ marginBottom: 16 }} message="人工更正后，后续钉钉同步保留所选门店。审批单及费用明细将一起调整，原始报销内容保留。" />
+        <Descriptions size="small" column={2} style={{ marginBottom: 16 }}>
+          <Descriptions.Item label="审批编号">{storeCorrection?.approval_no || "—"}</Descriptions.Item>
+          <Descriptions.Item label="申请人">{storeCorrection?.applicant_name || "—"}</Descriptions.Item>
+          <Descriptions.Item label="原关联门店">{stores.find((store) => store.id === storeCorrection?.store_id)?.name || "未关联"}</Descriptions.Item>
+          <Descriptions.Item label="报销总额">{storeCorrection?.total_expense_amount || "0.00"} 元</Descriptions.Item>
+        </Descriptions>
+        {storeCorrectionError ? <Alert type="error" showIcon message={storeCorrectionError} style={{ marginBottom: 16 }} /> : null}
+        <Form form={storeCorrectionForm} layout="vertical" disabled={storeCorrectionBusy}>
+          <Form.Item name="mode" label="关联方式" rules={[{ required: true }]}>
+            <Select options={[{ value: "manual", label: "人工指定门店" }, ...(storeCorrection?.manual_store_id ? [{ value: "automatic", label: "恢复按钉钉原始数据自动关联" }] : [])]} />
+          </Form.Item>
+          <Form.Item noStyle shouldUpdate={(before, after) => before.mode !== after.mode}>
+            {({ getFieldValue }) => getFieldValue("mode") === "manual" ? <Form.Item name="store_id" label="正确门店" rules={[{ required: true, message: "请选择正确门店" }]}>
+              <Select showSearch optionFilterProp="label" placeholder="搜索并选择门店" options={stores.filter((store) => store.status === "active").map((store) => ({ value: store.id, label: store.name }))} />
+            </Form.Item> : <Alert type="warning" message="将重新识别钉钉原始门店；无法识别时会提示，保留当前关联。" style={{ marginBottom: 16 }} />}
+          </Form.Item>
+          <Form.Item name="reason" label="更正原因" rules={[{ required: true, whitespace: true, message: "请填写更正原因" }]}>
+            <Input.TextArea maxLength={1000} showCount rows={3} placeholder="例如：申请人提报时选错了门店" />
+          </Form.Item>
+        </Form>
+      </Modal>
       <Modal title="费用解析异常明细" open={Boolean(parseErrorJob)} onCancel={() => setParseErrorJob(null)} footer={null} width={1100}>
         <Space direction="vertical" size={16} style={{ width: "100%", minWidth: 0 }}>
           <Typography.Text type="secondary">执行时间：{formatBeijingDateTime(parseErrorJob?.created_at)}。审批原始数据已保存，以下问题需要核对后再同步。</Typography.Text>

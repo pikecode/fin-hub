@@ -30,6 +30,7 @@ import type {
   Ledger,
   Store,
 } from "@fin-hub/shared-types";
+import { UnpaidPaymentSettlement } from "../components/UnpaidPaymentSettlement";
 import { AppShell } from "../components/AppShell";
 import { MoneyDisplay } from "../components/MoneyDisplay";
 import { StatusBadge } from "../components/StatusBadge";
@@ -630,6 +631,7 @@ export default function BankPage() {
       counterparty_account: transaction.counterparty_account ?? "",
       summary: transaction.summary ?? undefined,
       special_type: transaction.special_type ?? null,
+      direct_posting_type: transaction.direct_posting_type ?? null,
       payment_status: transaction.payment_status ?? "paid",
     });
     setIsModalOpen(true);
@@ -675,6 +677,7 @@ export default function BankPage() {
         counterparty_account: normalizePastedCell(values.counterparty_account) || null,
         summary: normalizePastedCell(values.summary) || null,
         special_type: values.special_type || null,
+        direct_posting_type: values.direct_posting_type || null,
         payment_status: values.payment_status || "paid",
       };
       if (!editingTransaction && !duplicatesConfirmed) {
@@ -1065,10 +1068,11 @@ export default function BankPage() {
       render: (_, record) => {
         const ledger = ledgersByKey.get(`${record.store_id}|${record.ledger_period}`);
         const isClosed = ledger?.status === "closed";
+        const isSettlementLocked = Boolean(record.payment_settlement_status);
         const isMatched = Number(record.matched_amount || 0) > 0;
         return (
           <Space size="small">
-            <Button type="link" size="small" disabled={isClosed} onClick={() => openEditModal(record)}>
+            <Button type="link" size="small" disabled={isClosed || isSettlementLocked} onClick={() => openEditModal(record)}>
               {isMatched ? "付款情况" : "编辑"}
             </Button>
             <Popconfirm
@@ -1079,7 +1083,7 @@ export default function BankPage() {
               okButtonProps={{ danger: true }}
               onConfirm={() => deleteTransaction(record)}
             >
-              <Button type="link" size="small" danger disabled={isClosed || isMatched}>
+              <Button type="link" size="small" danger disabled={isClosed || isMatched || isSettlementLocked}>
                 删除
               </Button>
             </Popconfirm>
@@ -1363,6 +1367,7 @@ export default function BankPage() {
         )}
 
         {errorMessage && <Alert type="error" message="加载失败" description={errorMessage} showIcon closable />}
+        <UnpaidPaymentSettlement storeId={queryStoreId ?? filterForm.getFieldValue("store_id")} onChanged={async () => { await loadData(filterForm.getFieldsValue()); await loadSummary(); }} />
 
         <Card
           title="银行流水列表"
@@ -1528,8 +1533,8 @@ export default function BankPage() {
             loading={isLoading}
             rowSelection={{
               getCheckboxProps: (record) => ({
-                disabled: Number(record.matched_amount || 0) > 0 || Boolean(record.special_type),
-                name: Number(record.matched_amount || 0) > 0 || record.special_type ? "已匹配，不能删除" : undefined,
+                disabled: Number(record.matched_amount || 0) > 0 || Boolean(record.special_type) || Boolean(record.payment_settlement_status),
+                name: record.payment_settlement_status ? "实付核对占用，不能删除" : Number(record.matched_amount || 0) > 0 || record.special_type ? "已匹配，不能删除" : undefined,
               }),
             }}
             exportFileName="银行流水"
@@ -1589,6 +1594,22 @@ export default function BankPage() {
           <Form.Item name="payment_status" label="付款情况" rules={[{ required: true }]}>
             <Select options={bankPaymentStatusOptions} />
           </Form.Item>
+          <Form.Item name="direct_posting_type" label="直接入账属性" extra="按发生日期所属月份入账，无需对账；修改或删除流水会同步调整报表。">
+            <Select
+              allowClear
+              placeholder="不直接入账"
+              disabled={Boolean(editingTransaction && Number(editingTransaction.matched_amount || 0) > 0)}
+              options={[
+                { value: "bank_interest", label: "银行结息（收入）" },
+                { value: "bank_fee", label: "银行手续费（支出）" },
+                { value: "bank_sms_fee", label: "银行短信费（支出）" },
+                { value: "bank_other_expense", label: "银行其他支出" },
+              ]}
+              onChange={(value) => {
+                if (value) form.setFieldsValue({ direction: value === "bank_interest" ? "income" : "expense", special_type: null });
+              }}
+            />
+          </Form.Item>
           <Form.Item name="special_type" label="流水属性">
             <Form.Item noStyle shouldUpdate={(previous, current) => previous.special_type !== current.special_type}>
               {({ getFieldValue, setFieldsValue }) => {
@@ -1599,42 +1620,42 @@ export default function BankPage() {
                     <Checkbox
                       checked={specialType === "current_account"}
                       disabled={disabled}
-                      onChange={(event) => setFieldsValue({ special_type: event.target.checked ? "current_account" : null })}
+                      onChange={(event) => setFieldsValue({ special_type: event.target.checked ? "current_account" : null, direct_posting_type: null })}
                     >
                       往来款
                     </Checkbox>
                     <Checkbox
                       checked={specialType === "shareholder_dividend"}
                       disabled={disabled}
-                      onChange={(event) => setFieldsValue({ special_type: event.target.checked ? "shareholder_dividend" : null })}
+                      onChange={(event) => setFieldsValue({ special_type: event.target.checked ? "shareholder_dividend" : null, direct_posting_type: null })}
                     >
                       股东分红
                     </Checkbox>
                     <Checkbox
                       checked={specialType === "shareholder_capital"}
                       disabled={disabled}
-                      onChange={(event) => setFieldsValue({ special_type: event.target.checked ? "shareholder_capital" : null })}
+                      onChange={(event) => setFieldsValue({ special_type: event.target.checked ? "shareholder_capital" : null, direct_posting_type: null })}
                     >
                       股东注资
                     </Checkbox>
                     <Checkbox
                       checked={specialType === "other_income_expense"}
                       disabled={disabled}
-                      onChange={(event) => setFieldsValue({ special_type: event.target.checked ? "other_income_expense" : null })}
+                      onChange={(event) => setFieldsValue({ special_type: event.target.checked ? "other_income_expense" : null, direct_posting_type: null })}
                     >
                       其他收支
                     </Checkbox>
                     <Checkbox
                       checked={specialType === "counter_refund"}
                       disabled={disabled}
-                      onChange={(event) => setFieldsValue({ special_type: event.target.checked ? "counter_refund" : null })}
+                      onChange={(event) => setFieldsValue({ special_type: event.target.checked ? "counter_refund" : null, direct_posting_type: null })}
                     >
                       退款
                     </Checkbox>
                     <Checkbox
                       checked={specialType === "loan_repayment"}
                       disabled={disabled}
-                      onChange={(event) => setFieldsValue({ special_type: event.target.checked ? "loan_repayment" : null })}
+                      onChange={(event) => setFieldsValue({ special_type: event.target.checked ? "loan_repayment" : null, direct_posting_type: null })}
                     >
                       借还款
                     </Checkbox>
