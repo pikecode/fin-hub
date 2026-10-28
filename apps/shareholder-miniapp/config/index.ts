@@ -1,6 +1,7 @@
 import { defineConfig } from "@tarojs/cli";
 
-const apiBaseUrl = process.env.TARO_APP_API_BASE_URL ?? "http://localhost:8000";
+const apiBaseUrl =
+  process.env.TARO_APP_API_BASE_URL ?? "https://fin.moshuo.fun";
 
 export default defineConfig({
   projectName: "fin-hub-shareholder-miniapp",
@@ -18,6 +19,7 @@ export default defineConfig({
   defineConstants: {
     __API_BASE_URL__: JSON.stringify(apiBaseUrl),
   },
+  copy: { options: {}, patterns: [{ from: "src/assets", to: "dist/assets" }] },
   mini: {},
   h5: {},
 });

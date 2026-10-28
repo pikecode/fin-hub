@@ -61,6 +61,8 @@ def decode_session_token(token: str) -> dict[str, Any] | None:
             return None
         padded = payload_encoded + "=" * (-len(payload_encoded) % 4)
         payload = json.loads(base64.urlsafe_b64decode(padded.encode("utf-8")))
+        if payload.get("typ") not in (None, "session"):
+            return None
         if int(payload.get("exp", 0)) < int(time.time()):
             return None
         return payload

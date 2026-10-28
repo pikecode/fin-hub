@@ -1,5 +1,249 @@
+/* Shared visual system: warm neutral surfaces, ink-green emphasis, tabular money. */
 page {
-  background: #f6f8f6;
-  color: #17231f;
-  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+  background: #f5f5f1;
+  color: #22372f;
+  font-family:
+    -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei",
+    sans-serif;
+  font-size: 28px;
+  line-height: 1.6;
+}
+.page {
+  box-sizing: border-box;
+  min-height: 100vh;
+  padding: 32px 28px 48px;
+}
+.page text {
+  display: block;
+}
+.title {
+  font-size: 42px;
+  font-weight: 600;
+  letter-spacing: -1px;
+  line-height: 1.35;
+  color: #19382c;
+  margin: 12px 0;
+  word-break: break-word;
+}
+.eyebrow {
+  font-size: 22px;
+  color: #668174;
+  letter-spacing: 2px;
+}
+.muted,
+.hero-subtitle,
+.row-sub,
+.label {
+  color: #7b8780;
+  font-size: 23px;
+  line-height: 1.65;
+}
+.hero {
+  padding: 4px 0 26px;
+  display: block;
+}
+.hero-subtitle {
+  margin-top: 12px;
+}
+.section {
+  background: #fff;
+  border: 1px solid #e7ebe5;
+  border-radius: 20px;
+  padding: 28px;
+  margin: 22px 0;
+}
+.section-title {
+  font-size: 28px;
+  font-weight: 600;
+  color: #294438;
+  margin-bottom: 20px;
+}
+.row {
+  padding: 22px 0;
+  border-bottom: 1px solid #edf0ea;
+  line-height: 1.75;
+}
+.row:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+.row:first-child {
+  padding-top: 0;
+}
+.value,
+.row-amount {
+  font-size: 34px;
+  line-height: 1.4;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.5px;
+  word-break: break-word;
+}
+.summary {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px;
+  background: #e9ede5;
+  border: 1px solid #e2e8df;
+  border-radius: 20px;
+  overflow: hidden;
+  margin: 24px 0;
+}
+.metric {
+  background: #fff;
+  padding: 24px;
+  min-width: 0;
+}
+.metric .value {
+  margin-top: 9px;
+  font-size: 32px;
+}
+.metric:first-child {
+  grid-column: 1/-1;
+  background: #214f42;
+  padding: 32px;
+}
+.metric:first-child .label {
+  color: #c1d2c8;
+}
+.metric:first-child .value {
+  font-size: 54px;
+  color: #fff;
+  letter-spacing: -1px;
+}
+.filters {
+  display: flex;
+  gap: 20px;
+  flex-wrap: wrap;
+  align-items: center;
+  background: #fff;
+  padding: 22px;
+  border: 1px solid #e7ebe5;
+  border-radius: 16px;
+  margin: 20px 0;
+  font-size: 24px;
+}
+.filters picker {
+  flex: 1;
+  min-width: 180px;
+}
+button {
+  background: #214f42;
+  color: #fff;
+  border: 0;
+  border-radius: 12px;
+  font-size: 27px;
+  font-weight: 500;
+  line-height: 2.7;
+  margin-top: 16px;
+}
+button::after {
+  border: 0;
+}
+button[disabled] {
+  background: #e8ece7;
+  color: #9ba69e;
+}
+.filters button {
+  font-size: 23px;
+  background: #edf2ec;
+  color: #375b48;
+  margin: 0;
+  padding: 0 20px;
+}
+input {
+  box-sizing: border-box;
+  background: #f5f6f2;
+  padding: 22px;
+  height: 92px;
+  margin: 18px 0;
+  border: 1px solid #e7ebe4;
+  border-radius: 12px;
+  font-size: 27px;
+  color: #22372f;
+}
+.error {
+  color: #b15346;
+}
+.error button {
+  background: #f8eeeb;
+  color: #a65144;
+}
+.mobile-track {
+  background: #edf0e9;
+  height: 10px;
+  border-radius: 10px;
+  overflow: hidden;
+  margin-top: 14px;
+}
+.mobile-track view {
+  background: #6b927b;
+  height: 100%;
+  border-radius: 10px;
+}
+.tabs {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 6px;
+  background: #e9ede5;
+  border-radius: 14px;
+  margin-bottom: 22px;
+}
+.tabs .tab {
+  font-size: 23px;
+  line-height: 2.6;
+  font-weight: 400;
+  margin: 0;
+  padding: 0 16px;
+  border-radius: 10px;
+  background: transparent;
+  color: #758378;
+}
+.tabs .active {
+  background: #fff;
+  color: #214f42;
+  font-weight: 600;
+  box-shadow: 0 2px 6px #243d2910;
+}
+.period-picker {
+  padding: 20px 24px;
+  background: #fff;
+  border: 1px solid #e3e9df;
+  border-radius: 14px;
+  color: #335442;
+  font-size: 26px;
+}
+.profile-card {
+  position: relative;
+  padding-left: 126px;
+  min-height: 100px;
+}
+.avatar {
+  position: absolute;
+  left: 26px;
+  top: 30px;
+  width: 76px;
+  height: 76px;
+  line-height: 76px;
+  text-align: center;
+  border-radius: 24px;
+  background: #e9efe5;
+  color: #45654e;
+  font-size: 34px;
+}
+.profile-name {
+  font-size: 32px;
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+.profile-card > text:not(.avatar):not(.profile-name) {
+  font-size: 23px;
+  color: #7b8780;
+}
+.logout-button {
+  background: transparent;
+  color: #8c7366;
+  border: 1px solid #dddcd2;
+  margin-top: 32px;
 }

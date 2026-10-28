@@ -1,453 +1,518 @@
-import { Button, Picker, View, Text } from "@tarojs/components";
+import { Button, Picker, Text, View } from "@tarojs/components";
 import Taro from "@tarojs/taro";
-import { useEffect, useMemo, useState } from "react";
-import type {
-  ExpenseBreakdownItem,
-  LedgerPeriodOption,
-  LedgerReportDetail,
-  LedgerTrend,
-  RevenueChannelBreakdownItem,
-} from "@fin-hub/shared-types";
-import { formatMoney, formatPeriod } from "@fin-hub/shared-utils";
-import { api, clearShareholderToken, MiniappApiError } from "../../lib/api";
+import { useEffect, useRef, useState } from "react";
+import type { BankTransaction, DividendMonth } from "@fin-hub/shared-types";
+import {
+  api,
+  MobileStore,
+  MobileReport,
+  MobileRevenue,
+  MobileBank,
+} from "../../lib/api";
+import {
+  selectedStore,
+  selectStore,
+  selectedPeriod,
+  selectPeriod,
+} from "../../lib/navigation";
 import "./index.css";
-
-type ReportTab = "revenue" | "revenueChannel" | "category" | "supplier" | "pendingExpense" | "pendingBank";
-
-interface AlertItem {
-  key: string;
-  tone: "warning" | "danger" | "info";
-  title: string;
-  description: string;
-}
-
-function BreakdownRanking({ title, items }: { title: string; items: ExpenseBreakdownItem[] }) {
-  const totalAmount = items.reduce((sum, item) => sum + Number(item.amount), 0);
-  const maxAmount = Math.max(...items.map((item) => Number(item.amount)), 1);
-
+const money = (n: unknown) =>
+  n == null
+    ? "—"
+    : "¥" +
+      Number(n).toLocaleString("zh-CN", {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      });
+const pct = (n: unknown) => (n == null ? "—" : Number(n).toFixed(1) + "%");
+const tabs = ["财务报表", "营业收入", "银行流水", "筹建报表", "分红管理"];
+function Metric({ label, value }: { label: string; value: unknown }) {
   return (
-    <View className="section">
-      <Text className="section-title">{title}</Text>
-      {items.length ? (
-        items.map((item) => (
-          <View key={item.name} className="ranking-row">
-            <View className="ranking-head">
-              <View>
-                <Text className="row-main">{item.name}</Text>
-                <Text className="row-sub">
-                  {item.item_count} 笔，占比{" "}
-                  {totalAmount > 0 ? `${((Number(item.amount) / totalAmount) * 100).toFixed(1)}%` : "-"}
-                </Text>
-              </View>
-              <Text className="row-amount">{formatMoney(item.amount)}</Text>
-            </View>
-            <View className="ranking-track">
-              <View
-                className="ranking-bar"
-                style={{ width: `${Math.max((Number(item.amount) / maxAmount) * 100, 4).toFixed(2)}%` }}
-              />
-            </View>
-          </View>
-        ))
-      ) : (
-        <Text className="empty">暂无数据</Text>
-      )}
+    <View className="metric">
+      <Text className="label">{label}</Text>
+      <Text className="value">{String(value)}</Text>
     </View>
   );
 }
-
-function AlertList({ alerts }: { alerts: AlertItem[] }) {
-  if (!alerts.length) {
-    return (
-      <View className="alert-card stable">
-        <Text className="alert-title">经营状态平稳</Text>
-        <Text className="alert-desc">当前账期未发现需要特别关注的报表项。</Text>
-      </View>
-    );
-  }
-  return (
-    <View className="alert-section">
-      {alerts.map((alert) => (
-        <View key={alert.key} className={`alert-card ${alert.tone}`}>
-          <Text className="alert-title">{alert.title}</Text>
-          <Text className="alert-desc">{alert.description}</Text>
-        </View>
-      ))}
-    </View>
-  );
-}
-
-function paymentStatusText(status?: string) {
-  if (status === "paid") return "已付款";
-  if (status === "partial_paid") return "部分付款";
-  if (status === "unpaid") return "未付款";
-  return status || "-";
-}
-
-function directionText(direction?: string) {
-  if (direction === "income") return "收入";
-  if (direction === "expense") return "支出";
-  return direction || "-";
-}
-
-function percentText(value?: string | number | null) {
-  return `${Number(value ?? 0).toFixed(1)}%`;
-}
-
-function RevenueChannelList({ items }: { items: RevenueChannelBreakdownItem[] }) {
-  return (
-    <View className="section">
-      <Text className="section-title">收入渠道分析</Text>
-      {items.length ? (
-        items.map((item) => (
-          <View key={item.channel} className="row channel-row">
-            <View>
-              <Text className="row-main">{item.channel}</Text>
-              <Text className="row-sub">
-                实收 {formatMoney(item.net_amount)} 手续费 {formatMoney(item.fee_amount)} 费率 {percentText(item.fee_rate)}
-              </Text>
-              <Text className="row-sub">
-                已对账 {formatMoney(item.matched_amount)} 未对账 {formatMoney(item.unmatched_amount)}
-              </Text>
-            </View>
-            <View className="channel-rate">
-              <Text className="rate-value">{percentText(item.reconciliation_rate)}</Text>
-              <Text className="rate-label">对账率</Text>
-            </View>
-          </View>
-        ))
-      ) : (
-        <Text className="empty">暂无渠道分析</Text>
-      )}
-    </View>
-  );
-}
-
-export default function ReportPage() {
-  const router = Taro.useRouter();
-  const storeId = router.params.storeId ?? "";
-  const initialPeriod = router.params.period ?? "";
-  const [detail, setDetail] = useState<LedgerReportDetail | null>(null);
-  const [periods, setPeriods] = useState<LedgerPeriodOption[]>([]);
-  const [trend, setTrend] = useState<LedgerTrend | null>(null);
-  const [selectedPeriod, setSelectedPeriod] = useState(initialPeriod);
-  const [statusText, setStatusText] = useState("加载中");
-  const [activeTab, setActiveTab] = useState<ReportTab>("revenue");
-
+export default function Report() {
+  const route = Taro.useRouter();
+  const [stores, S] = useState<MobileStore[]>([]),
+    [storeId, I] = useState(route.params.storeId || selectedStore()),
+    [periods, PS] = useState<string[]>([]),
+    [period, P] = useState(""),
+    [tab, T] = useState(0),
+    [busy, B] = useState(false),
+    [error, E] = useState("");
+  const [report, R] = useState<MobileReport | null>(null),
+    [revenue, RV] = useState<MobileRevenue | null>(null),
+    [bank, BK] = useState<MobileBank | null>(null),
+    [pre, PR] = useState<Awaited<ReturnType<typeof api.preopening>> | null>(
+      null,
+    ),
+    [div, D] = useState<DividendMonth[]>([]),
+    [page, PG] = useState(1),
+    [start, ST] = useState(""),
+    [end, EN] = useState(""),
+    [status, MS] = useState(""),
+    [refresh, RF] = useState(0);
+  const version = useRef(0),
+    periodVersion = useRef(0);
+  Taro.useDidShow(() => {
+    api
+      .stores()
+      .then((rows) => {
+        S(rows);
+        const saved = selectedStore();
+        const next = rows.find((x) => x.id === saved)?.id || rows[0]?.id || "";
+        if (next) selectStore(next);
+        I(next);
+      })
+      .catch((e) => E(e.message));
+  });
   useEffect(() => {
-    async function loadReport() {
-      if (!storeId) {
-        setStatusText("缺少门店参数");
-        return;
-      }
+    if (!storeId) return;
+    const v = ++periodVersion.current;
+    P("");
+    PS([]);
+    api
+      .periods(storeId)
+      .then((rows) => {
+        if (v !== periodVersion.current) return;
+        PS(rows);
+        P(
+          rows.includes(selectedPeriod(storeId))
+            ? selectedPeriod(storeId)
+            : rows[0] || "",
+        );
+      })
+      .catch((e) => {
+        if (v === periodVersion.current) E(e.message);
+      });
+    return () => {
+      periodVersion.current++;
+    };
+  }, [storeId]);
+  useEffect(() => {
+    const v = ++version.current;
+    R(null);
+    RV(null);
+    BK(null);
+    PR(null);
+    D([]);
+    E("");
+    if (!storeId) return;
+    if ([0, 1, 4].includes(tab) && !period) {
+      B(false);
+      return;
+    }
+    B(true);
+    async function load() {
       try {
-        setStatusText("加载中");
-        const visiblePeriods = await api.ledgerPeriods(storeId);
-        setPeriods(visiblePeriods);
-        if (!visiblePeriods.length) {
-          setDetail(null);
-          setSelectedPeriod("");
-          setStatusText("暂无可查看账期");
-          return;
+        if (tab === 0) {
+          const r = await api.report(storeId, period);
+          if (v === version.current) R(r);
+        } else if (tab === 1) {
+          const r = await api.revenue(storeId, period, page);
+          if (v === version.current) RV(r);
+        } else if (tab === 2) {
+          const q = ["page=" + page];
+          if (start) q.push("start=" + start);
+          if (end) q.push("end=" + end);
+          if (status) q.push("match_status=" + status);
+          const r = await api.bank(storeId, q.join("&"));
+          if (v === version.current) BK(r);
+        } else if (tab === 3) {
+          const r = await api.preopening(storeId);
+          if (v === version.current) PR(r);
+        } else {
+          const r = await api.dividend(storeId, period);
+          if (v === version.current) D(r.history);
         }
-        const nextPeriod =
-          visiblePeriods.find((item) => item.period === selectedPeriod)?.period ??
-          visiblePeriods[0].period;
-        setSelectedPeriod(nextPeriod);
-        const [data, trends] = await Promise.all([
-          api.ledgerDetail(storeId, nextPeriod),
-          api.ledgerTrends(storeId),
-        ]);
-        setDetail(data);
-        setTrend(trends[0] ?? null);
-        setStatusText("");
-      } catch (error) {
-        setDetail(null);
-        setTrend(null);
-        if (error instanceof MiniappApiError && error.statusCode === 401) {
-          clearShareholderToken();
-          setStatusText("授权已失效，请重新登录");
-          Taro.showToast({ title: "授权已失效，请重新登录", icon: "none" });
-          setTimeout(() => {
-            Taro.reLaunch({ url: "/pages/shareholder-login/index" });
-          }, 800);
-          return;
-        }
-        setStatusText("暂时无法加载报表");
+      } catch (e) {
+        if (v === version.current)
+          E(e instanceof Error ? e.message : "加载失败");
+      } finally {
+        if (v === version.current) B(false);
       }
     }
-
-    loadReport();
-  }, [selectedPeriod, storeId]);
-
-  async function changePeriod(index: number) {
-    const nextPeriod = periods[index]?.period;
-    if (nextPeriod) {
-      setSelectedPeriod(nextPeriod);
-    }
-  }
-
-  const report = detail?.summary;
-  const selectedPeriodIndex = Math.max(
+    load();
+    return () => {
+      version.current++;
+    };
+  }, [storeId, period, tab, page, start, end, status, refresh]);
+  const m = report?.report.metrics,
+    s = report?.supplement;
+  const storeIndex = Math.max(
     0,
-    periods.findIndex((item) => item.period === selectedPeriod),
+    stores.findIndex((x) => x.id === storeId),
   );
-  const tabs: Array<{ key: ReportTab; label: string; count: number }> = [
-    { key: "revenue", label: "收入", count: detail?.revenue_records.length ?? 0 },
-    { key: "revenueChannel", label: "渠道", count: detail?.revenue_channel_breakdown.length ?? 0 },
-    { key: "category", label: "分类", count: detail?.category_breakdown.length ?? 0 },
-    { key: "supplier", label: "供应商", count: detail?.supplier_breakdown.length ?? 0 },
-    { key: "pendingExpense", label: "待付", count: detail?.pending_expense_items.length ?? 0 },
-    { key: "pendingBank", label: "流水", count: detail?.pending_bank_transactions.length ?? 0 },
-  ];
-  const trendItems = trend?.items ?? [];
-  const trendMaxAmount = useMemo(() => {
-    const amounts = trendItems.flatMap((item) => [
-      Math.abs(Number(item.income_amount)),
-      Math.abs(Number(item.profit_amount)),
-    ]);
-    return Math.max(...amounts, 1);
-  }, [trendItems]);
-
-  function barWidth(value: string) {
-    return `${Math.max((Math.abs(Number(value)) / trendMaxAmount) * 100, 4).toFixed(2)}%`;
+  function selectTab(i: number) {
+    PG(1);
+    T(i);
   }
-
-  function reportShareText() {
-    if (!report) return "暂无报表数据";
-    return [
-      `${report.store_name} ${formatPeriod(report.period)} 财务摘要`,
-      `营业收入：${formatMoney(report.income_amount)}`,
-      `支出合计：${formatMoney(report.expense_amount)}`,
-      `利润：${formatMoney(report.profit_amount)}`,
-      `待处理支出：${report.pending_expense_count} 笔`,
-      `未匹配流水：${report.pending_bank_transaction_count} 笔`,
-    ].join("\n");
-  }
-
-  const profitRate =
-    report && Number(report.income_amount) > 0 ? (Number(report.profit_amount) / Number(report.income_amount)) * 100 : 0;
-  const expenseRate =
-    report && Number(report.income_amount) > 0 ? (Number(report.expense_amount) / Number(report.income_amount)) * 100 : 0;
-  const alerts = useMemo<AlertItem[]>(() => {
-    if (!report) return [];
-    const items: AlertItem[] = [];
-    if (Number(report.profit_amount) < 0) {
-      items.push({
-        key: "negative-profit",
-        tone: "danger",
-        title: "本期利润为负",
-        description: `利润 ${formatMoney(report.profit_amount)}，建议重点查看费用分类和供应商支出。`,
-      });
-    }
-    if (expenseRate >= 85) {
-      items.push({
-        key: "high-expense-rate",
-        tone: "warning",
-        title: "支出占比较高",
-        description: `支出占收入 ${expenseRate.toFixed(1)}%，需要关注成本结构。`,
-      });
-    }
-    if (report.pending_expense_count > 0) {
-      items.push({
-        key: "pending-expense",
-        tone: "info",
-        title: "存在待处理支出",
-        description: `还有 ${report.pending_expense_count} 笔支出未完成付款处理。`,
-      });
-    }
-    if (report.pending_bank_transaction_count > 0) {
-      items.push({
-        key: "pending-bank",
-        tone: "warning",
-        title: "存在未匹配流水",
-        description: `还有 ${report.pending_bank_transaction_count} 笔银行流水未匹配。`,
-      });
-    }
-    return items;
-  }, [expenseRate, report]);
-
-  async function copyReportSummary() {
-    await Taro.setClipboardData({ data: reportShareText() });
-    Taro.showToast({ title: "已复制摘要", icon: "success" });
-  }
-
   return (
     <View className="page">
       <View className="hero">
-        <View>
-          <Text className="eyebrow">门店报表</Text>
-          <Text className="title">{report?.store_name ?? "门店报表"}</Text>
-          <Text className="hero-subtitle">{statusText || formatPeriod(report?.period ?? selectedPeriod)}</Text>
-        </View>
-        <Text className={report?.ledger_status === "closed" ? "status closed" : "status open"}>
-          {report?.ledger_status === "closed" ? "已封账" : "做账中"}
+        <Text className="eyebrow">门店经营</Text>
+        <Picker
+          mode="selector"
+          range={stores.map((x) => x.name)}
+          value={storeIndex}
+          onChange={(e) => {
+            PG(1);
+            selectStore(stores[Number(e.detail.value)].id);
+            I(stores[Number(e.detail.value)].id);
+          }}
+        >
+          <Text className="title">
+            {stores.find((x) => x.id === storeId)?.name || "门店"} ⌄
+          </Text>
+        </Picker>
+        <Text className="hero-subtitle">
+          报表按已封账月份查看 · 流水支持实时查询
         </Text>
       </View>
-      <Picker
-        mode="selector"
-        range={periods.map((item) => formatPeriod(item.period))}
-        value={selectedPeriodIndex}
-        onChange={(event) => changePeriod(Number(event.detail.value))}
-      >
-        <View className="period-picker">
-          <Text className="label">查看账期</Text>
-          <Text className="period-value">
-            {selectedPeriod ? formatPeriod(selectedPeriod) : "暂无可选账期"}
-          </Text>
-        </View>
-      </Picker>
-      <View className="summary">
-        <View className="item">
-          <Text className="label">营业收入</Text>
-          <Text className="value">{formatMoney(report?.income_amount ?? 0)}</Text>
-        </View>
-        <View className="item">
-          <Text className="label">支出合计</Text>
-          <Text className="value">{formatMoney(report?.expense_amount ?? 0)}</Text>
-        </View>
-        <View className="item">
-          <Text className="label">利润</Text>
-          <Text className="value">{formatMoney(report?.profit_amount ?? 0)}</Text>
-        </View>
-      </View>
-      <View className="insight-strip">
-        <View className="insight-item">
-          <Text className="label">利润率</Text>
-          <Text className="insight-value">{profitRate.toFixed(1)}%</Text>
-        </View>
-        <View className="insight-item">
-          <Text className="label">支出占比</Text>
-          <Text className="insight-value amber">{expenseRate.toFixed(1)}%</Text>
-        </View>
-        <View className="insight-item">
-          <Text className="label">待处理</Text>
-          <Text className="insight-value">{report?.pending_expense_count ?? 0}</Text>
-        </View>
-        <View className="insight-item">
-          <Text className="label">未匹配</Text>
-          <Text className="insight-value amber">{report?.pending_bank_transaction_count ?? 0}</Text>
-        </View>
-      </View>
-      <AlertList alerts={alerts} />
-      <View className="section">
-        <View className="section-heading">
-          <Text className="section-title">最近账期趋势</Text>
-          <View className="share-actions">
-            <Button className="mini-action" onClick={copyReportSummary}>
-              复制摘要
-            </Button>
-            <Button className="mini-action" openType="share">
-              分享
-            </Button>
-          </View>
-        </View>
-        {trendItems.length ? (
-          trendItems.map((item) => (
-            <View key={item.period} className="trend-card">
-              <View className="trend-header">
-                <Text className="trend-period">{formatPeriod(item.period)}</Text>
-                <Text className={Number(item.profit_amount) >= 0 ? "profit positive" : "profit negative"}>
-                  {formatMoney(item.profit_amount)}
-                </Text>
-              </View>
-              <View className="bar-row">
-                <Text className="bar-label">收入</Text>
-                <View className="bar-track">
-                  <View className="bar income" style={{ width: barWidth(item.income_amount) }} />
-                </View>
-                <Text className="bar-value">{formatMoney(item.income_amount)}</Text>
-              </View>
-              <View className="bar-row">
-                <Text className="bar-label">利润</Text>
-                <View className="bar-track">
-                  <View
-                    className={Number(item.profit_amount) >= 0 ? "bar profit-bar" : "bar loss-bar"}
-                    style={{ width: barWidth(item.profit_amount) }}
-                  />
-                </View>
-                <Text className="bar-value">{formatMoney(item.profit_amount)}</Text>
-              </View>
-            </View>
-          ))
-        ) : (
-          <Text className="empty">暂无趋势数据</Text>
-        )}
-      </View>
       <View className="tabs">
-        {tabs.map((tab) => (
+        {tabs.map((label, i) => (
           <Button
-            key={tab.key}
-            className={activeTab === tab.key ? "tab active" : "tab"}
-            onClick={() => setActiveTab(tab.key)}
+            key={label}
+            className={tab === i ? "tab active" : "tab"}
+            onClick={() => selectTab(i)}
           >
-            {tab.label} {tab.count}
+            {label}
           </Button>
         ))}
       </View>
-      {activeTab === "revenue" ? (
-        <View className="section">
-          <Text className="section-title">营业收入明细</Text>
-          {(detail?.revenue_records ?? []).length ? (
-            detail?.revenue_records.map((item) => (
-              <View key={item.id} className="row">
-                <View>
-                  <Text className="row-main">{item.channel}</Text>
-                  <Text className="row-sub">
-                    {item.revenue_date} 实收 {formatMoney(item.net_amount)} 手续费 {formatMoney(item.fee_amount)}
-                  </Text>
-                </View>
-                <Text className="row-amount">{formatMoney(item.gross_amount)}</Text>
-              </View>
-            ))
-          ) : (
-            <Text className="empty">暂无收入明细</Text>
-          )}
+      {[0, 1, 4].includes(tab) && (
+        <Picker
+          mode="selector"
+          range={periods.map((x) => x.replace("-", "年") + "月")}
+          value={Math.max(0, periods.indexOf(period))}
+          onChange={(e) => {
+            PG(1);
+            const next = periods[Number(e.detail.value)];
+            selectPeriod(storeId, next);
+            P(next);
+          }}
+        >
+          <View className="period-picker">{period || "暂无已封账月份"} ⌄</View>
+        </Picker>
+      )}
+      {tab === 2 && (
+        <View className="filters">
+          <Picker
+            mode="date"
+            value={start}
+            onChange={(e) => {
+              PG(1);
+              ST(e.detail.value);
+            }}
+          >
+            <Text>{start || "开始日期"}</Text>
+          </Picker>
+          <Picker
+            mode="date"
+            value={end}
+            onChange={(e) => {
+              PG(1);
+              EN(e.detail.value);
+            }}
+          >
+            <Text>{end || "结束日期"}</Text>
+          </Picker>
+          <Picker
+            mode="selector"
+            range={["全部关联状态", "未完全关联", "已关联"]}
+            onChange={(e) => {
+              PG(1);
+              MS(["", "unmatched", "matched"][Number(e.detail.value)]);
+            }}
+          >
+            <Text>
+              {status === "matched"
+                ? "已关联"
+                : status
+                  ? "未完全关联"
+                  : "全部关联状态"}{" "}
+              ⌄
+            </Text>
+          </Picker>
+          <Button
+            onClick={() => {
+              ST("");
+              EN("");
+              MS("");
+              PG(1);
+            }}
+          >
+            重置
+          </Button>
         </View>
-      ) : null}
-      {activeTab === "revenueChannel" ? <RevenueChannelList items={detail?.revenue_channel_breakdown ?? []} /> : null}
-      {activeTab === "category" ? <BreakdownRanking title="费用分类排行" items={detail?.category_breakdown ?? []} /> : null}
-      {activeTab === "supplier" ? <BreakdownRanking title="供应商支出排行" items={detail?.supplier_breakdown ?? []} /> : null}
-      {activeTab === "pendingExpense" ? (
-        <View className="section">
-          <Text className="section-title">待处理支出</Text>
-          {(detail?.pending_expense_items ?? []).length ? (
-            detail?.pending_expense_items.map((item) => (
-              <View key={item.id} className="row">
-                <View>
-                  <Text className="row-main">{item.description}</Text>
-                  <Text className="row-sub">
-                    {item.expense_date} {item.supplier_name || "未关联供应商"} {paymentStatusText(item.payment_status)}
-                  </Text>
-                </View>
-                <Text className="row-amount">{formatMoney(item.amount)}</Text>
-              </View>
-            ))
-          ) : (
-            <Text className="empty">暂无待处理支出</Text>
-          )}
+      )}
+      {busy && <View className="section">正在加载，请稍候…</View>}
+      {error && (
+        <View className="section error">
+          <Text>{error}</Text>
+          <Button onClick={() => RF(refresh + 1)}>重新加载</Button>
         </View>
-      ) : null}
-      {activeTab === "pendingBank" ? (
-        <View className="section">
-          <Text className="section-title">未匹配流水</Text>
-          {(detail?.pending_bank_transactions ?? []).length ? (
-            detail?.pending_bank_transactions.map((item) => (
-              <View key={item.id} className="row">
-                <View>
-                  <Text className="row-main">{item.counterparty_name || "未知交易对方"}</Text>
-                  <Text className="row-sub">
-                    {directionText(item.direction)} {item.occurred_at.slice(0, 10)} 已匹配 {formatMoney(item.matched_amount)}
-                  </Text>
+      )}
+      {!busy && !error && [0, 1, 4].includes(tab) && !period && (
+        <View className="section">暂无已封账月份，请联系财务</View>
+      )}
+      {m && (
+        <>
+          <View className="summary">
+            <Metric label="营业收入" value={money(m.income_amount)} />
+            <Metric label="业绩目标" value={money(s?.revenue_target)} />
+            <Metric
+              label="完成率"
+              value={
+                Number(s?.revenue_target) > 0
+                  ? pct(
+                      (Number(m.income_amount) / Number(s?.revenue_target)) *
+                        100,
+                    )
+                  : "—"
+              }
+            />
+            <Metric label="实收" value={money(m.net_income_amount)} />
+            <Metric label="手续费" value={money(m.fee_amount)} />
+            <Metric
+              label="手续费率"
+              value={
+                Number(m.income_amount) > 0
+                  ? pct((Number(m.fee_amount) / Number(m.income_amount)) * 100)
+                  : "—"
+              }
+            />
+            <Metric label="总支出" value={money(m.expense_amount)} />
+            <Metric label="毛利润" value={money(m.gross_profit_amount)} />
+            <Metric
+              label="净利润"
+              value={money(Number(m.income_amount) - Number(m.expense_amount))}
+            />
+          </View>
+          <View className="section">
+            <Text className="section-title">成本结构</Text>
+            {[
+              ["食材成本", m.food_cost_amount, m.food_cost_rate],
+              ["人工成本", m.labor_cost_amount, m.labor_cost_rate],
+              ["租金成本", m.rent_cost_amount, m.rent_cost_rate],
+            ].map(([label, amount, rate]) => (
+              <View className="row" key={String(label)}>
+                <Text>
+                  {label} {money(amount)}
+                </Text>
+                <Text>{pct(rate)}</Text>
+                <View className="mobile-track">
+                  <View
+                    style={{
+                      width:
+                        Math.min(100, Math.max(0, Number(rate) || 0)) + "%",
+                    }}
+                  />
                 </View>
-                <Text className="row-amount">{formatMoney(item.amount)}</Text>
               </View>
-            ))
-          ) : (
-            <Text className="empty">暂无未匹配流水</Text>
-          )}
+            ))}
+          </View>
+          <View className="section">
+            <Text className="section-title">营业渠道</Text>
+            {m.revenue_channel_summary.map((x) => (
+              <View key={x.channel} className="row">
+                <Text>{x.channel}</Text>
+                <Text>
+                  营业收入 {money(x.gross_amount)} · 实收 {money(x.net_amount)}
+                </Text>
+              </View>
+            ))}
+          </View>
+          <View className="section">
+            <Text className="section-title">各类别支出</Text>
+            {m.expense_category_summary.map((x) => (
+              <View
+                className="row"
+                key={x.name}
+                onClick={() =>
+                  Taro.navigateTo({
+                    url: `/pages/expenses/index?storeId=${storeId}&period=${period}&category=${encodeURIComponent(x.name)}`,
+                  })
+                }
+              >
+                <Text>{x.name}</Text>
+                <Text>{money(x.amount)}</Text>
+              </View>
+            ))}
+          </View>
+          <View className="section">
+            <Text className="section-title">利润与资金</Text>
+            <View className="row">
+              <Text>报表次月10日银行余额</Text>
+              <Text>
+                {money((s?.bank_balance as { amount?: string })?.amount)}
+              </Text>
+              <Text className="row-sub">
+                {String((s?.bank_balance as { date?: string })?.date || "")}
+              </Text>
+            </View>
+            {[
+              ["剩余未分配利润", s?.remaining_undistributed],
+              ["本月分配", s?.distribution_amount],
+              ["本月运营增资", s?.capital_amount],
+              ["筹建投入资金", s?.preopening_investment],
+              ["筹建费用总支出", s?.preopening_expense_amount],
+              ["累计增资", s?.total_capital],
+              ["累计分红", s?.cumulative_distribution],
+            ].map(([l, v]) => (
+              <View className="row" key={String(l)}>
+                <Text>{String(l)}</Text>
+                <Text>{money(v)}</Text>
+              </View>
+            ))}
+          </View>
+        </>
+      )}
+      {revenue && (
+        <>
+          <View className="section">
+            <Text className="section-title">渠道月度统计</Text>
+            {revenue.channels.map((x) => (
+              <View key={x.channel} className="row">
+                <Text>{x.channel}</Text>
+                <Text>
+                  营业 {money(x.gross)} · 实收 {money(x.net)}
+                </Text>
+                <Text className="row-sub">
+                  手续费 {money(x.fee)} · 费率{" "}
+                  {Number(x.gross) > 0
+                    ? pct((Number(x.fee) / Number(x.gross)) * 100)
+                    : "—"}
+                </Text>
+              </View>
+            ))}
+          </View>
+          <View className="section">
+            <Text className="section-title">
+              每日明细 · 共 {revenue.total} 条
+            </Text>
+            {revenue.items.map((x) => (
+              <View className="row" key={x.id}>
+                <Text>
+                  {x.revenue_date} · {x.channel}
+                </Text>
+                <Text>{money(x.gross_amount)}</Text>
+                <Text className="row-sub">
+                  实收 {money(x.net_amount)} · 手续费 {money(x.fee_amount)}
+                </Text>
+              </View>
+            ))}
+          </View>
+        </>
+      )}
+      {bank && (
+        <>
+          <View className="section">
+            <Text className="section-title">当前银行余额</Text>
+            <Text className="value">
+              {money(
+                bank.balance.current_balance ?? bank.balance.balance_amount,
+              )}
+            </Text>
+            <Text className="row-sub">当前余额，不随列表日期筛选改变</Text>
+          </View>
+          <View className="section">
+            <Text className="section-title">
+              银行流水 · 共 {bank.list.total} 笔
+            </Text>
+            {bank.list.items.map((x) => (
+              <View
+                className="row"
+                key={x.id}
+                onClick={() =>
+                  Taro.navigateTo({
+                    url: "/pages/bank-detail/index?id=" + x.id,
+                  })
+                }
+              >
+                <Text>
+                  {x.counterparty_name || "未填写户名"} ·{" "}
+                  {x.direction === "income" ? "收入" : "支出"} {money(x.amount)}
+                </Text>
+                <Text className="row-sub">
+                  {x.occurred_at.slice(0, 10)} ·{" "}
+                  {x.direct_posting_type
+                    ? "直接入账"
+                    : Number(x.matched_amount) >= Number(x.amount)
+                      ? "已关联"
+                      : Number(x.matched_amount) > 0
+                        ? "部分关联"
+                        : "未关联"}
+                </Text>
+                <Text className="row-sub">
+                  余额 {money(x.running_balance)} · 查看业务详情 →
+                </Text>
+              </View>
+            ))}
+          </View>
+        </>
+      )}
+      {pre && (
+        <View className="section">
+          <Text className="section-title">筹建累计支出 {money(pre.total)}</Text>
+          <Text className="row-sub">
+            不分账期 · {pre.status === "closed" ? "已封账" : "筹建中"}
+          </Text>
+          {pre.details.map((x, i) => (
+            <View className="row" key={x.id || i}>
+              <Text>
+                {x.category_l1} / {x.category_l2}
+              </Text>
+              <Text>{x.description}</Text>
+              <Text>{money(x.amount)}</Text>
+            </View>
+          ))}
         </View>
-      ) : null}
+      )}
+      {tab === 4 &&
+        div.map((x) => (
+          <View className="section" key={x.period}>
+            <Text className="section-title">
+              {x.period} {x.period === period ? "· 当前查看月" : ""}
+            </Text>
+            <View className="row">
+              <Text>净利润 {money(x.net_profit)}</Text>
+              <Text>
+                分配 {money(x.distribution_amount)} · 增资{" "}
+                {money(x.capital_amount)}
+              </Text>
+              <Text>剩余未分配 {money(x.remaining_undistributed)}</Text>
+            </View>
+            {x.entries.map((e, i) => (
+              <View className="row" key={i}>
+                <Text>
+                  {e.shareholder_name} ·{" "}
+                  {e.entry_type === "distribution" ? "分红" : "注资"}{" "}
+                  {money(e.amount)}
+                </Text>
+              </View>
+            ))}
+          </View>
+        ))}
+      {!busy && !error && ((tab === 1 && revenue) || (tab === 2 && bank)) && (
+        <View className="filters">
+          <Button disabled={page === 1} onClick={() => PG(page - 1)}>
+            上一页
+          </Button>
+          <Text>第 {page} 页</Text>
+          <Button
+            disabled={
+              page * 30 >= (tab === 1 ? revenue!.total : bank!.list.total)
+            }
+            onClick={() => PG(page + 1)}
+          >
+            下一页
+          </Button>
+        </View>
+      )}
     </View>
   );
 }

@@ -1,3 +1,4 @@
+from uuid import uuid4
 import re
 from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
@@ -106,14 +107,16 @@ def available_periods(session: Session, store: Store, selected_period: str) -> l
     return sorted(periods, reverse=True)
 
 
-def history_rows(session: Session, store: Store, selected_period: str) -> list[DividendMonthRead]:
+def history_rows(session: Session, store: Store, selected_period: str, create_missing: bool = True) -> list[DividendMonthRead]:
     ordered = sorted(available_periods(session, store, selected_period))
     months = {month.period: month for month in session.scalars(select(DividendMonth).where(DividendMonth.store_id == store.id)).all()}
     for period in ordered:
         if period not in months:
-            months[period] = DividendMonth(store_id=store.id, period=period)
-            session.add(months[period])
-    session.flush()
+            months[period] = DividendMonth(id=uuid4().hex, store_id=store.id, period=period, reference_ratio=60, no_distribution=False, no_capital=False, locked=False)
+            if create_missing:
+                session.add(months[period])
+    if create_missing:
+        session.flush()
     profits = calculate_store_ledger_profits(session, store.id, [period for period in ordered if period >= "2026-10"])
     entries_by_month = {}
     for entry in session.scalars(select(DividendEntry).where(

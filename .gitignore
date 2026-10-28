@@ -27,3 +27,6 @@ __pycache__/
 /apps/api/data/
 /uploads/
 /reports/
+
+# WeChat developer tool local preferences
+**/project.private.config.json

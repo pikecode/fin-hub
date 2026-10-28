@@ -1,84 +1,108 @@
+import { clearNavigation } from "./navigation";
 import Taro from "@tarojs/taro";
 import type {
-  ApiEnvelope,
-  LedgerPeriodOption,
-  LedgerReportDetail,
-  LedgerReportSummary,
-  LedgerTrend,
-  ReportPeriodOption,
-  ShareholderAccessGrant,
-  ShareholderLoginResponse,
-  StoreComparisonReport,
-  StoreReportSummary,
+  CurrentUser,
+  StoreLedgerWorkspace,
+  BankTransaction,
+  BankTransactionBusinessDetail,
+  RevenueRecord,
+  DividendMonth,
 } from "@fin-hub/shared-types";
-
 declare const __API_BASE_URL__: string;
-
-const API_BASE_URL = __API_BASE_URL__;
-const TOKEN_KEY = "fin_hub_shareholder_token";
-
+export const API_BASE_URL = __API_BASE_URL__;
+const TOKEN_KEY = "fin_hub_miniapp_token";
+export const getShareholderToken = () => Taro.getStorageSync<string>(TOKEN_KEY);
+export const setShareholderToken = (token: string) =>
+  Taro.setStorageSync(TOKEN_KEY, token);
+export const clearShareholderToken = () => {
+  Taro.removeStorageSync(TOKEN_KEY);
+  clearNavigation();
+};
 export class MiniappApiError extends Error {
   constructor(
-    public readonly statusCode: number,
+    public statusCode: number,
     message: string,
   ) {
     super(message);
   }
 }
-
-export function getShareholderToken() {
-  return Taro.getStorageSync<string>(TOKEN_KEY);
-}
-
-export function setShareholderToken(token: string) {
-  Taro.setStorageSync(TOKEN_KEY, token);
-}
-
-export function clearShareholderToken() {
-  Taro.removeStorageSync(TOKEN_KEY);
-}
-
-async function request<T>(path: string, options: { method?: "GET" | "POST"; data?: unknown; auth?: boolean } = {}): Promise<T> {
-  const token = getShareholderToken();
-  const response = await Taro.request<ApiEnvelope<T>>({
-    url: `${API_BASE_URL}${path}`,
-    method: options.method ?? "GET",
-    data: options.data,
-    header: options.auth === false || !token ? undefined : { authorization: `Bearer ${token}` },
+export async function request<T>(path: string, data?: unknown): Promise<T> {
+  const r = await Taro.request<{ data: T; detail?: string }>({
+    url: API_BASE_URL + "/api/miniapp" + path,
+    method: data ? "POST" : "GET",
+    data,
+    header: { authorization: "Bearer " + getShareholderToken() },
+    timeout: 30000,
   });
-  if (response.statusCode < 200 || response.statusCode >= 300) {
-    throw new MiniappApiError(response.statusCode, `API ${response.statusCode}`);
+  if (r.statusCode === 401 && path != "/login") {
+    clearShareholderToken();
+    Taro.reLaunch({ url: "/pages/shareholder-login/index" });
   }
-  return response.data.data;
+  if (r.statusCode < 200 || r.statusCode >= 300)
+    throw new MiniappApiError(
+      r.statusCode,
+      typeof r.data.detail === "string"
+        ? r.data.detail
+        : "请求失败，请稍后重试",
+    );
+  return r.data.data;
 }
-
+export interface MobileStore {
+  id: string;
+  name: string;
+}
+export interface MobileReport {
+  report: StoreLedgerWorkspace;
+  supplement: Record<string, unknown>;
+}
+export interface MobileRevenue {
+  channels: { channel: string; gross: string; net: string; fee: string }[];
+  items: RevenueRecord[];
+  total: number;
+}
+export interface MobileBank {
+  list: { items: BankTransaction[]; total: number };
+  balance: {
+    balance_amount?: string;
+    current_balance?: string;
+    [key: string]: unknown;
+  };
+}
 export const api = {
-  login: (accessCode: string) =>
-    request<ShareholderLoginResponse>("/api/shareholder-auth/login", {
-      method: "POST",
-      data: { access_code: accessCode },
-      auth: false,
+  login: (username: string, password: string) =>
+    request<{ token: string; user: CurrentUser }>("/login", {
+      username,
+      password,
     }),
-  storeSummaries: () => request<StoreReportSummary[]>("/api/reports/store-summaries"),
-  storeComparison: (period?: string) =>
-    request<StoreComparisonReport>(
-      `/api/reports/store-comparison${period ? `?period=${encodeURIComponent(period)}` : ""}`,
+  me: () => request<CurrentUser>("/me"),
+  stores: () => request<MobileStore[]>("/stores"),
+  periods: (id: string) => request<string[]>("/periods?store_id=" + id),
+  report: (id: string, period: string) =>
+    request<MobileReport>(`/report?store_id=${id}&period=${period}`),
+  revenue: (id: string, period: string, page: number) =>
+    request<MobileRevenue>(
+      `/revenue?store_id=${id}&period=${period}&page=${page}`,
     ),
-  reportPeriods: () => request<ReportPeriodOption[]>("/api/reports/periods"),
-  shareholderMe: () => request<ShareholderAccessGrant>("/api/shareholder-auth/me"),
-  ledgerPeriods: (storeId: string) =>
-    request<LedgerPeriodOption[]>(`/api/reports/ledger-periods?store_id=${encodeURIComponent(storeId)}`),
-  ledgerTrends: (storeId?: string, limit = 6) => {
-    const params = [`limit=${encodeURIComponent(String(limit))}`];
-    if (storeId) params.unshift(`store_id=${encodeURIComponent(storeId)}`);
-    return request<LedgerTrend[]>(`/api/reports/ledger-trends?${params.join("&")}`);
-  },
-  ledgerSummary: (storeId: string, period: string) =>
-    request<LedgerReportSummary>(
-      `/api/reports/ledger-summary?store_id=${encodeURIComponent(storeId)}&period=${encodeURIComponent(period)}`,
+  bank: (id: string, query: string) =>
+    request<MobileBank>(`/bank?store_id=${id}&${query}`),
+  bankDetail: (id: string) =>
+    request<BankTransactionBusinessDetail>("/bank/" + id),
+  dividend: (id: string, period: string) =>
+    request<{ history: DividendMonth[] }>(
+      `/dividend?store_id=${id}&period=${period}`,
     ),
-  ledgerDetail: (storeId: string, period: string) =>
-    request<LedgerReportDetail>(
-      `/api/reports/ledger-detail?store_id=${encodeURIComponent(storeId)}&period=${encodeURIComponent(period)}`,
-    ),
+  preopening: (id: string) =>
+    request<{
+      total: string;
+      status: string;
+      details: {
+        id: string;
+        description: string;
+        amount: string;
+        category_l1: string;
+        category_l2: string;
+      }[];
+    }>("/preopening?store_id=" + id),
+  changePassword: (current_password: string, new_password: string) =>
+    request("/change-password", { current_password, new_password }),
 };

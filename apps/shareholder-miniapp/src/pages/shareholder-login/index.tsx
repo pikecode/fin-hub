@@ -3,50 +3,58 @@ import Taro from "@tarojs/taro";
 import { useState } from "react";
 import { api, setShareholderToken } from "../../lib/api";
 import "./index.css";
-
-export default function ShareholderLoginPage() {
-  const [accessCode, setAccessCode] = useState("");
-  const [statusText, setStatusText] = useState("");
-  const [isLoading, setIsLoading] = useState(false);
-
+export default function Login() {
+  const [username, U] = useState(""),
+    [password, P] = useState(""),
+    [busy, B] = useState(false),
+    [error, E] = useState("");
   async function login() {
-    if (!accessCode.trim()) {
-      setStatusText("请输入授权码");
+    if (busy) return;
+    if (!username.trim() || !password) {
+      E("请输入用户名和密码");
       return;
     }
-    setIsLoading(true);
-    setStatusText("");
+    B(true);
+    E("");
     try {
-      const result = await api.login(accessCode.trim());
-      setShareholderToken(result.token);
-      Taro.reLaunch({ url: "/pages/stores/index" });
-    } catch {
-      setStatusText("授权码无效或已停用");
+      const r = await api.login(username.trim(), password);
+      setShareholderToken(r.token);
+      Taro.switchTab({ url: "/pages/stores/index" });
+    } catch (e) {
+      E(e instanceof Error ? e.message : "登录失败");
     } finally {
-      setIsLoading(false);
+      B(false);
     }
   }
-
   return (
     <View className="page">
       <View className="brand">
-        <Text className="brand-mark">FIN</Text>
-        <Text className="eyebrow">蘑说财务</Text>
-        <Text className="title">股东报表</Text>
-        <Text className="muted">输入财务后台发放的授权码，查看授权门店的已封账报表。</Text>
+        <Text className="eyebrow">蘑说财务 · 股东端</Text>
+        <Text className="title">看见每一笔经营</Text>
+        <Text className="muted">使用后台分配的账号，查看授权门店经营情况</Text>
       </View>
       <View className="login-panel">
-        <Text className="field-label">授权码</Text>
         <Input
           className="input"
-          password
-          placeholder="请输入授权码"
-          value={accessCode}
-          onInput={(event) => setAccessCode(event.detail.value)}
+          placeholder="用户名"
+          value={username}
+          onInput={(e) => U(e.detail.value)}
         />
-        {statusText ? <Text className="error">{statusText}</Text> : null}
-        <Button className="login-button" loading={isLoading} onClick={login}>
-          进入报表
+        <Input
+          className="input"
+          placeholder="密码"
+          password
+          value={password}
+          onInput={(e) => P(e.detail.value)}
+        />
+        {error && <Text className="error">{error}</Text>}
+        <Button
+          className="login-button"
+          loading={busy}
+          disabled={busy}
+          onClick={login}
+        >
+          登录
         </Button>
       </View>
     </View>
