@@ -139,6 +139,10 @@ def prepare_candidate(session, match, item, allocations, version):
 
 def ensure_periods_open(session, item, periods=()):
     approval = approval_for_item(session, item)
+    if approval:
+        from app.modules.accrual_accounting import active_links, ensure_approval_open
+        if active_links(session, approval_id=approval.id):
+            ensure_approval_open(session, approval)
     affected = set(periods)
     if approval:
         affected.update(a["period"] for a in read_plan(session, approval.id)["allocations"])
@@ -250,6 +254,8 @@ def annotate_matches(session, matches):
         )
     for match in matches:
         approval_id = mapping.get(match.expense_item_id)
+        from app.modules.accrual_accounting import active_links
+        match.accrual_covered_amount = sum((row.amount for row in active_links(session, approval_id=approval_id)), Decimal(0)) if approval_id else Decimal(0)
         if approval_id in headers:
             match._effective_allocations = allocations.get(approval_id, [])
             match._effective_accounting_version = headers[approval_id].version
@@ -342,6 +348,9 @@ def planned_rows_for_periods(session, store_id, periods):
 
 
 def protect_expense_changes(session, item, changes):
+    from app.models import AccrualApprovalLink
+    if item.source == "accrual":
+        raise HTTPException(409, "计提费用只能通过补提或冲销调整")
     changed = {
         key
         for key in ("amount", "category_l1", "category_l2")
@@ -352,6 +361,8 @@ def protect_expense_changes(session, item, changes):
     approval = approval_for_item(session, item)
     if not approval:
         return
+    if session.scalar(select(AccrualApprovalLink.id).where(AccrualApprovalLink.approval_id == approval.id, AccrualApprovalLink.active.is_(True)).limit(1)):
+        raise HTTPException(409, "审批单已关联计提，请先解除覆盖再修改费用")
     from app.modules.bank.unpaid import mutation_lock
 
     mutation_lock(session)
@@ -432,4 +443,5 @@ def overlay_planned_expenses(
             data.update(amount=row[3], ledger_period=period)
             combined[key] = SimpleNamespace(**data)
         additions.extend(combined.values())
-    return [item for item in base_items if item.id not in owned_all] + additions
+    from app.modules.accrual_accounting import overlay_reports
+    return overlay_reports(session, [item for item in base_items if item.id not in owned_all] + additions, store_ids, period_start, period_end, aggregate=aggregate)

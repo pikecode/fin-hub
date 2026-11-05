@@ -495,9 +495,10 @@ export interface MajorExpenseVoucherCreate {
 export type BankPaymentStatus = "paid" | "unpaid" | "unreceived";
 export type BankSpecialType = "current_account" | "shareholder_dividend" | "shareholder_capital" | "other_income_expense" | "counter_refund" | "loan_repayment";
 
-export type BankDirectPostingType = "bank_interest" | "bank_fee" | "bank_sms_fee" | "bank_other_expense";
+export type BankDirectPostingType = "bank_interest" | "other_income" | "bank_fee" | "bank_sms_fee" | "bank_other_expense";
 
 export interface BankTransaction {
+  accounting_periods?: string[];
   is_archived?: boolean;
   payment_settlement_status?: string | null;
   id: string;
@@ -675,6 +676,7 @@ export interface BankBalance {
 }
 
 export interface ExpenseBankMatch {
+  accrual_covered_amount?: string;
   id: string;
   expense_item_id: string;
   bank_transaction_id: string;
@@ -693,6 +695,7 @@ export interface ExpenseBankMatch {
 }
 
 export interface MatchCreate {
+  accrual_coverage?: { original_id: string; amount: string; remark: string; confirm_category_difference: boolean };
   expense_item_id: string;
   bank_transaction_id: string;
   amount: string;
@@ -742,6 +745,7 @@ export interface ReconciliationCandidateResult {
 }
 
 export interface ReconciliationRecord {
+  approval_change_pending?: boolean;
   settled_bank_transactions?: BankTransaction[];
   match: ExpenseBankMatch;
   bank_transaction: BankTransaction;
@@ -1189,6 +1193,7 @@ export interface BankImportPreviewResult {
 }
 
 export interface ApprovalInstance {
+  store_issue?: string | null;
   title?: string | null;
   expense_scope?: "operating" | "preopening";
   id: string;
@@ -1481,7 +1486,7 @@ export interface DividendShareholder {
 
 export interface DividendEntry {
   id: string;
-  entry_type: "distribution" | "capital";
+  entry_type: "distribution" | "capital" | "preopening_coverage";
   shareholder_id?: string | null;
   shareholder_name: string;
   holding_ratio: string;
@@ -1501,6 +1506,8 @@ export interface DividendMonth {
   manual_net_profit?: string | null;
   manual_remaining_undistributed?: string | null;
   profit_source: "report" | "manual";
+  preopening_coverage_amount?: string;
+  cumulative_preopening_coverage?: string;
   distribution_amount: string;
   capital_amount: string;
   historical_profit: string;
@@ -1554,20 +1561,32 @@ export interface CurrentUser {
 }
 
 export interface DividendFundingSetting {
+  preopening_overrun_amount?: string;
+  preopening_surplus_amount?: string;
   preopening_investment: string;
   preopening_expense_override: string | null;
   preopening_expense_amount: string;
-  preopening_expense_source: "manual" | "report";
+  preopening_expense_source: "manual" | "report" | "missing";
+  preopening_balance?: string | null;
+  preopening_profit_covered?: string;
+  preopening_uncovered?: string | null;
 }
 
 export interface FinancialReportSupplement extends DividendFundingSetting {
+  accrual_totals?: { accrual: string; supplement: string; reversal: string };
+  historical_profit?: string;
+  preopening_balance?: string | null;
+  preopening_profit_covered?: string;
+  preopening_uncovered?: string | null;
   dividend_start_period?: string | null;
   dividend_excluded?: boolean;
   store_id: string;
   period: string;
   revenue_target: string | null;
-  bank_balance: { date: string; status: "ready" | "pending" | "missing_base"; amount: string | null };
+  bank_balance: { date: string; status: "ready" | "pending" | "missing_base" | "missing_manual"; amount: string | null; source?: "manual" };
   remaining_undistributed: string | null;
+  preopening_coverage_amount?: string;
+  cumulative_preopening_coverage?: string;
   distribution_amount: string;
   capital_amount: string;
   cumulative_capital: string;
@@ -1581,6 +1600,7 @@ export interface FinancialReportAppendix {
     transaction: BankTransaction;
     business: {
       kind: "expense" | "income";
+      accrual_covered_amount?: string;
       description: string;
       application_date?: string | null;
       approval_no?: string | null;
@@ -1598,6 +1618,7 @@ export interface FinancialReportAppendix {
 
 
 export interface DividendOpeningBalance extends DividendFundingSetting {
+  historical_preopening_coverage?: string;
   configured: boolean;
   start_period: string | null;
   opening_remaining: string | null;
@@ -1610,6 +1631,7 @@ export interface DividendOpeningBalance extends DividendFundingSetting {
   updated_at?: string | null;
 }
 export interface DividendOpeningUpdate {
+  historical_preopening_coverage?: string;
   start_period: string;
   opening_remaining: string;
   historical_profit: string;

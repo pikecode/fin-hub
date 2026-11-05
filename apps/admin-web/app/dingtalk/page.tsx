@@ -406,7 +406,7 @@ function approvalMatchStatusMeta(status?: string | null) {
   const normalized = (status || "").toLowerCase();
   const statusMap: Record<string, { label: string; color: string }> = {
     matched: { label: "已匹配", color: "green" },
-    partial_matched: { label: "已匹配", color: "green" },
+    partial_matched: { label: "未匹配满", color: "orange" },
     pending_match: { label: "未匹配", color: "gold" },
     pending_classification: { label: "未匹配", color: "gold" },
     sync_conflict: { label: "未匹配", color: "gold" },
@@ -673,6 +673,7 @@ export default function DingTalkPage() {
   const [instanceTotal, setInstanceTotal] = useState(0);
   const [instanceLoading, setInstanceLoading] = useState(false);
   const [instanceSearch, setInstanceSearch] = useState("");
+  const [storeIssueOnly, setStoreIssueOnly] = useState(false);
   const [instanceKeyword, setInstanceKeyword] = useState("");
   const [instanceStatusFilters, setInstanceStatusFilters] = useState<string[]>([]);
   const [instanceReload, setInstanceReload] = useState(0);
@@ -1074,6 +1075,7 @@ export default function DingTalkPage() {
     setErrorMessage(null);
     setApprovalInstances([]);
     const query = new URLSearchParams({ page: String(instancePage), page_size: String(instancePageSize), compact: "true" });
+    if (storeIssueOnly) query.set("store_issue_only", "true");
     if (instanceTemplateFilterId) query.set("template_id", instanceTemplateFilterId);
     if (instanceStoreFilterId) query.set("store_id", instanceStoreFilterId);
     if (instanceKeyword.trim()) query.set("keyword", instanceKeyword.trim());
@@ -1090,7 +1092,7 @@ export default function DingTalkPage() {
       if (!disposed && request === instanceRequest.current) setInstanceLoading(false);
     });
     return () => { disposed = true; };
-  }, [activeTabKey, instancePage, instancePageSize, instanceTemplateFilterId, instanceStoreFilterId, instanceKeyword, instanceStatusFilters, instanceReload]);
+  }, [activeTabKey, instancePage, instancePageSize, instanceTemplateFilterId, instanceStoreFilterId, instanceKeyword, instanceStatusFilters, instanceReload, storeIssueOnly]);
 
   function handleTabChange(key: string) {
     const nextKey = key as DingTalkTabKey;
@@ -2013,6 +2015,7 @@ export default function DingTalkPage() {
       key: "associated_store", title: "关联门店", width: 210,
       render: (_, record) => <Space direction="vertical" size={2}>
         <Typography.Text>{stores.find((store) => store.id === record.store_id)?.name || (record.store_id ? "门店未加载" : "未关联")}</Typography.Text>
+        {record.store_issue ? <Tag color="orange" style={{ whiteSpace: "normal" }}>{record.store_issue}</Tag> : null}
         {record.manual_store_id ? <Tag color="blue" title={record.store_override_reason || undefined}>人工关联</Tag> : null}
       </Space>,
     },
@@ -2468,6 +2471,7 @@ export default function DingTalkPage() {
                           disabled: !template.is_enabled,
                         }))}
                       />
+                      <Select value={storeIssueOnly ? "issues" : "all"} style={{ width: 185 }} onChange={value => { setStoreIssueOnly(value === "issues"); setInstancePage(1); }} options={[{ value: "all", label: "全部门店关联状态" }, { value: "issues", label: "门店落库异常" }]} />
                       <Button onClick={() => setIsApprovalAuditModalOpen(true)}>
                         诊断/重解析
                       </Button>

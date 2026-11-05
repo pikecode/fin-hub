@@ -3525,6 +3525,13 @@ def sync_real_instance(
         return False
     from app.models import PreopeningStore
     sealed_instance = session.scalar(select(ApprovalInstance).where(ApprovalInstance.dingtalk_instance_id == instance_id).with_for_update())
+    from app.modules.approval_notices import detect_source_change
+    detect_source_change(session, sealed_instance, raw_instance)
+    parent_source_id = raw_instance.get("main_process_instance_id")
+    if parent_source_id and str(raw_instance.get("biz_action", "")).upper() == "MODIFY":
+        parent = session.scalar(select(ApprovalInstance).where(ApprovalInstance.dingtalk_instance_id == str(parent_source_id)).with_for_update())
+        if parent is not None and parent.id != (sealed_instance.id if sealed_instance else None):
+            detect_source_change(session, parent, raw_instance)
     if sealed_instance and sealed_instance.expense_scope == "preopening":
         state = session.get(PreopeningStore, sealed_instance.store_id)
         if state and state.status == "closed":
@@ -4008,8 +4015,10 @@ def approval_needs_detail_resync(instance: ApprovalInstance) -> bool:
     return isinstance(parsed, dict) and parsed.get("expense_parse_status") == "skipped"
 
 
-def approval_detail_refresh_due(instance: ApprovalInstance) -> bool:
+def approval_detail_refresh_due(instance: ApprovalInstance, monitor_matched: bool = False) -> bool:
     """Pending approvals stay live; finished approvals/errors refresh at most daily."""
+    if monitor_matched:
+        return instance.last_parsed_at is None or instance.last_parsed_at <= utc_now() - timedelta(hours=24)
     if instance.approval_status.lower() in TERMINAL_NON_EXPENSE_STATUSES:
         return False
     if instance.approval_status.lower() not in COMPLETED_APPROVAL_STATUSES:
@@ -4050,6 +4059,11 @@ def run_approval_sync(
     skipped_missing_instance_ids: list[str] = []
     skipped_missing_process_codes: list[str] = []
     resume_cursors = resume_cursors or {}
+    from app.modules.matching.router import approval_expense_join_condition
+    monitored_ids = set(session.scalars(select(ApprovalInstance.id).join(ExpenseItem, approval_expense_join_condition())
+        .join(ExpenseBankMatch, ExpenseBankMatch.expense_item_id == ExpenseItem.id).where(
+        ApprovalInstance.template_id.in_([t.id for t in templates]), ExpenseBankMatch.status == "confirmed", ExpenseBankMatch.expense_scope == "operating").distinct()))
+    monitor_refresh_count = 0
     for template in templates:
         ensure_sync_job_not_canceled(session, job)
         if should_use_real_dingtalk():
@@ -4098,7 +4112,7 @@ def run_approval_sync(
                     if (
                         skip_existing
                         and existing_instance is not None
-                        and not approval_detail_refresh_due(existing_instance)
+                        and not approval_detail_refresh_due(existing_instance, existing_instance.id in monitored_ids)
                     ):
                         template_skipped_existing += 1
                         detail_skipped_count += 1
@@ -4112,6 +4126,10 @@ def run_approval_sync(
                             raise
                         template_skipped_missing += 1
                         skipped_missing_instance_ids.append(instance_id)
+                        from app.modules.approval_notices import mark_source_unavailable
+                        mark_source_unavailable(session, existing_instance)
+                        if existing_instance and existing_instance.id in monitored_ids:
+                            existing_instance.last_parsed_at = utc_now()
                         session.commit()
                         continue
                     raw_instance.setdefault("process_instance_id", instance_id)
@@ -4184,9 +4202,12 @@ def run_approval_sync(
             client = dingtalk_client(config)
             for instance in retry_instances:
                 ensure_sync_job_not_canceled(session, job)
-                if instance.dingtalk_instance_id in handled_instance_ids or not approval_needs_detail_resync(instance):
+                is_monitored = instance.id in monitored_ids
+                if instance.dingtalk_instance_id in handled_instance_ids or (not is_monitored and not approval_needs_detail_resync(instance)):
                     continue
-                if skip_existing and not approval_detail_refresh_due(instance):
+                if is_monitored and (monitor_refresh_count >= 100 or not approval_detail_refresh_due(instance, True)):
+                    continue
+                if skip_existing and not approval_detail_refresh_due(instance, is_monitored):
                     detail_skipped_count += 1
                     continue
                 # ✅ 再次获取排他锁，防止并发修改
@@ -4200,6 +4221,8 @@ def run_approval_sync(
                 handled_instance_ids.add(instance.dingtalk_instance_id)
                 job.processed_count += 1
                 retry_refreshed_count += 1
+                if is_monitored:
+                    monitor_refresh_count += 1
                 try:
                     detail_fetched_count += 1
                     raw_instance = client.get_process_instance(instance.dingtalk_instance_id)
@@ -4208,6 +4231,10 @@ def run_approval_sync(
                         raise
                     retry_skipped_missing += 1
                     skipped_missing_instance_ids.append(instance.dingtalk_instance_id)
+                    from app.modules.approval_notices import mark_source_unavailable
+                    mark_source_unavailable(session, instance)
+                    if is_monitored:
+                        instance.last_parsed_at = utc_now()
                     session.commit()
                     continue
                 raw_instance.setdefault("process_instance_id", instance.dingtalk_instance_id)
@@ -5202,6 +5229,7 @@ def list_approval_instances(
     approval_status: list[str] | None = Query(default=None),
     include_matched: bool = False,
     compact: bool = False,
+    store_issue_only: bool = False,
     match_status: str | None = None,
     page: int = 1,
     page_size: int = 50,
@@ -5266,11 +5294,17 @@ def list_approval_instances(
                   "未匹配": ["unparsed", "pending_classification", "pending_match", "unmatched", "sync_conflict"]}
         query = query.where(ApprovalInstance.processing_status.in_(groups.get(match_status, [match_status])))
 
+    store_issues = {}
+    if store_issue_only:
+        from app.modules.dingtalk.store_issues import approval_store_issues
+        store_issues = approval_store_issues(session, list(session.scalars(query)))
+        query = query.where(ApprovalInstance.id.in_(list(store_issues)))
+
     items, total = paginate(session, query, page, page_size)
     stats_by_approval_id = approval_expense_stats_map(session, [item.id for item in items])
     return ApiEnvelope(
         data=Page(
-            items=[approval_instance_read(session, item, stats_by_approval_id.get(item.id), compact=compact) for item in items],
+            items=[approval_instance_read(session, item, stats_by_approval_id.get(item.id), compact=compact).model_copy(update={"store_issue": store_issues.get(item.id)}) for item in items],
             total=total,
             page=page,
             page_size=page_size,

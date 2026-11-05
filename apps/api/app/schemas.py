@@ -277,11 +277,14 @@ class DividendMonthUpdate(BaseModel):
     reference_ratio: Decimal | None = Field(default=None, ge=0, le=100)
     distribution: list[DividendEntryInput] | None = None
     capital: list[DividendEntryInput] | None = None
+    preopening_coverage: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=2)
+    preopening_coverage_remark: str | None = Field(default=None, max_length=240)
     no_distribution: bool | None = None
     no_capital: bool | None = None
 
 
 class DividendOpeningUpdate(BaseModel):
+    historical_preopening_coverage: Decimal = Field(default=Decimal("0"), ge=0, max_digits=14, decimal_places=2)
     start_period: str = Field(pattern=r"^\d{4}-(0[1-9]|1[0-2])$")
     opening_remaining: Decimal = Field(max_digits=14, decimal_places=2)
     historical_profit: Decimal = Field(max_digits=14, decimal_places=2)
@@ -294,6 +297,7 @@ class DividendOpeningUpdate(BaseModel):
 
 
 class DividendOpeningRead(BaseModel):
+    historical_preopening_coverage: Decimal = Decimal("0.00")
     configured: bool
     start_period: str | None = None
     opening_remaining: Decimal | None = None
@@ -321,6 +325,8 @@ class DividendMonthRead(BaseModel):
     manual_remaining_undistributed: Decimal | None = None
     profit_source: str
     distribution_amount: Decimal
+    preopening_coverage_amount: Decimal = Decimal("0.00")
+    cumulative_preopening_coverage: Decimal = Decimal("0.00")
     capital_amount: Decimal
     historical_profit: Decimal
     historical_distribution: Decimal
@@ -554,8 +560,8 @@ class MajorExpenseVoucherRead(BaseModel):
 
 
 class ExpenseItemRead(ExpenseItemCreate):
-    # Synced approval rows may contain zero-amount voucher supplements.
-    amount: Decimal = Field(ge=0)
+    # Reports include signed accrual reversals; write schemas still require positive amounts.
+    amount: Decimal
     expense_scope: str = "operating"
     preopening_category_id: str | None = None
     preopening_category_l1: str | None = None
@@ -633,7 +639,7 @@ class BankTransactionCreate(BaseModel):
     summary: str | None = None
     bank_serial_no: str | None = None
     payment_status: str = Field(default="paid", pattern=r"^(paid|unpaid|unreceived)$")
-    direct_posting_type: str | None = Field(default=None, pattern=r"^(bank_interest|bank_fee|bank_sms_fee|bank_other_expense)$")
+    direct_posting_type: str | None = Field(default=None, pattern=r"^(bank_interest|other_income|bank_fee|bank_sms_fee|bank_other_expense)$")
     special_type: str | None = Field(default=None, pattern=r"^(current_account|shareholder_dividend|shareholder_capital|other_income_expense|counter_refund|loan_repayment)$")
     allow_duplicates: bool = Field(default=False, exclude=True)
 
@@ -671,12 +677,13 @@ class BankTransactionUpdate(BaseModel):
     summary: str | None = None
     bank_serial_no: str | None = None
     payment_status: str | None = Field(default=None, pattern=r"^(paid|unpaid|unreceived)$")
-    direct_posting_type: str | None = Field(default=None, pattern=r"^(bank_interest|bank_fee|bank_sms_fee|bank_other_expense)$")
+    direct_posting_type: str | None = Field(default=None, pattern=r"^(bank_interest|other_income|bank_fee|bank_sms_fee|bank_other_expense)$")
     special_type: str | None = Field(default=None, pattern=r"^(current_account|shareholder_dividend|shareholder_capital|other_income_expense|counter_refund|loan_repayment)$")
     allow_duplicates: bool = Field(default=False, exclude=True)
 
 
 class BankTransactionRead(BankTransactionCreate):
+    accounting_periods: list[str] = Field(default_factory=list)
     is_archived: bool = False
     payment_settlement_status: str | None = None
     model_config = ConfigDict(from_attributes=True)
@@ -780,7 +787,15 @@ class AccountingAllocationInput(BaseModel):
     amount: Decimal = Field(gt=0, max_digits=14, decimal_places=2)
 
 
+class AccrualCoverageInput(BaseModel):
+    original_id: str
+    amount: Decimal = Field(gt=0, max_digits=14, decimal_places=2)
+    remark: str = Field(min_length=1, max_length=2000)
+    confirm_category_difference: bool = False
+
+
 class MatchCreate(BaseModel):
+    accrual_coverage: AccrualCoverageInput | None = None
     expense_item_id: str
     bank_transaction_id: str
     amount: Decimal = Field(gt=0)
@@ -795,6 +810,7 @@ class MatchCreate(BaseModel):
 
 
 class MatchRead(MatchCreate):
+    accrual_covered_amount: Decimal = Decimal(0)
     model_config = ConfigDict(from_attributes=True)
 
     id: str
@@ -1477,6 +1493,7 @@ class ApprovalStoreUpdate(BaseModel):
 
 
 class ApprovalInstanceRead(BaseModel):
+    store_issue: str | None = None
     title: str | None = None
     expense_scope: str = "operating"
     model_config = ConfigDict(from_attributes=True)
@@ -1531,6 +1548,7 @@ class ReconciliationCandidateResult(BaseModel):
 
 
 class ReconciliationRecord(BaseModel):
+    approval_change_pending: bool = False
     settled_bank_transactions: list[BankTransactionRead] = Field(default_factory=list)
     match: MatchRead
     bank_transaction: BankTransactionRead

@@ -1,5 +1,5 @@
 import type { ColumnsType } from "antd/es/table";
-import { Tag } from "antd";
+import { Space, Tag, Tooltip } from "antd";
 import type { BankTransaction } from "@fin-hub/shared-types";
 import { MoneyDisplay } from "./MoneyDisplay";
 import { StatusBadge } from "./StatusBadge";
@@ -45,6 +45,11 @@ export function getBankTransactionViewColumns(): BankTransactionViewColumn[] {
       width: 120,
       render: (value: string) => value?.slice(0, 10) || "-",
     },
+    { key: "ledger_period", title: "所属账期", dataIndex: "ledger_period", width: 105 },
+    { key: "accounting_periods", title: "入账月份", width: 190, render: (_, row) => {
+      const periods = row.accounting_periods ?? (row.direct_posting_type ? [row.occurred_at.slice(0, 7)] : []);
+      return <Tooltip title={row.direct_posting_type ? "直接入账按发生月份统计；银行流水列表不受账期限制" : "按已确认对账的入账月份展示，实付核对组以对账记录为准"}><Space wrap size={4}>{periods.length ? periods.map(period => <Tag key={period}>{period}</Tag>) : row.special_type ? "特殊流水" : Number(row.matched_amount || 0) > 0 ? "以对账记录为准" : "待对账"}</Space></Tooltip>;
+    } },
     {
       key: "direction",
       title: "类型",
@@ -116,7 +121,7 @@ export function getBankTransactionViewColumns(): BankTransactionViewColumn[] {
       title: "直接入账",
       dataIndex: "direct_posting_type",
       width: 130,
-      render: (value: string | null) => value ? <Tag color="cyan">{({ bank_interest: "银行结息", bank_fee: "银行手续费", bank_sms_fee: "银行短信费", bank_other_expense: "银行其他支出" } as Record<string, string>)[value] || value}</Tag> : "—",
+      render: (value: string | null) => value ? <Tag color="cyan">{({ bank_interest: "银行结息", other_income: "其他收入", bank_fee: "银行手续费", bank_sms_fee: "银行短信费", bank_other_expense: "银行其他支出" } as Record<string, string>)[value] || value}</Tag> : "—",
     },
     {
       key: "special_type",

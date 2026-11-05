@@ -1,3 +1,5 @@
+export const FINANCIAL_REPORT_PDF_WIDTH_PX = 700;
+
 /** Split before rasterizing so long appendices never become one oversized canvas. */
 export function paginateFinancialReport(source: HTMLElement): HTMLElement[] {
   const doc = source.ownerDocument;
@@ -9,8 +11,8 @@ export function paginateFinancialReport(source: HTMLElement): HTMLElement[] {
   function newPage(repeatHeading = false) {
     page = doc.createElement("main");
     page.className = "financial-export";
-    page.style.width = "760px";
-    page.style.maxWidth = "760px";
+    page.style.width = `${FINANCIAL_REPORT_PDF_WIDTH_PX}px`;
+    page.style.maxWidth = `${FINANCIAL_REPORT_PDF_WIDTH_PX}px`;
     if (styles) page.appendChild(styles.cloneNode(true));
     if (repeatHeading && heading) page.appendChild(heading.cloneNode(true));
     doc.body.appendChild(page);

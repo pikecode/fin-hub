@@ -3,9 +3,9 @@ import io
 from collections.abc import Iterable
 from datetime import datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
-from typing import Literal
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from openpyxl import load_workbook
 from sqlalchemy import and_, func, or_, select
@@ -110,6 +110,9 @@ def normalize_bank_assignment(session: Session, payload: BankTransactionCreate) 
 def list_bank_transactions(
     store_id: str | None = None,
     ledger_period: str | None = None,
+    posting_period: Annotated[str | None, Query(pattern=r"^\d{4}-(0[1-9]|1[0-2])$")] = None,
+    cross_period_only: bool = False,
+    transaction_id: str | None = None,
     direction: str | None = None,
     special_type: Literal["normal", "current_account", "shareholder_dividend", "shareholder_capital", "other_income_expense", "counter_refund", "loan_repayment"] | None = None,
     match_status: Literal["unmatched", "matched"] | None = None,
@@ -140,10 +143,32 @@ def list_bank_transactions(
         occurred_to=occurred_to,
         exclude_special=exclude_special,
     ).order_by(BankTransaction.occurred_at.desc())
+    from app.modules.bank.accounting_visibility import attach_accounting_periods, direct_month_conditions
+    if cross_period_only and not posting_period:
+        raise HTTPException(422, "跨期查询需要指定入账月份")
+    if posting_period:
+        query = query.where(*direct_month_conditions(posting_period, cross_only=cross_period_only))
+    if transaction_id:
+        query = query.where(BankTransaction.id == transaction_id)
     items, total = paginate(session, query, page, page_size)
+    attach_accounting_periods(session, items)
     annotate_payment_status(session, items)
     attach_running_balances(session, items)
     return ApiEnvelope(data=Page(items=items, total=total, page=page, page_size=page_size))
+
+
+@router.get("/cross-period-direct-postings")
+def cross_period_direct_postings(
+    store_id: str, period: str = Query(pattern=r"^\d{4}-(0[1-9]|1[0-2])$"),
+    session: Session = Depends(get_session), current_user: User = Depends(get_current_user),
+):
+    from app.modules.bank.accounting_visibility import direct_month_conditions
+    ensure_permission(session, current_user, "reconciliation.view")
+    query = build_bank_transaction_query(session=session, current_user=current_user, store_id=store_id)
+    rows = list(session.scalars(query.where(*direct_month_conditions(period, cross_only=True))))
+    return ApiEnvelope(data={"period": period, "count": len(rows),
+        "income_amount": str(sum((row.amount for row in rows if row.direction == "income"), Decimal(0))),
+        "expense_amount": str(sum((row.amount for row in rows if row.direction == "expense"), Decimal(0)))})
 
 
 def attach_running_balances(session: Session, items: list[BankTransaction]) -> None:

@@ -820,7 +820,7 @@ def test_list_approval_instances_returns_expense_aggregation(client: TestClient,
     assert item["total_expense_amount"] == "200.00"
     assert item["confirmed_match_amount"] == "120.00"
     assert item["candidate_match_count"] == 1
-    assert item["processing_status"] == "matched"
+    assert item["processing_status"] == "partial_matched"
 
 
 def test_reorder_template_mappings(client: TestClient) -> None:

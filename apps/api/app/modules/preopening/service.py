@@ -28,6 +28,8 @@ def ensure_open(state: PreopeningStore):
 
 
 def ensure_operating(session: Session, expense: ExpenseItem, bank: BankTransaction):
+    if expense.source == "accrual":
+        raise HTTPException(409, "计提不直接匹配银行流水，请关联实际审批单")
     from app.modules.bank.unpaid import mutation_lock
 
     mutation_lock(session)

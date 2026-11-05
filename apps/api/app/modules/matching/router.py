@@ -440,40 +440,6 @@ def real_approval_candidate_filter():
     )
 
 
-def matched_approval_keys(
-    session: Session,
-    *,
-    store_id: str | None,
-    ledger_period: str | None,
-    exclude_match_id: str | None = None,
-) -> tuple[set[str], set[str]]:
-    """Return approval and DingTalk document IDs that already have an active match."""
-    query = (
-        select(ExpenseItem)
-        .join(ExpenseBankMatch, ExpenseBankMatch.expense_item_id == ExpenseItem.id)
-        .where(ExpenseBankMatch.status != MatchStatus.REJECTED.value)
-    )
-    if exclude_match_id:
-        query = query.where(ExpenseBankMatch.id != exclude_match_id)
-    if store_id:
-        query = query.where(ExpenseItem.store_id == store_id)
-    if ledger_period:
-        query = query.where(ExpenseItem.ledger_period == ledger_period)
-
-    matched_items = list(session.scalars(query))
-    approval_ids = {
-        item.approval_instance_id
-        for item in matched_items
-        if item.approval_instance_id
-    }
-    document_ids = {
-        item.source_document_id.split(":", 1)[0]
-        for item in matched_items
-        if item.source == "dingtalk" and item.source_document_id
-    }
-    return approval_ids, document_ids
-
-
 @router.get("", response_model=ApiEnvelope[Page[MatchRead]])
 def list_matches(
     status: str | None = None,
@@ -1139,15 +1105,6 @@ def create_match_candidate(
     protect_payment_bank(session, bank_transaction.id, matching=True)
     if bank_transaction.special_type is not None or bank_transaction.direct_posting_type is not None:
         raise HTTPException(status_code=409, detail="Special bank transactions cannot be matched")
-    if bank_transaction.ledger_period:
-        ledger = session.scalar(
-            select(Ledger).where(
-                Ledger.store_id == bank_transaction.store_id,
-                Ledger.period == bank_transaction.ledger_period,
-            )
-        )
-        if ledger is not None and ledger.status == LedgerStatus.CLOSED.value:
-            raise HTTPException(status_code=409, detail="Ledger is closed")
     if expense_item.store_id != bank_transaction.store_id:
         raise HTTPException(status_code=409, detail="Store mismatch")
     accounting.protect_expense_changes(session, expense_item, {key: value for key, value in {'category_l1': payload.category_l1, 'category_l2': payload.category_l2}.items() if value is not None})
@@ -1180,7 +1137,8 @@ def create_match_candidate(
             },
         )
         ensure_approval_expense_category_selected(session, expense_item)
-        for key, value in payload.model_dump(exclude={"category_l1", "category_l2", "accounting_allocations", "accounting_version"}).items():
+        existing_match.accrual_coverage_json = payload.accrual_coverage.model_dump_json() if payload.accrual_coverage else None
+        for key, value in payload.model_dump(exclude={"category_l1", "category_l2", "accounting_allocations", "accounting_version", "accrual_coverage"}).items():
             setattr(existing_match, key, value)
         accounting.prepare_candidate(session, existing_match, expense_item, payload.accounting_allocations, payload.accounting_version)
         existing_match.status = MatchStatus.CANDIDATE.value
@@ -1195,7 +1153,7 @@ def create_match_candidate(
     # 银行流水归属账期仍保留在 bank_transaction.ledger_period 字段中，可追溯
     # if payload.accounting_period and bank_transaction.ledger_period and payload.accounting_period != bank_transaction.ledger_period:
     #     raise HTTPException(status_code=409, detail="Accounting period does not match bank transaction period")
-    payload_data = payload.model_dump(exclude={"category_l1", "category_l2", "accounting_allocations", "accounting_version"})
+    payload_data = payload.model_dump(exclude={"category_l1", "category_l2", "accounting_allocations", "accounting_version", "accrual_coverage"})
     payload_category_l1, payload_category_l2 = normalized_expense_category_payload(
         payload.category_l1,
         payload.category_l2,
@@ -1217,6 +1175,7 @@ def create_match_candidate(
     )
     ensure_approval_expense_category_selected(session, expense_item)
     match = ExpenseBankMatch(**payload_data, status=MatchStatus.CANDIDATE.value)
+    match.accrual_coverage_json = payload.accrual_coverage.model_dump_json() if payload.accrual_coverage else None
     accounting.prepare_candidate(session, match, expense_item, payload.accounting_allocations, payload.accounting_version)
     session.add(match)
     session.flush()
@@ -1401,16 +1360,16 @@ def list_reconciliation_candidates(
                 ApprovalTemplate.is_enabled.is_(True),
             )
         )
-        .where(ExpenseItem.source != "revenue_fee")
+        .where(ExpenseItem.source.notin_(["revenue_fee", "accrual"]))
         .where(or_(ApprovalInstance.approval_status.is_(None), ~func.lower(ApprovalInstance.approval_status).in_(["terminated", "canceled", "cancelled", "cancel", "withdrawn", "撤销", "已撤销"])))
         .where(ExpenseItem.amount > 0)
     )
     query = query.where(ExpenseItem.expense_scope == "operating")
     if not approval_search:
         query = query.where(
-            ExpenseItem.payment_status.in_(
+            or_(ApprovalInstance.id.is_not(None), ExpenseItem.payment_status.in_(
                 [ExpensePaymentStatus.UNPAID.value, ExpensePaymentStatus.PARTIAL_PAID.value]
-            )
+            ))
         )
     if template_id:
         query = query.where(ApprovalInstance.template_id == template_id)
@@ -1464,6 +1423,7 @@ def list_reconciliation_candidates(
     approval_stats = approval_expense_stats_map(
         session,
         list({approval.id for _, approval, _ in rows if approval is not None}),
+        exclude_match_id=exclude_match_id,
     )
 
     candidates_by_approval_id: dict[str, ReconciliationExpenseCandidate] = {}
@@ -1478,18 +1438,11 @@ def list_reconciliation_candidates(
             )
         )
     }
-    matched_approval_ids, matched_document_ids = matched_approval_keys(
-        session,
-        store_id=target_store_id,
-        ledger_period=None,
-        exclude_match_id=exclude_match_id,
-    )
     for expense, approval, template in rows:
-        if not approval_search and approval is not None and (
-            approval.id in matched_approval_ids
-            or approval.dingtalk_instance_id in matched_document_ids
-        ):
-            continue
+        if not approval_search and approval is not None:
+            stats = approval_stats.get(approval.id, {})
+            if approval.processing_status == "manual_matched" or Decimal(stats.get("remaining_match_amount", 0)) <= 0:
+                continue
         if (
             expense.source == "dingtalk"
             and expense.source_document_id
@@ -1500,6 +1453,8 @@ def list_reconciliation_candidates(
         if expense.id in active_expense_ids:
             continue
         remaining_expense_amount = Decimal(expense.amount) - Decimal(confirmed_amounts.get(expense.id) or 0)
+        if approval is not None:
+            remaining_expense_amount = Decimal(approval_stats.get(approval.id, {}).get("remaining_match_amount", 0))
         if remaining_expense_amount <= 0 and not approval_search:
             continue
         approval_total_amount = (
@@ -1557,6 +1512,40 @@ def list_reconciliation_candidates(
             candidates=candidates[: min(page_size, 100)],
         )
     )
+
+
+@router.get("/reconciliation/partial-approvals")
+def list_partial_approvals(
+    store_id: str,
+    keyword: str | None = None,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+):
+    ensure_permission(session, current_user, "reconciliation.view")
+    ensure_store_access(session, current_user, store_id)
+    confirmed_ids = select(ApprovalInstance.id).join(ExpenseItem, approval_expense_join_condition()).join(
+        ExpenseBankMatch, ExpenseBankMatch.expense_item_id == ExpenseItem.id).where(
+        ExpenseItem.store_id == store_id, ExpenseBankMatch.status == "confirmed",
+        ExpenseBankMatch.expense_scope == "operating", ApprovalInstance.expense_scope == "operating")
+    query = select(ApprovalInstance, ApprovalTemplate.name).options(defer(ApprovalInstance.raw_payload)).join(
+        ApprovalTemplate, ApprovalTemplate.id == ApprovalInstance.template_id).where(ApprovalInstance.id.in_(confirmed_ids))
+    if keyword and keyword.strip():
+        query = query.where(or_(ApprovalInstance.approval_no.contains(keyword.strip(), autoescape=True),
+            ApprovalInstance.applicant_name.contains(keyword.strip(), autoescape=True)))
+    rows = session.execute(query.order_by(ApprovalInstance.submit_at.desc().nullslast(), ApprovalInstance.id)).all()
+    stats = approval_expense_stats_map(session, [approval.id for approval, _ in rows])
+    partials = [(approval, name, stats[approval.id]) for approval, name in rows
+        if Decimal(stats[approval.id]["confirmed_match_amount"]) > 0 and Decimal(stats[approval.id]["remaining_match_amount"]) > 0]
+    selected = partials[(page - 1) * page_size:page * page_size]
+    items = [{"approval_id": approval.id, "approval_no": approval.approval_no or approval.dingtalk_instance_id,
+        "applicant_name": approval.applicant_name, "template_name": name, "approval_status": approval.approval_status,
+        "processing_status": "partial_matched", "total_amount": stat["total_expense_amount"],
+        "matched_amount": stat["confirmed_match_amount"], "remaining_amount": stat["remaining_match_amount"],
+        "confirmed_payment_count": stat["confirmed_payment_count"],
+        "sync_conflict_count": stat["sync_conflict_expense_item_count"]} for approval, name, stat in selected]
+    return ApiEnvelope(data={"items": items, "total": len(partials), "page": page, "page_size": page_size})
 
 
 @router.get(
@@ -1650,9 +1639,13 @@ def list_reconciliation_records(
         for current_template_id in template_ids
     }
     settled = completed_payments(session, [bank.id for _, bank, _, _, _ in rows])
+    from app.models import ApprovalChangeNotice
+    pending_approvals = set(session.execute(select(ApprovalChangeNotice.approval_id, ApprovalChangeNotice.store_id).where(
+        ApprovalChangeNotice.approval_id.in_([a.id for _, _, _, a, _ in rows if a]), ApprovalChangeNotice.status == "pending")).all())
     accounting.annotate_matches(session, [row[0] for row in rows])
     records = [
         ReconciliationRecord(
+            approval_change_pending=bool(approval and (approval.id, expense.store_id) in pending_approvals),
             match=match,
             settled_bank_transactions=settled.get(bank_transaction.id, []),
             bank_transaction=bank_transaction,
@@ -1791,11 +1784,11 @@ def unmatch_reconciliation_record(
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> ApiEnvelope[MatchRead]:
+    mutation_lock(session)
     ensure_permission(session, current_user, "reconciliation.manage")
     match = session.get(ExpenseBankMatch, match_id)
     if match is None:
         raise HTTPException(status_code=404, detail="Match not found")
-    protect_payment_bank(session, match.bank_transaction_id, matching=True)
     if match.expense_scope != "operating":
         raise HTTPException(409, "筹建记录请在筹建费用页面操作")
     if match.status != MatchStatus.CONFIRMED.value:
@@ -1813,6 +1806,8 @@ def unmatch_reconciliation_record(
     match.reason = f"{match.reason}\n解除匹配" if match.reason else "解除匹配"
 
     session.flush()
+    from app.modules.accrual_accounting import release_unmatched_coverage
+    release_unmatched_coverage(session, expense_item, audit_actor(current_user))
     refresh_bank_matched_amount(session, bank_transaction)
     refresh_expense_payment_status(session, expense_item)
     refresh_approval_processing_status(session, expense_item.approval_instance_id)
@@ -1873,6 +1868,19 @@ def confirm_match(
     match.status = MatchStatus.CONFIRMED.value
     match.confirmed_by = operator
     match.confirmed_at = utc_now()
+    if match.accrual_coverage_json:
+        from app.modules.accruals import LinkCreate, apply_link
+        from uuid import uuid4
+        approval = accounting.approval_for_item(session, expense_item)
+        if approval is None:
+            raise HTTPException(409, "计提覆盖必须关联审批单")
+        session.flush()
+        try:
+            apply_link(LinkCreate(**json.loads(match.accrual_coverage_json), approval_id=approval.id,
+                request_key=f"{match.id}:{uuid4().hex[:20]}"), session, current_user)
+        except Exception:
+            session.rollback()
+            raise
     if not match.accounting_period:
         match.accounting_period = bank_transaction.ledger_period or expense_item.ledger_period
     bank_transaction.matched_amount = confirmed_bank_amount + match.amount

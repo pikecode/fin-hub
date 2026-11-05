@@ -492,11 +492,17 @@ def unmatch(
 @router.post("/stores/{store_id}/close")
 def close(store_id: str, session: SessionDep, user: UserDep):
     authorize(session, user, "reconciliation.manage", store_id)
+    from app.modules.dividend.opening import lock_store as lock_dividend_store
+    from app.modules.dividend.coverage import validate_allocations
+
+    lock_dividend_store(session, store_id)
     state = lock_store(session, store_id)
     ensure_open(state)
     state.status = "closed"
     state.closed_at = utc_now()
     state.closed_by = audit_actor(user)
+    session.flush()
+    validate_allocations(session, store_id, check_profit=False)
     audit(session, user, "close", store_id, "筹建费用报表封账")
     session.commit()
     return ApiEnvelope(data={"status": "closed"})

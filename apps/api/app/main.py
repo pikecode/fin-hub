@@ -16,6 +16,8 @@ from app.middleware.request_logging import create_request_logging_middleware
 from app.middleware.security_headers import create_security_headers_middleware
 from app.modules.attachments.router import router as attachments_router
 from app.modules.audit.router import router as audit_router
+from app.modules.accruals import router as accrual_router
+from app.modules.approval_notices import router as approval_notices_router
 from app.modules.auth.router import router as auth_router
 from app.modules.bank.unpaid import router as bank_payment_router
 from app.modules.bank.router import router as bank_router
@@ -115,6 +117,8 @@ def create_app() -> FastAPI:
     app.include_router(health_router, prefix="/api")
     app.include_router(auth_router, prefix="/api")
     app.include_router(audit_router, prefix="/api")
+    app.include_router(accrual_router, prefix="/api")
+    app.include_router(approval_notices_router, prefix="/api")
     app.include_router(attachments_router, prefix="/api")
     app.include_router(users_router, prefix="/api")
     app.include_router(shareholder_auth_router, prefix="/api")

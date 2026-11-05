@@ -26,7 +26,11 @@ from app.models import (
     Store,
     User,
 )
-from app.modules.approvals.status import approval_expense_stats_map
+from app.modules.approvals.status import (
+    approval_expense_stats_map,
+    canonical_expense_condition,
+    canonical_expense_items,
+)
 from app.modules.auth.permissions import effective_store_ids, ensure_permission, ensure_store_access
 from app.modules.auth.router import get_optional_current_user
 from app.modules.expense_classification import (
@@ -67,7 +71,7 @@ MAJOR_EXPENSE_VOUCHER_SOURCE = "major_expense_voucher"
 
 
 def operating_expense_category_condition():
-    return (ExpenseItem.expense_scope == "operating") & ~or_(
+    return canonical_expense_condition() & (ExpenseItem.expense_scope == "operating") & ~or_(
         ExpenseItem.category_l1.in_(NON_OPERATING_EXPENSE_CATEGORY_L1),
         (ExpenseItem.category_l1 == FOOD_COST_CATEGORY_L1)
         & (ExpenseItem.category_l2 == PREPAID_FOOD_COST_CATEGORY_L2),
@@ -175,10 +179,12 @@ def build_report_summary(session: Session, ledger: Ledger, store: Store) -> Ledg
     )
     expense_rows = [
         item
-        for item in expense_rows
+        for item in canonical_expense_items(expense_rows)
         if item.expense_scope == "operating" and not is_non_operating_expense(item.category_l1, item.category_l2)
         and item.source != MAJOR_EXPENSE_VOUCHER_SOURCE
     ]
+    from app.modules.accrual_accounting import overlay_reports
+    expense_rows = overlay_reports(session, expense_rows, [ledger.store_id], ledger.period, ledger.period)
     expense_amount = sum((Decimal(item.amount) for item in expense_rows), Decimal("0.00"))
     pending_expense_count = session.scalar(
         select(func.count()).select_from(ExpenseItem).where(
@@ -239,7 +245,7 @@ def read_ledger_export_rows(
     ).all()
     expenses = session.scalars(
         select(ExpenseItem)
-        .where(ExpenseItem.expense_scope == "operating", ExpenseItem.store_id == store_id, ExpenseItem.ledger_period == period)
+        .where(canonical_expense_condition(), ExpenseItem.expense_scope == "operating", ExpenseItem.store_id == store_id, ExpenseItem.ledger_period == period)
         .order_by(ExpenseItem.expense_date.asc(), ExpenseItem.created_at.asc())
     ).all()
     bank_transactions = session.scalars(
@@ -247,13 +253,14 @@ def read_ledger_export_rows(
         .where(BankTransaction.store_id == store_id, BankTransaction.ledger_period == period)
         .order_by(BankTransaction.occurred_at.asc())
     ).all()
-    return list(revenue_records), list(expenses), list(bank_transactions)
+    from app.modules.accrual_accounting import overlay_reports
+    return list(revenue_records), overlay_reports(session, list(expenses), [store_id], period, period), list(bank_transactions)
 
 
 def export_expense_rows(expenses: list[ExpenseItem]) -> list[ExpenseItem]:
     return [
         item
-        for item in expenses
+        for item in canonical_expense_items(expenses)
         if item.expense_scope == "operating" and not is_non_operating_expense(item.category_l1, item.category_l2)
         and item.source != MAJOR_EXPENSE_VOUCHER_SOURCE
     ]
@@ -803,7 +810,7 @@ def read_financial_analytics_details(
     if not store_ids:
         return ApiEnvelope(data=FinancialAnalyticsDetailReport(title="暂无授权门店"))
 
-    expense_query = select(ExpenseItem).where(ExpenseItem.expense_scope == "operating", ExpenseItem.store_id.in_(store_ids))
+    expense_query = select(ExpenseItem).where(canonical_expense_condition(), ExpenseItem.expense_scope == "operating", ExpenseItem.store_id.in_(store_ids))
     expense_query = apply_period_range(expense_query, ExpenseItem.ledger_period, period_start, period_end)
     bank_query = select(BankTransaction).where(BankTransaction.is_archived.is_(False), BankTransaction.store_id.in_(store_ids))
     bank_query = apply_period_range(bank_query, BankTransaction.ledger_period, period_start, period_end)
@@ -870,11 +877,11 @@ def read_financial_analytics_details(
         automatic_query = apply_period_range(automatic_query, ExpenseItem.ledger_period, period_start, period_end)
         expense_ids.update(session.scalars(automatic_query))
         accounted_query = select(ExpenseItem).where(
-            ExpenseItem.id.in_(expense_ids), ExpenseItem.amount > 0,
+            ExpenseItem.id.in_(expense_ids), ExpenseItem.amount != 0,
             ExpenseItem.expense_scope == "operating",
         )
         if category_l1:
-            accounted_query = accounted_query.where(ExpenseItem.category_l1 == category_l1)
+            accounted_query = accounted_query.where(func.coalesce(func.nullif(ExpenseItem.category_l1, ""), "未分类") == category_l1)
         if category_l2:
             accounted_query = accounted_query.where(ExpenseItem.category_l2 == category_l2)
         expense_items = export_expense_rows(list(session.scalars(
@@ -883,7 +890,7 @@ def read_financial_analytics_details(
     elif detail_type == "category":
         title = "费用分类明细"
         if category_l1:
-            expense_query = expense_query.where(ExpenseItem.category_l1 == category_l1)
+            expense_query = expense_query.where(func.coalesce(func.nullif(ExpenseItem.category_l1, ""), "未分类") == category_l1)
         if category_l2:
             expense_query = expense_query.where(ExpenseItem.category_l2 == category_l2)
         expense_items = list(
@@ -954,7 +961,7 @@ def read_financial_analytics_details(
         from app.modules.matching.accounting import overlay_planned_expenses
         expense_items = overlay_planned_expenses(session, expense_items, store_ids, period_start, period_end, aggregate=True)
         if category_l1:
-            expense_items = [item for item in expense_items if item.category_l1 == category_l1]
+            expense_items = [item for item in expense_items if (item.category_l1 or "未分类") == category_l1]
         if category_l2:
             expense_items = [item for item in expense_items if item.category_l2 == category_l2]
     expense_ids = [item.id for item in expense_items]
@@ -1162,15 +1169,17 @@ def read_ledger_detail(
     detail_expenses = list(
         session.scalars(
             select(ExpenseItem)
-            .where(ExpenseItem.expense_scope == "operating", ExpenseItem.store_id == store_id, ExpenseItem.ledger_period == period)
+            .where(canonical_expense_condition(), ExpenseItem.expense_scope == "operating", ExpenseItem.store_id == store_id, ExpenseItem.ledger_period == period)
         )
     )
     detail_expenses = [
         item
-        for item in detail_expenses
+        for item in canonical_expense_items(detail_expenses)
         if item.expense_scope == "operating" and not is_non_operating_expense(item.category_l1, item.category_l2)
         and item.source != MAJOR_EXPENSE_VOUCHER_SOURCE
     ]
+    from app.modules.accrual_accounting import overlay_reports
+    detail_expenses = overlay_reports(session, detail_expenses, [store_id], period, period)
     category_buckets: dict[tuple[str, str | None], tuple[Decimal, int]] = {}
     supplier_buckets: dict[str, tuple[Decimal, int]] = {}
     for item in detail_expenses:
@@ -1199,6 +1208,7 @@ def read_ledger_detail(
             ExpenseItem.store_id == store_id,
             ExpenseItem.ledger_period == period,
             ExpenseItem.payment_status.in_(["unpaid", "partial_paid"]),
+            func.coalesce(operating_expense_category_condition(), True),
         )
         .order_by(ExpenseItem.created_at.desc())
         .limit(20)

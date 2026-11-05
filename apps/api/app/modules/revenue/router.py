@@ -378,8 +378,16 @@ def update_revenue_channel(
     channel = session.get(RevenueChannel, channel_id)
     if channel is None:
         raise HTTPException(status_code=404, detail="Revenue channel not found")
-    if channel.name == "银行结息":
-        raise HTTPException(409, "银行结息为银行直接入账渠道，不能修改或删除")
+    if channel.name == "银行结息" or (
+        channel.name == "其他收入"
+        and session.scalar(
+            select(RevenueRecord.id).where(
+                RevenueRecord.channel == channel.name,
+                RevenueRecord.is_bank_direct.is_(True),
+            ).limit(1)
+        )
+    ):
+        raise HTTPException(409, "该渠道存在银行直接入账收入，不能修改或删除")
     if channel.deleted_at is not None:
         raise HTTPException(status_code=409, detail="Revenue channel has been deleted")
 
@@ -427,8 +435,16 @@ def delete_revenue_channel(
     channel = session.get(RevenueChannel, channel_id)
     if channel is None:
         raise HTTPException(status_code=404, detail="Revenue channel not found")
-    if channel.name == "银行结息":
-        raise HTTPException(409, "银行结息为银行直接入账渠道，不能修改或删除")
+    if channel.name == "银行结息" or (
+        channel.name == "其他收入"
+        and session.scalar(
+            select(RevenueRecord.id).where(
+                RevenueRecord.channel == channel.name,
+                RevenueRecord.is_bank_direct.is_(True),
+            ).limit(1)
+        )
+    ):
+        raise HTTPException(409, "该渠道存在银行直接入账收入，不能修改或删除")
     if channel.deleted_at is not None:
         return ApiEnvelope(data={"ok": True})
     channel_name = channel.name

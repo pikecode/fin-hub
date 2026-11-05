@@ -23,6 +23,8 @@ function mergeMonths(rows: Array<DividendWorkspace["current"]>) {
     available_profit: activeRows.some((row) => row.available_profit == null) ? null : addValues(...activeRows.map((row) => row.available_profit ?? "0")),
     profit_source: "report" as const,
     net_profit: addValues(...activeRows.map((row) => row.net_profit)),
+    preopening_coverage_amount: addValues(...activeRows.map((row) => row.preopening_coverage_amount)),
+    cumulative_preopening_coverage: addValues(...activeRows.map((row) => row.cumulative_preopening_coverage)),
     distribution_amount: addValues(...activeRows.map((row) => row.distribution_amount)),
     capital_amount: addValues(...activeRows.map((row) => row.capital_amount)),
     historical_profit: addValues(...activeRows.map((row) => row.historical_profit)),
@@ -39,6 +41,7 @@ function mergeMonths(rows: Array<DividendWorkspace["current"]>) {
 }
 
 export function mergeWorkspaces(items: DividendWorkspace[], period: string): DividendWorkspace {
+  const included = items.filter((item) => !item.current.excluded_from_calculation);
   const byPeriod = new Map<string, DividendWorkspace["history"]>();
   items.forEach((item) => item.history.forEach((row) => byPeriod.set(row.period, [...(byPeriod.get(row.period) ?? []), row])));
   const history = [...byPeriod.entries()].sort(([left], [right]) => right.localeCompare(left)).map(([, rows]) => mergeMonths(rows));
@@ -60,7 +63,12 @@ export function mergeWorkspaces(items: DividendWorkspace[], period: string): Div
     funding: {
       preopening_investment: addValues(...items.filter((item) => !item.current.excluded_from_calculation).map((item) => item.funding?.preopening_investment)),
       preopening_expense_amount: addValues(...items.filter((item) => !item.current.excluded_from_calculation).map((item) => item.funding?.preopening_expense_amount)),
-      preopening_expense_override: null, preopening_expense_source: "report",
+      preopening_balance: included.some((i) => i.funding?.preopening_balance == null) ? null : addValues(...items.filter((i) => !i.current.excluded_from_calculation).map((i) => i.funding?.preopening_balance ?? "0")),
+      preopening_overrun_amount: included.some((i) => i.funding?.preopening_balance == null) ? undefined : addValues(...included.map((i) => Math.max(-Number(i.funding?.preopening_balance || 0), 0))),
+      preopening_surplus_amount: included.some((i) => i.funding?.preopening_balance == null) ? undefined : addValues(...included.map((i) => Math.max(Number(i.funding?.preopening_balance || 0), 0))),
+      preopening_profit_covered: current.cumulative_preopening_coverage,
+      preopening_uncovered: included.some((i) => i.funding?.preopening_uncovered == null) ? null : addValues(...items.filter((i) => !i.current.excluded_from_calculation).map((i) => i.funding?.preopening_uncovered ?? "0")),
+      preopening_expense_override: null, preopening_expense_source: included.some((i) => i.funding?.preopening_expense_source === "missing") ? "missing" : "report",
     },
   };
 }

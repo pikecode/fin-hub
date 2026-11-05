@@ -149,3 +149,14 @@ def test_report_expense_details_follow_confirmed_month_and_exclude_pending_rows(
     assert sum(Decimal(row['amount']) for row in rows) == Decimal('100')
     params['category_l2'] = '鸡'
     assert [row['id'] for row in client.get('/api/reports/analytics/details', params=params).json()['data']['expense_items']] == [matched.id]
+    # Historical confirmed expenses may have NULL or empty category labels.
+    params.pop('category_l2')
+    params['category_l1'] = '未分类'
+    for category in (None, ''):
+        matched.category_l1 = category
+        session.commit()
+        response = client.get('/api/reports/analytics/details', params=params)
+        assert response.status_code == 200
+        rows = response.json()['data']['expense_items']
+        assert [row['id'] for row in rows] == [matched.id]
+        assert sum(Decimal(row['amount']) for row in rows) == Decimal('50')

@@ -43,6 +43,7 @@ def opening_read(session, store_id):
                 "opening_remaining",
                 "historical_profit",
                 "historical_distribution",
+                "historical_preopening_coverage",
                 "operating_capital",
                 "version",
                 "reason",
@@ -115,6 +116,7 @@ def configured_history(session, store_id, selected_period):
         entries_by_period.setdefault(period, []).append(entry)
     total_profit = Decimal(opening.historical_profit)
     total_distribution = Decimal(opening.historical_distribution)
+    total_coverage = Decimal(opening.historical_preopening_coverage)
     total_capital = Decimal(opening.operating_capital)
     remaining = Decimal(opening.opening_remaining)
     rows = []
@@ -129,6 +131,7 @@ def configured_history(session, store_id, selected_period):
             (Decimal(entry.amount) for entry in entries if entry.entry_type == "capital"),
             Decimal(0),
         )
+        coverage = sum((Decimal(e.amount) for e in entries if e.entry_type == "preopening_coverage"), Decimal(0))
         excluded = period < opening.start_period
         profit = Decimal(profits.get(period, 0))
         if excluded and month and month.manual_net_profit is not None:
@@ -136,7 +139,8 @@ def configured_history(session, store_id, selected_period):
         available = None
         if not excluded:
             available = remaining + profit
-            remaining = available - distribution
+            remaining = available - distribution - coverage
+            total_coverage += coverage
             total_profit += profit
             total_distribution += distribution
             total_capital += capital
@@ -157,6 +161,8 @@ def configured_history(session, store_id, selected_period):
                 if excluded and month and month.manual_net_profit is not None
                 else "report",
                 distribution_amount=distribution.quantize(MONEY),
+                preopening_coverage_amount=coverage.quantize(MONEY),
+                cumulative_preopening_coverage=total_coverage.quantize(MONEY) if not excluded else Decimal("0.00"),
                 capital_amount=capital.quantize(MONEY),
                 historical_profit=total_profit.quantize(MONEY) if not excluded else Decimal("0.00"),
                 historical_distribution=total_distribution.quantize(MONEY)

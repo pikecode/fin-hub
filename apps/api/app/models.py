@@ -5,6 +5,7 @@ from uuid import uuid4
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     Date,
     DateTime,
     ForeignKey,
@@ -594,6 +595,7 @@ class ExpenseBankMatch(Base):
     amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
     accounting_allocations_json: Mapped[str | None] = mapped_column(Text)
     requested_accounting_version: Mapped[int | None] = mapped_column()
+    accrual_coverage_json: Mapped[str | None] = mapped_column(Text)
 
     @property
     def accounting_allocations(self):
@@ -915,6 +917,7 @@ class FinancialReportMonthSetting(Base):
     store_id: Mapped[str] = mapped_column(ForeignKey("stores.id"), nullable=False)
     period: Mapped[str] = mapped_column(String(7), nullable=False)
     revenue_target: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+    bank_balance_manual: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
 
 
 class DividendFundingSetting(Base):
@@ -931,6 +934,7 @@ class DividendOpeningBalance(Base):
     opening_remaining: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
     historical_profit: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
     historical_distribution: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    historical_preopening_coverage: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=0, server_default="0", nullable=False)
     operating_capital: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
     version: Mapped[int] = mapped_column(default=1, nullable=False)
     reason: Mapped[str] = mapped_column(Text, nullable=False)
@@ -953,3 +957,60 @@ class ApprovalAccountingAllocation(Base):
     approval_id: Mapped[str] = mapped_column(ForeignKey("approval_accounting_plans.approval_id"), nullable=False)
     period: Mapped[str] = mapped_column(String(7), index=True, nullable=False)
     amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+
+
+class AccrualEntry(Base):
+    __tablename__ = "accrual_entries"
+    __table_args__ = (
+        UniqueConstraint("store_id", "request_key", name="uq_accrual_request"),
+        CheckConstraint("amount > 0", name="ck_accrual_positive"),
+        CheckConstraint("(entry_type = 'accrual' AND original_id IS NULL) OR (entry_type IN ('supplement', 'reversal') AND original_id IS NOT NULL)", name="ck_accrual_original"),
+    )
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    store_id: Mapped[str] = mapped_column(ForeignKey("stores.id"), index=True)
+    period: Mapped[str] = mapped_column(String(7), index=True)
+    entry_type: Mapped[str] = mapped_column(String(20))
+    original_id: Mapped[str | None] = mapped_column(ForeignKey("accrual_entries.id"), index=True)
+    category_l1: Mapped[str] = mapped_column(String(100))
+    category_l2: Mapped[str] = mapped_column(String(100))
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2))
+    remark: Mapped[str] = mapped_column(Text)
+    request_key: Mapped[str] = mapped_column(String(64))
+    created_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
+
+
+class AccrualApprovalLink(Base):
+    __tablename__ = "accrual_approval_links"
+    __table_args__ = (
+        UniqueConstraint("request_key", name="uq_accrual_link_request"),
+        CheckConstraint("amount > 0", name="ck_accrual_link_positive"),
+    )
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    original_id: Mapped[str] = mapped_column(ForeignKey("accrual_entries.id"), index=True)
+    approval_id: Mapped[str] = mapped_column(ForeignKey("approval_instances.id"), index=True)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2))
+    whole_approval: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    remark: Mapped[str] = mapped_column(Text)
+    request_key: Mapped[str] = mapped_column(String(64))
+    created_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
+
+
+class ApprovalChangeNotice(Base):
+    __tablename__ = "approval_change_notices"
+    __table_args__ = (UniqueConstraint("approval_id", "store_id", name="uq_approval_notice_store"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    approval_id: Mapped[str] = mapped_column(ForeignKey("approval_instances.id"), index=True)
+    store_id: Mapped[str] = mapped_column(ForeignKey("stores.id"), index=True)
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    version: Mapped[int] = mapped_column(default=1)
+    before_json: Mapped[str] = mapped_column(Text)
+    after_json: Mapped[str] = mapped_column(Text)
+    changed_fields_json: Mapped[str] = mapped_column(Text)
+    periods_json: Mapped[str] = mapped_column(Text)
+    detected_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime)
+    reviewed_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+    review_note: Mapped[str | None] = mapped_column(Text)

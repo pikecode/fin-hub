@@ -1,12 +1,25 @@
 # 生产部署指南
 
-更新日期：2026-10-12。
+更新日期：2026-10-31。
+
+本文是生产部署总入口。日常发布必须先按下面的决策选择流程，再进入对应文档；不能直接调用旧部署脚本。
 
 ## 默认流程
 
 后续日常发布默认使用 [增量部署操作流程](incremental-deployment.md)：按修改范围，只更新受影响服务。前端在本地或 CI 生产构建，上传运行产物；后端依赖不变时封装代码层；静态首页直接上传；Nginx 检查后重新加载。
 
 前端弹窗、样式等小改动只更新 admin-web，不构建或重启 API；依赖、锁文件、基础镜像变化时完整构建受影响服务，见 [预构建镜像方案](prebuilt-image-deployment.md)。
+
+## 发布决策
+
+| 变更 | 唯一流程 |
+| --- | --- |
+| 前端页面、样式、交互 | [增量部署操作流程](incremental-deployment.md)，本地构建，服务器只封装并切换 `admin-web` |
+| API 代码且依赖不变 | [增量部署操作流程](incremental-deployment.md)，服务器只封装并切换 `api` |
+| 依赖、锁文件、基础镜像或构建配置 | [预构建镜像部署方案](prebuilt-image-deployment.md)，本地/CI 构建 `linux/amd64` 镜像 |
+| 数据库迁移 | 先评估备份、兼容性和回滚，再按受影响服务发布 |
+
+无论哪种流程，生产服务器都不执行源码构建、依赖安装或完整 Compose 构建。
 
 ## 生产环境
 
@@ -22,7 +35,7 @@
 
 ## 脚本适用范围
 
-scripts/deploy-prod-images.sh 用于完整预构建镜像发布，当前不是自动选择服务的增量部署脚本，它会执行全栈 Compose 操作。保留回滚镜像及其他项目资源时设置 PRUNE_OLD_IMAGES=false，镜像清理独立安排。
+scripts/deploy-prod-images.sh 仅用于完整预构建镜像发布，不是日常增量发布入口。它会执行全栈 Compose 操作；日常小改动不得使用它。完整发布时设置 `PRUNE_OLD_IMAGES=false` 保留回滚镜像，镜像清理独立安排。
 
 旧 deploy.sh、fast-deploy.sh、deploy-prod.sh 等保留作参考，不作为日常小改动默认入口。
 

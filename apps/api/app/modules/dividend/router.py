@@ -87,6 +87,7 @@ def month_read(session: Session, store: Store, month: DividendMonth, historical_
         manual_remaining_undistributed=month.manual_remaining_undistributed,
         profit_source="manual" if month.period < "2026-10" else "report",
         distribution_amount=distribution, capital_amount=capital,
+        preopening_coverage_amount=sum((Decimal(e.amount) for e in entries if e.entry_type == "preopening_coverage"), Decimal(0)),
         historical_profit=total_profit, historical_distribution=total_distribution,
         remaining_undistributed=month.manual_remaining_undistributed if month.period <= "2026-10" else None,
         cumulative_capital=total_capital, reference_ratio=month.reference_ratio,
@@ -126,16 +127,19 @@ def history_rows(session: Session, store: Store, selected_period: str, create_mi
     result: list[DividendMonthRead] = []
     total_profit = total_distribution = total_capital = Decimal("0.00")
     remaining = None
+    total_coverage = Decimal(0)
     for period in ordered:
         month = months[period]
         row = month_read(session, store, month, total_profit, total_distribution, total_capital, preloaded_entries=entries_by_month.get(month.id, []), report_profit=profits.get(period))
+        total_coverage += row.preopening_coverage_amount
+        row.cumulative_preopening_coverage = total_coverage
         if period <= "2026-10":
             row.remaining_undistributed = month.manual_remaining_undistributed
             if period == "2026-10":
                 remaining = month.manual_remaining_undistributed
         else:
             if remaining is not None:
-                remaining = (Decimal(remaining) + row.net_profit - row.distribution_amount).quantize(MONEY)
+                remaining = (Decimal(remaining) + row.net_profit - row.distribution_amount - row.preopening_coverage_amount).quantize(MONEY)
             row.remaining_undistributed = remaining
         total_profit = row.historical_profit
         total_distribution = row.historical_distribution
@@ -169,12 +173,15 @@ def read_workspace(store_id: str, period: str, session: Session = Depends(get_se
         warnings.append("尚未确认期初数据，暂沿用原有历史口径；请通过录入历史数据选择起始月份。")
     elif current.excluded_from_calculation:
         warnings.append(f"当前月份早于数据隔离月份 {opening.start_period}，记录仅供查看，不参与累计计算。")
+    funding = opening.model_dump(mode="json")
+    from app.modules.dividend.coverage import construction_metrics
+    funding.update(construction_metrics(funding, current.cumulative_preopening_coverage))
     return ApiEnvelope(data=DividendWorkspaceRead(
         store=store, period=period,
         shareholders=[DividendShareholderRead.model_validate(item) for item in shareholders],
         current=current, history=sorted(history, key=lambda item: item.period, reverse=True),
         available_periods=sorted(set(available_periods(session, store, period)) | {row.period for row in history}, reverse=True),
-        opening=opening, funding={field: opening.model_dump(mode="json")[field] for field in ("preopening_investment", "preopening_expense_override", "preopening_expense_amount", "preopening_expense_source")}, warnings=warnings,
+        opening=opening, funding={field: funding[field] for field in ("preopening_investment", "preopening_expense_override", "preopening_expense_amount", "preopening_expense_source", "preopening_balance", "preopening_profit_covered", "preopening_uncovered")}, warnings=warnings,
     ))
 
 
@@ -274,6 +281,40 @@ def update_month(store_id: str, period: str, payload: DividendMonthUpdate, sessi
                 raise HTTPException(status_code=422, detail="股东不存在或已停用")
             session.add(DividendEntry(month_id=month.id, entry_type=entry_type, shareholder_id=shareholder.id, shareholder_name=shareholder.name, holding_ratio=shareholder.holding_ratio, amount=row.amount, remark=row.remark))
         write_audit_log(session, actor=audit_actor(current_user), action=f"dividend_{entry_type}.save", resource_type="dividend_month", resource_id=month.id, summary=f"保存{period}{entry_type}：{total}")
+    if payload.preopening_coverage is not None:
+        if not opening:
+            raise HTTPException(422, "请先设置期初数据，再分配筹建超支")
+        previous = list(session.scalars(select(DividendEntry).where(
+            DividendEntry.month_id == month.id,
+            DividendEntry.entry_type == "preopening_coverage",
+        )))
+        before = [{"amount": str(row.amount), "remark": row.remark} for row in previous]
+        session.query(DividendEntry).filter(
+            DividendEntry.month_id == month.id,
+            DividendEntry.entry_type == "preopening_coverage",
+        ).delete(synchronize_session=False)
+        if payload.preopening_coverage > 0:
+            month.no_distribution = False
+            session.add(DividendEntry(
+                month_id=month.id, entry_type="preopening_coverage",
+                shareholder_name="补充筹建超支", holding_ratio=0,
+                amount=payload.preopening_coverage, remark=payload.preopening_coverage_remark,
+            ))
+        write_audit_log(
+            session, actor=audit_actor(current_user), action="dividend_preopening_coverage.save",
+            resource_type="dividend_month", resource_id=month.id,
+            summary=f"保存{period}补充筹建超支：{payload.preopening_coverage}",
+            metadata={"before": before, "amount": str(payload.preopening_coverage),
+                      "remark": payload.preopening_coverage_remark},
+        )
+    if opening and any(key in changes for key in ("distribution", "preopening_coverage")):
+        affected = session.scalar(select(DividendMonth).where(DividendMonth.store_id == store_id, DividendMonth.period > period, DividendMonth.locked.is_(True)))
+        closed = session.scalar(select(Ledger).where(Ledger.store_id == store_id, Ledger.period >= period, Ledger.status == "closed"))
+        if affected or closed:
+            raise HTTPException(409, "受影响的后续月份已锁定或账期已封账，请先解锁")
+        session.flush()
+        from app.modules.dividend.coverage import validate_allocations
+        validate_allocations(session, store_id)
     session.commit()
     return read_workspace(store_id, period, session, current_user)
 

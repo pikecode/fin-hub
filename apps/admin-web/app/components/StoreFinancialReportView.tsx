@@ -1,14 +1,14 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { Alert, Button, Card, Empty, Image, InputNumber, Modal, Space, Table, Tag, Typography, message } from "antd";
+import { Alert, Button, Card, Empty, Image, Input, InputNumber, Modal, Space, Table, Tag, Typography, message } from "antd";
 import { DownloadOutlined, EyeOutlined, FilePdfOutlined, InfoCircleOutlined, PaperClipOutlined } from "@ant-design/icons";
 import dayjs from "dayjs";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Attachment, ExpenseItem, MajorExpenseVoucher, StoreLedgerWorkspace, FinancialReportSupplement, FinancialReportAppendix } from "@fin-hub/shared-types";
 import { formatMoney, formatPeriod } from "@fin-hub/shared-utils";
-import { financialReportHtml, reportGroups } from "./financialReportPresentation";
-import { paginateFinancialReport } from "./financialReportPagination";
+import { financialReportHtml, reportGroups, reportCategorySections, reportSpecialLabels } from "./financialReportPresentation";
+import { FINANCIAL_REPORT_PDF_WIDTH_PX, paginateFinancialReport } from "./financialReportPagination";
 import { apiClient } from "../lib/api";
 
 const RevenueChannelStackChart = dynamic(
@@ -71,7 +71,16 @@ export interface StoreFinancialReportViewProps {
 
 export function StoreFinancialReportView({ storeId, period }: StoreFinancialReportViewProps) {
   const [data, setData] = useState<StoreLedgerWorkspace | null>(null);
+  const [specialRows, setSpecialRows] = useState<FinancialReportAppendix["rows"]>([]);
+  const [specialLoading, setSpecialLoading] = useState(false);
+  const [specialError, setSpecialError] = useState<string | null>(null);
   const [supplement, setSupplement] = useState<FinancialReportSupplement | null>(null);
+  const [balanceOpen, setBalanceOpen] = useState(false);
+  const [balanceValue, setBalanceValue] = useState<string | null>(null);
+  const [balanceExpected, setBalanceExpected] = useState<string | null>(null);
+  const [balanceReason, setBalanceReason] = useState("");
+  const [balanceSaving, setBalanceSaving] = useState(false);
+  const [balanceError, setBalanceError] = useState<string | null>(null);
   const [targetOpen, setTargetOpen] = useState(false);
   const [targetValue, setTargetValue] = useState<string | null>(null);
   const [targetSaving, setTargetSaving] = useState(false);
@@ -102,7 +111,7 @@ export function StoreFinancialReportView({ storeId, period }: StoreFinancialRepo
     setData(null);
     setErrorMessage(null);
     setSupplement(null);
-    setTargetOpen(false);
+    setTargetOpen(false); setBalanceOpen(false);
     Promise.all([
       apiClient.storeLedgers.report(storeId, `?period=${encodeURIComponent(period)}`),
       apiClient.reports.financialSupplement(storeId, period),
@@ -111,6 +120,16 @@ export function StoreFinancialReportView({ storeId, period }: StoreFinancialRepo
       .finally(() => { if (!ignore) setIsLoading(false); });
     return () => { ignore = true; };
   }, [period, storeId]);
+
+  useEffect(() => {
+    let ignore = false;
+    setSpecialLoading(true); setSpecialRows([]); setSpecialError(null);
+    apiClient.reports.financialAppendix(storeId, period).then(appendix => {
+      if (!ignore) setSpecialRows(appendix.rows.filter(row => row.transaction.special_type || row.transaction.direct_posting_type));
+    }).catch(error => { if (!ignore) setSpecialError(error instanceof Error ? error.message : "特殊流水加载失败"); })
+      .finally(() => { if (!ignore) setSpecialLoading(false); });
+    return () => { ignore = true; };
+  }, [storeId, period]);
 
   useEffect(() => {
     let ignore = false;
@@ -161,6 +180,18 @@ export function StoreFinancialReportView({ storeId, period }: StoreFinancialRepo
   useEffect(() => {
     setExpandedCategories(categoryRows.filter((item) => item.children?.length).map((item) => item.key));
   }, [categoryRows]);
+
+  async function saveBalance() {
+    if (balanceSaving) return;
+    if (!balanceReason.trim()) { setBalanceError("请填写录入或修改原因"); return; }
+    setBalanceSaving(true); setBalanceError(null);
+    try {
+      const extra = await apiClient.reports.updateReportBankBalance(storeId, period, balanceValue, balanceExpected, balanceReason);
+      setSupplement(current => current?.store_id === extra.store_id && current.period === extra.period ? extra : current);
+      setBalanceOpen(false); message.success("报表展示余额已保存");
+    } catch (error) { setBalanceError(error instanceof Error ? error.message : "保存失败"); }
+    finally { setBalanceSaving(false); }
+  }
 
   async function saveTarget() {
     if (targetSaving) return;
@@ -316,7 +347,7 @@ export function StoreFinancialReportView({ storeId, period }: StoreFinancialRepo
 
   function reportHtml(appendix: FinancialReportAppendix) {
     if (!data || !supplement) return null;
-    return financialReportHtml(data, supplement, appendix, categoryRows, majorExpenseVouchers);
+    return financialReportHtml(data, supplement, appendix, categoryRows, majorExpenseVouchers, window.location.origin);
   }
 
   function downloadBlob(blob: Blob, filename: string) {
@@ -357,7 +388,7 @@ export function StoreFinancialReportView({ storeId, period }: StoreFinancialRepo
       iframe.style.position = "fixed";
       iframe.style.left = "-10000px";
       iframe.style.top = "0";
-      iframe.style.width = "800px";
+      iframe.style.width = `${FINANCIAL_REPORT_PDF_WIDTH_PX + 40}px`;
       iframe.style.height = "900px";
       iframe.style.border = "0";
       document.body.appendChild(iframe);
@@ -379,7 +410,7 @@ export function StoreFinancialReportView({ storeId, period }: StoreFinancialRepo
             scale: frameDocument.documentElement.scrollHeight > 12000 ? 1.5 : 2,
             useCORS: true,
             backgroundColor: "#ffffff",
-            windowWidth: 800,
+            windowWidth: FINANCIAL_REPORT_PDF_WIDTH_PX + 40,
           },
           jsPDF: { unit: "mm", format: "a4", orientation: "portrait" },
           pagebreak: { mode: ["css", "legacy"], avoid: [".report-header", "h2", "tr", ".metric", ".chart-row"] },
@@ -494,7 +525,7 @@ export function StoreFinancialReportView({ storeId, period }: StoreFinancialRepo
 
   const detailColumns = [
     { title: "日期", dataIndex: "expense_date", width: 120, render: (value: string | null) => value || "-" },
-    { title: "费用内容", dataIndex: "description", ellipsis: true },
+    { title: "费用内容", dataIndex: "description", ellipsis: true, render: (value: string, record: ExpenseItem) => <Space>{record.source === "accrual" ? <Tag color="blue">{value.startsWith("[冲销]") ? "冲销" : value.startsWith("[补提]") ? "补提" : "计提"}</Tag> : null}<span>{value}</span>{record.source === "bank_direct" && record.source_document_id ? <Button type="link" size="small" href={`/bank?${new URLSearchParams({ store_id: storeId, ledger_period: period, transaction_id: record.source_document_id })}`}>查看原流水</Button> : null}</Space> },
     { title: "金额", dataIndex: "amount", width: 140, align: "right" as const, render: (value: string) => formatMoney(value) },
     { title: "报销凭证", dataIndex: "voucher_count", width: 220, render: (value: number | undefined, record: ExpenseItem) => renderDetailVoucherCell(value, record) },
   ];
@@ -525,6 +556,13 @@ export function StoreFinancialReportView({ storeId, period }: StoreFinancialRepo
 
   return (
     <div className="store-financial-report-view">
+      <Modal title="录入报表银行余额" open={balanceOpen} onCancel={() => !balanceSaving && setBalanceOpen(false)} onOk={() => void saveBalance()} confirmLoading={balanceSaving} cancelButtonProps={{ disabled: balanceSaving }} maskClosable={!balanceSaving} keyboard={!balanceSaving} closable={!balanceSaving} okText="保存" cancelText="取消">
+        <Typography.Paragraph>按当前门店、当前月份维护报表展示余额，页面及 HTML / PDF 同步使用。银行流水页面的真实余额计算不受影响。</Typography.Paragraph>
+        <Typography.Paragraph type="secondary">清空表示待录入，0 表示确认余额为零；负数可用于透支余额。</Typography.Paragraph>
+        {balanceError ? <Alert showIcon type="error" message={balanceError} style={{ marginBottom: 16 }} /> : null}
+        <InputNumber stringMode min="-999999999999.99" max="999999999999.99" precision={2} value={balanceValue} onChange={value => setBalanceValue(value == null ? null : String(value))} disabled={balanceSaving} addonAfter="元" style={{ width: "100%", marginBottom: 16 }} />
+        <Input.TextArea maxLength={1000} disabled={balanceSaving} value={balanceReason} onChange={event => setBalanceReason(event.target.value)} placeholder="必填：录入或修改原因" />
+      </Modal>
       <Modal title="设置本月业绩目标" open={targetOpen} onCancel={() => { if (!targetSaving) setTargetOpen(false); }} onOk={() => void saveTarget()} confirmLoading={targetSaving} cancelButtonProps={{ disabled: targetSaving }} maskClosable={!targetSaving} keyboard={!targetSaving} closable={!targetSaving} okText="保存" cancelText="取消">
         <Typography.Paragraph type="secondary">按当前门店、当前月份维护；清空表示未录入，目标为 0 时不计算完成率。</Typography.Paragraph>
         {targetError ? <Alert showIcon type="error" message={targetError} style={{ marginBottom: 16 }} /> : null}
@@ -532,9 +570,9 @@ export function StoreFinancialReportView({ storeId, period }: StoreFinancialRepo
       </Modal>
       {errorMessage ? <Alert type="error" showIcon message="报表加载失败" description={errorMessage} /> : null}
       {isLoading ? <div className="store-financial-report__loading"><Card loading /><Card loading /></div> : data && metrics && stats && supplement ? <>
-        <div className="store-financial-report__hero"><div><Typography.Text className="store-financial-report__eyebrow">门店财务报表 · {formatPeriod(data.period)}</Typography.Text><Typography.Title level={2}>经营全景</Typography.Title><Typography.Text type="secondary">收入按录入日期统计，支出按入账月份统计，门店预充值已排除。</Typography.Text></div><div className="store-financial-report__hero-actions"><Tag color={data.selected_ledger?.status === "closed" ? "green" : "gold"}>{data.selected_ledger?.status === "closed" ? "已封账" : "进行中"}</Tag><Button icon={<DownloadOutlined />} loading={isHtmlExporting} disabled={isMajorExpenseVoucherLoading || isPdfExporting} onClick={() => void exportHtml()}>导出 HTML</Button><Button type="primary" icon={<FilePdfOutlined />} loading={isPdfExporting} disabled={isMajorExpenseVoucherLoading || isHtmlExporting} onClick={() => void exportPdf()}>导出 PDF</Button></div></div>
+        <div className="store-financial-report__hero"><div><Typography.Text className="store-financial-report__eyebrow">门店财务报表 · {formatPeriod(data.period)}</Typography.Text><Typography.Title level={2}>经营全景</Typography.Title><Typography.Text type="secondary">收入按录入日期统计，支出按入账月份统计，门店预充值、备用金/借款及异常费用不计入经营支出。</Typography.Text></div><div className="store-financial-report__hero-actions"><Tag color={data.selected_ledger?.status === "closed" ? "green" : "gold"}>{data.selected_ledger?.status === "closed" ? "已封账" : "进行中"}</Tag><Button icon={<DownloadOutlined />} loading={isHtmlExporting} disabled={isMajorExpenseVoucherLoading || isPdfExporting} onClick={() => void exportHtml()}>导出 HTML</Button><Button type="primary" icon={<FilePdfOutlined />} loading={isPdfExporting} disabled={isMajorExpenseVoucherLoading || isHtmlExporting} onClick={() => void exportPdf()}>导出 PDF</Button></div></div>
         {reportGroups(data, supplement).map((group) => <Card key={group.title} className={`report-summary report-summary--${group.title === "门店支出" ? "expense" : "default"}`} title={group.title}
-          extra={group.title === "门店营收" ? <Button type="link" disabled={data.selected_ledger?.status === "closed"} onClick={() => { setTargetValue(supplement.revenue_target); setTargetError(null); setTargetOpen(true); }}>设置业绩目标</Button> : undefined}>
+          extra={group.title === "门店营收" ? <Button type="link" disabled={data.selected_ledger?.status === "closed"} onClick={() => { setTargetValue(supplement.revenue_target); setTargetError(null); setTargetOpen(true); }}>设置业绩目标</Button> : group.title === "资金流情况" ? <Button type="link" disabled={data.selected_ledger?.status === "closed"} onClick={() => { setBalanceValue(supplement.bank_balance.amount); setBalanceExpected(supplement.bank_balance.amount); setBalanceReason(""); setBalanceError(null); setBalanceOpen(true); }}>录入报表余额</Button> : undefined}>
           <div className={`report-summary__grid report-summary__grid--${group.items.length}`}>
             {group.items.map((item) => <div key={item.title} className={`report-summary__metric ${item.tone ? `report-summary__metric--${item.tone}` : ""}`}>
               <Typography.Text type="secondary">{item.title}</Typography.Text>
@@ -546,7 +584,21 @@ export function StoreFinancialReportView({ storeId, period }: StoreFinancialRepo
         <div className="store-financial-report__grid"><Card title="营业收入渠道"><RevenueChannelStackChart data={metrics.revenue_channel_summary} height={330} /></Card><Card title="核心成本率结构"><div className="store-financial-report__cost-list">{[["食材成本", metrics.food_cost_amount, metrics.food_cost_rate], ["人工成本", metrics.labor_cost_amount, metrics.labor_cost_rate], ["租金成本", metrics.rent_cost_amount, metrics.rent_cost_rate]].map(([name, amount, rate]) => <div className="store-financial-report__cost-item" key={String(name)}><div><Typography.Text strong>{name}</Typography.Text><Typography.Text type="secondary">{formatMoney(String(amount))}</Typography.Text></div><div className="store-financial-report__bar"><span style={{ width: `${Math.min(Number(rate || 0), 100)}%` }} /></div><Typography.Text type="secondary">{rate == null ? "/" : `${rate}%`}</Typography.Text></div>)}</div></Card></div>
         <Card title="各渠道经营收入明细" className="store-financial-report__category-card"><Table rowKey="channel" size="middle" pagination={false} dataSource={[...metrics.revenue_channel_summary].sort((a, b) => Number(b.gross_amount) - Number(a.gross_amount))} columns={[{ title: "收入渠道", dataIndex: "channel" }, { title: "经营收入", dataIndex: "gross_amount", align: "right" as const, render: (value: string) => `${formatMoney(value)}` }, { title: "实收", dataIndex: "net_amount", align: "right" as const, render: (value: string) => formatMoney(value) }, { title: "手续费", dataIndex: "fee_amount", align: "right" as const, render: (value: string) => `${formatMoney(value)}` }, { title: "手续费率", dataIndex: "fee_rate", align: "right" as const, render: (value: string) => `${value}%` }, { title: "收入占比", align: "right" as const, render: (_value: unknown, record) => ratio(Number(record.gross_amount), stats.income) }]} /></Card>
         <div className="store-financial-report__grid"><ExpenseCategoryBarChart title="支出分类排行" data={categoryRows.map((item) => ({ name: item.name, value: Number(item.amount) }))} height={330} /><Card title="核心食材"><div className="store-financial-report__food-grid">{[["鸡肉", metrics.chicken_cost_amount, metrics.chicken_cost_rate], ["菌子", metrics.mushroom_cost_amount, metrics.mushroom_cost_rate]].map(([name, amount, rate]) => <div className="store-financial-report__food-card" key={String(name)}><Typography.Text type="secondary">{name}支出</Typography.Text><Typography.Title level={3}>{formatMoney(String(amount))}</Typography.Title><div className="store-financial-report__food-bar"><span style={{ width: `${Math.min(Number(rate || 0), 100)}%` }} /></div><Tag color="blue">占营业收入 {rate == null ? "/" : `${rate}%`}</Tag></div>)}</div></Card></div>
-        <Card title="各类别支出统计" className="store-financial-report__category-card"><Table rowKey="key" size="middle" columns={[{ title: "费用分类", dataIndex: "name", render: (value: string, record: CategoryRow) => <Button type="link" onClick={() => void openCategoryDetail(record)}>{value}</Button> }, { title: "金额", dataIndex: "amount", align: "right" as const, render: (value: string) => `${formatMoney(value)}` }, { title: "占营业收入", dataIndex: "revenue_share", align: "right" as const }, { title: "占总支出", dataIndex: "share", align: "right" as const }, { title: "条数", dataIndex: "item_count", align: "right" as const, width: 90 }]} dataSource={categoryRows} expandable={{ childrenColumnName: "children", expandedRowKeys: expandedCategories, onExpandedRowsChange: (keys) => setExpandedCategories(keys.map(String)), onExpand: (_expanded, record) => { if (!record.children?.length) void openCategoryDetail(record); } }} pagination={false} /></Card>
+        <Card title="各类别支出统计" className="store-financial-report__category-card">{reportCategorySections(categoryRows, metrics.expense_amount, metrics.food_cost_amount).map(section => <section key={section.title} style={{ marginBottom: 20 }}><Typography.Title level={5}>{section.title} · {formatMoney(section.amount)}</Typography.Title><Table rowKey="key" size="middle" columns={[{ title: "费用分类", dataIndex: "name", render: (value: string, record: CategoryRow) => <Button type="link" onClick={() => void openCategoryDetail(record)}>{value}</Button> }, { title: "金额", dataIndex: "amount", align: "right" as const, render: (value: string) => `${formatMoney(value)}` }, { title: "占营业收入", dataIndex: "revenue_share", align: "right" as const }, { title: "占总支出", dataIndex: "share", align: "right" as const }, { title: "条数", dataIndex: "item_count", align: "right" as const, width: 90 }]} dataSource={section.rows} expandable={{ childrenColumnName: "children", expandedRowKeys: expandedCategories, onExpandedRowsChange: (keys) => setExpandedCategories(keys.map(String)), onExpand: (_expanded, record) => { if (!record.children?.length) void openCategoryDetail(record); } }} pagination={false} /></section>)}</Card>
+        <Card title="特殊流水" style={{ marginTop: 16, marginBottom: 16 }}>
+          <Typography.Paragraph type="secondary">展示特殊属性及直接入账流水，是否计入利润沿用各流水入账规则，此处不重复累计。</Typography.Paragraph>
+          {specialError ? <Alert type="error" showIcon message={specialError} /> : <Table rowKey={row => row.transaction.id} loading={specialLoading} dataSource={specialRows} size="small" pagination={{ pageSize: 10 }} scroll={{ x: 1200 }} columns={[
+            { title: "日期", render: (_, row) => dayjs(row.transaction.occurred_at).format("YYYY-MM-DD") },
+            { title: "所属账期", render: (_, row) => row.transaction.ledger_period },
+            { title: "入账月份", render: (_, row) => row.transaction.direct_posting_type ? <Space>{row.transaction.occurred_at.slice(0, 7)}{row.transaction.ledger_period !== row.transaction.occurred_at.slice(0, 7) ? <Tag color="orange">跨期</Tag> : null}</Space> : "以对账记录为准" },
+            { title: "流水属性", render: (_, row) => reportSpecialLabels[row.transaction.direct_posting_type || row.transaction.special_type || ""] || row.transaction.special_type || "其他" },
+            { title: "方向", render: (_, row) => row.transaction.direction === "income" ? "收入" : "支出" },
+            { title: "金额", align: "right", render: (_, row) => formatMoney(row.transaction.amount) },
+            { title: "对方户名", render: (_, row) => row.transaction.counterparty_name || "—" },
+            { title: "备注", render: (_, row) => row.transaction.summary || "—" },
+            { title: "来源", render: (_, row) => <Button type="link" href={`/bank?${new URLSearchParams({ store_id: storeId, ledger_period: period, transaction_id: row.transaction.id })}`}>查看流水</Button> },
+          ]} />}
+        </Card>
         <Card
           className="store-financial-report__major-voucher-card"
           title="主要支出凭证"

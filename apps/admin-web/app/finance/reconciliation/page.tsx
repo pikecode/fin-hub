@@ -1,5 +1,10 @@
 "use client";
 
+import { AccrualManagement } from "../../components/AccrualManagement";
+import { AccrualCoverageFields } from "../../components/AccrualCoverageFields";
+import { ApprovalChangeNoticePanel } from "../../components/ApprovalChangeNoticePanel";
+import { PartialApprovalList } from "../../components/PartialApprovalList";
+
 import { ApprovalAccountingFields, accountingPayload, type AccountingFormValues } from "../../components/ApprovalAccountingFields";
 
 import {
@@ -81,6 +86,11 @@ interface CandidateFilters {
 }
 
 interface ConfirmValues extends AccountingFormValues {
+  accrual_enabled?: boolean;
+  accrual_original_id?: string;
+  accrual_amount?: string;
+  accrual_remark?: string;
+  accrual_confirm_category_difference?: boolean;
   amount?: string;
   accounting_month?: dayjs.Dayjs;
   bank_occurred?: boolean;
@@ -420,7 +430,7 @@ export default function FinanceReconciliationPage() {
     [candidates, candidatePage, candidatePageSize],
   );
   const bankRemaining = selectedTransaction ? remainingAmount(selectedTransaction) : 0;
-  const defaultMatchAmount = bankRemaining;
+  const defaultMatchAmount = selectedCandidate ? Math.min(bankRemaining, Number(selectedCandidate.remaining_amount || 0)) : bankRemaining;
   const fallbackLedgerPeriod = useMemo(() => defaultLedgerPeriod(), []);
   const selectedLedgerPeriod = initialLedgerPeriod ?? fallbackLedgerPeriod;
   const selectedLedger = selectedStoreId ? ledgersByKey.get(`${selectedStoreId}|${selectedLedgerPeriod}`) : undefined;
@@ -890,6 +900,13 @@ export default function FinanceReconciliationPage() {
   }, []);
 
   useEffect(() => {
+    if (selectedStoreId) void loadStoreWorkspace(selectedStoreId);
+    const refresh = () => { if (selectedStoreId) void loadStoreWorkspace(selectedStoreId); };
+    window.addEventListener("focus", refresh);
+    return () => window.removeEventListener("focus", refresh);
+  }, [selectedStoreId, selectedLedgerPeriod]);
+
+  useEffect(() => {
     if (initialStoreId) setSelectedStoreId(initialStoreId);
   }, [initialStoreId]);
 
@@ -955,7 +972,7 @@ export default function FinanceReconciliationPage() {
     if (!selectedStoreId) return;
     setSelectedTransaction(transaction);
     setCandidatePage(1);
-    await loadCandidates(transaction, selectedStoreId, {});
+    await loadCandidates(transaction, selectedStoreId, filterForm.getFieldsValue());
 
     // 🚀 预加载下两笔流水的候选匹配
     preloadNextTransactions(transaction);
@@ -1244,6 +1261,7 @@ export default function FinanceReconciliationPage() {
       const categoryPath = confirmCategoryPathForExpenseItem(selectedExpenseItem);
       const categoryPayload = categoryPayloadFromPath(categoryPath);
       const match = await apiClient.matches.create({
+        accrual_coverage: values.accrual_enabled ? { original_id: values.accrual_original_id!, amount: values.accrual_amount!, remark: values.accrual_remark!, confirm_category_difference: !!values.accrual_confirm_category_difference } : undefined,
         bank_transaction_id: selectedTransaction.id,
         expense_item_id: selectedExpenseItem.id,
         amount: values.amount || defaultMatchAmount.toFixed(2),
@@ -1402,6 +1420,9 @@ export default function FinanceReconciliationPage() {
             </Typography.Link>
             <Tag color="blue">{record.template_name || "手工支出"}</Tag>
             <Tag>{record.approval_instance?.approval_status || record.match.status}</Tag>
+            {record.approval_instance && Number(record.approval_instance.confirmed_match_amount) > 0 ? <Tag color={Number(record.approval_instance.confirmed_match_amount) < Number(record.approval_instance.total_expense_amount) ? "orange" : "green"}>{Number(record.approval_instance.confirmed_match_amount) < Number(record.approval_instance.total_expense_amount) ? "审批未匹配满" : "审批已匹配完全"}</Tag> : null}
+            {record.approval_change_pending ? <Tag color="red">审批已变更 · 待核对报表</Tag> : null}
+            {Number(record.match.accrual_covered_amount || 0) > 0 ? <Tag color="purple">审批已计提覆盖 {formatMoney(record.match.accrual_covered_amount!)}（审批级）</Tag> : null}
           </Space>
           <Typography.Text ellipsis>{record.expense_item.description}</Typography.Text>
           <Space size={[10, 4]} wrap>
@@ -1423,7 +1444,7 @@ export default function FinanceReconciliationPage() {
           <Button size="small" onClick={() => setDetailRecord(record)}>明细</Button>
           <Button size="small" disabled={Boolean(record.settled_bank_transactions?.length)} onClick={() => openEdit(record)}>编辑</Button>
           <Popconfirm title="解除匹配关系？" okText="解除" cancelText="取消" onConfirm={() => unmatch(record)}>
-            <Button size="small" danger disabled={Boolean(record.settled_bank_transactions?.length)}>解除</Button>
+            <Button size="small" danger>解除</Button>
           </Popconfirm>
         </Space>
       ),
@@ -1768,6 +1789,7 @@ export default function FinanceReconciliationPage() {
         />
       ) : null}
       {errorMessage ? <Alert className="dashboard-alert" type="warning" showIcon message={errorMessage} closable onClose={() => setErrorMessage(null)} /> : null}
+      {selectedStoreId ? <ApprovalChangeNoticePanel storeId={selectedStoreId} onReviewed={() => loadReconciliationRecords(selectedStoreId)} /> : null}
 
       {!initialStoreId ? (
         <Card className="reconciliation-summary-card">
@@ -2082,12 +2104,12 @@ export default function FinanceReconciliationPage() {
         items={[
           {
             key: "workbench",
-            label: `银行流水 (${transactions.length})`,
+            label: `银行流水对账 (${transactions.length})`,
             children: activeTabKey === "workbench" ? (
               <Splitter className="reconciliation-workbench">
                 <Splitter.Panel defaultSize="34%" min="300px">
                   <Card
-                    title="银行流水"
+                    title={<Space>银行流水<Tag>当前门店 · 不限制账期</Tag></Space>}
                     className="data-table-card bank-transaction-panel"
                     extra={<Typography.Text type="secondary">共 {transactions.length} 条</Typography.Text>}
 	                  >
@@ -2110,7 +2132,6 @@ export default function FinanceReconciliationPage() {
 	                                <span className="bank-transaction-card__meta">
 	                                  <Typography.Text strong>{dayjs(transaction.occurred_at).format("YYYY-MM-DD")}</Typography.Text>
 	                                  <Tag color="orange">支出</Tag>
-	                                  {transaction.ledger_period ? <Tag>{transaction.ledger_period}</Tag> : null}
 	                                  {isFullyMatched ? <Tag color="green">已匹配</Tag> : <Tag>待匹配</Tag>}
 	                                </span>
                                 {transaction.counterparty_name && (
@@ -2246,6 +2267,7 @@ export default function FinanceReconciliationPage() {
                                 <div className="approval-candidate-card__aside">
                                   <Typography.Text className="approval-candidate-card__amount">{formatMoney(approvalTotalAmount(candidate))}</Typography.Text>
                                   <Typography.Text type="secondary">审批单总额</Typography.Text>
+                                  {Number(candidate.approval_instance?.confirmed_match_amount || 0) > 0 ? <Typography.Text type="warning">已匹配 {formatMoney(candidate.approval_instance!.confirmed_match_amount)} · 剩余 {formatMoney(candidate.remaining_amount)}</Typography.Text> : null}
                                   <Button
                                     size="small"
                                     type="primary"
@@ -2323,6 +2345,12 @@ export default function FinanceReconciliationPage() {
               </Card>
             ) : null,
           },
+          { key: "accruals", label: "计提与调整", children: activeTabKey === "accruals" && selectedStoreId ? <AccrualManagement storeId={selectedStoreId} period={selectedLedgerPeriod} onChanged={() => loadStoreWorkspace(selectedStoreId)} /> : null },
+          { key: "partial-approvals", label: "未匹配满审批单", children: activeTabKey === "partial-approvals" && selectedStoreId ? <PartialApprovalList key={selectedStoreId} storeId={selectedStoreId} onContinue={approvalNo => {
+            filterForm.setFieldsValue({ approval_no: approvalNo, template_id: undefined });
+            setActiveTabKey("workbench");
+            void loadCandidates(selectedTransaction, selectedStoreId, { approval_no: approvalNo });
+          }} /> : null },
         ]}
       />
       )}
@@ -2539,6 +2567,7 @@ export default function FinanceReconciliationPage() {
           </div>
           <div className="reconciliation-confirm-fields">
             <ApprovalAccountingFields approvalTotal={confirmPlan.total} configured={confirmPlan.configured} allowMultiple={Boolean(selectedCandidate?.approval_instance?.id)} disabled={isSaving || isExpenseItemsLoading} />
+            {selectedStoreId && selectedCandidate?.approval_instance?.id ? <AccrualCoverageFields storeId={selectedStoreId} /> : null}
             <Form.Item name="amount" label="匹配金额" rules={[{ required: true, message: "请输入匹配金额" }]}>
               <Input disabled />
             </Form.Item>

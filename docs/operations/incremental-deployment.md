@@ -1,10 +1,26 @@
 # 增量部署操作流程
 
-更新日期：2026-10-12。后续日常小改动默认按本文发布，只更新受影响服务。
+更新日期：2026-10-31。后续日常小改动默认按本文发布，只更新受影响服务。
+
+## 发布硬性规则
+
+- 生产服务器禁止执行 `pnpm install`、`pnpm build`、`docker compose build` 或任何 Next.js 构建。
+- 服务器只执行轻量镜像封装、目标服务切换和健康检查。
+- 发布前必须确认 SSH、HTTP、磁盘和内存正常；任一检查失败立即停止，不上传产物。
+- 前端产物必须排除 `.next/cache`，禁止上传 `node_modules`、源码压缩包或完整工作区。
+- 前端小改动只重启 `admin-web`，禁止全栈 `docker compose up -d`。
+- 发布失败先回滚目标服务，再清理临时文件；保留旧镜像用于回滚。
 
 ## 1. 判断范围与基线
 
 检查 `git status --short`、`git diff --stat` 和具体差异。纳入上次尚未部署的修改、共享包、新增、删除和重命名文件，不能只看当前需求。
+
+发布前先做资源预检。服务器无法及时响应 SSH 或 HTTP 时立即停止，通过云控制台恢复，不继续上传或构建：
+
+```sh
+ssh fin-hub-server 'set -e; uptime; free -h; df -h /; docker ps --format "{{.Names}} {{.Status}}"'
+curl -fsS --max-time 10 https://fin.moshuo.fun/api/health
+```
 
 | 修改范围 | 发布方式 |
 | --- | --- |
@@ -81,6 +97,14 @@ COPY shared-api-client-dist /repo/packages/shared-api-client/dist
 ```
 
 先删除旧 `.next` 再完整替换，防止 chunk 与构建版本混用。服务器 docker build 只做 COPY/轻量封装，不执行 pnpm build。生成镜像后仅更新 ADMIN_WEB_IMAGE 和 admin-web。
+
+目标服务切换时保留旧镜像，不执行全局镜像清理：
+
+```sh
+docker compose --env-file /opt/fin-hub/.env.production \
+  -f /opt/fin-hub/infra/docker/docker-compose.prod.images.yml \
+  up -d --no-deps admin-web
+```
 
 ## 3. 后端、静态页与 Nginx
 

@@ -566,7 +566,9 @@ def test_store_ledger_workspace_calculates_gross_profit_from_food_cost(
     category_names = [item["name"] for item in workspace["metrics"]["expense_category_summary"]]
     assert "食材成本 / 肉类" in category_names
     assert "运营支出 / 物料采购" in category_names
-    assert "未分类" not in category_names
+    assert "未分类" in category_names
+    assert {item["name"]: item["amount"] for item in workspace["metrics"]["expense_category_summary"]}["未分类"] == "80.00"
+    assert sum(Decimal(item["amount"]) for item in workspace["metrics"]["expense_category_summary"]) == Decimal(workspace["metrics"]["expense_amount"])
     assert_batch_profit_matches_monthly(session, store_id)
 
 

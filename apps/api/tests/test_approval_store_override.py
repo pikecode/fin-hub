@@ -202,3 +202,51 @@ def test_only_admin_can_correct_store(session):
     with pytest.raises(HTTPException) as error:
         change_approval_store(session, SimpleNamespace(role="viewer"), "unknown", "unknown", "更正")
     assert error.value.status_code == 403
+
+
+def test_store_issue_filter_detects_source_and_expense_mismatch_and_clears_after_correction(client, session):
+    old, target, template, job, raw, instance, item = setup(session)
+    endpoint = "/api/dingtalk/approval-instances"
+    params = {"store_issue_only": "true", "compact": "true", "page_size": 1}
+    assert client.get(endpoint, params=params).json()["data"]["total"] == 0
+    # Source form says old store, while both persisted records say another store.
+    instance.store_id = target.id
+    item.store_id = target.id
+    session.commit()
+    response = client.get(endpoint, params=params)
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["total"] == 1 and data["items"][0]["id"] == instance.id
+    assert "来源门店" in data["items"][0]["store_issue"]
+    assert client.get(endpoint, params={**params, "store_id": old.id}).json()["data"]["total"] == 0
+    assert client.get(endpoint, params={**params, "keyword": "CORRECTION"}).json()["data"]["total"] == 1
+    response = client.patch(f"{endpoint}/{instance.id}/store", json={"store_id": target.id, "reason": "人工确认目标门店"})
+    assert response.status_code == 200, response.text
+    # An intentional manual override must not be flagged just because source differs.
+    assert client.get(endpoint, params=params).json()["data"]["total"] == 0
+    item.store_id = old.id
+    session.commit()
+    response = client.get(endpoint, params=params)
+    assert "费用明细" in response.json()["data"]["items"][0]["store_issue"]
+    # Reads must never repair or mutate persisted assignments.
+    session.refresh(item)
+    assert item.store_id == old.id
+
+
+def test_store_issue_filter_missing_and_unresolved_source(client, session):
+    old, target, template, job, raw, instance, item = setup(session)
+    instance.store_id = None
+    session.commit()
+    params = {"store_issue_only": "true", "page_size": 1, "page": 1}
+    endpoint = "/api/dingtalk/approval-instances"
+    data = client.get(endpoint, params=params).json()["data"]
+    assert data["total"] == 1 and "未关联有效门店" in data["items"][0]["store_issue"]
+    instance.store_id = old.id
+    raw["form_component_values"][0]["value"] = "待确认的未知门店"
+    instance.raw_payload = json.dumps(raw, ensure_ascii=False)
+    session.commit()
+    data = client.get(endpoint, params=params).json()["data"]
+    assert data["total"] == 1 and "来源门店无法识别" in data["items"][0]["store_issue"]
+    assert client.get(endpoint, params={**params, "page": 2}).json()["data"]["items"] == []
+    # Default listing remains available and includes the original record.
+    assert client.get(endpoint).json()["data"]["total"] == 1

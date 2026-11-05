@@ -1,6 +1,6 @@
 # 交付验收与发布检查
 
-生成时间：2026-08-29
+生成时间：2026-10-31
 
 ## 一键验收脚本
 
@@ -28,8 +28,8 @@ scripts/preflight.sh --smoke
 
 `--smoke` 依赖已启动的服务：
 
-- `API_BASE_URL`，默认 `http://localhost:8000`。
-- `ADMIN_BASE_URL`，默认 `http://localhost:3000`。
+- `API_BASE_URL`，默认 `http://localhost:8057`。
+- `ADMIN_BASE_URL`，默认 `http://localhost:3077`。
 
 冒烟检查：
 

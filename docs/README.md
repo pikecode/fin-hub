@@ -4,6 +4,8 @@
 
 ## 必读入口
 
+- [项目修改记录](CHANGELOG.md)
+- [修改记录规范](operations/change-recording.md)
 - [生产部署指南](operations/production-deployment.md)
 - [增量部署操作流程（后续默认）](operations/incremental-deployment.md)
 - [交付验收与发布检查](operations/preflight-and-release-checklist.md)
@@ -26,6 +28,14 @@
 - [架构与交互规划](architecture/fin-hub-architecture-interaction-plan.md)
 
 ### 功能与实现
+
+- [2026-11-04 财务需求汇总与核对](2026-11-04-finance-requirements-review.md)
+
+- [分红管理与筹建超支分配](2026-11-03-dividend-preopening-allocation.md)
+
+- [已对账审批变更提醒](2026-11-03-reconciled-approval-change-notices.md)
+
+- [门店计提、补提与冲销设计及实施状态](2026-11-03-accrual-and-reversal-design.md)
 
 - [门店筹建费用开发实施计划](2026-10-04-store-preopening-expense-implementation-plan.md)
 - [门店筹建费用需求分析与设计（评审稿）](2026-10-04-store-preopening-expense-requirements-design.md)

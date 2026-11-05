@@ -755,6 +755,7 @@ export function createApiClient(options: ApiClientOptions) {
     },
     reports: {
       financialSupplement: (storeId: string, period: string) => request<FinancialReportSupplement>(`/api/reports/financial-supplement?store_id=${encodeURIComponent(storeId)}&period=${encodeURIComponent(period)}`),
+      updateReportBankBalance: (storeId: string, period: string, amount: string | null, expected: string | null, reason: string) => request<FinancialReportSupplement>(`/api/reports/financial-bank-balance?store_id=${encodeURIComponent(storeId)}&period=${encodeURIComponent(period)}`, { method: "PATCH", body: JSON.stringify({ amount, expected, reason }) }),
       updateFinancialTarget: (storeId: string, period: string, revenueTarget: string | null) => request<FinancialReportSupplement>(`/api/reports/financial-target?store_id=${encodeURIComponent(storeId)}&period=${encodeURIComponent(period)}`, { method: "PATCH", body: JSON.stringify({ revenue_target: revenueTarget }) }),
       financialAppendix: (storeId: string, period: string) => request<FinancialReportAppendix>(`/api/reports/financial-appendix?store_id=${encodeURIComponent(storeId)}&period=${encodeURIComponent(period)}`),
       analytics: (params = "") => request<FinancialAnalyticsReport>(`/api/reports/analytics${params}`),
@@ -795,7 +796,7 @@ export function createApiClient(options: ApiClientOptions) {
         request<DividendShareholder>("/api/dividends/shareholders", { method: "POST", body: JSON.stringify(payload) }),
       updateShareholder: (id: string, payload: Partial<Pick<DividendShareholder, "name" | "holding_ratio" | "status" | "remark">>) =>
         request<DividendShareholder>(`/api/dividends/shareholders/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
-      updateMonth: (storeId: string, period: string, payload: { manual_net_profit?: string; manual_remaining_undistributed?: string; reference_ratio?: string; distribution?: Array<{ shareholder_id: string; amount: string; remark?: string }>; capital?: Array<{ shareholder_id: string; amount: string; remark?: string }>; no_distribution?: boolean; no_capital?: boolean }) =>
+      updateMonth: (storeId: string, period: string, payload: { preopening_coverage?: string; preopening_coverage_remark?: string; manual_net_profit?: string; manual_remaining_undistributed?: string; reference_ratio?: string; distribution?: Array<{ shareholder_id: string; amount: string; remark?: string }>; capital?: Array<{ shareholder_id: string; amount: string; remark?: string }>; no_distribution?: boolean; no_capital?: boolean }) =>
         request<DividendWorkspace>(`/api/dividends/months/${encodeURIComponent(storeId)}/${encodeURIComponent(period)}`, { method: "PUT", body: JSON.stringify(payload) }),
       lockMonth: (storeId: string, period: string) =>
         request<DividendWorkspace>(`/api/dividends/months/${encodeURIComponent(storeId)}/${encodeURIComponent(period)}/lock`, { method: "POST" }),

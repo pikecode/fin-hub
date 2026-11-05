@@ -184,6 +184,7 @@ export default function CategoriesPage() {
           )}
           {isRevenueFeeCategory(record) ? <StatusBadge status="warning" text="渠道关联" /> : null}
           {isProtectedFirstLevelCategory(record) ? <StatusBadge status="warning" text="毛利口径" /> : null}
+          {(record.parent_id ? categoryById.get(record.parent_id)?.name : record.name) === "异常费用" ? <Tooltip title="已审批但实际无需支付的费用，保留审批记录，不计入经营支出和利润计算"><StatusBadge status="info" text="不计入报表" /></Tooltip> : null}
         </Space>
       ),
     },

@@ -2,6 +2,8 @@
 
 > 日常小改动默认使用 [增量部署操作流程](incremental-deployment.md)。本页用于依赖或基础镜像变化等完整构建场景，现有脚本不会自动选择受影响服务。
 
+只有在增量覆盖层无法完整表达变更时才使用本文。本文的构建发生在本地或 CI，服务器只执行 `docker load`、镜像切换和验收；不要在服务器执行 `docker compose build`。
+
 当前生产服务器资源有限，不适合在服务器上执行 `docker compose build`。尤其是 `admin-web` 的 Next.js 生产构建会下载 Node 依赖、构建页面、执行 lint/typecheck，容易把 SSH 和 HTTP 一起拖慢甚至卡死。
 
 新的部署方式把发布拆成两步：
@@ -31,10 +33,17 @@ scp reports/deploy/fin-hub-images-<tag>.tar fin-hub-server:/opt/fin-hub/
 scp reports/deploy/fin-hub-images-<tag>.env fin-hub-server:/opt/fin-hub/
 ```
 
-在服务器发布：
+在服务器发布完整镜像：
 
 ```bash
 ssh fin-hub-server 'cd /opt/fin-hub && scripts/deploy-prod-images.sh --load fin-hub-images-<tag>.tar --image-env fin-hub-images-<tag>.env'
+```
+
+完整发布会重建 Compose 中的应用服务。发布前确认服务器资源正常，发布时保留旧镜像：
+
+```bash
+ssh fin-hub-server 'set -e; uptime; free -h; df -h /'
+ssh fin-hub-server 'cd /opt/fin-hub && PRUNE_OLD_IMAGES=false scripts/deploy-prod-images.sh --load fin-hub-images-<tag>.tar --image-env fin-hub-images-<tag>.env'
 ```
 
 ## 方式二：镜像仓库发布
@@ -69,4 +78,4 @@ ssh fin-hub-server 'cd /opt/fin-hub && scripts/deploy-prod-images.sh'
 - 生产镜像建议使用 git SHA 或版本号作为 tag，避免只用 `latest` 导致无法回滚。
 - 旧脚本 `scripts/deploy-prod.sh` 会在服务器 build，仅作为兼容方案保留。
 - 多域名部署后，检查使用 `https://fin.moshuo.fun/api/health`，或本机请求设置 `Host: fin.moshuo.fun`，避免裸 127.0.0.1 命中品牌首页。
-- `deploy-prod-images.sh` 包含旧镜像全局清理行为，保留回滚镜像或服务器运行其他项目时设置 `PRUNE_OLD_IMAGES=false`，清理独立安排。
+- `deploy-prod-images.sh` 默认不清理旧镜像；只有明确确认无需回滚时才设置 `PRUNE_OLD_IMAGES=true`，清理独立安排。

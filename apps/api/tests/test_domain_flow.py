@@ -664,7 +664,7 @@ def test_reconciliation_candidate_search_returns_parsed_approval_lines_without_b
     assert len(candidates) == 1
     assert {candidate["approval_instance"]["approval_no"] for candidate in candidates} == {"202608242148000482025"}
     assert candidates[0]["expense_item"]["description"] in {"爆米花", "薄荷糖"}
-    assert candidates[0]["remaining_amount"] in {"104.50", "27.79"}
+    assert candidates[0]["remaining_amount"] == "132.29"  # 整张审批明细合计，而非选中单行余额
     assert all(":" in candidate["expense_item"]["source_document_id"] for candidate in candidates)
     assert (
         session.query(ExpenseItem)
@@ -1349,10 +1349,12 @@ def test_reconciliation_search_allows_partial_approval_remaining_match(
     assert first_match.status_code == 201
     assert client.post(f"/api/matches/{first_match.json()['data']['id']}/confirm?operator=tester").status_code == 200
 
-    hidden_candidates = client.get(
+    partial_candidates = client.get(
         f"/api/matches/reconciliation/candidates?bank_transaction_id={second_bank_id}&store_id={store_id}&approval_only=true"
     ).json()["data"]["candidates"]
-    assert all(candidate["expense_item"]["id"] != expense.id for candidate in hidden_candidates)
+    assert len(partial_candidates) == 1
+    assert partial_candidates[0]["expense_item"]["id"] == expense.id
+    assert partial_candidates[0]["remaining_amount"] == "600.00"
 
     searched_candidates = client.get(
         f"/api/matches/reconciliation/candidates?bank_transaction_id={second_bank_id}"

@@ -45,8 +45,8 @@ import { useClientSearchParams } from "../lib/searchParams";
 dayjs.extend(customParseFormat);
 dayjs.locale("zh-cn");
 
-interface BankFormValues extends Omit<BankTransactionCreate, "occurred_at"> {
-  ledger_key?: string;
+interface BankFormValues extends Omit<BankTransactionCreate, "occurred_at" | "store_id"> {
+  store_id?: string;
   occurred_at?: dayjs.Dayjs;
 }
 
@@ -366,11 +366,13 @@ export default function BankPage() {
   const searchParams = useClientSearchParams();
   const queryStoreId = searchParams.get("store_id") ?? undefined;
   const queryLedgerPeriod = searchParams.get("ledger_period") ?? undefined;
+  const queryTransactionId = searchParams.get("transaction_id") ?? undefined;
+  const [focusedTransactionId, setFocusedTransactionId] = useState<string | undefined>(queryTransactionId);
+  useEffect(() => { setFocusedTransactionId(queryTransactionId); }, [queryTransactionId]);
   const defaultOccurredRange = useMemo<[dayjs.Dayjs, dayjs.Dayjs]>(() => {
-    const periodMonth = queryLedgerPeriod ? dayjs(`${queryLedgerPeriod}-01`, "YYYY-MM-DD", true) : null;
-    const start = periodMonth?.isValid() ? periodMonth.startOf("month") : dayjs().startOf("month");
+    const start = dayjs().startOf("month");
     return [start, start.endOf("month")];
-  }, [queryLedgerPeriod]);
+  }, []);
   const initialFilters = useMemo<BankFilterValues>(
     () => ({
       store_id: queryStoreId,
@@ -414,8 +416,8 @@ export default function BankPage() {
   } | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [form] = Form.useForm<BankFormValues>();
-  const [entryForm] = Form.useForm<{ ledger_key: string }>();
-  const [importForm] = Form.useForm<{ ledger_key: string }>();
+  const [entryForm] = Form.useForm<{ store_id: string }>();
+  const [importForm] = Form.useForm<{ store_id: string }>();
   const [filterForm] = Form.useForm<BankFilterValues>();
   const [balanceForm] = Form.useForm<BankBalanceCorrectionFormValues>();
   const loadRequestIdRef = useRef(0);
@@ -425,13 +427,7 @@ export default function BankPage() {
     () => new Map(ledgers.map((ledger) => [`${ledger.store_id}|${ledger.period}`, ledger])),
     [ledgers],
   );
-  const openLedgerOptions = ledgers
-    .filter((ledger) => ledger.status === "open")
-    .map((ledger) => ({
-      label: `${storesById.get(ledger.store_id)?.name ?? "未知"} / ${ledger.period}`,
-      value: `${ledger.store_id}|${ledger.period}`,
-    }));
-  const entryLedgerOptions = openLedgerOptions.filter((option) => !queryStoreId || option.value.startsWith(`${queryStoreId}|`));
+  const storeOptions = stores.map((store) => ({ label: store.name, value: store.id }));
   const currentStore = queryStoreId ? storesById.get(queryStoreId) : undefined;
   const currentStoreLedgerLabel = queryStoreId ? `${currentStore?.name ?? "当前门店"}` : "";
   const activeRangeText = useMemo(() => {
@@ -464,6 +460,7 @@ export default function BankPage() {
     if (options.includePagination ?? true) params.set("page_size", "500");
     const storeId = values?.store_id || queryStoreId;
     if (storeId) params.set("store_id", storeId);
+    if (focusedTransactionId) params.set("transaction_id", focusedTransactionId);
     if (values?.direction) params.set("direction", values.direction);
     if (values?.special_type) params.set("special_type", values.special_type);
     if (values?.unmatched_only) params.set("unmatched_only", "true");
@@ -591,6 +588,7 @@ export default function BankPage() {
   }
 
   function resetFilters() {
+    filterForm.resetFields();
     filterForm.setFieldsValue(initialFilters);
     void loadData(initialFilters);
   }
@@ -600,14 +598,20 @@ export default function BankPage() {
     setSummaryRange(defaultOccurredRange);
     void loadData(initialFilters);
     void loadSummary(defaultOccurredRange);
-  }, [defaultOccurredRange, filterForm, initialFilters]);
+  }, [defaultOccurredRange, filterForm, initialFilters, focusedTransactionId]);
+
+  useEffect(() => {
+    const refresh = () => { void loadData(); void loadSummary(); };
+    window.addEventListener("focus", refresh);
+    return () => window.removeEventListener("focus", refresh);
+  }, [queryStoreId, queryLedgerPeriod, focusedTransactionId]);
 
   function openCreateModal() {
     setTransactionError(null);
     setEditingTransaction(null);
     form.resetFields();
-    if (queryStoreId && queryLedgerPeriod) {
-      form.setFieldValue("ledger_key", `${queryStoreId}|${queryLedgerPeriod}`);
+    if (queryStoreId) {
+      form.setFieldValue("store_id", queryStoreId);
     }
     form.setFieldsValue({
       direction: "expense",
@@ -623,7 +627,7 @@ export default function BankPage() {
     setTransactionError(null);
     setEditingTransaction(transaction);
     form.setFieldsValue({
-      ledger_key: `${transaction.store_id}|${transaction.ledger_period}`,
+      store_id: transaction.store_id,
       occurred_at: dayjs(transaction.occurred_at),
       direction: transaction.direction,
       amount: transaction.amount,
@@ -656,9 +660,9 @@ export default function BankPage() {
       message.warning("请填写有效金额");
       return;
     }
-    const [formStoreId, formPeriod] = (values.ledger_key ?? "").split("|");
+    const formStoreId = values.store_id;
     const storeId = formStoreId || queryStoreId;
-    const period = formPeriod || queryLedgerPeriod || values.occurred_at.format("YYYY-MM");
+    const period = editingTransaction?.ledger_period || values.occurred_at.format("YYYY-MM");
     if (!storeId) {
       setTransactionError("请选择流水归属门店");
       message.warning("缺少门店，无法保存流水");
@@ -781,8 +785,8 @@ export default function BankPage() {
     entryForm.resetFields();
     setEntryRows(createBankEntryRows(10));
     setEntryValidationErrors([]);
-    if (queryStoreId && queryLedgerPeriod) {
-      entryForm.setFieldValue("ledger_key", `${queryStoreId}|${queryLedgerPeriod}`);
+    if (queryStoreId) {
+      entryForm.setFieldValue("store_id", queryStoreId);
     }
     setIsEntryModalOpen(true);
   }
@@ -794,8 +798,8 @@ export default function BankPage() {
     });
   }
 
-  async function submitEntryBatch(values: { ledger_key?: string }, duplicatesConfirmed = false) {
-    const [formStoreId] = (values.ledger_key ?? "").split("|");
+  async function submitEntryBatch(values: { store_id?: string }, duplicatesConfirmed = false) {
+    const formStoreId = values.store_id;
     const storeId = formStoreId || queryStoreId;
     if (!storeId) {
       message.warning("请先选择门店");
@@ -920,8 +924,8 @@ export default function BankPage() {
 
   function openImportModal() {
     importForm.resetFields();
-    if (queryStoreId && queryLedgerPeriod) {
-      importForm.setFieldValue("ledger_key", `${queryStoreId}|${queryLedgerPeriod}`);
+    if (queryStoreId) {
+      importForm.setFieldValue("store_id", queryStoreId);
     }
     setUploadFileList([]);
     setImportPreview(null);
@@ -933,12 +937,10 @@ export default function BankPage() {
       message.warning("请选择文件");
       return;
     }
-    const ledgerKey = importForm.getFieldValue("ledger_key");
-    const [formStoreId, formPeriod] = (ledgerKey ?? "").split("|");
+    const formStoreId = importForm.getFieldValue("store_id");
     const storeId = formStoreId || queryStoreId;
-    const period = formPeriod || queryLedgerPeriod;
-    if (!storeId || !period) {
-      message.warning("请选择账套");
+    if (!storeId) {
+      message.warning("请选择门店");
       return;
     }
     const file = uploadFileList[0].originFileObj;
@@ -947,7 +949,6 @@ export default function BankPage() {
     try {
       const payload = new FormData();
       payload.append("store_id", storeId);
-      payload.append("ledger_period", period);
       payload.append("file", file);
       const result = await apiClient.bankTransactions.previewImport(payload);
       setImportPreview(result);
@@ -961,12 +962,10 @@ export default function BankPage() {
 
   async function confirmImport(duplicatesConfirmed = false) {
     if (!importPreview) return;
-    const ledgerKey = importForm.getFieldValue("ledger_key");
-    const [formStoreId, formPeriod] = (ledgerKey ?? "").split("|");
+    const formStoreId = importForm.getFieldValue("store_id");
     const storeId = formStoreId || queryStoreId;
-    const period = formPeriod || queryLedgerPeriod;
-    if (!storeId || !period) {
-      message.warning("请选择账套");
+    if (!storeId) {
+      message.warning("请选择门店");
       return;
     }
     const file = uploadFileList[0]?.originFileObj;
@@ -985,7 +984,6 @@ export default function BankPage() {
     try {
       const payload = new FormData();
       payload.append("store_id", storeId);
-      payload.append("ledger_period", period);
       if (duplicatesConfirmed) payload.append("allow_duplicates", "true");
       payload.append("file", file);
       await apiClient.bankTransactions.importFile(payload);
@@ -1023,8 +1021,8 @@ export default function BankPage() {
     setIsLoading(true);
     try {
       await apiClient.bankTransactions.delete(record.id);
-      message.success("删除成功");
-      await loadData(initialFilters);
+      message.success(`已删除 ${dayjs(record.occurred_at).format("YYYY-MM-DD")} · ${record.amount} 元 · ${record.summary || record.counterparty_name || "无摘要"}`);
+      await loadData();
       await loadSummary();
     } catch (error) {
       message.error(error instanceof Error ? error.message : "删除失败");
@@ -1049,7 +1047,7 @@ export default function BankPage() {
     try {
       const result = await apiClient.bankTransactions.deleteBatch(ids);
       message.success(`成功删除 ${result.deleted_count} 条流水`);
-      await loadData(initialFilters);
+      await loadData();
       await loadSummary();
     } catch (error) {
       message.error(error instanceof Error ? error.message : "批量删除失败");
@@ -1059,7 +1057,7 @@ export default function BankPage() {
   }
 
   const columns: EnterpriseTableColumn<BankTransaction>[] = [
-    ...getBankTransactionViewColumns(),
+    ...getBankTransactionViewColumns().filter((column) => column.key !== "ledger_period"),
     {
       key: "actions",
       title: "操作",
@@ -1390,7 +1388,7 @@ export default function BankPage() {
             <div className="bank-overview__metrics">
               <div className="bank-overview__range">
                 <div className="bank-overview__range-copy">
-                  <Typography.Text className="bank-overview__range-label">统计日期范围</Typography.Text>
+                  <Typography.Text className="bank-overview__range-label">收支汇总日期范围（仅影响上方汇总）</Typography.Text>
                   <Typography.Text className="bank-overview__range-value">{activeRangeText}</Typography.Text>
                 </div>
                 <DatePicker.RangePicker
@@ -1526,6 +1524,11 @@ export default function BankPage() {
             </Form.Item>
           </Form>
 
+          {focusedTransactionId ? <Alert type="info" style={{ marginBottom: 12 }} message="当前定位报表来源流水" action={<Button onClick={() => setFocusedTransactionId(undefined)}>清除定位</Button>} /> : null}
+          <Space style={{ marginBottom: 12 }}>
+            <Tag>按门店查询 · 不限制账期</Tag>
+            <Button onClick={() => void loadData()}>刷新列表</Button>
+          </Space>
           <EnterpriseTable
             rowKey="id"
             columns={columns}
@@ -1575,8 +1578,8 @@ export default function BankPage() {
           {queryStoreId ? (
             <Alert type="info" showIcon message={`流水归属门店：${currentStoreLedgerLabel}`} style={{ marginBottom: 16 }} />
           ) : (
-            <Form.Item name="ledger_key" label="账套" rules={[{ required: true }]}>
-              <Select disabled={Boolean(editingTransaction)} options={openLedgerOptions} />
+            <Form.Item name="store_id" label="门店" rules={[{ required: true }]}>
+              <Select disabled={Boolean(editingTransaction)} options={storeOptions} />
             </Form.Item>
           )}
           <Form.Item name="occurred_at" label="发生日期" rules={[{ required: true }]}>
@@ -1601,12 +1604,13 @@ export default function BankPage() {
               disabled={Boolean(editingTransaction && Number(editingTransaction.matched_amount || 0) > 0)}
               options={[
                 { value: "bank_interest", label: "银行结息（收入）" },
+                { value: "other_income", label: "其他收入（收入，不参与匹配）" },
                 { value: "bank_fee", label: "银行手续费（支出）" },
                 { value: "bank_sms_fee", label: "银行短信费（支出）" },
                 { value: "bank_other_expense", label: "银行其他支出" },
               ]}
               onChange={(value) => {
-                if (value) form.setFieldsValue({ direction: value === "bank_interest" ? "income" : "expense", special_type: null });
+                if (value) form.setFieldsValue({ direction: ["bank_interest", "other_income"].includes(value) ? "income" : "expense", special_type: null });
               }}
             />
           </Form.Item>
@@ -1829,10 +1833,10 @@ export default function BankPage() {
       >
         <Form form={entryForm} layout="vertical" onFinish={submitEntryBatch}>
           {queryStoreId ? (
-            <Alert type="info" showIcon message={`流水归属门店：${currentStoreLedgerLabel}，账期按每行发生日期自动确定`} style={{ marginBottom: 16 }} />
+            <Alert type="info" showIcon message={`流水归属门店：${currentStoreLedgerLabel}，按每行发生日期记录流水`} style={{ marginBottom: 16 }} />
           ) : (
-            <Form.Item name="ledger_key" label="账套" rules={[{ required: true }]}>
-              <Select options={entryLedgerOptions} placeholder="请选择门店" />
+            <Form.Item name="store_id" label="门店" rules={[{ required: true }]}>
+              <Select options={storeOptions} placeholder="请选择门店" />
             </Form.Item>
           )}
           <Space direction="vertical" style={{ width: "100%" }} size={12}>
@@ -1917,14 +1921,14 @@ export default function BankPage() {
             items={[
               {
                 key: "step1",
-                label: "1. 选择账套和文件",
+                label: "1. 选择门店和文件",
                 children: (
                   <Space direction="vertical" style={{ width: "100%" }}>
                     {queryStoreId ? (
                       <Alert type="info" showIcon message={`流水归属门店：${currentStoreLedgerLabel}`} />
                     ) : (
-                      <Form.Item name="ledger_key" label="账套" rules={[{ required: true }]}>
-                        <Select options={openLedgerOptions} />
+                      <Form.Item name="store_id" label="门店" rules={[{ required: true }]}>
+                        <Select options={storeOptions} />
                       </Form.Item>
                     )}
                       <Form.Item label="上传文件">

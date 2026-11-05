@@ -30,6 +30,27 @@ def store_row(session):
     return store
 
 
+def test_report_construction_balance_and_profit_coverage(client, session):
+    from app.models import DividendFundingSetting
+    store = store_row(session)
+    session.add(Ledger(store_id=store.id, period="2026-09"))
+    session.add(RevenueRecord(store_id=store.id, ledger_period="2026-09", revenue_date=date(2026, 9, 1), channel="现金", gross_amount=60, net_amount=60, fee_amount=0))
+    funding = DividendFundingSetting(store_id=store.id, preopening_investment=100, preopening_expense_override=200)
+    session.add(funding)
+    session.commit()
+    url = f"/api/reports/financial-supplement?store_id={store.id}&period=2026-09"
+    data = client.get(url).json()["data"]
+    assert data["historical_profit"] == "60.00"
+    assert data["preopening_balance"] == "-100.00"
+    assert data["preopening_profit_covered"] == "0.00"  # Profit alone is not an allocation.
+    assert data["preopening_uncovered"] == "100.00"
+    funding.preopening_expense_override = 80
+    session.commit()
+    data = client.get(url).json()["data"]
+    assert data["preopening_balance"] == "20.00"
+    assert data["preopening_profit_covered"] == data["preopening_uncovered"] == "0.00"
+
+
 def bank_row(session, store, day, amount, direction="expense", **kwargs):
     bank = BankTransaction(
         store_id=store.id,
@@ -52,7 +73,7 @@ def test_month_target_validation_lock_audit_and_read_without_writes(client, sess
     data = client.get(url)
     assert data.status_code == 200, data.text
     assert data.json()["data"]["revenue_target"] is None
-    assert data.json()["data"]["bank_balance"]["date"] == "2026-10-10"
+    assert data.json()["data"]["bank_balance"]["date"] == "2026-09-30"
     assert session.scalar(select(func.count()).select_from(DividendMonth)) == before
     assert session.scalar(select(func.count()).select_from(Ledger)) == 0
     target = f"/api/reports/financial-target?store_id={store.id}&period=2026-09"
@@ -115,7 +136,7 @@ def test_cutoff_balance_inclusive_day_future_base_and_unpaid(client, session):
         == "pending"
     )
     response = client.get(f"/api/reports/financial-supplement?store_id={store.id}&period=2026-12")
-    assert response.json()["data"]["bank_balance"]["date"] == "2027-01-10"
+    assert response.json()["data"]["bank_balance"]["date"] == "2026-12-31"
 
 
 def test_manual_dividend_remaining_and_zero_funding_override(client, session):
@@ -182,7 +203,7 @@ def test_manual_dividend_remaining_and_zero_funding_override(client, session):
         client.patch(
             funding_url, json={"preopening_investment": "0", "preopening_expense_override": None}
         ).json()["data"]["preopening_expense_source"]
-        == "report"
+        == "missing"
     )
     session.add(PreopeningStore(store_id=store.id, status="closed"))
     session.commit()
@@ -325,6 +346,10 @@ def test_preopening_fallback_deduplicates_whole_approval_and_partial_payments(cl
             for b in [b1, b2]
         ]
     )
+    session.commit()
+    from app.models import DividendFundingSetting
+    session.add(DividendFundingSetting(store_id=store.id, preopening_investment=0, preopening_expense_override=999))
+    session.add(PreopeningStore(store_id=store.id, status="closed"))
     session.commit()
     response = client.get(f"/api/dividends/stores/{store.id}/funding-settings")
     assert response.status_code == 200, response.text

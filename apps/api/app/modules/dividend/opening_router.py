@@ -106,6 +106,7 @@ def save_opening(
         "opening_remaining",
         "historical_profit",
         "historical_distribution",
+        "historical_preopening_coverage",
         "operating_capital",
     ):
         setattr(existing, key, getattr(payload, key))
@@ -114,6 +115,8 @@ def save_opening(
     existing.updated_by = audit_actor(user)
     existing.updated_at = utc_now()
     session.flush()
+    from app.modules.dividend.coverage import validate_allocations
+    validate_allocations(session, store_id)
     after = opening_read(session, store_id).model_dump(mode="json")
     write_audit_log(
         session,

@@ -133,7 +133,7 @@ function approvalMatchStatusMeta(status?: string | null) {
   const statusMap: Record<string, { label: string; color: string }> = {
     matched: { label: "已匹配", color: "green" },
     manual_matched: { label: "已匹配", color: "green" },
-    partial_matched: { label: "已匹配", color: "green" },
+    partial_matched: { label: "未匹配满", color: "orange" },
     pending_match: { label: "未匹配", color: "gold" },
     pending_classification: { label: "未匹配", color: "gold" },
     sync_conflict: { label: "未匹配", color: "gold" },

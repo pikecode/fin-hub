@@ -117,7 +117,7 @@ def build_close_check(session: Session, ledger: Ledger) -> LedgerCloseCheck:
                 RevenueRecord.ledger_period == ledger.period,
             )
         )
-        if record.channel in required_channel_names
+        if record.channel in required_channel_names and not record.is_bank_direct
     ]
     confirmed_revenue_matches = list(
         session.scalars(
@@ -271,6 +271,8 @@ def close_ledger(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_permission("reconciliation.manage")),
 ) -> ApiEnvelope[LedgerRead]:
+    from app.modules.bank.unpaid import mutation_lock
+    mutation_lock(session)
     ledger = session.get(Ledger, ledger_id)
     if ledger is None:
         raise HTTPException(status_code=404, detail="Ledger not found")

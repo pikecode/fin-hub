@@ -151,10 +151,12 @@ def test_unpaid_balance_multiple_payments_final_difference_and_business_links(cl
     ).json()["data"]
     assert records["total"] == 1
     assert {b["id"] for b in records["items"][0]["settled_bank_transactions"]} == set(ids)
-    assert (
-        client.post("/api/matches/reconciliation/records/" + match.id + "/unmatch").status_code
-        == 409
-    )
+    unmatch_response = client.post("/api/matches/reconciliation/records/" + match.id + "/unmatch")
+    assert unmatch_response.status_code == 200, unmatch_response.text
+    session.expire_all()
+    assert session.get(ExpenseBankMatch, match.id).status == "rejected"
+    assert session.get(BankTransaction, source.id).is_archived
+    assert client.get("/api/bank-payment-settlements", params={"store_id": store.id, "status": "completed"}).json()["data"]["total"] == 1
     assert (
         client.post(
             base + "/complete", json={"confirm_difference": True, "remark": "重复"}

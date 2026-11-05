@@ -2,7 +2,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, defer
 
 from app.core.database import get_session
@@ -11,7 +11,6 @@ from app.models import (
     ApprovalTemplate,
     BankTransaction,
     ExpenseBankMatch,
-    ExpenseCategory,
     ExpenseItem,
     Ledger,
     MatchStatus,
@@ -26,6 +25,7 @@ from app.modules.approvals.status import approval_expense_stats_map
 from app.modules.auth.permissions import ensure_permission, ensure_store_access
 from app.modules.auth.router import get_current_user
 from app.modules.dingtalk.router import approval_instance_read
+from app.modules.approvals.status import canonical_expense_condition
 from app.modules.expense_classification import FOOD_COST_CATEGORY_L1, is_non_operating_expense
 from app.modules.ledgers.router import build_close_check
 from app.modules.matching.router import (
@@ -82,7 +82,7 @@ def dedupe_expense_rows(rows):
     return unique_rows
 
 
-def confirmed_accounting_expense_rows(session: Session, store_id: str, period: str):
+def confirmed_accounting_expense_rows(session: Session, store_id: str, period: str, *, apply_accrual=True):
     """Return expense detail rows for approvals confirmed into the accounting period.
 
     A bank transaction can be matched to a single line while representing the
@@ -120,6 +120,7 @@ def confirmed_accounting_expense_rows(session: Session, store_id: str, period: s
             .join(ApprovalInstance, approval_expense_join_condition())
             .where(
                 ApprovalInstance.id.in_(confirmed_approval_ids),
+                canonical_expense_condition(),
                 ExpenseItem.store_id == store_id,
                 ApprovalInstance.store_id == store_id,
                 ExpenseItem.expense_scope == "operating",
@@ -141,16 +142,21 @@ def confirmed_accounting_expense_rows(session: Session, store_id: str, period: s
             ExpenseBankMatch.accounting_period == period,
             ExpenseItem.expense_scope == "operating",
             ExpenseItem.source != REVENUE_FEE_SOURCE,
+            canonical_expense_condition(),
         )
     ).all()
     automatic_bank_rows = session.execute(select(
         ExpenseItem.id, ExpenseItem.category_l1, ExpenseItem.category_l2, ExpenseItem.amount,
     ).where(ExpenseItem.store_id == store_id, ExpenseItem.ledger_period == period,
-            ExpenseItem.expense_scope == "operating", ExpenseItem.source == "bank_direct")).all()
+            ExpenseItem.expense_scope == "operating", ExpenseItem.source.in_(["bank_direct", "accrual"]))).all()
     from app.modules.matching.accounting import planned_rows_for_periods
     owned, planned = planned_rows_for_periods(session, store_id, [period])
     legacy = [row for row in [*approval_rows, *direct_rows] if row[0] not in owned]
-    return dedupe_expense_rows([*legacy, *automatic_bank_rows, *planned.get(period, [])])
+    rows = dedupe_expense_rows([*legacy, *automatic_bank_rows, *planned.get(period, [])])
+    if apply_accrual:
+        from app.modules.accrual_accounting import adjust_rows
+        rows = adjust_rows(session, store_id, period, rows)
+    return rows
 
 
 def calculate_store_ledger_profit(session: Session, store_id: str, period: str) -> Decimal:
@@ -218,7 +224,7 @@ def calculate_store_ledger_profits(session: Session, store_id: str, periods: lis
             .join(ApprovalInstance, approval_expense_join_condition())
             .where(ApprovalInstance.id.in_(periods_by_approval), ExpenseItem.store_id == store_id,
                    ApprovalInstance.store_id == store_id, ExpenseItem.expense_scope == "operating",
-                   ExpenseItem.source != REVENUE_FEE_SOURCE))
+                   ExpenseItem.source != REVENUE_FEE_SOURCE, canonical_expense_condition()))
         for approval_id, expense_id, l1, l2, amount in rows:
             for period in periods_by_approval[approval_id]:
                 subtract(period, expense_id, l1, l2, amount)
@@ -228,13 +234,15 @@ def calculate_store_ledger_profits(session: Session, store_id: str, periods: lis
         .join(ExpenseBankMatch, ExpenseBankMatch.expense_item_id == ExpenseItem.id)
         .where(ExpenseItem.store_id == store_id, ExpenseBankMatch.status == MatchStatus.CONFIRMED.value,
                ExpenseBankMatch.accounting_period.in_(periods), ExpenseItem.expense_scope == "operating",
-               ExpenseItem.source != REVENUE_FEE_SOURCE)):
+               ExpenseItem.source != REVENUE_FEE_SOURCE, canonical_expense_condition())):
         subtract(period, expense_id, l1, l2, amount)
     for period, source, l1, l2, amount in session.execute(select(
         ExpenseItem.ledger_period, ExpenseItem.source, ExpenseItem.category_l1,
         ExpenseItem.category_l2, ExpenseItem.amount)
-        .where(ExpenseItem.store_id == store_id, ExpenseItem.ledger_period.in_(periods),
-               ExpenseItem.source.in_([REVENUE_FEE_SOURCE, KUAILV_PURCHASE_SOURCE, "bank_direct"]))):
+        .where(ExpenseItem.store_id == store_id, or_(ExpenseItem.ledger_period.in_(periods), ExpenseItem.source == "accrual"),
+               ExpenseItem.source.in_([REVENUE_FEE_SOURCE, KUAILV_PURCHASE_SOURCE, "bank_direct", "accrual"]))):
+        if source == "accrual":
+            return {month: calculate_store_ledger_profit(session, store_id, month) for month in periods}
         if source == REVENUE_FEE_SOURCE or not is_non_operating_expense(l1, l2):
             totals[period] -= decimal_sum(amount)
     return totals
@@ -536,39 +544,15 @@ def read_store_ledger_workspace(
         for item in approval_instances
         if approval_stats_by_id.get(item.id, {}).get("processing_status") in {"unparsed", "pending_classification", "pending_match"}
     )
-    active_category_rows = session.execute(
-        select(
-            ExpenseCategory.id,
-            ExpenseCategory.name,
-            ExpenseCategory.parent_id,
-        ).where(
-            ExpenseCategory.status == "active",
-        )
-    ).all()
-    active_category_by_id = {
-        category_id: {"name": name, "parent_id": parent_id}
-        for category_id, name, parent_id in active_category_rows
-    }
-    active_root_names = {name for _, name, parent_id in active_category_rows if parent_id is None}
-    active_child_pairs = {
-        (parent_name, child_name)
-        for _, child_name, parent_id in active_category_rows
-        if parent_id is not None
-        for parent in [active_category_by_id.get(parent_id)]
-        if parent is not None and parent["parent_id"] is None
-        for parent_name in [str(parent["name"])]
-    }
     category_map: dict[tuple[str, str | None], dict[str, Decimal | int | str | None]] = {}
     for category_l1, category_l2, amount in [
         *[(row[1], row[2], row[3]) for row in confirmed_expense_rows],
         *revenue_fee_rows,
         *kuailv_purchase_rows,
     ]:
-        if not category_l1 or category_l1 not in active_root_names:
-            continue
-        if category_l2 and (category_l1, category_l2) not in active_child_pairs:
-            continue
-        l1 = category_l1
+        # Keep historical labels even if a category was later disabled or deleted;
+        # otherwise the category subtotal no longer reconciles with total expense.
+        l1 = category_l1 or "未分类"
         l2 = category_l2
         key = (l1, l2)
         bucket = category_map.setdefault(

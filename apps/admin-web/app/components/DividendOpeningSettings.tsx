@@ -9,7 +9,7 @@ import type { AuditLog, DividendOpeningBalance, DividendOpeningUpdate } from "@f
 import { formatMoney, formatPeriod } from "@fin-hub/shared-utils";
 import { apiClient } from "../lib/api";
 
-const labels = { opening_remaining: "期初剩余未分配利润", historical_profit: "历史累计利润", historical_distribution: "历史累计分红", preopening_investment: "筹建投入资金", preopening_expense_override: "筹建费用总支出", operating_capital: "累计运营增资" };
+const labels = { historical_preopening_coverage: "历史经营利润已补充筹建超支", opening_remaining: "期初剩余未分配利润", historical_profit: "历史累计利润", historical_distribution: "历史累计分红", preopening_investment: "筹建投入资金", preopening_expense_override: "筹建费用总支出", operating_capital: "累计运营增资" };
 type FormValues = Omit<DividendOpeningUpdate, "version" | "start_period"> & { start_period: dayjs.Dayjs };
 const isolationHelp = "数据隔离月份是使用系统计算的第一个月份（包含该月）。例如选择2026年9月，2026年8月及以前的系统财务数据不会再次计入分红累计，由本次录入的期初数据代表。原始审批、报表和分红记录会保留。";
 
@@ -39,9 +39,10 @@ export function DividendOpeningSettings({ storeId, opening, disabled, onSaved }:
       if (version !== generation.current) return;
       setInitial(result);
       form.setFieldsValue({ start_period: result.start_period ? dayjs(result.start_period + "-01") : undefined,
+        historical_preopening_coverage: result.historical_preopening_coverage ?? "0",
         opening_remaining: result.opening_remaining ?? undefined, historical_profit: result.historical_profit ?? undefined,
         historical_distribution: result.historical_distribution ?? undefined, operating_capital: result.operating_capital ?? undefined,
-        preopening_investment: result.preopening_investment, preopening_expense_override: result.preopening_expense_override, reason: "" });
+        preopening_investment: result.preopening_investment, preopening_expense_override: result.preopening_expense_source === "report" ? result.preopening_expense_amount : result.preopening_expense_override, reason: "" });
       setLoaded(true);
     } catch (reason) { if (version === generation.current) setError(reason instanceof Error ? reason.message : "期初数据加载失败"); }
     finally { if (version === generation.current) setLoading(false); }
@@ -50,7 +51,7 @@ export function DividendOpeningSettings({ storeId, opening, disabled, onSaved }:
     if (!loaded || !initial || saving) return;
     const values = await form.validateFields().catch(() => null);
     if (!values) return;
-    setConfirmation({ ...values, start_period: values.start_period.format("YYYY-MM"), version: initial.version, preopening_expense_override: values.preopening_expense_override ?? null, reason: values.reason.trim() });
+    setConfirmation({ ...values, start_period: values.start_period.format("YYYY-MM"), version: initial.version, preopening_expense_override: initial.preopening_expense_source === "report" ? initial.preopening_expense_override : values.preopening_expense_override ?? null, reason: values.reason.trim() });
   }
   async function save() {
     if (!confirmation || saving) return;
@@ -75,7 +76,7 @@ export function DividendOpeningSettings({ storeId, opening, disabled, onSaved }:
     try {
       const metadata = JSON.parse(record.metadata_json || "{}");
       return <Descriptions column={1} size="small"><Descriptions.Item label="修改原因">{metadata.reason || "—"}</Descriptions.Item>
-        {([['start_period','数据隔离月份'], ...Object.entries(labels)] as [string,string][]).map(([field,label]) => <Descriptions.Item key={field} label={label}>{metadata.before?.[field] ?? "未录入"} → {metadata.after?.[field] ?? "自动取报表"}</Descriptions.Item>)}
+        {([['start_period','数据隔离月份'], ...Object.entries(labels)] as [string,string][]).map(([field,label]) => <Descriptions.Item key={field} label={label}>{metadata.before?.[field] ?? "未录入"} → {metadata.after?.[field] ?? "未录入 / 已封账时取报表"}</Descriptions.Item>)}
       </Descriptions>;
     } catch { return record.summary || "—"; }
   }
@@ -88,8 +89,8 @@ export function DividendOpeningSettings({ storeId, opening, disabled, onSaved }:
         <Form.Item name="start_period" label={<Space>数据隔离月份<Button type="text" size="small" aria-label="数据隔离月份说明" icon={<InfoCircleOutlined />} onClick={() => setHelpOpen(true)} /></Space>} rules={[{ required: true, message: "请选择第一个纳入计算的月份" }]}>
           <DatePicker picker="month" locale={zhCN.DatePicker} format="YYYY年MM月" allowClear={false} style={{ width: "100%" }} />
         </Form.Item>
-        <div className="dividend-opening-fields">{Object.entries(labels).map(([field,label]) => <Form.Item key={field} name={field} label={label} rules={field === "preopening_expense_override" ? [] : [{ required: true, message: `请填写${label}，没有则填0` }]} extra={field === "preopening_expense_override" ? "留空取筹建报表；填0则明确使用0。" : field === "opening_remaining" || field === "historical_profit" ? "亏损可填负数，金额为隔离月之前的值。" : undefined}>
-          <InputNumber stringMode min={field === "opening_remaining" || field === "historical_profit" ? "-999999999999.99" : "0"} max="999999999999.99" precision={2} addonAfter="元" style={{ width: "100%" }} />
+        <div className="dividend-opening-fields">{Object.entries(labels).map(([field,label]) => <Form.Item key={field} name={field} label={label} rules={field === "preopening_expense_override" ? [] : [{ required: true, message: `请填写${label}，没有则填0` }]} extra={field === "preopening_expense_override" ? "筹建报表封账后使用报表总支出；未封账时请人工录入。超支＝总支出－投入，可在这里维护。" : field === "historical_preopening_coverage" ? "仅填隔离月之前实际用于补充筹建超支的利润；期初剩余利润应已扣除此金额，不会再次扣减。" : field === "opening_remaining" || field === "historical_profit" ? "亏损可填负数，金额为隔离月之前的值。" : undefined}>
+          <InputNumber disabled={field === "preopening_expense_override" && initial?.preopening_expense_source === "report"} stringMode min={field === "opening_remaining" || field === "historical_profit" ? "-999999999999.99" : "0"} max="999999999999.99" precision={2} addonAfter="元" style={{ width: "100%" }} />
         </Form.Item>)}</div>
         <Form.Item name="reason" label="录入 / 修改原因" rules={[{ required: true, whitespace: true, message: "请填写原因，便于追溯" }]}><Input.TextArea maxLength={1000} showCount rows={2} placeholder="例如：首次启用系统，按财务确认金额建立期初" /></Form.Item>
       </Form></Spin>
@@ -97,7 +98,7 @@ export function DividendOpeningSettings({ storeId, opening, disabled, onSaved }:
     <Modal title="确认期初数据" open={Boolean(confirmation)} onOk={() => void save()} confirmLoading={saving} onCancel={() => { if (!saving) setConfirmation(null); }} cancelButtonProps={{ disabled: saving }} maskClosable={!saving} keyboard={!saving} closable={!saving} okText="确认保存" cancelText="返回修改">
       <Alert showIcon type="warning" message="保存后将重新计算隔离月份及后续月份的累计金额。已有锁定 / 封账记录时会阻止修改。" style={{ marginBottom: 16 }} />
       <Descriptions size="small" column={1}><Descriptions.Item label="自此月份起计算">{confirmation ? formatPeriod(confirmation.start_period) : "—"}</Descriptions.Item>
-        {Object.entries(labels).map(([field,label]) => <Descriptions.Item key={field} label={label}>{confirmation?.[field as keyof typeof labels] == null ? "自动取筹建报表" : formatMoney(confirmation[field as keyof typeof labels]!)}</Descriptions.Item>)}
+        {Object.entries(labels).map(([field,label]) => <Descriptions.Item key={field} label={label}>{field === "preopening_expense_override" && initial?.preopening_expense_source === "report" ? `${formatMoney(initial.preopening_expense_amount)}（已封账报表）` : confirmation?.[field as keyof typeof labels] == null ? "待录入（筹建报表未封账）" : formatMoney(confirmation[field as keyof typeof labels]!)}</Descriptions.Item>)}
       </Descriptions>
     </Modal>
     <Modal title="数据隔离月份说明" open={helpOpen} footer={<Button type="primary" onClick={() => setHelpOpen(false)}>知道了</Button>} onCancel={() => setHelpOpen(false)}><Typography.Paragraph>{isolationHelp}</Typography.Paragraph></Modal>

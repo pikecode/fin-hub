@@ -37,8 +37,10 @@ from app.modules.store_ledgers.router import (
     confirmed_accounting_expense_rows,
     approval_expense_join_condition,
 )
+from app.modules.bank.direct_posting import INCOME_TYPES, LABELS as DIRECT_INCOME_LABELS
 from app.modules.bank.unpaid import completed_payments, mutation_lock
 from app.schemas import ApiEnvelope, BankTransactionRead, ExpenseItemRead
+from app.modules.reports.manual_balance import ManualBalanceUpdate, save_manual_balance
 
 router = APIRouter(tags=["financial-report"])
 PERIOD = r"^\d{4}-(0[1-9]|1[0-2])$"
@@ -128,8 +130,11 @@ def dividend_totals(session, store_id, period):
             "capital_amount": money(current.capital_amount)
             if not current.excluded_from_calculation
             else "0.00",
+            "preopening_coverage_amount": money(current.preopening_coverage_amount) if not current.excluded_from_calculation else "0.00",
+            "cumulative_preopening_coverage": money(current.cumulative_preopening_coverage),
             "cumulative_capital": money(current.cumulative_capital),
             "cumulative_distribution": money(current.historical_distribution),
+            "historical_profit": money(current.historical_profit),
         }
     months = {
         m.period: m
@@ -167,14 +172,17 @@ def dividend_totals(session, store_id, period):
                     (
                         amount
                         for (p, kind), amount in sums.items()
-                        if p > "2026-10" and kind == "distribution"
+                        if p > "2026-10" and kind in ("distribution", "preopening_coverage")
                     ),
                     Decimal(0),
                 )
             )
     return {
         "remaining_undistributed": money(remaining) if remaining is not None else None,
+        "historical_profit": money(sum(calculate_store_ledger_profits(session, store_id, sorted(set(months) | set(session.scalars(select(Ledger.period).where(Ledger.store_id == store_id, Ledger.period <= period))))).values(), Decimal(0))),
         "distribution_amount": money(sums.get((period, "distribution"))),
+        "preopening_coverage_amount": money(sums.get((period, "preopening_coverage"))),
+        "cumulative_preopening_coverage": money(sum((a for (_, k), a in sums.items() if k == "preopening_coverage"), Decimal(0))),
         "capital_amount": money(sums.get((period, "capital"))),
         "cumulative_capital": money(
             sum((amount for (_, kind), amount in sums.items() if kind == "capital"), Decimal(0))
@@ -206,6 +214,7 @@ def funding_read(session, store_id):
                 ExpenseItem.store_id == store_id,
                 ExpenseItem.expense_scope == "preopening",
                 ExpenseItem.approval_instance_id.in_(approval_ids),
+                ExpenseItem.approval_instance_id.in_(select(ApprovalInstance.id).where(ApprovalInstance.store_id == store_id, ApprovalInstance.expense_scope == "preopening")),
             )
         )
     )
@@ -221,11 +230,13 @@ def funding_read(session, store_id):
         Decimal(0),
     )
     override = setting.preopening_expense_override if setting else None
+    state = session.scalar(select(PreopeningStore).where(PreopeningStore.store_id == store_id))
+    sealed = bool(state and state.status == "closed")
     return {
         "preopening_investment": money(setting.preopening_investment if setting else 0),
         "preopening_expense_override": money(override) if override is not None else None,
-        "preopening_expense_amount": money(override if override is not None else total),
-        "preopening_expense_source": "manual" if override is not None else "report",
+        "preopening_expense_amount": money(total if sealed else override or 0),
+        "preopening_expense_source": "report" if sealed else "manual" if override is not None else "missing",
     }
 
 
@@ -258,6 +269,12 @@ def supplement(
     totals = dividend_totals(session, store_id, period)
     opening = session.get(DividendOpeningBalance, store_id)
     funding = funding_read(session, store_id)
+    from app.models import AccrualEntry
+    accrual_totals = {kind: money(amount) for kind, amount in session.execute(select(
+        AccrualEntry.entry_type, func.sum(AccrualEntry.amount)).where(
+        AccrualEntry.store_id == store_id, AccrualEntry.period == period).group_by(AccrualEntry.entry_type))}
+    from app.modules.dividend.coverage import construction_metrics
+    construction = construction_metrics(funding, totals["cumulative_preopening_coverage"])
     return ApiEnvelope(
         data={
             "store_id": store_id,
@@ -267,14 +284,32 @@ def supplement(
             "revenue_target": money(setting.revenue_target)
             if setting and setting.revenue_target is not None
             else None,
-            "bank_balance": balance_at(session, store_id, next_month(first).replace(day=10)),
+            "bank_balance": {
+                "date": (next_month(first) - timedelta(days=1)).isoformat(),
+                "status": "ready" if setting and setting.bank_balance_manual is not None else "missing_manual",
+                "amount": money(setting.bank_balance_manual) if setting and setting.bank_balance_manual is not None else None,
+                "source": "manual",
+            },
             **totals,
             **funding,
+            "accrual_totals": {kind: accrual_totals.get(kind, "0.00") for kind in ("accrual", "supplement", "reversal")},
+            **construction,
             "total_capital": money(
                 Decimal(totals["cumulative_capital"]) + Decimal(funding["preopening_investment"])
             ),
         }
     )
+
+
+@router.patch("/reports/financial-bank-balance")
+def update_report_bank_balance(
+    payload: ManualBalanceUpdate, store_id: str, period: str = Query(pattern=PERIOD),
+    session: Session = Depends(get_session), user: User = Depends(get_current_user),
+):
+    authorize(session, user, store_id)
+    period_date(period)
+    save_manual_balance(session, user, store_id, period, payload)
+    return supplement(store_id, period, session, user)
 
 
 @router.patch("/reports/financial-target")
@@ -475,6 +510,9 @@ def appendix(
     month_accounted_amounts = {
         row[0]: row[3] for row in confirmed_accounting_expense_rows(session, store_id, period)
     }
+    from app.models import AccrualApprovalLink
+    covered_approvals = dict(session.execute(select(AccrualApprovalLink.approval_id, func.sum(AccrualApprovalLink.amount))
+        .where(AccrualApprovalLink.active.is_(True)).group_by(AccrualApprovalLink.approval_id)).all())
     month_allocations = dict(
         session.execute(
             select(
@@ -494,7 +532,7 @@ def appendix(
                             {
                                 "description": detail.description,
                                 "amount": money(
-                                    month_accounted_amounts.get(detail.id, detail.amount)
+                                    month_accounted_amounts.get(detail.id, 0 if approval and approval.id in covered_approvals else detail.amount)
                                 ),
                                 "category_l1": detail.category_l1,
                                 "category_l2": detail.category_l2,
@@ -511,8 +549,9 @@ def appendix(
                         else item.expense_date.isoformat(),
                         "approval_no": approval.approval_no if approval else None,
                         "accounting_amount": money(
-                            month_allocations.get(approval.id if approval else None, match.amount)
+                            sum((month_accounted_amounts.get(detail.id, Decimal(0)) for detail in canonical_expense_items(expense_details.get(approval.id, [item]))), Decimal(0)) if approval and approval.id in covered_approvals else month_allocations.get(approval.id if approval else None, match.amount)
                         ),
+                        "accrual_covered_amount": money(covered_approvals.get(approval.id, 0)) if approval else "0.00",
                         "shared_accounting_amount": bool(
                             approval and approval.id in month_allocations
                         ),
@@ -543,11 +582,11 @@ def appendix(
         )
     }
     for bank in banks:
-        if bank.direct_posting_type == "bank_interest":
+        if bank.direct_posting_type in INCOME_TYPES:
             rows[bank.id]["business"].append(
                 {
                     "kind": "income",
-                    "description": "银行结息",
+                    "description": DIRECT_INCOME_LABELS[bank.direct_posting_type],
                     "revenue_start": bank.occurred_at.date().isoformat(),
                     "revenue_end": bank.occurred_at.date().isoformat(),
                     "accounting_amount": money(bank.amount),
