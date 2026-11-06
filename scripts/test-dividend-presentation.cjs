@@ -67,9 +67,10 @@ console.log("Report category split, fee detail omission and special-flow present
 const manualExtra = { ...extra, period: "2026-09", bank_balance: { date: "2026-09-30", status: "ready", amount: "23456.78", source: "manual" } };
 const manualMetric = reportGroups(reportData, manualExtra).find(group => group.title === "资金流情况").items[0];
 assert.equal(manualMetric.value, utils.formatMoney("23456.78"));
-assert.equal(manualMetric.hint, "2026-09 · 报表手工录入");
+assert.equal(manualMetric.hint, "截至 2026-09-30 余额");
 const manualHtml = financialReportHtml(reportData, manualExtra, { expense_items: [], rows: [] }, [], []);
 assert.ok(manualHtml.includes(utils.formatMoney("23456.78")));
+assert.ok(manualHtml.includes("截至 2026-09-30 余额"));
 assert.equal(reportGroups(reportData, { ...manualExtra, bank_balance: { ...manualExtra.bank_balance, status: "missing_manual", amount: null } }).find(group => group.title === "资金流情况").items[0].value, "待录入");
 assert.equal(reportGroups(reportData, { ...manualExtra, bank_balance: { ...manualExtra.bank_balance, amount: "0" } }).find(group => group.title === "资金流情况").items[0].value, utils.formatMoney(0));
 console.log("Manual report balance HTML/value/missing/zero assertions passed.");
@@ -81,3 +82,26 @@ assert.ok(tracedHtml.includes("入账月份"));
 assert.ok(tracedHtml.includes("2026-09"));
 assert.ok(tracedHtml.includes('href="https://finance.example/bank?store_id=report-store&amp;transaction_id=hidden-100&amp;ledger_period=2026-10"'));
 console.log("Cross-period report source link/context assertions passed.");
+
+const groupedExpenses = [
+  { id: "detail-a", description: "分组租金", amount: "1300", category_l1: "租管", category_l2: "租金", expense_date: "2026-09-01", application_date: "2026-09-02" },
+  { id: "detail-b", description: "分组电费", amount: "1159.20", category_l1: "租管", category_l2: "水电", expense_date: "2026-09-01" },
+  { id: "accrual-c", description: "无流水计提", amount: "200", category_l1: "人力", category_l2: "工资", source: "accrual", expense_date: "2026-09-01" },
+];
+const groupedHtml = financialReportHtml(reportData, extra, {
+  expense_items: groupedExpenses,
+  rows: ["bank-a", "bank-b"].map((id) => ({
+    transaction: { id, direction: "expense", occurred_at: "2026-10-01", amount: "2459.20", counterparty_name: "分组收款人" },
+    business: [{ kind: "expense", description: "租金电费", accounting_amount: "2459.20", expense_details: groupedExpenses.slice(0, 2).map(item => ({ ...item, expense_id: item.id })) }],
+  })),
+}, [], []);
+const groupedSection = groupedHtml.split('<h2>支出明细</h2>')[1].split('</section>')[0];
+assert(groupedSection.includes('续流水 1'));
+assert(groupedSection.includes('同流水 1 费用'));
+assert.equal((groupedSection.match(/1,300\.00/g) || []).length, 1);
+assert.equal((groupedSection.match(/1,159\.20/g) || []).length, 1);
+assert(groupedSection.includes('未关联银行流水'));
+assert(groupedSection.includes('无流水计提'));
+assert(groupedSection.includes('2026-10-01'));
+assert(groupedSection.includes('2026-09-02'));
+console.log('Bank-grouped expense details, shared-expense deduplication and unlinked accrual assertions passed.');

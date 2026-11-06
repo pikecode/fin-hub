@@ -2,7 +2,7 @@
 
 import { Alert, Button, Cascader, Checkbox, DatePicker, Form, Input, InputNumber, Modal, Select, Space, Table, Tag, Typography, message } from "antd";
 import dayjs from "dayjs";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ApprovalInstance, ExpenseCategory, Ledger } from "@fin-hub/shared-types";
 import { formatMoney } from "@fin-hub/shared-utils";
 import { apiClient } from "../lib/api";
@@ -16,6 +16,12 @@ export function AccrualManagement({ storeId, period, onChanged }: { storeId: str
   const [ledgers, setLedgers] = useState<Ledger[]>([]);
   const [links, setLinks] = useState<Link[]>([]);
   const [categories, setCategories] = useState<ExpenseCategory[]>([]);
+  const categoryOptions = useMemo(() => categories
+    .filter(root => !root.parent_id && root.status === "active" && !["门店预充值", "备用金/借款", "异常费用"].includes(root.name))
+    .map(root => ({ value: root.name, label: root.name, children: categories
+      .filter(child => child.parent_id === root.id && child.status === "active" && !(root.name === "食材成本" && child.name === "快驴充值"))
+      .map(child => ({ value: child.name, label: child.name })) }))
+    .filter(root => root.children.length > 0), [categories]);
   const [approvals, setApprovals] = useState<ApprovalInstance[]>([]);
   const [editing, setEditing] = useState<Entry | null>(null);
   const [mode, setMode] = useState<Entry["entry_type"] | "link" | null>(null);
@@ -140,7 +146,7 @@ export function AccrualManagement({ storeId, period, onChanged }: { storeId: str
         {mode !== "accrual" ? <Form.Item name="original_id" label="原计提" rules={[{ required: true }]}><Select disabled={!!editing} showSearch optionFilterProp="label" options={roots.map(row => ({ value: row.id, label: `${row.period} · ${row.remark} · 关联审批 ${formatMoney(covered(row))}` }))} /></Form.Item> : null}
         {selected ? <Typography.Paragraph type="secondary">原分类：{selected.category_l1} / {selected.category_l2}；有效金额 {formatMoney(effective(selected))}</Typography.Paragraph> : null}
         {mode === "link" ? <><Form.Item name="approval_ids" label="审批单（可多选，输入单号搜索）" rules={[{ required: true }]}><Select mode="multiple" showSearch filterOption={false} onSearch={value => void searchApprovals(value)} options={approvals.map(a => ({ value: a.id, label: `${a.approval_no || a.id} · ${a.title || "审批单"}` }))} /></Form.Item><Form.Item name="confirm_category_difference" valuePropName="checked"><Checkbox>如审批分类不同，确认保留原计提分类，不改写历史</Checkbox></Form.Item></> : <><Form.Item name="month" label="本次入账月份" extra={mode === "supplement" || mode === "reversal" ? "可选择原计提月份或之后的开放账期；本次调整只计入所选月份。" : undefined} rules={[{ required: true }]}><DatePicker picker="month" onChange={() => setError(undefined)} disabledDate={value => !!selected && value.format("YYYY-MM") < selected.period} /></Form.Item>{targetMonth && !targetLedger ? <Alert type="warning" showIcon style={{ marginBottom: 16 }} message={`${targetMonth} 尚未创建账期`} description="先创建该月账期，再提交本次计提或调整。" action={<Button loading={busy} onClick={() => void createTargetLedger()}>创建所选账期</Button>} /> : targetLedger?.status !== "open" && targetMonth ? <Alert type="warning" showIcon style={{ marginBottom: 16 }} message="所选账期已封账，请选择后续开放账期" /> : null}</>}
-        {mode === "accrual" || editing ? <Form.Item name="category" label="二级费用分类" rules={[{ required: true }, { validator: (_, value) => value?.length === 2 ? Promise.resolve() : Promise.reject(new Error("请选择二级分类")) }]}><Cascader options={categories.filter(c => !c.parent_id && c.status === "active").map(root => ({ value: root.name, label: root.name, children: categories.filter(c => c.parent_id === root.id && c.status === "active").map(child => ({ value: child.name, label: child.name })) }))} /></Form.Item> : null}
+        {mode === "accrual" || editing ? <Form.Item name="category" label="二级费用分类" extra="计提仅支持经营费用；异常费用、门店预充值、备用金/借款及快驴充值不参与计提。" rules={[{ required: true }, { validator: (_, value) => value?.length === 2 && categoryOptions.some(root => root.value === value[0] && root.children.some(child => child.value === value[1])) ? Promise.resolve() : Promise.reject(new Error("请选择有效的经营费用二级分类")) }]}><Cascader options={categoryOptions} /></Form.Item> : null}
         {mode === "link" ? <Alert type="info" showIcon message="选中的审批单整单不重复计入报表，仍可正常匹配银行流水。金额差异请通过补提或冲销调整。" style={{ marginBottom: 16 }} /> : <Form.Item name="amount" label="金额" rules={[{ required: true }]}><InputNumber stringMode min="0.01" precision={2} style={{ width: "100%" }} /></Form.Item>}
         {editing ? <Form.Item name="edit_reason" label="修改原因" rules={[{ required: true, whitespace: true }]}><Input.TextArea maxLength={2000} /></Form.Item> : null}
         <Form.Item name="remark" label="备注 / 原因" rules={[{ required: true, whitespace: true }]}><Input.TextArea maxLength={2000} /></Form.Item>

@@ -251,6 +251,42 @@ class FundingUpdate(BaseModel):
     )
 
 
+def historical_category_expenses(session: Session, store_id: str, period: str):
+    """Accumulate the canonical monthly report categories through period inclusive."""
+    from app.models import AccrualEntry
+    from app.modules.expense_classification import is_non_operating_expense
+    from app.modules.store_ledgers.router import KUAILV_PURCHASE_SOURCE, REVENUE_FEE_SOURCE
+
+    periods = set(session.scalars(select(ExpenseItem.ledger_period).where(
+        ExpenseItem.store_id == store_id, ExpenseItem.ledger_period <= period).distinct()))
+    periods.update(session.scalars(select(ExpenseBankMatch.accounting_period)
+        .join(ExpenseItem, ExpenseItem.id == ExpenseBankMatch.expense_item_id).where(
+            ExpenseItem.store_id == store_id, ExpenseBankMatch.accounting_period <= period).distinct()))
+    periods.update(session.scalars(select(ApprovalAccountingAllocation.period)
+        .join(ApprovalInstance, ApprovalInstance.id == ApprovalAccountingAllocation.approval_id).where(
+            ApprovalInstance.store_id == store_id, ApprovalAccountingAllocation.period <= period).distinct()))
+    periods.update(session.scalars(select(AccrualEntry.period).where(
+        AccrualEntry.store_id == store_id, AccrualEntry.period <= period).distinct()))
+    totals = {}
+
+    def add(l1, l2, amount):
+        key = (l1 or "未分类", l2)
+        totals[key] = totals.get(key, Decimal(0)) + amount
+
+    for month in sorted(p for p in periods if p):
+        for _, l1, l2, amount in confirmed_accounting_expense_rows(session, store_id, month):
+            if not is_non_operating_expense(l1, l2):
+                add(l1, l2, amount)
+    for l1, l2, amount, source in session.execute(select(
+        ExpenseItem.category_l1, ExpenseItem.category_l2, ExpenseItem.amount, ExpenseItem.source,
+    ).where(ExpenseItem.store_id == store_id, ExpenseItem.ledger_period <= period,
+            ExpenseItem.source.in_([REVENUE_FEE_SOURCE, KUAILV_PURCHASE_SOURCE]))):
+        if source == REVENUE_FEE_SOURCE or not is_non_operating_expense(l1, l2):
+            add(l1, l2, amount)
+    return [{"name": " / ".join(part for part in key if part), "amount": money(amount)}
+            for key, amount in sorted(totals.items(), key=lambda item: (item[0][0], item[0][1] or ""))]
+
+
 @router.get("/reports/financial-supplement")
 def supplement(
     store_id: str,
@@ -285,13 +321,14 @@ def supplement(
             if setting and setting.revenue_target is not None
             else None,
             "bank_balance": {
-                "date": (next_month(first) - timedelta(days=1)).isoformat(),
+                "date": (setting.bank_balance_date if setting and setting.bank_balance_date else next_month(first) - timedelta(days=1)).isoformat(),
                 "status": "ready" if setting and setting.bank_balance_manual is not None else "missing_manual",
                 "amount": money(setting.bank_balance_manual) if setting and setting.bank_balance_manual is not None else None,
                 "source": "manual",
             },
             **totals,
             **funding,
+            "historical_category_expenses": historical_category_expenses(session, store_id, period),
             "accrual_totals": {kind: accrual_totals.get(kind, "0.00") for kind in ("accrual", "supplement", "reversal")},
             **construction,
             "total_capital": money(
@@ -530,6 +567,7 @@ def appendix(
                         "kind": "expense",
                         "expense_details": [
                             {
+                                "expense_id": detail.id,
                                 "description": detail.description,
                                 "amount": money(
                                     month_accounted_amounts.get(detail.id, 0 if approval and approval.id in covered_approvals else detail.amount)
@@ -604,6 +642,7 @@ def appendix(
                     "accounting_amount": money(item.amount),
                     "expense_details": [
                         {
+                            "expense_id": item.id,
                             "description": item.description,
                             "amount": money(item.amount),
                             "category_l1": item.category_l1,

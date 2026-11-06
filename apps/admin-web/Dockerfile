@@ -30,21 +30,17 @@ COPY package.json pnpm-workspace.yaml ./
 COPY apps/admin-web ./apps/admin-web
 RUN pnpm --filter @fin-hub/admin-web build
 
-FROM ${NODE_BASE_IMAGE} AS runner
+# Always start the runtime from Node, never from a previous application image.
+FROM node:22-slim AS runner
 WORKDIR /repo
-ENV COREPACK_NPM_REGISTRY=https://registry.npmmirror.com \
-    npm_config_registry=https://registry.npmmirror.com
-RUN corepack enable
-ENV NODE_ENV=production
-ENV NEXT_TELEMETRY_DISABLED=1
+ENV NODE_ENV=production \
+    NEXT_TELEMETRY_DISABLED=1 \
+    HOSTNAME=0.0.0.0 \
+    PORT=3000
 
-# 最小化最终镜像，只复制必要的运行时文件
-COPY --from=build /repo/package.json /repo/pnpm-workspace.yaml ./
-COPY --from=build /repo/node_modules ./node_modules
-COPY --from=build /repo/packages ./packages
-COPY --from=build /repo/apps/admin-web/node_modules ./apps/admin-web/node_modules
-COPY --from=build /repo/apps/admin-web/.next ./apps/admin-web/.next
-COPY --from=build /repo/apps/admin-web/package.json ./apps/admin-web/package.json
+COPY --from=build --chown=node:node /repo/apps/admin-web/.next/standalone ./
+COPY --from=build --chown=node:node /repo/apps/admin-web/.next/static ./apps/admin-web/.next/static
 
+USER node
 EXPOSE 3000
-CMD ["pnpm", "--filter", "@fin-hub/admin-web", "start"]
+CMD ["node", "apps/admin-web/server.js"]

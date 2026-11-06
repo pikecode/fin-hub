@@ -718,6 +718,17 @@ def update_bank_transaction(
     return ApiEnvelope(data=transaction)
 
 
+def remove_unmatched_bank(session, transaction):
+    """Retain rejected matching history without leaving the bank in active lists."""
+    history = any(session.scalar(select(model.id).where(
+        model.bank_transaction_id == transaction.id
+    ).limit(1)) for model in (ExpenseBankMatch, RevenueBankMatch))
+    if history:
+        transaction.is_archived = True
+    else:
+        session.delete(transaction)
+
+
 @router.delete("/batch", response_model=ApiEnvelope[BankTransactionBatchDeleteResult])
 def delete_bank_transactions_batch(
     payload: BankTransactionBatchDeleteRequest,
@@ -737,10 +748,10 @@ def delete_bank_transactions_batch(
         if Decimal(transaction.matched_amount or 0) > 0 or transaction.special_type is not None:
             raise HTTPException(status_code=409, detail="选中的银行流水中包含已匹配流水，不能批量删除")
         has_expense_match = session.scalar(
-            select(ExpenseBankMatch).where(ExpenseBankMatch.bank_transaction_id == transaction.id).limit(1)
+            select(ExpenseBankMatch).where(ExpenseBankMatch.bank_transaction_id == transaction.id, ExpenseBankMatch.status != "rejected").limit(1)
         )
         has_revenue_match = session.scalar(
-            select(RevenueBankMatch).where(RevenueBankMatch.bank_transaction_id == transaction.id).limit(1)
+            select(RevenueBankMatch).where(RevenueBankMatch.bank_transaction_id == transaction.id, RevenueBankMatch.status != "rejected").limit(1)
         )
         if has_expense_match or has_revenue_match:
             raise HTTPException(status_code=409, detail="选中的银行流水中包含已有匹配记录的流水，不能批量删除")
@@ -762,7 +773,7 @@ def delete_bank_transactions_batch(
         )
         protect_payment_bank(session, transaction.id)
         sync_direct_posting(session, transaction, deleting=True)
-        session.delete(transaction)
+        remove_unmatched_bank(session, transaction)
     session.commit()
     return ApiEnvelope(data=BankTransactionBatchDeleteResult(deleted_count=len(transactions)))
 
@@ -784,10 +795,10 @@ def delete_bank_transaction(
     if Decimal(transaction.matched_amount or 0) > 0 or transaction.special_type is not None:
         raise HTTPException(status_code=409, detail="Bank transaction already matched")
     has_expense_match = session.scalar(
-        select(ExpenseBankMatch).where(ExpenseBankMatch.bank_transaction_id == transaction_id).limit(1)
+        select(ExpenseBankMatch).where(ExpenseBankMatch.bank_transaction_id == transaction_id, ExpenseBankMatch.status != "rejected").limit(1)
     )
     has_revenue_match = session.scalar(
-        select(RevenueBankMatch).where(RevenueBankMatch.bank_transaction_id == transaction_id).limit(1)
+        select(RevenueBankMatch).where(RevenueBankMatch.bank_transaction_id == transaction_id, RevenueBankMatch.status != "rejected").limit(1)
     )
     if has_expense_match or has_revenue_match:
         raise HTTPException(status_code=409, detail="Bank transaction already has match records")
@@ -807,7 +818,7 @@ def delete_bank_transaction(
         },
     )
     sync_direct_posting(session, transaction, deleting=True)
-    session.delete(transaction)
+    remove_unmatched_bank(session, transaction)
     session.commit()
     return ApiEnvelope(data=deleted)
 

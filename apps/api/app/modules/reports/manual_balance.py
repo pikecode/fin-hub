@@ -1,5 +1,7 @@
 """Report-only manual bank balance; no changes to bank transactions or profit."""
 
+from calendar import monthrange
+from datetime import date as DateValue
 from decimal import Decimal
 
 from fastapi import HTTPException
@@ -15,6 +17,8 @@ from app.modules.bank.unpaid import mutation_lock
 class ManualBalanceUpdate(BaseModel):
     amount: Decimal | None = Field(max_digits=14, decimal_places=2)
     expected: Decimal | None = Field(max_digits=14, decimal_places=2)
+    date: DateValue | None = None
+    expected_date: DateValue | None = None
     reason: str = Field(min_length=1, max_length=1000)
 
 
@@ -41,12 +45,20 @@ def save_manual_balance(session, user, store_id, period, payload):
         .execution_options(populate_existing=True)
     )
     old = setting.bank_balance_manual if setting else None
+    year, month = map(int, period.split("-"))
+    fallback_date = DateValue(year, month, monthrange(year, month)[1])
+    old_date = (setting.bank_balance_date if setting else None) or fallback_date
+    if "expected_date" in payload.model_fields_set and payload.expected_date != old_date:
+        raise HTTPException(409, "报表余额日期已被修改，请刷新后重新录入")
+    if "date" in payload.model_fields_set and payload.amount is not None and payload.date is None:
+        raise HTTPException(422, "请选择余额截止日期")
     if old != payload.expected:
         raise HTTPException(409, "报表余额已被修改，请刷新后重新录入")
     if setting is None:
         setting = FinancialReportMonthSetting(store_id=store_id, period=period)
         session.add(setting)
     setting.bank_balance_manual = payload.amount
+    setting.bank_balance_date = (payload.date if "date" in payload.model_fields_set else old_date) if payload.amount is not None else None
     write_audit_log(
         session,
         actor=audit_actor(user),
@@ -58,6 +70,8 @@ def save_manual_balance(session, user, store_id, period, payload):
             "period": period,
             "before": str(old) if old is not None else None,
             "after": str(payload.amount) if payload.amount is not None else None,
+            "before_date": old_date.isoformat(),
+            "after_date": setting.bank_balance_date.isoformat() if setting.bank_balance_date else None,
             "reason": payload.reason.strip(),
         },
     )

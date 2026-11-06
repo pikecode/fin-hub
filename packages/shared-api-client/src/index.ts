@@ -755,7 +755,7 @@ export function createApiClient(options: ApiClientOptions) {
     },
     reports: {
       financialSupplement: (storeId: string, period: string) => request<FinancialReportSupplement>(`/api/reports/financial-supplement?store_id=${encodeURIComponent(storeId)}&period=${encodeURIComponent(period)}`),
-      updateReportBankBalance: (storeId: string, period: string, amount: string | null, expected: string | null, reason: string) => request<FinancialReportSupplement>(`/api/reports/financial-bank-balance?store_id=${encodeURIComponent(storeId)}&period=${encodeURIComponent(period)}`, { method: "PATCH", body: JSON.stringify({ amount, expected, reason }) }),
+      updateReportBankBalance: (storeId: string, period: string, amount: string | null, expected: string | null, reason: string, date?: string | null, expectedDate?: string | null) => request<FinancialReportSupplement>(`/api/reports/financial-bank-balance?store_id=${encodeURIComponent(storeId)}&period=${encodeURIComponent(period)}`, { method: "PATCH", body: JSON.stringify({ amount, expected, reason, date, expected_date: expectedDate }) }),
       updateFinancialTarget: (storeId: string, period: string, revenueTarget: string | null) => request<FinancialReportSupplement>(`/api/reports/financial-target?store_id=${encodeURIComponent(storeId)}&period=${encodeURIComponent(period)}`, { method: "PATCH", body: JSON.stringify({ revenue_target: revenueTarget }) }),
       financialAppendix: (storeId: string, period: string) => request<FinancialReportAppendix>(`/api/reports/financial-appendix?store_id=${encodeURIComponent(storeId)}&period=${encodeURIComponent(period)}`),
       analytics: (params = "") => request<FinancialAnalyticsReport>(`/api/reports/analytics${params}`),

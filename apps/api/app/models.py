@@ -918,6 +918,7 @@ class FinancialReportMonthSetting(Base):
     period: Mapped[str] = mapped_column(String(7), nullable=False)
     revenue_target: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
     bank_balance_manual: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+    bank_balance_date: Mapped[date | None] = mapped_column(Date)
 
 
 class DividendFundingSetting(Base):

@@ -284,6 +284,7 @@ def test_appendix_uses_accounting_month_full_approval_details_and_no_500_limit(c
     bank_detail = next(row for row in data["rows"] if row["transaction"]["id"] == bank.id)
     assert bank_detail["business"][0]["accounting_amount"] == "60.00"
     assert len(bank_detail["business"][0]["expense_details"]) == 2
+    assert {item["expense_id"] for item in bank_detail["business"][0]["expense_details"]} == {item["id"] for item in data["expense_items"]}
     assert len(data["expense_items"]) == 2
     assert data["expense_items"][0]["application_date"].startswith("2026-09-01")
     october = client.get(

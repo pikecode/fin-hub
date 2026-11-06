@@ -1573,6 +1573,7 @@ export interface DividendFundingSetting {
 }
 
 export interface FinancialReportSupplement extends DividendFundingSetting {
+  historical_category_expenses?: Array<{ name: string; amount: string }>;
   accrual_totals?: { accrual: string; supplement: string; reversal: string };
   historical_profit?: string;
   preopening_balance?: string | null;
@@ -1611,7 +1612,7 @@ export interface FinancialReportAppendix {
       shared_accounting_amount?: boolean;
       revenue_start?: string;
       revenue_end?: string;
-      expense_details?: { description: string; amount: string; category_l1: string | null; category_l2: string | null }[];
+      expense_details?: { expense_id?: string; description: string; amount: string; category_l1: string | null; category_l2: string | null }[];
     }[];
   }[];
 }

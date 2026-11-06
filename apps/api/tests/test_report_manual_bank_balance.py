@@ -158,3 +158,21 @@ def test_0041_migration_preserves_targets_without_fabricating_balance(client, se
     migration.downgrade()
     migration.upgrade()
     session.commit()
+
+
+def test_manual_balance_as_of_date_and_date_only_conflict(client, session):
+    store = setup(session)
+    url = f"/api/reports/financial-bank-balance?store_id={store.id}&period=2026-09"
+    payload = {"amount": "1200", "expected": None, "date": "2026-10-05", "expected_date": "2026-09-30", "reason": "实际核对日期"}
+    response = client.patch(url, json=payload)
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["bank_balance"]["date"] == "2026-10-05"
+    payload.update(expected="1200", expected_date="2026-10-05", date="2026-10-06")
+    assert client.patch(url, json=payload).status_code == 200
+    assert client.patch(url, json=payload).status_code == 409
+    payload.update(expected_date="2026-10-06", date=None)
+    assert client.patch(url, json=payload).status_code == 422
+    payload.update(amount=None)
+    response = client.patch(url, json=payload)
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["bank_balance"]["status"] == "missing_manual"
