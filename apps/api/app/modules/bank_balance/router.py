@@ -2,7 +2,8 @@ from datetime import datetime, time
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from pydantic import BaseModel, Field
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.core.database import get_session
@@ -31,7 +32,7 @@ def ensure_correction_ledger_open(session: Session, store_id: str, correction_da
 def latest_correction(session: Session, store_id: str) -> BankBalanceCorrection | None:
     return session.scalar(
         select(BankBalanceCorrection)
-        .where(BankBalanceCorrection.store_id == store_id)
+        .where(BankBalanceCorrection.store_id == store_id, BankBalanceCorrection.is_deleted.is_(False))
         .order_by(
             BankBalanceCorrection.correction_date.desc(),
             BankBalanceCorrection.created_at.desc(),
@@ -110,7 +111,7 @@ def list_bank_balance_corrections(
     corrections = list(
         session.scalars(
             select(BankBalanceCorrection)
-            .where(BankBalanceCorrection.store_id == store_id)
+            .where(BankBalanceCorrection.store_id == store_id, BankBalanceCorrection.is_deleted.is_(False))
             .order_by(
                 BankBalanceCorrection.correction_date.desc(),
                 BankBalanceCorrection.created_at.desc(),
@@ -137,6 +138,7 @@ def create_bank_balance_correction(
     ensure_store_access(session, current_user, payload.store_id)
     if not verify_password(payload.password, current_user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid password")
+    session.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"), {"key": "bank-balance:" + payload.store_id})
     ensure_correction_ledger_open(session, payload.store_id, payload.correction_date)
 
     correction = BankBalanceCorrection(
@@ -166,3 +168,39 @@ def create_bank_balance_correction(
     session.commit()
     session.refresh(correction)
     return ApiEnvelope(data=correction_read(correction, current_user.display_name))
+
+
+class CorrectionDelete(BaseModel):
+    reason: str = Field(min_length=1, max_length=500)
+    password: str
+
+
+@router.delete("/corrections/{correction_id}")
+def delete_correction(correction_id: str, payload: CorrectionDelete,
+                      session: Session = Depends(get_session),  # noqa: B008
+                      current_user: User = Depends(get_current_user)):  # noqa: B008
+    ensure_permission(session, current_user, "reconciliation.manage")
+    correction = session.get(BankBalanceCorrection, correction_id)
+    if correction is None:
+        raise HTTPException(404, "校正记录不存在")
+    ensure_store_access(session, current_user, correction.store_id)
+    if not verify_password(payload.password, current_user.password_hash):
+        raise HTTPException(401, "密码错误")
+    if not payload.reason.strip():
+        raise HTTPException(422, "请填写删除原因")
+    session.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+                    {"key": "bank-balance:" + correction.store_id})
+    session.refresh(correction)
+    if not correction.is_deleted:
+        ensure_correction_ledger_open(session, correction.store_id, correction.correction_date)
+        before = calculate_bank_balance(session, correction.store_id).model_dump(mode="json")
+        correction.is_deleted = True
+        session.flush()
+        after = calculate_bank_balance(session, correction.store_id).model_dump(mode="json")
+        write_audit_log(session, actor=audit_actor(current_user), action="bank_balance_correction.delete",
+            resource_type="bank_balance_correction", resource_id=correction.id,
+            summary="删除银行余额校正", metadata={"store_id": correction.store_id,
+            "reason": payload.reason.strip(), "before": before, "after": after,
+            "correction_date": str(correction.correction_date), "balance_amount": str(correction.balance_amount)})
+        session.commit()
+    return ApiEnvelope(data=calculate_bank_balance(session, correction.store_id))

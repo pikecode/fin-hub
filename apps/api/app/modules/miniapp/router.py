@@ -266,8 +266,11 @@ def dividend(
             )
         )
     )
+    from app.modules.reports.financial import supplement
+
     return ApiEnvelope(
-        data={"opening": opening, "history": [r for r in history if r.period in visible]}
+        data={"opening": opening, "history": [r for r in history if r.period in visible],
+              "supplement": supplement(store_id, period, session, user).data}
     )
 
 

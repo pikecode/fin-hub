@@ -1,16 +1,19 @@
-import { Button, Image, Text, View } from "@tarojs/components";
+import { Button, Text, View } from "@tarojs/components";
 import Taro from "@tarojs/taro";
 import { useEffect, useState } from "react";
 import type { BankTransactionBusinessDetail } from "@fin-hub/shared-types";
 import { api, API_BASE_URL, getShareholderToken } from "../../lib/api";
-const money = (x: unknown) => "¥" + Number(x || 0).toFixed(2);
+const postingLabels: Record<string, string> = { bank_interest: "银行结息", other_income: "其他收入", bank_fee: "银行手续费", bank_sms_fee: "银行短信费", bank_other_expense: "银行其他支出" };
+const money = (x: unknown) => x == null ? "—" : "¥" + Number(x).toFixed(2);
 export default function Detail() {
   const { id } = Taro.useRouter().params;
   const [data, D] = useState<BankTransactionBusinessDetail | null>(null),
+    [showDetails, SD] = useState(Taro.useRouter().params.details === "1"),
     [error, E] = useState(""),
     [busy, B] = useState(false);
   async function load() {
     B(true);
+    D(null);
     E("");
     try {
       D(await api.bankDetail(id || ""));
@@ -62,6 +65,26 @@ export default function Detail() {
             <Text>{data.special_label}</Text>
             <Text>{data.remark || "无备注"}</Text>
           </View>
+          <Button onClick={() => SD(!showDetails)}>{showDetails ? "收起详情" : "详情"}</Button>
+          {showDetails && <View className="section">
+            <Text className="section-title">流水完整信息</Text>
+            {[
+              ["发生时间", data.transaction.occurred_at.replace("T", " ")],
+              ["方向", data.transaction.direction === "income" ? "收入" : "支出"],
+              ["金额", money(data.transaction.amount)],
+              ["对方户名", data.transaction.counterparty_name],
+              ["对方账号", data.transaction.counterparty_account],
+              ["银行流水号", data.transaction.bank_serial_no],
+              ["流水属性", data.special_label || "普通流水"],
+              ["直接入账", postingLabels[data.transaction.direct_posting_type || ""] || "—"],
+              ["付款情况", data.transaction.payment_status === "paid" ? "已实付" : "未实付"],
+              ["已匹配金额", money(data.transaction.matched_amount)],
+              ["入账月份", data.transaction.accounting_periods?.join("、") || "待入账"],
+              ["流水备注", data.transaction.summary || data.remark],
+              ["录入时间", data.transaction.created_at],
+              ["更新时间", data.transaction.updated_at],
+            ].map(([label, value]) => <View className="row" key={String(label)}><Text>{label}</Text><Text>{value || "—"}</Text></View>)}
+          </View>}
           {data.expenses.map((x, i) => (
             <View className="section" key={x.expense_item_id + i}>
               <Text className="section-title">

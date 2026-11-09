@@ -82,6 +82,7 @@ def balance_at(session, store_id, cutoff, today=None):
         .where(
             BankBalanceCorrection.store_id == store_id,
             BankBalanceCorrection.correction_date <= cutoff,
+            BankBalanceCorrection.is_deleted.is_(False),
         )
         .order_by(
             BankBalanceCorrection.correction_date.desc(),
@@ -304,6 +305,23 @@ def supplement(
     )
     totals = dividend_totals(session, store_id, period)
     opening = session.get(DividendOpeningBalance, store_id)
+    previous_period = (first - timedelta(days=1)).strftime("%Y-%m")
+    previous_remaining = (
+        money(opening.opening_remaining) if opening and period == opening.start_period
+        else dividend_totals(session, store_id, previous_period)["remaining_undistributed"]
+    )
+    from app.modules.expense_classification import is_non_operating_expense
+
+    # Reuse report accounting rows so deleted/excluded entries and signed reversals agree.
+    accounted = {row[0]: row[3] for row in confirmed_accounting_expense_rows(session, store_id, period)
+                 if not is_non_operating_expense(row[1], row[2])}
+    accrual_details = [{"id": item.id, "category_l1": item.category_l1,
+                        "category_l2": item.category_l2, "description": item.description,
+                        "date": item.expense_date.isoformat(), "amount": money(accounted[item.id])}
+                       for item in session.scalars(select(ExpenseItem).where(
+                           ExpenseItem.id.in_(accounted), ExpenseItem.source == "accrual")
+                           .order_by(ExpenseItem.category_l1, ExpenseItem.category_l2,
+                                     ExpenseItem.expense_date, ExpenseItem.id))]
     funding = funding_read(session, store_id)
     from app.models import AccrualEntry
     accrual_totals = {kind: money(amount) for kind, amount in session.execute(select(
@@ -329,6 +347,8 @@ def supplement(
             **totals,
             **funding,
             "historical_category_expenses": historical_category_expenses(session, store_id, period),
+            "previous_remaining_undistributed": previous_remaining,
+            "accrual_details": accrual_details,
             "accrual_totals": {kind: accrual_totals.get(kind, "0.00") for kind in ("accrual", "supplement", "reversal")},
             **construction,
             "total_capital": money(

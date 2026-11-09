@@ -7,6 +7,7 @@ import type {
   BankTransactionBusinessDetail,
   RevenueRecord,
   DividendMonth,
+  FinancialReportSupplement,
 } from "@fin-hub/shared-types";
 declare const __API_BASE_URL__: string;
 export const API_BASE_URL = __API_BASE_URL__;
@@ -53,7 +54,7 @@ export interface MobileStore {
 }
 export interface MobileReport {
   report: StoreLedgerWorkspace;
-  supplement: Record<string, unknown>;
+  supplement: FinancialReportSupplement;
 }
 export interface MobileRevenue {
   channels: { channel: string; gross: string; net: string; fee: string }[];
@@ -88,7 +89,7 @@ export const api = {
   bankDetail: (id: string) =>
     request<BankTransactionBusinessDetail>("/bank/" + id),
   dividend: (id: string, period: string) =>
-    request<{ history: DividendMonth[] }>(
+    request<{ history: DividendMonth[]; supplement: FinancialReportSupplement }>(
       `/dividend?store_id=${id}&period=${period}`,
     ),
   preopening: (id: string) =>

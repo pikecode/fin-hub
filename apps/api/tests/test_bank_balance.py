@@ -166,3 +166,27 @@ def test_bank_balance_correction_requires_password_and_open_ledger(client: TestC
         },
     )
     assert closed.status_code == 409
+
+
+def test_delete_correction_falls_back_and_keeps_history(client, session):
+    from app.models import BankBalanceCorrection
+    store = client.post('/api/stores', json={'name': '删除校正测试'}).json()['data']['id']
+    ids = []
+    for day, amount in [('2026-09-01', '1000'), ('2026-09-02', '2000')]:
+        response = client.post('/api/bank-balance/corrections', json={
+            'store_id': store, 'correction_date': day, 'balance_amount': amount,
+            'remark': '测试', 'password': 'admin123456'})
+        assert response.status_code == 201, response.text
+        ids.append(response.json()['data']['id'])
+    def remove(id, password='admin123456'):
+        return client.request('DELETE', '/api/bank-balance/corrections/' + id,
+            json={'reason': '录入错误', 'password': password})
+    assert remove(ids[1], 'wrong').status_code == 401
+    response = remove(ids[1])
+    assert response.status_code == 200, response.text
+    assert response.json()['data']['base_correction_date'] == '2026-09-01'
+    assert response.json()['data']['balance_amount'] == '1000.00'
+    assert session.get(BankBalanceCorrection, ids[1]).is_deleted
+    assert len(client.get('/api/bank-balance/corrections', params={'store_id':store}).json()['data']) == 1
+    assert remove(ids[1]).status_code == 200
+    assert remove(ids[0]).json()['data']['has_correction'] is False

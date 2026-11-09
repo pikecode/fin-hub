@@ -522,6 +522,11 @@ export default function BankPage() {
     }
   }
 
+  const [deletingCorrection, setDeletingCorrection] = useState<BankBalanceCorrection | null>(null);
+  const [correctionDeleteReason, setCorrectionDeleteReason] = useState("");
+  const [correctionDeletePassword, setCorrectionDeletePassword] = useState("");
+  const [correctionDeleting, setCorrectionDeleting] = useState(false);
+
   async function loadBalanceHistory() {
     if (!queryStoreId) {
       message.warning("请先选择门店");
@@ -1778,6 +1783,24 @@ export default function BankPage() {
         />
       </Modal>
 
+      <Modal title="删除余额校正记录" open={!!deletingCorrection} confirmLoading={correctionDeleting} okButtonProps={{ danger: true }} onCancel={() => !correctionDeleting && setDeletingCorrection(null)} onOk={async () => {
+        if (!deletingCorrection || correctionDeleting) return;
+        if (!correctionDeleteReason.trim() || !correctionDeletePassword) { message.warning("请填写删除原因和密码"); return; }
+        setCorrectionDeleting(true);
+        try {
+          await apiClient.request(`/api/bank-balance/corrections/${deletingCorrection.id}`, { method: "DELETE", body: JSON.stringify({ reason: correctionDeleteReason, password: correctionDeletePassword }) });
+          setDeletingCorrection(null); setCorrectionDeletePassword("");
+          await loadBalanceHistory(); await loadData(filterForm.getFieldsValue());
+          message.success("校正记录已失效，余额已按有效基准重新计算");
+        } catch (error) { message.error(error instanceof Error ? error.message : "删除失败"); }
+        finally { setCorrectionDeleting(false); }
+      }}>
+        <Alert type="warning" showIcon message="删除最新校正后，将回退至上一条有效基准；没有有效记录时显示暂无基准。" />
+        <Typography.Paragraph>{deletingCorrection?.correction_date} · {deletingCorrection?.balance_amount}</Typography.Paragraph>
+        <Input.TextArea disabled={correctionDeleting} placeholder="删除原因" value={correctionDeleteReason} onChange={e => setCorrectionDeleteReason(e.target.value)} maxLength={500} />
+        <Input.Password disabled={correctionDeleting} placeholder="当前账号密码" value={correctionDeletePassword} onChange={e => setCorrectionDeletePassword(e.target.value)} />
+      </Modal>
+
       <Modal
         title="银行余额校正记录"
         open={isBalanceHistoryModalOpen}
@@ -1792,6 +1815,7 @@ export default function BankPage() {
           dataSource={balanceCorrections}
           columns={[
             { title: "校正日期", dataIndex: "correction_date", width: 130 },
+            { title: "操作", render: (_, row) => <Button danger size="small" onClick={() => { setDeletingCorrection(row); setCorrectionDeleteReason(""); setCorrectionDeletePassword(""); }}>删除</Button> },
             { title: "银行余额", dataIndex: "balance_amount", width: 150, render: (value: string) => <MoneyDisplay value={Number(value)} /> },
             { title: "备注", dataIndex: "remark", ellipsis: true },
             { title: "录入人", dataIndex: "created_by", width: 140 },

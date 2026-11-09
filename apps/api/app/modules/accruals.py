@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from app.core.database import get_session
 from app.models import (
     AccrualApprovalLink,
+    AccrualDocument,
     AccrualEntry,
     ApprovalInstance,
     AuditLog,
@@ -53,6 +54,7 @@ class EntryCreate(BaseModel):
 
 
 class EntryRead(EntryCreate):
+    document_id: str | None = None
     model_config = ConfigDict(from_attributes=True)
     id: str
     created_by: str
@@ -81,6 +83,12 @@ def list_entries(
 
 @router.post("", response_model=ApiEnvelope[EntryRead])
 def create_entry(payload: EntryCreate, session: SessionDependency, user: UserDependency):
+    result = apply_entry(payload, session, user)
+    session.commit()
+    return result
+
+
+def apply_entry(payload, session, user):
     authorize(session, user, payload.store_id, "reconciliation.manage")
     from app.modules.bank.unpaid import mutation_lock
 
@@ -215,9 +223,79 @@ def create_entry(payload: EntryCreate, session: SessionDependency, user: UserDep
             "original_id": entry.original_id,
         },
     )
-    session.commit()
-    session.refresh(entry)
+    session.flush()
     return ApiEnvelope(data=entry)
+
+
+class DocumentLine(BaseModel):
+    category_l1: str
+    category_l2: str
+    amount: Decimal = Field(gt=0, max_digits=14, decimal_places=2)
+    remark: str = Field(min_length=1, max_length=2000)
+
+
+class DocumentCreate(BaseModel):
+    store_id: str
+    period: str = Field(pattern=r"^\d{4}-(0[1-9]|1[0-2])$")
+    remark: str = Field(min_length=1, max_length=2000)
+    request_key: str = Field(min_length=1, max_length=64)
+    lines: list[DocumentLine] = Field(min_length=1, max_length=100)
+
+
+def document_read(document, session):
+    rows = list(session.scalars(select(AccrualEntry).where(
+        AccrualEntry.document_id == document.id).order_by(AccrualEntry.created_at, AccrualEntry.id)))
+    return {"id": document.id, "store_id": document.store_id, "period": document.period,
+            "remark": document.remark, "amount": str(sum((row.amount for row in rows), Decimal(0))),
+            "lines": [EntryRead.model_validate(row).model_dump(mode="json") for row in rows]}
+
+
+@router.get("/documents")
+def list_documents(store_id: str, session: SessionDependency, user: UserDependency):
+    authorize(session, user, store_id, "reconciliation.view")
+    return ApiEnvelope(data=[document_read(row, session) for row in session.scalars(
+        select(AccrualDocument).where(AccrualDocument.store_id == store_id)
+        .order_by(AccrualDocument.created_at.desc()))])
+
+
+@router.post("/documents")
+def create_document(payload: DocumentCreate, session: SessionDependency, user: UserDependency):
+    import json
+    from hashlib import sha256
+
+    from app.modules.bank.unpaid import mutation_lock
+
+    authorize(session, user, payload.store_id, "reconciliation.manage")
+    if not payload.remark.strip() or not payload.request_key.strip():
+        raise HTTPException(422, "备注及请求标识不能为空")
+    mutation_lock(session)
+    session.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+                    {"key": "accrual:" + payload.store_id})
+    encoded = json.dumps(payload.model_dump(mode="json"), sort_keys=True)
+    existing = session.scalar(select(AccrualDocument).where(
+        AccrualDocument.store_id == payload.store_id, AccrualDocument.request_key == payload.request_key))
+    if existing:
+        if existing.payload_json != encoded:
+            raise HTTPException(409, "重复请求参数不一致")
+        return ApiEnvelope(data=document_read(existing, session))
+    try:
+        document = AccrualDocument(store_id=payload.store_id, period=payload.period,
+            remark=payload.remark.strip(), request_key=payload.request_key,
+            payload_json=encoded, created_by=user.id)
+        session.add(document)
+        session.flush()
+        for index, line in enumerate(payload.lines):
+            entry = apply_entry(EntryCreate(store_id=payload.store_id, period=payload.period,
+                **line.model_dump(), request_key=sha256(
+                    f"document:{payload.store_id}:{payload.request_key}:{index}".encode()).hexdigest()), session, user).data
+            entry.document_id = document.id
+        session.flush()
+        result = document_read(document, session)
+        session.commit()
+        return ApiEnvelope(data=result)
+    except Exception:
+        session.rollback()
+        raise
 
 
 @router.patch("/{entry_id}", response_model=ApiEnvelope[EntryRead])

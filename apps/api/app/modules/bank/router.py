@@ -182,7 +182,7 @@ def attach_running_balances(session: Session, items: list[BankTransaction]) -> N
         corrections = list(
             session.scalars(
                 select(BankBalanceCorrection)
-                .where(BankBalanceCorrection.store_id == store_id)
+                .where(BankBalanceCorrection.store_id == store_id, BankBalanceCorrection.is_deleted.is_(False))
                 .order_by(
                     BankBalanceCorrection.correction_date.asc(),
                     BankBalanceCorrection.created_at.asc(),

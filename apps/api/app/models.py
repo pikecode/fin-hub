@@ -565,6 +565,7 @@ class BankPaymentSettlementLink(Base):
 
 
 class BankBalanceCorrection(Base):
+    is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
     __tablename__ = "bank_balance_corrections"
     __table_args__ = (
         Index("ix_bank_balance_corrections_store_date", "store_id", "correction_date"),
@@ -960,7 +961,21 @@ class ApprovalAccountingAllocation(Base):
     amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
 
 
+class AccrualDocument(Base):
+    __tablename__ = "accrual_documents"
+    __table_args__ = (UniqueConstraint("store_id", "request_key", name="uq_accrual_document_request"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    store_id: Mapped[str] = mapped_column(ForeignKey("stores.id"), index=True)
+    period: Mapped[str] = mapped_column(String(7))
+    remark: Mapped[str] = mapped_column(Text)
+    request_key: Mapped[str] = mapped_column(String(64))
+    payload_json: Mapped[str] = mapped_column(Text)
+    created_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
+
+
 class AccrualEntry(Base):
+    document_id: Mapped[str | None] = mapped_column(ForeignKey("accrual_documents.id"), index=True)
     __tablename__ = "accrual_entries"
     __table_args__ = (
         UniqueConstraint("store_id", "request_key", name="uq_accrual_request"),

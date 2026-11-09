@@ -146,3 +146,48 @@ def test_mobile_report_uses_multi_period_cost_and_denies_other_store_bank(client
     assert r.status_code == 200, r.text
     assert sum(Decimal(x["amount"]) for x in r.json()["data"]["items"]) == Decimal("20000")
     assert client.get("/api/miniapp/bank/" + other.id, headers=h).status_code == 403
+
+
+def test_mobile_dynamic_group_scope_and_revocation(client, session):
+    from datetime import datetime
+    from app.models import StoreGroup, UserStoreGroupPermission
+
+    direct, outside, user = setup(session)
+    group = StoreGroup(name="股东授权分组")
+    session.add(group)
+    session.flush()
+    grant = UserStoreGroupPermission(user_id=user.id, group_id=group.id)
+    session.add(grant)
+    session.commit()
+    client.cookies.clear()
+    headers = {"authorization": "Bearer " + make_token(user)}
+    # A store added after the token is issued inherits the group grant.
+    later = Store(name="分组后续新门店", group_id=group.id)
+    session.add(later)
+    session.flush()
+    transaction = BankTransaction(store_id=later.id, ledger_period="2026-10",
+        occurred_at=datetime(2026, 11, 1), direction="expense", amount=123,
+        counterparty_account="test-account", summary="测试备注", payment_status="paid")
+    session.add_all([transaction, Ledger(store_id=later.id, period="2026-10", status="closed")])
+    session.commit()
+    assert {r["id"] for r in client.get("/api/miniapp/stores", headers=headers).json()["data"]} == {direct.id, later.id}
+    detail_url = f"/api/miniapp/bank/{transaction.id}"
+    detail = client.get(detail_url, headers=headers)
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["data"]["transaction"]["counterparty_account"] == "test-account"
+    dividend_url = f"/api/miniapp/dividend?store_id={later.id}&period=2026-10"
+    dividend = client.get(dividend_url, headers=headers)
+    assert dividend.status_code == 200, dividend.text
+    assert dividend.json()["data"]["supplement"]["store_id"] == later.id
+    # Moving out of the group revokes scope without issuing a new token.
+    later.group_id = None
+    session.commit()
+    assert client.get(detail_url, headers=headers).status_code == 403
+    later.group_id = group.id
+    session.commit()
+    session.delete(grant)
+    session.commit()
+    assert client.get(dividend_url, headers=headers).status_code == 403
+    assert client.get(detail_url, headers=headers).status_code == 403
+    assert {r["id"] for r in client.get("/api/miniapp/stores", headers=headers).json()["data"]} == {direct.id}
+    assert client.get(f"/api/miniapp/bank?store_id={outside.id}", headers=headers).status_code == 403

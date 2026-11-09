@@ -1,7 +1,7 @@
 import { Button, Picker, Text, View } from "@tarojs/components";
 import Taro from "@tarojs/taro";
 import { useEffect, useRef, useState } from "react";
-import type { BankTransaction, DividendMonth } from "@fin-hub/shared-types";
+import type { BankTransaction, DividendMonth, FinancialReportSupplement } from "@fin-hub/shared-types";
 import {
   api,
   MobileStore,
@@ -50,6 +50,7 @@ export default function Report() {
       null,
     ),
     [div, D] = useState<DividendMonth[]>([]),
+    [divSummary, DS] = useState<FinancialReportSupplement | null>(null),
     [page, PG] = useState(1),
     [start, ST] = useState(""),
     [end, EN] = useState(""),
@@ -99,6 +100,7 @@ export default function Report() {
     BK(null);
     PR(null);
     D([]);
+    DS(null);
     E("");
     if (!storeId) return;
     if ([0, 1, 4].includes(tab) && !period) {
@@ -126,7 +128,7 @@ export default function Report() {
           if (v === version.current) PR(r);
         } else {
           const r = await api.dividend(storeId, period);
-          if (v === version.current) D(r.history);
+          if (v === version.current) { D(r.history); DS(r.supplement); }
         }
       } catch (e) {
         if (v === version.current)
@@ -346,7 +348,7 @@ export default function Report() {
           <View className="section">
             <Text className="section-title">利润与资金</Text>
             <View className="row">
-              <Text>报表次月10日银行余额</Text>
+              <Text>报表银行余额</Text>
               <Text>
                 {money((s?.bank_balance as { amount?: string })?.amount)}
               </Text>
@@ -355,12 +357,15 @@ export default function Report() {
               </Text>
             </View>
             {[
+              ["上月末未分配利润", s?.previous_remaining_undistributed],
               ["剩余未分配利润", s?.remaining_undistributed],
+              ["历史累计利润", s?.historical_profit],
+              ["本月补充筹建超支", s?.preopening_coverage_amount],
               ["本月分配", s?.distribution_amount],
               ["本月运营增资", s?.capital_amount],
               ["筹建投入资金", s?.preopening_investment],
               ["筹建费用总支出", s?.preopening_expense_amount],
-              ["累计增资", s?.total_capital],
+              ["累计投入", s?.total_capital],
               ["累计分红", s?.cumulative_distribution],
             ].map(([l, v]) => (
               <View className="row" key={String(l)}>
@@ -450,6 +455,7 @@ export default function Report() {
                 <Text className="row-sub">
                   余额 {money(x.running_balance)} · 查看业务详情 →
                 </Text>
+                <Button onClick={(event) => { event.stopPropagation(); Taro.navigateTo({ url: "/pages/bank-detail/index?id=" + x.id + "&details=1" }); }}>详情</Button>
               </View>
             ))}
           </View>
@@ -472,6 +478,18 @@ export default function Report() {
           ))}
         </View>
       )}
+      {tab === 4 && divSummary && <View className="section">
+        <Text className="section-title">{period} · 投入与累计</Text>
+        {[
+          ["上月末未分配利润", divSummary.previous_remaining_undistributed],
+          ["筹建投入资金", divSummary.preopening_investment],
+          ["筹建费用总支出", divSummary.preopening_expense_source === "missing" ? null : divSummary.preopening_expense_amount],
+          [Number(divSummary.preopening_balance) < 0 ? "筹建超支" : "筹建结余", divSummary.preopening_balance == null ? null : Math.abs(Number(divSummary.preopening_balance))],
+          ["经营利润已补充筹建超支", divSummary.preopening_profit_covered],
+          ["筹建超支未补充", divSummary.preopening_uncovered],
+          ["累计投入", divSummary.total_capital],
+        ].map(([label, value]) => <View className="row" key={String(label)}><Text>{label}</Text><Text>{money(value)}</Text></View>)}
+      </View>}
       {tab === 4 &&
         div.map((x) => (
           <View className="section" key={x.period}>
@@ -485,14 +503,23 @@ export default function Report() {
                 {money(x.capital_amount)}
               </Text>
               <Text>剩余未分配 {money(x.remaining_undistributed)}</Text>
+              <Text>可分配利润 {money(x.available_profit)}</Text>
+              <Text>本月补充筹建超支 {money(x.preopening_coverage_amount)}</Text>
+              <Text>累计补充筹建超支 {money(x.cumulative_preopening_coverage)}</Text>
+              <Text>历史累计利润 {money(x.historical_profit)}</Text>
+              <Text>历史累计分红 {money(x.historical_distribution)}</Text>
+              <Text>累计运营增资 {money(x.cumulative_capital)}</Text>
+              <Text>建议分红 {money(x.suggested_distribution)} · 参考比例 {pct(x.reference_ratio)}</Text>
+              <Text>{x.excluded_from_calculation ? "期初隔离前" : x.locked ? "已锁定" : "已出账"}</Text>
             </View>
             {x.entries.map((e, i) => (
               <View className="row" key={i}>
                 <Text>
                   {e.shareholder_name} ·{" "}
-                  {e.entry_type === "distribution" ? "分红" : "注资"}{" "}
+                  {e.entry_type === "distribution" ? "分红" : e.entry_type === "preopening_coverage" ? "补充筹建超支" : "注资"}{" "}
                   {money(e.amount)}
                 </Text>
+                <Text className="row-sub">{e.remark || "无备注"}</Text>
               </View>
             ))}
           </View>

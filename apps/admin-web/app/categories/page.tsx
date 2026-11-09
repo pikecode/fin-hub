@@ -28,9 +28,9 @@ export default function CategoriesPage() {
   const parentOptions = useMemo(
     () =>
       categories
-        .filter((category) => !category.parent_id)
+        .filter((category) => !category.parent_id && category.id !== editingCategory?.id)
         .map((category) => ({ label: category.name, value: category.id })),
-    [categories],
+    [categories, editingCategory],
   );
   const categoryById = useMemo(
     () => new Map(categories.map((category) => [category.id, category])),
@@ -178,7 +178,7 @@ export default function CategoriesPage() {
         <Space size={8}>
           <Typography.Text strong={!record.parent_id}>{value}</Typography.Text>
           {record.parent_id ? (
-            <StatusBadge status="default" text="二级分类" />
+            <StatusBadge status={categoryById.get(record.parent_id)?.parent_id ? "warning" : "default"} text={categoryById.get(record.parent_id)?.parent_id ? "层级异常" : "二级分类"} />
           ) : (
             <StatusBadge status="info" text="一级分类" />
           )}
@@ -312,7 +312,7 @@ export default function CategoriesPage() {
               <Select
                 allowClear
                 placeholder="选择上级分类（留空为一级分类）"
-                options={parentOptions}
+                options={editingCategory?.parent_id && !parentOptions.some(option => option.value === editingCategory.parent_id) ? [...parentOptions, { value: editingCategory.parent_id, label: `${categoryById.get(editingCategory.parent_id)?.name || "上级分类不存在"}（层级异常，请重新选择）`, disabled: true }] : parentOptions}
               />
             </Form.Item>
           )}

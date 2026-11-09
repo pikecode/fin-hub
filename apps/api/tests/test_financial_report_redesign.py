@@ -532,3 +532,32 @@ def test_direct_postings_export_their_expenses_and_income_dates(client, session)
     assert calculate_store_ledger_profits(session, store.id, ["2026-09"])["2026-09"] == Decimal(
         "15.00"
     )
+
+
+def test_report_prior_remaining_and_signed_accrual_details(client, session):
+    from app.models import DividendOpeningBalance
+    from test_accruals import setup_store
+
+    payload = setup_store(client, session)
+    store_id = payload["store_id"]
+    session.add(DividendOpeningBalance(
+        store_id=store_id, start_period="2026-09", opening_remaining=100000,
+        historical_profit=100000, historical_distribution=0, operating_capital=0,
+        reason="test", updated_by="test"))
+    session.commit()
+    original = client.post("/api/accruals", json=payload)
+    assert original.status_code == 200, original.text
+    original_id = original.json()["data"]["id"]
+    reversal = client.post("/api/accruals", json={**payload, "period": "2026-10",
+        "entry_type": "reversal", "original_id": original_id,
+        "amount": "5000", "request_key": "report-reversal"})
+    assert reversal.status_code == 200, reversal.text
+    url = f"/api/reports/financial-supplement?store_id={store_id}&period="
+    september = client.get(url + "2026-09").json()["data"]
+    october = client.get(url + "2026-10").json()["data"]
+    assert september["previous_remaining_undistributed"] == "100000.00"
+    assert october["previous_remaining_undistributed"] == september["remaining_undistributed"] == "35000.00"
+    assert september["accrual_details"][0]["amount"] == "65000.00"
+    assert len(october["accrual_details"]) == 1
+    assert october["accrual_details"][0]["amount"] == "-5000.00"
+    assert october["accrual_details"][0]["category_l2"] == "职工薪酬"

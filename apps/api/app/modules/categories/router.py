@@ -68,6 +68,19 @@ def list_categories(
     return ApiEnvelope(data=Page(items=items, total=total, page=page, page_size=page_size))
 
 
+def ensure_two_levels(session, parent_id, category_id=None):
+    if parent_id is None:
+        return
+    parent = session.get(ExpenseCategory, parent_id)
+    if parent is None:
+        raise HTTPException(404, "上级分类不存在")
+    if parent.parent_id is not None:
+        raise HTTPException(409, "费用分类仅支持两级，上级必须是一级分类")
+    if category_id and session.scalar(select(ExpenseCategory.id).where(
+        ExpenseCategory.parent_id == category_id).limit(1)):
+        raise HTTPException(409, "该分类包含子分类，不能移动到其他分类下；请先调整子分类")
+
+
 @router.post("", response_model=ApiEnvelope[ExpenseCategoryRead], status_code=201)
 def create_category(
     payload: ExpenseCategoryCreate,
@@ -79,6 +92,7 @@ def create_category(
         raise HTTPException(status_code=404, detail="Parent category not found")
     if payload.parent_id is None and payload.name in SYSTEM_ROOT_CATEGORY_NAMES:
         raise HTTPException(status_code=409, detail=f"{payload.name}是系统分类，不能手工新增")
+    ensure_two_levels(session, payload.parent_id)
     ensure_parent_is_not_revenue_fee(session, payload.parent_id)
     exists = session.scalar(
         select(ExpenseCategory).where(
@@ -132,6 +146,7 @@ def update_category(
         raise HTTPException(status_code=404, detail="Parent category not found")
     if parent_id is None and name in SYSTEM_ROOT_CATEGORY_NAMES:
         raise HTTPException(status_code=409, detail=f"{name}是系统分类，不能手工新增")
+    ensure_two_levels(session, parent_id, category.id)
     ensure_parent_is_not_revenue_fee(session, parent_id)
     exists = session.scalar(
         select(ExpenseCategory).where(

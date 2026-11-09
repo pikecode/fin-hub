@@ -1573,6 +1573,9 @@ export interface DividendFundingSetting {
 }
 
 export interface FinancialReportSupplement extends DividendFundingSetting {
+  previous_remaining_undistributed?: string | null;
+  accrual_details?: Array<{ id: string; category_l1: string | null; category_l2: string | null; description: string; date: string; amount: string }>;
+
   historical_category_expenses?: Array<{ name: string; amount: string }>;
   accrual_totals?: { accrual: string; supplement: string; reversal: string };
   historical_profit?: string;
