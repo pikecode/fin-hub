@@ -177,7 +177,7 @@ def apply_entry(payload, session, user):
             (
                 link.amount
                 for link in active_links(session, original_id=original.id)
-                if not link.whole_approval
+                if not link.whole_approval and not link.detail_selection_json
             ),
             Decimal(0),
         )
@@ -313,6 +313,7 @@ def remove_entry(
 
 
 class LinkCreate(BaseModel):
+    expense_item_ids: list[str] | None = Field(default=None, min_length=1, max_length=100)
     original_id: str
     approval_id: str
     amount: Decimal | None = Field(default=None, gt=0, max_digits=14, decimal_places=2)
@@ -330,6 +331,7 @@ def link_read(link):
             "approval_id",
             "amount",
             "whole_approval",
+            "detail_selection_json",
             "active",
             "remark",
             "created_at",
@@ -356,6 +358,8 @@ def list_links(store_id: str, session: SessionDependency, user: UserDependency):
 
 
 def apply_link(payload: LinkCreate, session, user):
+    import json
+
     from app.modules.accrual_accounting import active_links, effective_amount, ensure_approval_open
     from app.modules.bank.unpaid import mutation_lock
     from app.modules.matching.accounting import approval_items
@@ -369,7 +373,9 @@ def apply_link(payload: LinkCreate, session, user):
         select(AccrualApprovalLink).where(AccrualApprovalLink.request_key == payload.request_key)
     )
     if existing:
-        if existing.whole_approval != (payload.amount is None) or (
+        selected_ids = sorted(payload.expense_item_ids or [])
+        old_ids = sorted(row["id"] for row in json.loads(existing.detail_selection_json or "[]"))
+        if selected_ids != old_ids or existing.whole_approval != (payload.amount is None and not selected_ids) or (
             existing.original_id,
             existing.approval_id,
             existing.amount,
@@ -378,7 +384,7 @@ def apply_link(payload: LinkCreate, session, user):
             original.id,
             payload.approval_id,
             existing.amount
-            if payload.amount is None and existing.whole_approval
+            if payload.amount is None and (existing.whole_approval or existing.detail_selection_json)
             else payload.amount,
             payload.remark.strip(),
         ):
@@ -396,6 +402,13 @@ def apply_link(payload: LinkCreate, session, user):
         raise HTTPException(422, "关联原因不能为空")
     ensure_approval_open(session, approval)
     items = approval_items(session, approval.id)
+    if payload.expense_item_ids:
+        if payload.amount is not None or len(set(payload.expense_item_ids)) != len(payload.expense_item_ids):
+            raise HTTPException(422, "明细不能重复选择，也无需填写覆盖金额")
+        selected_ids = set(payload.expense_item_ids)
+        items = [item for item in items if item.id in selected_ids]
+        if {item.id for item in items} != selected_ids:
+            raise HTTPException(409, "所选审批明细已变更，请刷新后重新选择")
     if not items or any(
         i.amount < 0 or is_non_operating_expense(i.category_l1, i.category_l2) for i in items
     ):
@@ -408,19 +421,28 @@ def apply_link(payload: LinkCreate, session, user):
         and not payload.confirm_category_difference
     ):
         raise HTTPException(409, "审批分类与计提不同，请确认保留原计提分类或先办理分类调整")
-    whole = payload.amount is None
+    whole = payload.amount is None and not payload.expense_item_ids
+    detailed = bool(payload.expense_item_ids)
     approval_links = active_links(session, approval_id=approval.id)
     if approval_links and (whole or any(link.whole_approval for link in approval_links)):
         raise HTTPException(409, "该审批已有有效计提关联，请先解除原关联")
-    amount = sum((i.amount for i in items), Decimal(0)) if whole else payload.amount
+    if detailed:
+        for previous in approval_links:
+            if not previous.detail_selection_json:
+                raise HTTPException(409, "该审批已有整单或历史金额覆盖，请先解除")
+            if {r["id"] for r in json.loads(previous.detail_selection_json)} & set(payload.expense_item_ids):
+                raise HTTPException(409, "所选明细已关联其他计提，不可重复关联")
+    elif any(link.detail_selection_json for link in approval_links):
+        raise HTTPException(409, "该审批已有明细关联，请先解除")
+    amount = sum((i.amount for i in items), Decimal(0)) if whole or detailed else payload.amount
     if not amount or amount <= 0:
         raise HTTPException(409, "审批金额必须大于零")
-    if not whole:
+    if not whole and not detailed:
         if sum(
             (
                 l.amount
                 for l in active_links(session, original_id=original.id)
-                if not l.whole_approval
+                if not l.whole_approval and not l.detail_selection_json
             ),
             Decimal(0),
         ) + amount > effective_amount(session, original):
@@ -434,6 +456,10 @@ def apply_link(payload: LinkCreate, session, user):
         approval_id=approval.id,
         amount=amount.quantize(Decimal("0.01")),
         whole_approval=whole,
+        detail_selection_json=json.dumps([{"id": i.id, "line_key": i.approval_line_key,
+            "source_document_id": i.source_document_id, "description": i.description,
+            "amount": str(i.amount), "category_l1": i.category_l1, "category_l2": i.category_l2}
+            for i in items], ensure_ascii=False) if detailed else None,
         remark=payload.remark.strip(),
         request_key=payload.request_key,
         created_by=user.id,
@@ -535,3 +561,20 @@ def revoke_link(
         )
         session.commit()
     return ApiEnvelope(data=link_read(link))
+
+
+@router.get("/approval-details/{approval_id}")
+def selectable_details(approval_id: str, session: SessionDependency, user: UserDependency):
+    from app.modules.accrual_accounting import active_links
+    from app.modules.matching.accounting import approval_items
+    approval = session.get(ApprovalInstance, approval_id)
+    if not approval:
+        raise HTTPException(404, "审批单不存在")
+    authorize(session, user, approval.store_id, "reconciliation.view")
+    import json
+    links = active_links(session, approval_id=approval.id)
+    occupied = {row["id"] for link in links for row in json.loads(link.detail_selection_json or "[]")}
+    all_blocked = any(not link.detail_selection_json for link in links)
+    return ApiEnvelope(data=[{"id": i.id, "disabled": all_blocked or i.id in occupied, "description": i.description, "amount": str(i.amount),
+        "category_l1": i.category_l1, "category_l2": i.category_l2}
+        for i in approval_items(session, approval.id)])

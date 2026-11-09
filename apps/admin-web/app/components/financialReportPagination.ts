@@ -47,12 +47,16 @@ export function paginateFinancialReport(source: HTMLElement): HTMLElement[] {
     startTable();
     for (const row of Array.from(table.tBodies).flatMap((section) => Array.from(section.rows))) {
       const copy = row.cloneNode(true) as HTMLTableRowElement;
+      // Repeat the transaction context only on the first detail row of a page.
+      const continuation = copy.querySelector<HTMLElement>("[data-bank-continuation-context]");
+      if (continuation && body!.rows.length === 0) continuation.style.display = "block";
       body!.appendChild(copy);
       if (overflows() && (body!.rows.length > 1 || page.children.length > (styles ? 2 : 1))) {
         copy.remove();
         if (!body!.rows.length) current!.remove();
         newPage(true);
         startTable();
+        if (continuation) continuation.style.display = "block";
         body!.appendChild(copy);
       }
     }

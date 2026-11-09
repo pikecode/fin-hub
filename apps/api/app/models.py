@@ -1007,6 +1007,7 @@ class AccrualApprovalLink(Base):
     approval_id: Mapped[str] = mapped_column(ForeignKey("approval_instances.id"), index=True)
     amount: Mapped[Decimal] = mapped_column(Numeric(14, 2))
     whole_approval: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    detail_selection_json: Mapped[str | None] = mapped_column(Text)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     remark: Mapped[str] = mapped_column(Text)
     request_key: Mapped[str] = mapped_column(String(64))
@@ -1030,3 +1031,34 @@ class ApprovalChangeNotice(Base):
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime)
     reviewed_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
     review_note: Mapped[str | None] = mapped_column(Text)
+
+
+class StoreLoan(Base):
+    __tablename__ = "store_loans"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    store_id: Mapped[str] = mapped_column(ForeignKey("stores.id"), index=True)
+    borrower: Mapped[str] = mapped_column(String(120))
+    reason: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
+
+
+class StoreLoanEvent(Base):
+    __tablename__ = "store_loan_events"
+    __table_args__ = (CheckConstraint("amount > 0", name="ck_loan_event_amount"),
+                     UniqueConstraint("request_key", name="uq_loan_event_request"),
+                     Index("uq_active_loan_event_bank", "bank_transaction_id", unique=True, postgresql_where=text("active")))
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    loan_id: Mapped[str] = mapped_column(ForeignKey("store_loans.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(16))
+    occurred_on: Mapped[date] = mapped_column(Date)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2))
+    bank_transaction_id: Mapped[str] = mapped_column(ForeignKey("bank_transactions.id"))
+    active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    generated_bank: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    previous_special_type: Mapped[str | None] = mapped_column(String(32))
+    revoked_reason: Mapped[str | None] = mapped_column(Text)
+    remark: Mapped[str] = mapped_column(Text)
+    request_key: Mapped[str] = mapped_column(String(64))
+    payload_json: Mapped[str] = mapped_column(Text)
+    created_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)

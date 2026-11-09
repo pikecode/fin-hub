@@ -3379,6 +3379,10 @@ def sync_expense_line(
 
     # ✅ 已存在的支出行：处理更新或冲突检测
     matched = expense_has_bank_match(session, item)
+    # A linked approval must be reviewed before source changes alter its accounting identity.
+    from app.models import AccrualApprovalLink
+    linked = session.scalar(select(AccrualApprovalLink.id).where(AccrualApprovalLink.approval_id == instance.id, AccrualApprovalLink.active.is_(True)).limit(1)) is not None
+    matched = matched or linked
     # A changed source is only a conflict when its values cannot be applied.
     # Re-evaluate on every refresh so resolved conflicts do not remain forever.
     protected_fields = edited_fields(item)
@@ -4063,6 +4067,8 @@ def run_approval_sync(
     monitored_ids = set(session.scalars(select(ApprovalInstance.id).join(ExpenseItem, approval_expense_join_condition())
         .join(ExpenseBankMatch, ExpenseBankMatch.expense_item_id == ExpenseItem.id).where(
         ApprovalInstance.template_id.in_([t.id for t in templates]), ExpenseBankMatch.status == "confirmed", ExpenseBankMatch.expense_scope == "operating").distinct()))
+    from app.models import AccrualApprovalLink
+    monitored_ids.update(session.scalars(select(ApprovalInstance.id).join(AccrualApprovalLink, AccrualApprovalLink.approval_id == ApprovalInstance.id).where(ApprovalInstance.template_id.in_([t.id for t in templates]), AccrualApprovalLink.active.is_(True)).distinct()))
     monitor_refresh_count = 0
     for template in templates:
         ensure_sync_job_not_canceled(session, job)

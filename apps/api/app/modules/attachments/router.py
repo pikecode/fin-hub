@@ -6,7 +6,7 @@ from urllib.parse import urlparse
 import httpx
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -19,9 +19,12 @@ from app.models import (
     ExpenseItem,
     Ledger,
     LedgerStatus,
+    StoreLoan,
+    StoreLoanEvent,
     User,
 )
 from app.modules.audit.service import write_audit_log
+from app.modules.auth.permissions import ensure_store_access, scoped_store_condition
 from app.modules.auth.router import audit_actor, require_permission
 from app.modules.common import paginate
 from app.modules.dingtalk.client import DingTalkClient, DingTalkClientError, DingTalkCredentials
@@ -38,6 +41,18 @@ def storage_root() -> Path:
 
 
 def ensure_resource_for_upload(session: Session, resource_type: str, resource_id: str) -> None:
+    if resource_type == "loan_event":
+        event = session.get(StoreLoanEvent, resource_id)
+        if not event:
+            raise HTTPException(404, "借还款记录不存在")
+        if not event.active:
+            raise HTTPException(409, "已撤销登记不能追加凭证")
+        loan = session.get(StoreLoan, event.loan_id)
+        closed = session.scalar(select(Ledger.id).where(Ledger.store_id == loan.store_id,
+            Ledger.period >= event.occurred_on.strftime("%Y-%m"), Ledger.status == "closed").limit(1))
+        if closed:
+            raise HTTPException(409, "已封账借还款凭证不能修改")
+        return
     if resource_type != "expense_item":
         raise HTTPException(status_code=422, detail="Only expense_item attachments are supported")
     item = session.get(ExpenseItem, resource_id)
@@ -48,6 +63,22 @@ def ensure_resource_for_upload(session: Session, resource_type: str, resource_id
     )
     if ledger is not None and ledger.status == LedgerStatus.CLOSED.value:
         raise HTTPException(status_code=409, detail="Ledger is closed")
+
+
+def resource_access(session, user, resource_type, resource_id):
+    if resource_type == "expense_item":
+        item = session.get(ExpenseItem, resource_id)
+        if not item:
+            raise HTTPException(404, "费用不存在")
+        ensure_store_access(session, user, item.store_id)
+    elif resource_type == "loan_event":
+        event = session.get(StoreLoanEvent, resource_id)
+        loan = session.get(StoreLoan, event.loan_id) if event else None
+        if not loan:
+            raise HTTPException(404, "借还款记录不存在")
+        ensure_store_access(session, user, loan.store_id)
+    else:
+        raise HTTPException(422, "不支持的附件资源类型")
 
 
 def ensure_safe_file_name(file_name: str | None) -> str:
@@ -117,8 +148,15 @@ def list_attachments(
     page: int = 1,
     page_size: int = 50,
     session: Session = Depends(get_session),
+    current_user: User = Depends(require_permission("reports.view")),
 ) -> ApiEnvelope[Page[AttachmentRead]]:
+    if resource_type and resource_id:
+        resource_access(session, current_user, resource_type, resource_id)
     query = select(Attachment).order_by(Attachment.created_at.desc())
+    expense_ids = select(ExpenseItem.id).where(scoped_store_condition(session, current_user, ExpenseItem.store_id))
+    loan_ids = select(StoreLoanEvent.id).join(StoreLoan, StoreLoan.id == StoreLoanEvent.loan_id).where(scoped_store_condition(session, current_user, StoreLoan.store_id))
+    query = query.where(or_(and_(Attachment.resource_type == "expense_item", Attachment.resource_id.in_(expense_ids)),
+                           and_(Attachment.resource_type == "loan_event", Attachment.resource_id.in_(loan_ids))))
     if resource_type:
         query = query.where(Attachment.resource_type == resource_type)
     if resource_id:
@@ -135,13 +173,24 @@ async def upload_attachment(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_permission("reconciliation.manage")),
 ) -> ApiEnvelope[AttachmentRead]:
+    resource_access(session, current_user, resource_type, resource_id)
     ensure_resource_for_upload(session, resource_type, resource_id)
-    content = await file.read()
+    content = await file.read(MAX_MANUAL_ATTACHMENT_SIZE + 1)
     if not content:
         raise HTTPException(status_code=422, detail="Attachment file is empty")
     if len(content) > MAX_MANUAL_ATTACHMENT_SIZE:
         raise HTTPException(status_code=413, detail="Attachment file must be 500KB or smaller")
+    item = session.get(ExpenseItem, resource_id) if resource_type == "expense_item" else None
+    if resource_type == "loan_event" or (item and item.source == "accrual"):
+        signatures = [(b"\x89PNG\r\n\x1a\n", "image/png"), (b"\xff\xd8\xff", "image/jpeg")]
+        detected = next((mime for signature, mime in signatures if content.startswith(signature)), None)
+        if not detected:
+            raise HTTPException(422, "请上传 PNG 或 JPEG 图片凭证")
     digest = hashlib.sha256(content).hexdigest()
+    existing = session.scalar(select(Attachment).where(Attachment.resource_type == resource_type,
+        Attachment.resource_id == resource_id, Attachment.file_hash == digest))
+    if existing:
+        return ApiEnvelope(data=existing)
     file_name = ensure_safe_file_name(file.filename)
     relative_path = Path(resource_type) / resource_id / f"{digest[:16]}-{file_name}"
     target_path = storage_root() / relative_path
@@ -152,7 +201,7 @@ async def upload_attachment(
         resource_type=resource_type,
         resource_id=resource_id,
         file_name=file_name,
-        content_type=file.content_type,
+        content_type=(detected if resource_type == "loan_event" or (resource_type == "expense_item" and session.get(ExpenseItem, resource_id).source == "accrual") else file.content_type),
         file_size=len(content),
         file_path=str(relative_path),
         file_hash=digest,
@@ -179,11 +228,12 @@ async def upload_attachment(
 def download_attachment(
     attachment_id: str,
     session: Session = Depends(get_session),
-    _: User = Depends(require_permission("reconciliation.manage")),
+    current_user: User = Depends(require_permission("reports.view")),
 ) -> FileResponse:
     attachment = session.get(Attachment, attachment_id)
     if attachment is None:
         raise HTTPException(status_code=404, detail="Attachment not found")
+    resource_access(session, current_user, attachment.resource_type, attachment.resource_id)
     if attachment.download_status != AttachmentStatus.STORED.value or not attachment.file_path:
         raise HTTPException(status_code=409, detail="Attachment file is not available")
     root = storage_root().resolve()
@@ -201,11 +251,12 @@ def download_attachment(
 def get_attachment_access_url(
     attachment_id: str,
     session: Session = Depends(get_session),
-    _: User = Depends(require_permission("reconciliation.manage")),
+    current_user: User = Depends(require_permission("reports.view")),
 ) -> ApiEnvelope[AttachmentAccessUrl]:
     attachment = session.get(Attachment, attachment_id)
     if attachment is None:
         raise HTTPException(status_code=404, detail="Attachment not found")
+    resource_access(session, current_user, attachment.resource_type, attachment.resource_id)
     if attachment.source != "dingtalk":
         raise HTTPException(status_code=409, detail="Only DingTalk attachments support access URLs")
 
@@ -230,6 +281,7 @@ def download_dingtalk_attachment(
     attachment = session.get(Attachment, attachment_id)
     if attachment is None:
         raise HTTPException(status_code=404, detail="Attachment not found")
+    resource_access(session, current_user, attachment.resource_type, attachment.resource_id)
     if attachment.source != "dingtalk":
         raise HTTPException(status_code=409, detail="Attachment is not from DingTalk")
     if attachment.download_status == AttachmentStatus.STORED.value:

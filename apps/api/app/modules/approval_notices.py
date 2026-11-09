@@ -10,6 +10,8 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_session
 from app.models import (
+    AccrualApprovalLink,
+    AccrualEntry,
     ApprovalAccountingAllocation,
     ApprovalChangeNotice,
     ApprovalInstance,
@@ -87,6 +89,8 @@ def matched_periods(session, approval):
     for store_id, period in session.execute(query):
         if store_id:
             result.setdefault(store_id, set()).update([p for p in [period, *allocations] if p])
+    for store_id, period in session.execute(select(AccrualEntry.store_id, AccrualEntry.period).join(AccrualApprovalLink, AccrualApprovalLink.original_id == AccrualEntry.id).where(AccrualApprovalLink.approval_id == approval.id, AccrualApprovalLink.active.is_(True))):
+        result.setdefault(store_id, set()).add(period)
     return result
 
 

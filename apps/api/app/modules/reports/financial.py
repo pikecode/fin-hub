@@ -303,6 +303,8 @@ def supplement(
             FinancialReportMonthSetting.period == period,
         )
     )
+    from app.modules.loans import loan_rows
+    receivables = loan_rows(session, store_id, next_month(first) - timedelta(days=1))
     totals = dividend_totals(session, store_id, period)
     opening = session.get(DividendOpeningBalance, store_id)
     previous_period = (first - timedelta(days=1)).strftime("%Y-%m")
@@ -347,6 +349,8 @@ def supplement(
             **totals,
             **funding,
             "historical_category_expenses": historical_category_expenses(session, store_id, period),
+            "loan_receivables": receivables,
+            "loan_receivable_amount": money(sum((Decimal(row["remaining"]) for row in receivables), Decimal(0))),
             "previous_remaining_undistributed": previous_remaining,
             "accrual_details": accrual_details,
             "accrual_totals": {kind: accrual_totals.get(kind, "0.00") for kind in ("accrual", "supplement", "reversal")},

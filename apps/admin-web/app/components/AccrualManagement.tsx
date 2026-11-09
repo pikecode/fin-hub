@@ -5,10 +5,12 @@ import dayjs from "dayjs";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ApprovalInstance, ExpenseCategory, Ledger } from "@fin-hub/shared-types";
 import { formatMoney } from "@fin-hub/shared-utils";
+import { AccrualDocumentEditor } from "./AccrualDocumentEditor";
+import { RecordImages } from "./RecordImages";
 import { apiClient } from "../lib/api";
 
-interface Entry { id: string; store_id: string; period: string; entry_type: "accrual" | "supplement" | "reversal"; original_id: string | null; category_l1: string; category_l2: string; amount: string; remark: string; }
-interface Link { id: string; original_id: string; approval_id: string; approval_no?: string; amount: string; whole_approval?: boolean; active: boolean; remark: string; }
+interface Entry { document_id?: string; id: string; store_id: string; period: string; entry_type: "accrual" | "supplement" | "reversal"; original_id: string | null; category_l1: string; category_l2: string; amount: string; remark: string; }
+interface Link { detail_selection_json?: string; id: string; original_id: string; approval_id: string; approval_no?: string; amount: string; whole_approval?: boolean; active: boolean; remark: string; }
 const labels = { accrual: "计提", supplement: "补提", reversal: "冲销" };
 
 export function AccrualManagement({ storeId, period, onChanged }: { storeId: string; period: string; onChanged: () => Promise<void> }) {
@@ -22,6 +24,8 @@ export function AccrualManagement({ storeId, period, onChanged }: { storeId: str
       .filter(child => child.parent_id === root.id && child.status === "active" && !(root.name === "食材成本" && child.name === "快驴充值"))
       .map(child => ({ value: child.name, label: child.name })) }))
     .filter(root => root.children.length > 0), [categories]);
+  const [images, setImages] = useState<Entry | null>(null);
+  const [detailChoices, setDetailChoices] = useState<{ disabled?: boolean; id: string; description: string; amount: string; category_l1: string; category_l2: string }[]>([]);
   const [approvals, setApprovals] = useState<ApprovalInstance[]>([]);
   const [editing, setEditing] = useState<Entry | null>(null);
   const [mode, setMode] = useState<Entry["entry_type"] | "link" | null>(null);
@@ -105,6 +109,8 @@ export function AccrualManagement({ storeId, period, onChanged }: { storeId: str
         const { period: oldPeriod, category_l1, category_l2, amount, remark } = editing;
         await apiClient.request(`/api/accruals/${editing.id}`, { method: "PATCH", body: JSON.stringify({ ...fields,
           expected: { period: oldPeriod, category_l1, category_l2, amount, remark }, reason: values.edit_reason }) });
+      } else if (mode === "link" && values.link_scope === "details") {
+        await apiClient.request("/api/accruals/links", { method: "POST", body: JSON.stringify({ original_id: values.original_id, approval_id: values.approval_id, expense_item_ids: values.expense_item_ids, remark: values.remark, confirm_category_difference: values.confirm_category_difference, request_key: requestKey.current }) });
       } else if (mode === "link") {
         await apiClient.request("/api/accruals/links/batch", { method: "POST", body: JSON.stringify({ original_id: values.original_id, approval_ids: values.approval_ids, remark: values.remark, confirm_category_difference: values.confirm_category_difference, request_key: requestKey.current }) });
       } else {
@@ -121,37 +127,43 @@ export function AccrualManagement({ storeId, period, onChanged }: { storeId: str
   return <Space direction="vertical" style={{ width: "100%" }} size="middle">
     <Alert type="info" showIcon message="计提先确认费用，审批和付款后续关联；补提增加支出，冲销减少支出。正式报表以封账为准。" />
     {error && !mode ? <Alert type="error" showIcon message={error} /> : null}
-    <Space wrap><Button type="primary" disabled={loading} onClick={() => open("accrual")}>新增计提</Button><Button onClick={() => { setAll(!all); }}>{all ? "查看当前账期" : "查看全部账期"}</Button><Button onClick={() => void load()}>刷新</Button><Tag>{all ? "全部账期" : period}</Tag></Space>
+    <Space wrap><AccrualDocumentEditor storeId={storeId} period={period} options={categoryOptions} onChanged={async () => { await load(); await onChanged(); }} /><Button type="primary" disabled={loading} onClick={() => open("accrual")}>新增计提</Button><Button onClick={() => { setAll(!all); }}>{all ? "查看当前账期" : "查看全部账期"}</Button><Button onClick={() => void load()}>刷新</Button><Tag>{all ? "全部账期" : period}</Tag></Space>
     <Table<Entry> rowKey="id" loading={loading} dataSource={entries.filter(row => all || row.period === period)} scroll={{ x: 1000 }} columns={[
       { title: "入账月份", dataIndex: "period" },
+      { title: "计提单", render: (_, row) => row.document_id ? row.document_id.slice(0, 8) : "单明细" },
       { title: "类型", render: (_, row) => <Tag color={row.entry_type === "reversal" ? "red" : "blue"}>{labels[row.entry_type]}</Tag> },
       { title: "费用分类", render: (_, row) => `${row.category_l1} / ${row.category_l2}` },
       { title: "金额", render: (_, row) => formatMoney((row.entry_type === "reversal" ? -1 : 1) * Number(row.amount)) },
       { title: "备注 / 原计提", render: (_, row) => <>{row.remark}{row.original_id ? <Typography.Paragraph type="secondary">{roots.find(root => root.id === row.original_id)?.remark || row.original_id}</Typography.Paragraph> : null}</> },
       { title: "有效计提 / 关联审批金额（全部月份）", render: (_, row) => row.entry_type === "accrual" ? `${formatMoney(effective(row))} / ${formatMoney(covered(row))}` : "—" },
-      { title: "操作", render: (_, row) => <Space><Button size="small" disabled={ledgers.find(ledger => ledger.period === row.period)?.status !== "open"} onClick={() => openEdit(row)}>编辑</Button><Button size="small" danger disabled={ledgers.find(ledger => ledger.period === row.period)?.status !== "open"} onClick={() => { setRemoving(row); setDeleteReason(""); }}>删除</Button>{row.entry_type === "accrual" ? <><Button size="small" onClick={() => open("supplement", row)}>补提</Button><Button size="small" danger onClick={() => open("reversal", row)}>冲销</Button><Button size="small" onClick={() => open("link", row)}>关联审批</Button></> : null}</Space> },
+      { title: "操作", render: (_, row) => <Space><Button size="small" onClick={() => setImages(row)}>图片凭证</Button><Button size="small" disabled={ledgers.find(ledger => ledger.period === row.period)?.status !== "open"} onClick={() => openEdit(row)}>编辑</Button><Button size="small" danger disabled={ledgers.find(ledger => ledger.period === row.period)?.status !== "open"} onClick={() => { setRemoving(row); setDeleteReason(""); }}>删除</Button>{row.entry_type === "accrual" ? <><Button size="small" onClick={() => open("supplement", row)}>补提</Button><Button size="small" danger onClick={() => open("reversal", row)}>冲销</Button><Button size="small" onClick={() => open("link", row)}>关联审批</Button></> : null}</Space> },
     ]} />
     <Typography.Title level={5}>审批计提覆盖记录</Typography.Title>
     <Table<Link> rowKey="id" dataSource={links} columns={[
       { title: "原计提", render: (_, row) => roots.find(root => root.id === row.original_id)?.remark || row.original_id },
       { title: "审批", render: (_, row) => row.approval_no || approvals.find(a => a.id === row.approval_id)?.approval_no || row.approval_id },
-      { title: "入账处理", render: (_, row) => row.whole_approval ? `整单不入账（关联时 ${formatMoney(row.amount)}）` : `历史部分覆盖 ${formatMoney(row.amount)}` }, { title: "原因", dataIndex: "remark" },
+      { title: "入账处理", render: (_, row) => row.detail_selection_json ? `选定明细不入账（${JSON.parse(row.detail_selection_json).length} 项）` : row.whole_approval ? `整单不入账（关联时 ${formatMoney(row.amount)}）` : `历史部分覆盖 ${formatMoney(row.amount)}` }, { title: "原因", dataIndex: "remark" },
       { title: "状态", render: (_, row) => row.active ? "有效" : "已解除" },
       { title: "操作", render: (_, row) => <Button disabled={!row.active} danger size="small" onClick={() => { setReason(""); setRevoke(row); }}>解除覆盖</Button> },
     ]} />
     <Modal title={editing ? `编辑${labels[editing.entry_type]}` : mode === "link" ? "关联已计提审批费用" : mode ? labels[mode] : "计提"} open={!!mode} onCancel={() => !busy && setMode(null)} confirmLoading={busy} onOk={() => void save()} maskClosable={!busy} closable={!busy}>
       {error ? <Alert type="error" message={error} /> : null}
       {editing ? <Alert showIcon type="info" style={{ marginBottom: 16 }} message="仅可编辑未封账记录，修改会保留审计记录。" description="修改分类会同步更新原计提及同组补提、冲销；同组存在封账记录或有效审批覆盖时不可修改分类。" /> : null}
-      <Form form={form} layout="vertical" disabled={busy}>
+      <Form name="accrual-entry" form={form} layout="vertical" disabled={busy}>
         {mode !== "accrual" ? <Form.Item name="original_id" label="原计提" rules={[{ required: true }]}><Select disabled={!!editing} showSearch optionFilterProp="label" options={roots.map(row => ({ value: row.id, label: `${row.period} · ${row.remark} · 关联审批 ${formatMoney(covered(row))}` }))} /></Form.Item> : null}
         {selected ? <Typography.Paragraph type="secondary">原分类：{selected.category_l1} / {selected.category_l2}；有效金额 {formatMoney(effective(selected))}</Typography.Paragraph> : null}
-        {mode === "link" ? <><Form.Item name="approval_ids" label="审批单（可多选，输入单号搜索）" rules={[{ required: true }]}><Select mode="multiple" showSearch filterOption={false} onSearch={value => void searchApprovals(value)} options={approvals.map(a => ({ value: a.id, label: `${a.approval_no || a.id} · ${a.title || "审批单"}` }))} /></Form.Item><Form.Item name="confirm_category_difference" valuePropName="checked"><Checkbox>如审批分类不同，确认保留原计提分类，不改写历史</Checkbox></Form.Item></> : <><Form.Item name="month" label="本次入账月份" extra={mode === "supplement" || mode === "reversal" ? "可选择原计提月份或之后的开放账期；本次调整只计入所选月份。" : undefined} rules={[{ required: true }]}><DatePicker picker="month" onChange={() => setError(undefined)} disabledDate={value => !!selected && value.format("YYYY-MM") < selected.period} /></Form.Item>{targetMonth && !targetLedger ? <Alert type="warning" showIcon style={{ marginBottom: 16 }} message={`${targetMonth} 尚未创建账期`} description="先创建该月账期，再提交本次计提或调整。" action={<Button loading={busy} onClick={() => void createTargetLedger()}>创建所选账期</Button>} /> : targetLedger?.status !== "open" && targetMonth ? <Alert type="warning" showIcon style={{ marginBottom: 16 }} message="所选账期已封账，请选择后续开放账期" /> : null}</>}
+        {mode === "link" ? <><Form.Item name="link_scope" label="关联范围" initialValue="whole"><Select options={[{ value: "whole", label: "整张审批单" }, { value: "details", label: "勾选审批明细" }]} /></Form.Item>
+        <Form.Item noStyle shouldUpdate={(a,b) => a.link_scope !== b.link_scope}>{({ getFieldValue }) => getFieldValue("link_scope") === "details" ? <>
+          <Form.Item name="approval_id" label="审批单" rules={[{ required: true }]}><Select showSearch filterOption={false} onSearch={value => void searchApprovals(value)} options={approvals.map(a => ({ value: a.id, label: a.approval_no || a.title || a.id }))} onChange={async value => { form.setFieldValue("expense_item_ids", []); setDetailChoices([]); try { const choices = await apiClient.request<typeof detailChoices>(`/api/accruals/approval-details/${value}`); if (form.getFieldValue("approval_id") === value) setDetailChoices(choices); } catch(e) { message.error(e instanceof Error ? e.message : "明细加载失败"); } }} /></Form.Item>
+          <Form.Item name="expense_item_ids" label="选择不重复入账的明细" rules={[{ required: true }]}><Checkbox.Group options={detailChoices.map(item => ({ value: item.id, disabled: item.disabled, label: `${item.disabled ? "（已关联）" : ""}${item.category_l1 || "未分类"} / ${item.category_l2 || ""} · ${item.description} · ${item.amount} 元` }))} /></Form.Item>
+        </> : <Form.Item name="approval_ids" label="审批单（可多选，输入单号搜索）" rules={[{ required: true }]}><Select mode="multiple" showSearch filterOption={false} onSearch={value => void searchApprovals(value)} options={approvals.map(a => ({ value: a.id, label: `${a.approval_no || a.id} · ${a.title || "审批单"}` }))} /></Form.Item>}</Form.Item><Form.Item name="confirm_category_difference" valuePropName="checked"><Checkbox>如审批分类不同，确认保留原计提分类，不改写历史</Checkbox></Form.Item></> : <><Form.Item name="month" label="本次入账月份" extra={mode === "supplement" || mode === "reversal" ? "可选择原计提月份或之后的开放账期；本次调整只计入所选月份。" : undefined} rules={[{ required: true }]}><DatePicker picker="month" onChange={() => setError(undefined)} disabledDate={value => !!selected && value.format("YYYY-MM") < selected.period} /></Form.Item>{targetMonth && !targetLedger ? <Alert type="warning" showIcon style={{ marginBottom: 16 }} message={`${targetMonth} 尚未创建账期`} description="先创建该月账期，再提交本次计提或调整。" action={<Button loading={busy} onClick={() => void createTargetLedger()}>创建所选账期</Button>} /> : targetLedger?.status !== "open" && targetMonth ? <Alert type="warning" showIcon style={{ marginBottom: 16 }} message="所选账期已封账，请选择后续开放账期" /> : null}</>}
         {mode === "accrual" || editing ? <Form.Item name="category" label="二级费用分类" extra="计提仅支持经营费用；异常费用、门店预充值、备用金/借款及快驴充值不参与计提。" rules={[{ required: true }, { validator: (_, value) => value?.length === 2 && categoryOptions.some(root => root.value === value[0] && root.children.some(child => child.value === value[1])) ? Promise.resolve() : Promise.reject(new Error("请选择有效的经营费用二级分类")) }]}><Cascader options={categoryOptions} /></Form.Item> : null}
-        {mode === "link" ? <Alert type="info" showIcon message="选中的审批单整单不重复计入报表，仍可正常匹配银行流水。金额差异请通过补提或冲销调整。" style={{ marginBottom: 16 }} /> : <Form.Item name="amount" label="金额" rules={[{ required: true }]}><InputNumber stringMode min="0.01" precision={2} style={{ width: "100%" }} /></Form.Item>}
+        {mode === "link" ? <Alert type="info" showIcon message="整单模式排除整张审批费用；明细模式只排除勾选项，其余正常入账。银行流水仍可正常匹配，差额通过补提或冲销调整。" style={{ marginBottom: 16 }} /> : <Form.Item name="amount" label="金额" rules={[{ required: true }]}><InputNumber stringMode min="0.01" precision={2} style={{ width: "100%" }} /></Form.Item>}
         {editing ? <Form.Item name="edit_reason" label="修改原因" rules={[{ required: true, whitespace: true }]}><Input.TextArea maxLength={2000} /></Form.Item> : null}
         <Form.Item name="remark" label="备注 / 原因" rules={[{ required: true, whitespace: true }]}><Input.TextArea maxLength={2000} /></Form.Item>
       </Form>
     </Modal>
+    <Modal title="计提图片凭证" open={!!images} footer={null} onCancel={() => setImages(null)}>{images && <RecordImages resourceType="expense_item" resourceId={images.id} readonly={ledgers.find(l => l.period === images.period)?.status !== "open"} />}</Modal>
     <Modal title="删除计提 / 调整记录" open={!!removing} confirmLoading={busy} okText="确认删除" okButtonProps={{ danger: true }} onCancel={() => !busy && setRemoving(null)} onOk={async () => {
       if (!removing || busy) return;
       if (!deleteReason.trim()) { message.warning("请填写删除原因"); return; }

@@ -1,4 +1,5 @@
 "use client";
+import { StoreLoans } from "../components/StoreLoans";
 
 import { Alert, Button, Card, Checkbox, DatePicker, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Statistic, Table, Tabs, Tag, Upload, Typography, message } from "antd";
 import zhCN from "antd/locale/zh_CN";
@@ -1370,6 +1371,7 @@ export default function BankPage() {
         )}
 
         {errorMessage && <Alert type="error" message="加载失败" description={errorMessage} showIcon closable />}
+        <StoreLoans storeId={queryStoreId} onChanged={async () => { await loadData(filterForm.getFieldsValue()); await loadSummary(); }} />
         <UnpaidPaymentSettlement storeId={queryStoreId ?? filterForm.getFieldValue("store_id")} onChanged={async () => { await loadData(filterForm.getFieldsValue()); await loadSummary(); }} />
 
         <Card

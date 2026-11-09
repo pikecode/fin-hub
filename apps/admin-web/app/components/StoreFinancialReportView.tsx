@@ -7,6 +7,7 @@ import dayjs from "dayjs";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Attachment, ExpenseItem, MajorExpenseVoucher, StoreLedgerWorkspace, FinancialReportSupplement, FinancialReportAppendix } from "@fin-hub/shared-types";
 import { formatMoney, formatPeriod } from "@fin-hub/shared-utils";
+import { RecordImages } from "./RecordImages";
 import { financialReportHtml, reportGroups, reportPercent, reportCategorySections, reportSpecialLabels } from "./financialReportPresentation";
 import { FINANCIAL_REPORT_PDF_WIDTH_PX, paginateFinancialReport } from "./financialReportPagination";
 import { apiClient } from "../lib/api";
@@ -71,6 +72,7 @@ export function StoreFinancialReportView({ storeId, period }: StoreFinancialRepo
   const [specialRows, setSpecialRows] = useState<FinancialReportAppendix["rows"]>([]);
   const [specialLoading, setSpecialLoading] = useState(false);
   const [specialError, setSpecialError] = useState<string | null>(null);
+  const [reportReceipt, setReportReceipt] = useState<{ type: string; id: string } | null>(null);
   const [supplement, setSupplement] = useState<FinancialReportSupplement | null>(null);
   const [balanceOpen, setBalanceOpen] = useState(false);
   const [balanceValue, setBalanceValue] = useState<string | null>(null);
@@ -356,9 +358,21 @@ export function StoreFinancialReportView({ storeId, period }: StoreFinancialRepo
     replaceVoucherPreviewUrls({});
   }
 
-  function reportHtml(appendix: FinancialReportAppendix) {
+  async function reportHtml(appendix: FinancialReportAppendix) {
     if (!data || !supplement) return null;
-    return financialReportHtml(data, supplement, appendix, categoryRows, majorExpenseVouchers, window.location.origin);
+    const receipts: { title: string; urls: string[] }[] = [];
+    const sources = [...(supplement.accrual_details || []).map(item => ({ type: "expense_item", id: item.id, title: `${item.description} · ${formatMoney(item.amount)}` })), ...(supplement.loan_receivables || []).flatMap(loan => (loan.events || []).filter(event => event.active !== false).map(event => ({ type: "loan_event", id: event.id, title: `${loan.borrower} · ${event.date} · ${event.kind === "lend" ? "借出" : "还款"} ${formatMoney(event.amount)}` })))];
+    for (const source of sources) {
+      const attachments = await apiClient.attachments.list(`?resource_type=${source.type}&resource_id=${source.id}&page_size=100`);
+      const urls: string[] = [];
+      for (const attachment of attachments.items) {
+        if (!attachment.content_type?.startsWith("image/")) continue;
+        const blob = await apiClient.attachments.download(attachment.id);
+        urls.push(await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(new Error("凭证读取失败")); reader.readAsDataURL(blob); }));
+      }
+      if (urls.length) receipts.push({ title: source.title, urls });
+    }
+    return financialReportHtml(data, supplement, appendix, categoryRows, majorExpenseVouchers, window.location.origin, receipts);
   }
 
   function downloadBlob(blob: Blob, filename: string) {
@@ -379,7 +393,7 @@ export function StoreFinancialReportView({ storeId, period }: StoreFinancialRepo
     setIsHtmlExporting(true);
     try {
       const expenseItems = await loadExportExpenseItems();
-      const html = reportHtml(expenseItems);
+      const html = await reportHtml(expenseItems);
       if (!html) return;
       downloadBlob(new Blob([html], { type: "text/html;charset=utf-8" }), `${data.store.name}-${data.period}-门店财务报表.html`);
     } catch (error) {
@@ -391,7 +405,7 @@ export function StoreFinancialReportView({ storeId, period }: StoreFinancialRepo
     if (!data) return;
     setIsPdfExporting(true);
     try {
-      const html = reportHtml(await loadExportExpenseItems());
+      const html = await reportHtml(await loadExportExpenseItems());
       if (!html) return;
       const filename = `${data.store.name}-${data.period}-门店财务报表.pdf`;
       const iframe = document.createElement("iframe");
@@ -410,6 +424,7 @@ export function StoreFinancialReportView({ storeId, period }: StoreFinancialRepo
         frameDocument.write(html);
         frameDocument.close();
         await frameDocument.fonts.ready;
+        await Promise.all(Array.from(frameDocument.images).map(image => image.decode()));
         await new Promise((resolve) => window.requestAnimationFrame(() => resolve(undefined)));
         iframe.style.height = `${Math.max(frameDocument.documentElement.scrollHeight, 900)}px`;
         const { default: html2pdf } = await import("html2pdf.js");
@@ -567,6 +582,7 @@ export function StoreFinancialReportView({ storeId, period }: StoreFinancialRepo
 
   return (
     <div className="store-financial-report-view">
+      <Modal title="图片凭证" open={!!reportReceipt} footer={null} onCancel={() => setReportReceipt(null)}>{reportReceipt && <RecordImages resourceType={reportReceipt.type} resourceId={reportReceipt.id} readonly />}</Modal>
       <Modal title="录入报表银行余额" open={balanceOpen} onCancel={() => !balanceSaving && setBalanceOpen(false)} onOk={() => void saveBalance()} confirmLoading={balanceSaving} cancelButtonProps={{ disabled: balanceSaving }} maskClosable={!balanceSaving} keyboard={!balanceSaving} closable={!balanceSaving} okText="保存" cancelText="取消">
         <Typography.Paragraph>按当前门店、当前月份维护报表展示余额，页面及 HTML / PDF 同步使用。银行流水页面的真实余额计算不受影响。</Typography.Paragraph>
         <Typography.Paragraph type="secondary">清空表示待录入，0 表示确认余额为零；负数可用于透支余额。</Typography.Paragraph>
@@ -593,6 +609,11 @@ export function StoreFinancialReportView({ storeId, period }: StoreFinancialRepo
               {item.hint ? <Typography.Text type="secondary" className="report-summary__hint">{item.hint}</Typography.Text> : null}
             </div>)}
           </div>
+          {group.title === "资金流情况" && !!supplement.loan_receivables?.length && <Table rowKey="id" size="small" pagination={false} dataSource={supplement.loan_receivables} columns={[
+            { title: "借款人", dataIndex: "borrower" }, { title: "借出本金", dataIndex: "amount", render: formatMoney }, { title: "累计归还", dataIndex: "repaid", render: formatMoney }, { title: "未还本金", dataIndex: "remaining", render: formatMoney }, { title: "状态", dataIndex: "status" }
+          ]} expandable={{ expandedRowRender: loan => <Table rowKey="id" pagination={false} dataSource={loan.events || []} columns={[
+            { title: "日期", dataIndex: "date" }, { title: "类型", render: (_, event) => `${event.kind === "lend" ? "借出" : "还款"}${event.active === false ? "（已撤销）" : ""}` }, { title: "金额", dataIndex: "amount", render: formatMoney }, { title: "备注", dataIndex: "remark" }, { title: "凭证", render: (_, event) => <Button onClick={() => setReportReceipt({ type: "loan_event", id: event.id })}>查看</Button> }
+          ]} /> }} />}
           {group.title === "门店营收" ? <div style={{ marginTop: 20 }}><Typography.Title level={5}>各渠道经营收入明细</Typography.Title><Table rowKey="channel" size="middle" pagination={false} dataSource={[...metrics.revenue_channel_summary].sort((a, b) => Number(b.gross_amount) - Number(a.gross_amount))} columns={[{ title: "收入渠道", dataIndex: "channel" }, { title: "经营收入", dataIndex: "gross_amount", align: "right" as const, render: (value: string) => `${formatMoney(value)}` }, { title: "实收", dataIndex: "net_amount", align: "right" as const, render: (value: string) => formatMoney(value) }, { title: "手续费", dataIndex: "fee_amount", align: "right" as const, render: (value: string) => `${formatMoney(value)}` }, { title: "手续费率", dataIndex: "fee_rate", align: "right" as const, render: (value: string) => `${value}%` }, { title: "收入占比", align: "right" as const, render: (_value: unknown, record) => ratio(Number(record.gross_amount), stats.income) }]} /></div> : null}
         </Card>)}
         <div><Card title="核心成本率结构"><div className="store-financial-report__cost-list">{[["食材成本", metrics.food_cost_amount, metrics.food_cost_rate], ["人工成本", metrics.labor_cost_amount, metrics.labor_cost_rate], ["租金成本", metrics.rent_cost_amount, metrics.rent_cost_rate]].map(([name, amount, rate]) => <div className="store-financial-report__cost-item" key={String(name)}><div><Typography.Text strong>{name}</Typography.Text><Typography.Text type="secondary">{formatMoney(String(amount))}</Typography.Text></div><div className="store-financial-report__bar"><span style={{ width: `${Math.min(Number(rate || 0), 100)}%` }} /></div><Typography.Text type="secondary">{rate == null ? "/" : `${rate}%`}</Typography.Text></div>)}</div></Card></div>
@@ -604,6 +625,7 @@ export function StoreFinancialReportView({ storeId, period }: StoreFinancialRepo
             { title: "费用分类", key: "category", render: (_: unknown, item: NonNullable<FinancialReportSupplement["accrual_details"]>[number]) => [item.category_l1, item.category_l2].filter(Boolean).join(" / ") || "未分类" },
             { title: "日期", dataIndex: "date" }, { title: "费用内容", dataIndex: "description" },
             { title: "入账金额", dataIndex: "amount", align: "right", render: (value: string) => formatMoney(value) },
+            { title: "图片凭证", render: (_, item) => <Button onClick={() => setReportReceipt({ type: "expense_item", id: item.id })}>查看</Button> },
           ]} />
         </Card>
         <Card title="特殊流水" style={{ marginTop: 16, marginBottom: 16 }}>

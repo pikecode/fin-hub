@@ -151,6 +151,8 @@ def reserved_payment_bank_ids():
 
 
 def protect_payment_bank(session, bank_id, *, matching=False):
+    from app.modules.loans import protect_loan_bank
+    protect_loan_bank(session, bank_id)
     mutation_lock(session)
     bank = session.get(BankTransaction, bank_id)
     if bank and bank.is_archived:

@@ -107,6 +107,14 @@ def coverage_deductions(session, store_id):
         if any(link.whole_approval for link in links if link.approval_id == approval_id):
             result.update({key: Decimal(value) / 100 for key, value in cells.items()})
             continue
+        detail_links = [link for link in links if link.approval_id == approval_id and link.detail_selection_json]
+        if detail_links:
+            import json
+            selected = {row["id"] for link in detail_links for row in json.loads(link.detail_selection_json)}
+            if not selected <= ids:
+                raise HTTPException(409, "计提关联审批明细发生删除或重建，请先核对并重新关联")
+            result.update({key: Decimal(value) / 100 for key, value in cells.items() if key[0] in selected})
+            continue
         total = sum(cells.values())
         # Legacy multiple payments can reference the same approval in multiple
         # months. Once accrual-covered, recognize its uncovered cost only once;

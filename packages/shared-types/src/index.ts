@@ -1573,6 +1573,8 @@ export interface DividendFundingSetting {
 }
 
 export interface FinancialReportSupplement extends DividendFundingSetting {
+  loan_receivable_amount?: string;
+  loan_receivables?: Array<{ id: string; borrower: string; amount: string; repaid: string; remaining: string; status: string; events?: Array<{ id: string; kind: string; date: string; amount: string; remark: string; active?: boolean }> }>;
   previous_remaining_undistributed?: string | null;
   accrual_details?: Array<{ id: string; category_l1: string | null; category_l2: string | null; description: string; date: string; amount: string }>;
 

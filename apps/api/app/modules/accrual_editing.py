@@ -106,7 +106,7 @@ def delete_entry(entry_id, payload, session, user):
         )
         if running < 0:
             raise HTTPException(409, "删除后某账期冲销超过可冲销额度")
-    if running < sum((link.amount for link in links if not link.whole_approval), Decimal(0)):
+    if running < sum((link.amount for link in links if not link.whole_approval and not link.detail_selection_json), Decimal(0)):
         raise HTTPException(409, "删除后有效金额不能低于已关联审批覆盖额")
     item = session.get(ExpenseItem, entry.id)
     if item is None or item.source != "accrual":
@@ -209,7 +209,7 @@ def update_entry(entry_id, payload, session, user):
         running += sum((amount for month, amount in changes if month == period), Decimal(0))
         if running < 0:
             raise HTTPException(409, "修改后某账期冲销超过可冲销额度")
-    if running < sum((link.amount for link in links if not link.whole_approval), Decimal(0)):
+    if running < sum((link.amount for link in links if not link.whole_approval and not link.detail_selection_json), Decimal(0)):
         raise HTTPException(409, "修改后有效金额不能低于已关联审批覆盖额")
     before_group = {
         row.id: EntryValues.model_validate(row, from_attributes=True).model_dump(mode="json")

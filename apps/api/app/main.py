@@ -14,6 +14,7 @@ from app.core.sentry import init_sentry
 from app.middleware.rate_limit import create_rate_limit_middleware
 from app.middleware.request_logging import create_request_logging_middleware
 from app.middleware.security_headers import create_security_headers_middleware
+from app.modules.loans import router as loans_router
 from app.modules.attachments.router import router as attachments_router
 from app.modules.audit.router import router as audit_router
 from app.modules.accruals import router as accrual_router
@@ -118,6 +119,7 @@ def create_app() -> FastAPI:
     app.include_router(auth_router, prefix="/api")
     app.include_router(audit_router, prefix="/api")
     app.include_router(accrual_router, prefix="/api")
+    app.include_router(loans_router, prefix="/api")
     app.include_router(approval_notices_router, prefix="/api")
     app.include_router(attachments_router, prefix="/api")
     app.include_router(users_router, prefix="/api")
