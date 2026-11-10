@@ -1,8 +1,9 @@
 export default defineAppConfig({
   pages: [
     "pages/shareholder-login/index",
-    "pages/stores/index",
     "pages/report/index",
+    "pages/bank/index",
+    "pages/dividend/index",
     "pages/profile/index",
     "pages/bank-detail/index",
     "pages/expenses/index",
@@ -14,14 +15,20 @@ export default defineAppConfig({
     borderStyle: "white",
     list: [
       {
-        pagePath: "pages/stores/index",
-        text: "门店",
+        pagePath: "pages/report/index",
+        text: "报表",
+        iconPath: "assets/tabbar/business.png",
+        selectedIconPath: "assets/tabbar/business-active.png",
+      },
+      {
+        pagePath: "pages/bank/index",
+        text: "银行流水",
         iconPath: "assets/tabbar/stores.png",
         selectedIconPath: "assets/tabbar/stores-active.png",
       },
       {
-        pagePath: "pages/report/index",
-        text: "经营",
+        pagePath: "pages/dividend/index",
+        text: "分红管理",
         iconPath: "assets/tabbar/business.png",
         selectedIconPath: "assets/tabbar/business-active.png",
       },

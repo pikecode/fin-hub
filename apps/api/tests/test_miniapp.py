@@ -58,7 +58,7 @@ def test_mobile_scope_readonly_and_password_revocation(client, session):
         client.get(
             "/api/miniapp/report", params={"store_id": a.id, "period": "2026-10"}, headers=h
         ).status_code
-        == 403
+        == 200
     )
     assert client.post("/api/bank-transactions", json={}, headers=h).status_code == 401
     for endpoint in ["report", "revenue", "dividend", "expenses"]:
@@ -191,3 +191,60 @@ def test_mobile_dynamic_group_scope_and_revocation(client, session):
     assert client.get(detail_url, headers=headers).status_code == 403
     assert {r["id"] for r in client.get("/api/miniapp/stores", headers=headers).json()["data"]} == {direct.id}
     assert client.get(f"/api/miniapp/bank?store_id={outside.id}", headers=headers).status_code == 403
+
+
+def test_mobile_open_period_data_and_scope(client, session):
+    a, b, u = setup(session)
+    session.add(RevenueRecord(store_id=a.id, ledger_period="2026-10",
+        revenue_date=date(2026, 10, 3), channel="扫码", gross_amount=100,
+        net_amount=99, fee_amount=1))
+    session.commit()
+    client.cookies.clear()
+    h = {"authorization": "Bearer " + make_token(u)}
+    assert client.get("/api/miniapp/periods", params={"store_id": a.id}, headers=h).json()["data"] == ["2026-10", "2026-09"]
+    for endpoint in ["report", "revenue", "dividend", "expenses"]:
+        url = "/api/miniapp/" + endpoint
+        result = client.get(url, params={"store_id": a.id, "period": "2026-10"}, headers=h)
+        assert result.status_code == 200, result.text
+        if endpoint == "report":
+            assert result.json()["data"]["report"]["selected_ledger"]["status"] == "open"
+            assert Decimal(result.json()["data"]["report"]["metrics"]["revenue_net_amount"]) == 99
+        if endpoint == "dividend":
+            assert "2026-10" in [r["period"] for r in result.json()["data"]["history"]]
+        assert client.get(url, params={"store_id": b.id, "period": "2026-10"}, headers=h).status_code == 403
+        assert client.get(url, params={"store_id": a.id, "period": "2026-13"}, headers=h).status_code == 422
+        assert client.get(url, params={"store_id": a.id, "period": "2026-12"}, headers=h).status_code == 404
+    assert session.scalar(select(func.count()).select_from(DividendMonth)) == 0
+
+
+def test_mobile_bank_without_ledger_and_filters(client, session):
+    from datetime import datetime
+    a, b, u = setup(session)
+    # This authorized store has no ledger at all, and no balance correction.
+    c = Store(name="无账期门店")
+    session.add(c)
+    session.flush()
+    session.add(UserStorePermission(user_id=u.id, store_id=c.id))
+    rows = []
+    for i in range(31):
+        row = BankTransaction(store_id=c.id, ledger_period="2026-09",
+            occurred_at=datetime(2026, 11, 1), direction="expense", amount=10,
+            payment_status="paid", summary="跨月流水")
+        session.add(row)
+        rows.append(row)
+    session.commit()
+    client.cookies.clear()
+    h = {"authorization": "Bearer " + make_token(u)}
+    assert client.get("/api/miniapp/periods", params={"store_id": c.id}, headers=h).json()["data"] == []
+    for page, count in [(1, 30), (2, 1)]:
+        result = client.get("/api/miniapp/bank", params={"store_id": c.id, "page": page,
+            "start": "2026-11-01", "end": "2026-11-01", "match_status": "unmatched"}, headers=h)
+        assert result.status_code == 200, result.text
+        data = result.json()["data"]
+        assert len(data["list"]["items"]) == count
+        assert data["list"]["total"] == 31
+        assert data["balance"]["has_correction"] is False
+    assert client.get("/api/miniapp/bank/" + rows[0].id, headers=h).status_code == 200
+    assert client.get("/api/miniapp/bank", params={"store_id": c.id, "start": "2026-11-02"}, headers=h).json()["data"]["list"]["total"] == 0
+    assert client.get("/api/miniapp/bank", params={"store_id": c.id, "start": "2026-11-02", "end": "2026-11-01"}, headers=h).status_code == 422
+    assert client.get("/api/miniapp/bank", params={"store_id": b.id}, headers=h).status_code == 403

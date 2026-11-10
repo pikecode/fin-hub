@@ -68,13 +68,14 @@ def scope(session, user, store_id):
         raise HTTPException(404, "门店不存在")
 
 
-def closed(session, user, store_id, period):
+def readable_period(session, user, store_id, period):
     scope(session, user, store_id)
     ledger = session.scalar(
         select(Ledger).where(Ledger.store_id == store_id, Ledger.period == period)
     )
-    if not ledger or ledger.status != "closed":
-        raise HTTPException(403, "该月份尚未封账，暂不可查看")
+    if not ledger:
+        raise HTTPException(404, "该月份尚未创建账期")
+    return ledger
 
 
 @router.post("/login")
@@ -131,7 +132,7 @@ def periods(
         data=list(
             session.scalars(
                 select(Ledger.period)
-                .where(Ledger.store_id == store_id, Ledger.status == "closed")
+                .where(Ledger.store_id == store_id)
                 .order_by(Ledger.period.desc())
             )
         )
@@ -148,7 +149,7 @@ def report(
     from app.modules.reports.financial import supplement
     from app.modules.store_ledgers.router import read_store_financial_report
 
-    closed(session, user, store_id, period)
+    readable_period(session, user, store_id, period)
     return ApiEnvelope(
         data={
             "report": read_store_financial_report(store_id, period, session, user).data,
@@ -167,7 +168,7 @@ def revenue(
 ):
     from app.schemas import RevenueRecordRead
 
-    closed(session, user, store_id, period)
+    readable_period(session, user, store_id, period)
     rows = list(
         session.scalars(
             select(RevenueRecord).where(
@@ -213,6 +214,7 @@ def bank(
 ):
     from app.modules.bank.router import list_bank_transactions
     from app.modules.bank_balance.router import calculate_bank_balance
+    from app.schemas import BankTransactionRead, Page
 
     scope(session, user, store_id)
     if start and end and start > end:
@@ -228,7 +230,14 @@ def bank(
         current_user=user,
     )
     return ApiEnvelope(
-        data={"list": result.data, "balance": calculate_bank_balance(session, store_id)}
+        data={
+            # Direct calls bypass the web route's response_model conversion.
+            "list": Page[BankTransactionRead](
+                items=[BankTransactionRead.model_validate(row) for row in result.data.items],
+                total=result.data.total, page=page, page_size=30,
+            ),
+            "balance": calculate_bank_balance(session, store_id),
+        }
     )
 
 
@@ -251,7 +260,7 @@ def dividend(
     from app.modules.dividend.opening import configured_history, opening_read
     from app.modules.dividend.router import history_rows
 
-    closed(session, user, store_id, period)
+    readable_period(session, user, store_id, period)
     store = session.get(Store, store_id)
     opening = opening_read(session, store_id)
     history = (
@@ -262,7 +271,7 @@ def dividend(
     visible = set(
         session.scalars(
             select(Ledger.period).where(
-                Ledger.store_id == store_id, Ledger.status == "closed", Ledger.period <= period
+                Ledger.store_id == store_id, Ledger.period <= period
             )
         )
     )
@@ -315,7 +324,7 @@ def attachment(
 @router.get("/expenses")
 def expenses(
     store_id: str,
-    period: str,
+    period: str = Query(pattern=r"^\d{4}-(0[1-9]|1[0-2])$"),
     category: str | None = None,
     page: int = Query(1, ge=1),
     session: Session = Depends(get_session),
@@ -326,7 +335,7 @@ def expenses(
     from app.modules.store_ledgers.router import confirmed_accounting_expense_rows
     from app.schemas import AttachmentRead
 
-    closed(session, user, store_id, period)
+    readable_period(session, user, store_id, period)
     rows = [
         r
         for r in confirmed_accounting_expense_rows(session, store_id, period)

@@ -1,3 +1,1 @@
-export default definePageConfig({
-  navigationBarTitleText: "门店报表",
-});
+export default definePageConfig({ navigationBarTitleText: "门店报表" });

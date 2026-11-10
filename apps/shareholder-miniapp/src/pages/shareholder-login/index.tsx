@@ -19,7 +19,7 @@ export default function Login() {
     try {
       const r = await api.login(username.trim(), password);
       setShareholderToken(r.token);
-      Taro.switchTab({ url: "/pages/stores/index" });
+      Taro.switchTab({ url: "/pages/report/index" });
     } catch (e) {
       E(e instanceof Error ? e.message : "登录失败");
     } finally {
