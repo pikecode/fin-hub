@@ -964,6 +964,29 @@ def read_financial_analytics_details(
             expense_items = [item for item in expense_items if (item.category_l1 or "未分类") == category_l1]
         if category_l2:
             expense_items = [item for item in expense_items if item.category_l2 == category_l2]
+    if detail_type == "report_expense":
+        from app.modules.reports.financial import report_expense_items
+        months = set(session.execute(select(Ledger.store_id, Ledger.period).where(Ledger.store_id.in_(store_ids))).all())
+        months.update(session.execute(select(ExpenseItem.store_id, ExpenseItem.ledger_period)
+            .where(ExpenseItem.store_id.in_(store_ids))).all())
+        months.update(session.execute(select(ExpenseItem.store_id, ExpenseBankMatch.accounting_period)
+            .join(ExpenseBankMatch, ExpenseBankMatch.expense_item_id == ExpenseItem.id)
+            .where(ExpenseItem.store_id.in_(store_ids), ExpenseBankMatch.status == "confirmed",
+                   ExpenseBankMatch.accounting_period.is_not(None))).all())
+        combined = {}
+        for sid, month in months:
+            if (period_start and month < period_start) or (period_end and month > period_end):
+                continue
+            for item in report_expense_items(session, sid, month):
+                if category_l1 and (item.category_l1 or "未分类") != category_l1:
+                    continue
+                if category_l2 and item.category_l2 != category_l2:
+                    continue
+                if item.id in combined:
+                    combined[item.id].amount += item.amount
+                else:
+                    combined[item.id] = item
+        expense_items = list(combined.values())
     expense_ids = [item.id for item in expense_items]
     voucher_counts = {
         resource_id: count

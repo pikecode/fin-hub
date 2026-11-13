@@ -11,17 +11,19 @@ interface Row {
   category_l1: string;
   category_l2: string;
   attachments: Attachment[];
+  source?: string;
+  source_document_id?: string;
 }
 export default function Expenses() {
   const p = Taro.useRouter().params;
-  const [data, D] = useState<{ items: Row[]; total: number } | null>(null),
+  const [data, D] = useState<{ items: Row[]; total: number; total_amount?: string } | null>(null),
     [page, P] = useState(1),
     [error, E] = useState("");
   useEffect(() => {
     let live = true;
     D(null);
     E("");
-    request<{ items: Row[]; total: number }>(
+    request<{ items: Row[]; total: number; total_amount?: string }>(
       `/expenses?store_id=${p.storeId}&period=${p.period}&category=${encodeURIComponent(p.category || "")}&page=${page}`,
     )
       .then((r) => {
@@ -57,10 +59,14 @@ export default function Expenses() {
       <Text className="title">{p.category || "费用明细"}</Text>
       {error && <Text className="error">{error}</Text>}
       {!data && !error && <Text>正在加载…</Text>}
+      {data && <View className="section"><Text>共 {data.total} 条 · 入账合计 {data.total_amount == null ? "—" : "¥"+Number(data.total_amount).toFixed(2)}</Text></View>}
+      {data && !data.items.length && <View className="section">暂无费用明细</View>}
       {data?.items.map((x) => (
         <View className="section" key={x.id}>
           <Text>{x.date}</Text>
           <Text>{x.description}</Text>
+          <Text className="row-sub">{x.category_l1} / {x.category_l2} · {x.source === "accrual" ? "计提/调整" : x.source === "bank_direct" ? "银行直接入账" : x.source === "kuailv_purchase" ? "采购" : "费用"}</Text>
+          {x.source === "bank_direct" && x.source_document_id && <Button onClick={()=>Taro.navigateTo({url:"/pages/bank-detail/index?id="+x.source_document_id})}>查看原流水</Button>}
           <Text className="value">¥{Number(x.amount).toFixed(2)}</Text>
           {x.attachments.map((a) => (
             <Button key={a.id} onClick={() => preview(a)}>

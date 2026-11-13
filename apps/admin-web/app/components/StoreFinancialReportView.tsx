@@ -1,4 +1,5 @@
 "use client";
+import { buildReportCategories } from "@fin-hub/shared-utils";
 
 import dynamic from "next/dynamic";
 import { DatePicker, Alert, Button, Card, Empty, Image, Input, InputNumber, Modal, Space, Table, Tag, Typography, message } from "antd";
@@ -164,29 +165,7 @@ export function StoreFinancialReportView({ storeId, period }: StoreFinancialRepo
   const metrics = data?.metrics;
   const categoryRows = useMemo<CategoryRow[]>(() => {
     if (!metrics) return [];
-    const roots = new Map<string, CategoryRow>();
-    const totalExpense = Number(metrics.expense_amount || 0);
-    const totalIncome = Number(metrics.income_amount || 0);
-    metrics.expense_category_summary.forEach((item) => {
-      const [rootName, childName] = item.name.split(" / ");
-      const root = roots.get(rootName) ?? { key: rootName, name: rootName, amount: "0", item_count: 0, share: "/", revenue_share: "/", children: [] };
-      root.amount = String(Number(root.amount) + Number(item.amount || 0));
-      root.item_count += item.item_count;
-      if (childName) root.children!.push({ key: item.name, name: childName, amount: item.amount, item_count: item.item_count, share: ratio(Number(item.amount), totalExpense), revenue_share: ratio(Number(item.amount), totalIncome) });
-      roots.set(rootName, root);
-    });
-    for (const item of supplement?.historical_category_expenses ?? []) {
-      const [rootName, childName] = item.name.split(" / ");
-      const root = roots.get(rootName) ?? { key: rootName, name: rootName, amount: "0", item_count: 0, share: "/", revenue_share: "/", children: [] };
-      root.historical_amount = String(Number(root.historical_amount || 0) + Number(item.amount));
-      if (childName) {
-        const child = root.children!.find(row => row.key === item.name);
-        if (child) child.historical_amount = item.amount;
-        else root.children!.push({ key: item.name, name: childName, amount: "0", historical_amount: item.amount, item_count: 0, share: ratio(0, totalExpense), revenue_share: ratio(0, totalIncome) });
-      }
-      roots.set(rootName, root);
-    }
-    return [...roots.values()].map((item) => ({ ...item, share: ratio(Number(item.amount), totalExpense), revenue_share: ratio(Number(item.amount), totalIncome), children: item.children?.sort((a, b) => Number(b.amount) - Number(a.amount)) })).sort((a, b) => Number(b.amount) - Number(a.amount));
+    return data && supplement ? buildReportCategories(data, supplement) : [];
   }, [metrics, supplement]);
 
   useEffect(() => {

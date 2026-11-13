@@ -148,12 +148,16 @@ def report(
 ):
     from app.modules.reports.financial import supplement
     from app.modules.store_ledgers.router import read_store_financial_report
+    from app.modules.expense.router import list_major_expense_vouchers
 
     readable_period(session, user, store_id, period)
     return ApiEnvelope(
         data={
             "report": read_store_financial_report(store_id, period, session, user).data,
             "supplement": supplement(store_id, period, session, user).data,
+            "major_vouchers": list_major_expense_vouchers(store_id, period, session, user).data,
+            "retrieved_at": utc_now().isoformat(),
+            "contract_version": "pc-parity-1",
         }
     )
 
@@ -298,16 +302,13 @@ def preopening(
 def attachment(
     attachment_id: str, session: Session = Depends(get_session), user: User = Depends(mobile_user)
 ):
-    from app.models import Attachment, ExpenseItem
-    from app.modules.attachments.router import download_attachment
+    from app.models import Attachment
+    from app.modules.attachments.router import download_attachment, resource_access
 
     row = session.get(Attachment, attachment_id)
-    if not row or row.resource_type != "expense_item":
+    if not row or row.resource_type not in {"expense_item", "loan_event"}:
         raise HTTPException(404, "凭证不存在")
-    item = session.get(ExpenseItem, row.resource_id)
-    if not item:
-        raise HTTPException(404, "费用不存在")
-    scope(session, user, item.store_id)
+    resource_access(session, user, row.resource_type, row.resource_id)
     if row.download_status != "stored" and row.source == "dingtalk":
         from fastapi.responses import Response
 
@@ -330,37 +331,46 @@ def expenses(
     session: Session = Depends(get_session),
     user: User = Depends(mobile_user),
 ):
-    from app.models import Attachment, ExpenseItem
-    from app.modules.expense_classification import is_non_operating_expense
-    from app.modules.store_ledgers.router import confirmed_accounting_expense_rows
+    from app.models import Attachment
+    from app.modules.reports.router import read_financial_analytics_details
     from app.schemas import AttachmentRead
 
     readable_period(session, user, store_id, period)
-    rows = [
-        r
-        for r in confirmed_accounting_expense_rows(session, store_id, period)
-        if not is_non_operating_expense(r[1], r[2])
-        and (not category or " / ".join(p for p in (r[1], r[2]) if p) == category)
-    ]
+    l1, _, l2 = (category or "").partition(" / ")
+    data = read_financial_analytics_details(detail_type="report_expense", store_id=store_id,
+        period_start=period, period_end=period, category_l1=l1 or None, category_l2=l2 or None,
+        session=session, shareholder_grant=None, current_user=user).data
+    rows = data.expense_items
     result = []
-    for item_id, l1, l2, amount in rows[(page - 1) * 30 : page * 30]:
-        item = session.get(ExpenseItem, item_id)
-        if not item:
-            continue
-        attachments = session.scalars(
-            select(Attachment).where(
-                Attachment.resource_type == "expense_item", Attachment.resource_id == item_id
-            )
-        ).all()
-        result.append(
-            {
-                "id": item_id,
-                "date": item.expense_date,
-                "description": item.description,
-                "category_l1": l1,
-                "category_l2": l2,
-                "amount": amount,
-                "attachments": [AttachmentRead.model_validate(a) for a in attachments],
-            }
-        )
-    return ApiEnvelope(data={"items": result, "total": len(rows)})
+    for item in rows[(page - 1) * 30 : page * 30]:
+        attachments = session.scalars(select(Attachment).where(
+            Attachment.resource_type == "expense_item", Attachment.resource_id == item.id)).all()
+        result.append({"id": item.id, "date": item.expense_date, "description": item.description,
+            "category_l1": item.category_l1, "category_l2": item.category_l2,
+            "amount": item.amount, "source": item.source, "source_document_id": item.source_document_id,
+            "attachments": [AttachmentRead.model_validate(a) for a in attachments]})
+    return ApiEnvelope(data={"items": result, "total": len(rows),
+        "total_amount": str(sum((Decimal(i.amount) for i in rows), Decimal(0)))})
+
+
+@router.get("/record-attachments")
+def record_attachments(resource_type: str = Query(pattern="^(expense_item|loan_event)$"),
+    resource_id: str = Query(min_length=1), session: Session = Depends(get_session),
+    user: User = Depends(mobile_user)):
+    from app.models import Attachment
+    from app.modules.attachments.router import resource_access
+    from app.schemas import AttachmentRead
+    resource_access(session, user, resource_type, resource_id)
+    rows = session.scalars(select(Attachment).where(Attachment.resource_type == resource_type,
+        Attachment.resource_id == resource_id).order_by(Attachment.created_at)).all()
+    return ApiEnvelope(data=[AttachmentRead.model_validate(row) for row in rows])
+
+
+@router.get("/report-special")
+def report_special(store_id: str, period: str = Query(pattern=r"^\d{4}-(0[1-9]|1[0-2])$"),
+    page: int = Query(1, ge=1), session: Session = Depends(get_session), user: User = Depends(mobile_user)):
+    from app.modules.reports.financial import appendix
+    readable_period(session, user, store_id, period)
+    data = appendix(store_id, period, session, user).data
+    rows = [r for r in data["rows"] if r["transaction"].get("special_type") or r["transaction"].get("direct_posting_type")]
+    return ApiEnvelope(data={"items": rows[(page-1)*30:page*30], "total": len(rows)})

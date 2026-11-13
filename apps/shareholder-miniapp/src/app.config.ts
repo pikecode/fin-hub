@@ -7,6 +7,7 @@ export default defineAppConfig({
     "pages/profile/index",
     "pages/bank-detail/index",
     "pages/expenses/index",
+    "pages/receipts/index",
   ],
   tabBar: {
     color: "#87928d",

@@ -1,0 +1,6 @@
+.report-contents { display: flex; flex-wrap: wrap; gap: 12px; padding: 16px 0; }
+.report-contents button { margin: 0; font-size: 22px; }
+.report-child { padding-left: 24px; border-left: 4px solid #d8e8df; }
+.report-line { display: flex; justify-content: space-between; gap: 16px; }
+.financial-report .metric .value { font-size: 30px; }
+.financial-report .metric { min-width: 0; }

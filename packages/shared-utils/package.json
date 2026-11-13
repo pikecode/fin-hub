@@ -12,5 +12,8 @@
   },
   "devDependencies": {
     "typescript": "^5.9.0"
+  },
+  "dependencies": {
+    "@fin-hub/shared-types": "workspace:*"
   }
 }

@@ -722,3 +722,24 @@ def appendix(
             "expense_items": export_items,
         }
     )
+
+
+def report_expense_items(session, store_id, period):
+    """Canonical report detail, including non-approval sources and signed adjustments."""
+    from types import SimpleNamespace
+    from app.modules.store_ledgers.router import confirmed_accounting_expense_rows
+    from app.modules.expense_classification import is_non_operating_expense
+    amounts = {key: amount for key, _, _, amount in confirmed_accounting_expense_rows(session, store_id, period)}
+    for item in session.scalars(select(ExpenseItem).where(ExpenseItem.store_id == store_id,
+            ExpenseItem.ledger_period == period, ExpenseItem.source.in_(["revenue_fee", "kuailv_purchase"]))):
+        amounts[item.id] = item.amount
+    originals = session.scalars(select(ExpenseItem).where(ExpenseItem.id.in_(amounts))
+        .order_by(ExpenseItem.expense_date.desc().nullslast(), ExpenseItem.created_at.desc(), ExpenseItem.id)).all()
+    result = []
+    for item in originals:
+        if is_non_operating_expense(item.category_l1, item.category_l2):
+            continue
+        data = {c.key: getattr(item, c.key) for c in ExpenseItem.__table__.columns}
+        data.update(amount=amounts[item.id], ledger_period=period)
+        result.append(SimpleNamespace(**data))
+    return result

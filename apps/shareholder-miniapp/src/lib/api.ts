@@ -8,6 +8,9 @@ import type {
   RevenueRecord,
   DividendMonth,
   FinancialReportSupplement,
+  MajorExpenseVoucher,
+  Attachment,
+  FinancialReportAppendix,
 } from "@fin-hub/shared-types";
 declare const __API_BASE_URL__: string;
 export const API_BASE_URL = __API_BASE_URL__;
@@ -55,6 +58,9 @@ export interface MobileStore {
 export interface MobileReport {
   report: StoreLedgerWorkspace;
   supplement: FinancialReportSupplement;
+  major_vouchers?: MajorExpenseVoucher[];
+  retrieved_at?: string;
+  contract_version?: string;
 }
 export interface MobileRevenue {
   channels: { channel: string; gross: string; net: string; fee: string }[];
@@ -75,6 +81,8 @@ export const api = {
       username,
       password,
     }),
+  recordAttachments: (type: string, id: string) => request<Attachment[]>(`/record-attachments?resource_type=${encodeURIComponent(type)}&resource_id=${encodeURIComponent(id)}`),
+  reportSpecial: (id: string, period: string, page: number) => request<{ items: FinancialReportAppendix["rows"]; total: number }>(`/report-special?store_id=${id}&period=${period}&page=${page}`),
   me: () => request<CurrentUser>("/me"),
   stores: () => request<MobileStore[]>("/stores"),
   periods: (id: string) => request<string[]>("/periods?store_id=" + id),
