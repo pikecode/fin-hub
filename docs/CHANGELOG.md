@@ -21,6 +21,15 @@
 
 ## 2026-11-13
 
+### 部署通用跨月统计及历史匹配编辑修复（生产已完成）
+
+- 时间：2026-11-13 10:30（Asia/Shanghai）；耗时约6分钟（估算）。用户授权生产部署；包含 `ed3bff6` 通用统计及此前 `5ab9fe8` 编辑修复。
+- 范围：API 从 `deploy-20261110-miniapp` 更新至 `deploy-20261113-accounting`，仅覆盖 `matching/accounting.py`、`bank/router.py`；管理端镜像及启动时间不变，只重建API及reload nginx，无迁移，版本仍 `20261109_0047`。
+- 验证：部署前只读比较生产146个账期，新旧费用统计差异0、封账差异0；上线后17项认证只读检查通过，含开放月份报表、收入、分红、费用、移动/管理端金额一致、非空流水列表/详情/日期筛选、非法月份/未登录拒绝。API running、重启0；未修改生产流水属性。
+- 备份：`/opt/fin-hub/releases/deploy-20261113-accounting/` 留存env.before（600）、镜像封装/发布脚本、impact.json、服务前后快照及verification.json。回滚只恢复 `API_IMAGE=fin-hub-api:deploy-20261110-miniapp` 并重建api、reload nginx，无需恢复数据库。
+- 新截图需求：“以实付金额入账”按钮尚未开发/发布，跨月归属等待用户选择：累计实付更新原统一月份，或按各笔匹配入账月份分别计费。该待定需求不在本次生产成果中。
+- 分支 `work/20261113-deploy-accounting-01`；前备份 `backup/20261113-deploy-accounting-01-before`；记录提交后建立 `backup/20261113-deploy-accounting-01-after`，尚未推送远程。
+
 ### 审批单跨月支付通用统计去重（开发完成，未部署）
 
 - 时间：2026-11-13 10:20（Asia/Shanghai）；耗时约8分钟（估算）。用户要求修正通用统计，避免同一审批单因多笔支付跨月重复计入整单。
