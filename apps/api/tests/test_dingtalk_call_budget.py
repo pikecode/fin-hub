@@ -82,7 +82,8 @@ def test_running_always_refreshes_finished_and_parse_errors_daily():
     for status in ['RUNNING', 'new']:
         assert sync.approval_detail_refresh_due(ApprovalInstance(approval_status=status, last_parsed_at=utc_now()))
     for status in ['TERMINATED', 'refuse']:
-        assert not sync.approval_detail_refresh_due(ApprovalInstance(approval_status=status))
+        assert sync.approval_detail_refresh_due(ApprovalInstance(approval_status=status))
+        assert not sync.approval_detail_refresh_due(ApprovalInstance(approval_status=status, last_parsed_at=utc_now()))
     for error in [None, 'Missing store']:
         instance = ApprovalInstance(approval_status='agree', store_id='store', parse_status='parsed', processing_status='pending_classification', parse_error=error, approved_at=utc_now(), last_parsed_at=utc_now())
         assert not sync.approval_detail_refresh_due(instance)
@@ -273,3 +274,20 @@ def test_rate_limit_retry_bounded_and_other_errors_not_retried(monkeypatch):
     with pytest.raises(client_module.DingTalkClientError):
         client.list_child_departments()
     assert posts.call_count == 1
+
+
+def test_interactive_verification_does_not_sleep_on_rate_limit(monkeypatch):
+    import pytest
+    from app.modules.dingtalk.client import DingTalkClientError
+
+    calls = []
+    def post(url, **kwargs):
+        calls.append(url)
+        return response(url, {'errcode': 90002, 'errmsg': 'rate limited'})
+    monkeypatch.setattr(client_module.httpx, 'post', post)
+    monkeypatch.setattr(client_module, 'sleep', lambda _: pytest.fail('interactive call must not sleep'))
+    api = DingTalkClient(DingTalkCredentials('key', 'secret'), retry_rate_limits=False)
+    monkeypatch.setattr(api, 'get_access_token', lambda: 'token')
+    with pytest.raises(DingTalkClientError):
+        api.get_process_instance('one')
+    assert len(calls) == 1

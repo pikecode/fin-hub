@@ -184,7 +184,7 @@ def test_historical_retry_respects_cooldown_and_terminal_status(session, monkeyp
     monkeypatch.setattr(sync, "dingtalk_client", lambda config: client)
     monkeypatch.setattr(sync, "sync_real_instance", lambda *args: True)
     sync.run_approval_sync(session, job=job, templates=[template], page_size=10, max_pages=10)
-    assert {call.args[0] for call in client.get_process_instance.call_args_list} == {"old-error", "running"}
+    assert {call.args[0] for call in client.get_process_instance.call_args_list} == {"old-error", "running", "terminal"}
     assert job.status == "succeeded"
 
 

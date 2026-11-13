@@ -1490,6 +1490,7 @@ def test_real_approval_sync_skips_existing_instances(client: TestClient, session
             store_id=store_id,
             parse_status="parsed",
             processing_status="matched",
+            last_parsed_at=utc_now(),
         )
     )
     session.commit()

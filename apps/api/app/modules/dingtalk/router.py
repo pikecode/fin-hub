@@ -7,7 +7,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Query
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -109,7 +109,7 @@ DINGTALK_SYNC_JOB_TYPES = {
 COMPLETED_APPROVAL_STATUSES = {"agree", "approved", "completed", "finish", "success"}
 PARSABLE_APPROVAL_STATUSES = COMPLETED_APPROVAL_STATUSES | {"running", "new"}
 RESYNC_PROCESSING_STATUSES = {"unparsed"}
-TERMINAL_NON_EXPENSE_STATUSES = {"terminated", "canceled", "cancelled", "cancel", "withdrawn", "refuse", "reject", "rejected", "refused", "deny"}
+TERMINAL_NON_EXPENSE_STATUSES = {"terminated", "canceled", "cancelled", "cancel", "withdrawn", "refuse", "reject", "rejected", "refused", "deny", "return", "returned", "退回"}
 
 
 class ApprovalSyncCanceled(Exception):
@@ -3269,7 +3269,7 @@ def edited_fields(item: ExpenseItem) -> set[str]:
 
 
 def expense_has_bank_match(session: Session, item: ExpenseItem) -> bool:
-    return session.scalar(select(ExpenseBankMatch.id).where(ExpenseBankMatch.expense_item_id == item.id).limit(1)) is not None
+    return session.scalar(select(ExpenseBankMatch.id).where(ExpenseBankMatch.expense_item_id == item.id, ExpenseBankMatch.status == "confirmed").limit(1)) is not None
 
 
 def source_document_id_for_line(instance_id: str, total_rows: int, line_key: str) -> str:
@@ -3468,19 +3468,24 @@ def mark_removed_expense_lines(session: Session, instance: ApprovalInstance, act
             )
         )
     )
+    from app.models import AccrualApprovalLink
+    linked = session.scalar(select(AccrualApprovalLink.id).where(
+        AccrualApprovalLink.approval_id == instance.id,
+        AccrualApprovalLink.active.is_(True),
+    ).limit(1)) is not None
     for item in [*items, *legacy_items]:
         if item.source_document_id in active_source_document_ids:
             continue
         item.approval_instance_id = instance.id
         item.parse_status = "source_removed"
         item.sync_conflict_status = (
-            "source_removed_after_matched" if expense_has_bank_match(session, item) else "source_removed"
+            "source_removed_after_matched" if linked or expense_has_bank_match(session, item) else "source_removed"
         )
 
 
 def approval_source_status(raw_instance: dict[str, Any]) -> str:
     status = parse_text(raw_instance.get("status"))
-    if status and status.lower() in (TERMINAL_NON_EXPENSE_STATUSES | {"running", "new"}):
+    if status and status.lower() not in COMPLETED_APPROVAL_STATUSES:
         return status
     return parse_text(raw_instance.get("result") or status) or "unknown"
 
@@ -4020,18 +4025,37 @@ def approval_needs_detail_resync(instance: ApprovalInstance) -> bool:
 
 
 def approval_detail_refresh_due(instance: ApprovalInstance, monitor_matched: bool = False) -> bool:
-    """Pending approvals stay live; finished approvals/errors refresh at most daily."""
-    if monitor_matched:
-        return instance.last_parsed_at is None or instance.last_parsed_at <= utc_now() - timedelta(hours=24)
-    if instance.approval_status.lower() in TERMINAL_NON_EXPENSE_STATUSES:
-        return False
-    if instance.approval_status.lower() not in COMPLETED_APPROVAL_STATUSES:
+    """Live approvals every run; terminal/recent daily; stable history weekly."""
+    status = instance.approval_status.lower()
+    if not monitor_matched and status not in (COMPLETED_APPROVAL_STATUSES | TERMINAL_NON_EXPENSE_STATUSES):
         return True
-    if instance.last_parsed_at and instance.last_parsed_at > utc_now() - timedelta(hours=24):
-        return False
-    if not approval_needs_detail_resync(instance) and should_skip_stable_approval(instance, sync_window_days=30):
-        return False
-    return True
+    interval = timedelta(hours=24)
+    if (not monitor_matched and status in COMPLETED_APPROVAL_STATUSES
+            and not approval_needs_detail_resync(instance)
+            and should_skip_stable_approval(instance, sync_window_days=30)):
+        interval = timedelta(days=7)
+    return instance.last_parsed_at is None or instance.last_parsed_at <= utc_now() - interval
+
+
+def historical_approval_refresh_ids(session, template_ids, monitored_ids, limit=100):
+    """Bound historical calls and rotate oldest checks first, including withdrawn sources."""
+    now = utc_now()
+    ref = func.coalesce(ApprovalInstance.dingtalk_modified_at, ApprovalInstance.approved_at, ApprovalInstance.submit_at)
+    recent_or_error = or_(
+        func.lower(ApprovalInstance.approval_status).in_(TERMINAL_NON_EXPENSE_STATUSES),
+        ref >= now - timedelta(days=30),
+        ApprovalInstance.parse_status != "parsed",
+        ApprovalInstance.store_id.is_(None),
+        ApprovalInstance.processing_status.in_(RESYNC_PROCESSING_STATUSES),
+    )
+    return set(session.scalars(select(ApprovalInstance.id).where(
+        ApprovalInstance.template_id.in_(template_ids),
+        ApprovalInstance.id.notin_(monitored_ids),
+        func.lower(ApprovalInstance.approval_status).in_(COMPLETED_APPROVAL_STATUSES | TERMINAL_NON_EXPENSE_STATUSES),
+        or_(ApprovalInstance.last_parsed_at.is_(None),
+            ApprovalInstance.last_parsed_at <= now - timedelta(days=7),
+            and_(recent_or_error, ApprovalInstance.last_parsed_at <= now - timedelta(hours=24))),
+    ).order_by(ApprovalInstance.last_parsed_at.asc().nullsfirst(), ApprovalInstance.id).limit(limit)))
 
 
 def ensure_sync_job_not_canceled(session: Session, job: SyncJob) -> None:
@@ -4069,7 +4093,11 @@ def run_approval_sync(
         ApprovalInstance.template_id.in_([t.id for t in templates]), ExpenseBankMatch.status == "confirmed", ExpenseBankMatch.expense_scope == "operating").distinct()))
     from app.models import AccrualApprovalLink
     monitored_ids.update(session.scalars(select(ApprovalInstance.id).join(AccrualApprovalLink, AccrualApprovalLink.approval_id == ApprovalInstance.id).where(ApprovalInstance.template_id.in_([t.id for t in templates]), AccrualApprovalLink.active.is_(True)).distinct()))
-    monitor_refresh_count = 0
+    historical_ids = historical_approval_refresh_ids(session, [t.id for t in templates], monitored_ids)
+    monitored_due_ids = set(session.scalars(select(ApprovalInstance.id).where(
+        ApprovalInstance.id.in_(monitored_ids),
+        or_(ApprovalInstance.last_parsed_at.is_(None), ApprovalInstance.last_parsed_at <= utc_now() - timedelta(hours=24)),
+    ).order_by(ApprovalInstance.last_parsed_at.asc().nullsfirst(), ApprovalInstance.id).limit(100)))
     for template in templates:
         ensure_sync_job_not_canceled(session, job)
         if should_use_real_dingtalk():
@@ -4134,7 +4162,7 @@ def run_approval_sync(
                         skipped_missing_instance_ids.append(instance_id)
                         from app.modules.approval_notices import mark_source_unavailable
                         mark_source_unavailable(session, existing_instance)
-                        if existing_instance and existing_instance.id in monitored_ids:
+                        if existing_instance:
                             existing_instance.last_parsed_at = utc_now()
                         session.commit()
                         continue
@@ -4209,9 +4237,15 @@ def run_approval_sync(
             for instance in retry_instances:
                 ensure_sync_job_not_canceled(session, job)
                 is_monitored = instance.id in monitored_ids
-                if instance.dingtalk_instance_id in handled_instance_ids or (not is_monitored and not approval_needs_detail_resync(instance)):
+                live_retry = (
+                    instance.approval_status.lower() not in (COMPLETED_APPROVAL_STATUSES | TERMINAL_NON_EXPENSE_STATUSES)
+                    and approval_needs_detail_resync(instance)
+                )
+                if instance.dingtalk_instance_id in handled_instance_ids or not (
+                    is_monitored or instance.id in historical_ids or live_retry
+                ):
                     continue
-                if is_monitored and (monitor_refresh_count >= 100 or not approval_detail_refresh_due(instance, True)):
+                if is_monitored and instance.id not in monitored_due_ids:
                     continue
                 if skip_existing and not approval_detail_refresh_due(instance, is_monitored):
                     detail_skipped_count += 1
@@ -4227,8 +4261,6 @@ def run_approval_sync(
                 handled_instance_ids.add(instance.dingtalk_instance_id)
                 job.processed_count += 1
                 retry_refreshed_count += 1
-                if is_monitored:
-                    monitor_refresh_count += 1
                 try:
                     detail_fetched_count += 1
                     raw_instance = client.get_process_instance(instance.dingtalk_instance_id)
@@ -4239,8 +4271,7 @@ def run_approval_sync(
                     skipped_missing_instance_ids.append(instance.dingtalk_instance_id)
                     from app.modules.approval_notices import mark_source_unavailable
                     mark_source_unavailable(session, instance)
-                    if is_monitored:
-                        instance.last_parsed_at = utc_now()
+                    instance.last_parsed_at = utc_now()
                     session.commit()
                     continue
                 raw_instance.setdefault("process_instance_id", instance.dingtalk_instance_id)
@@ -4276,6 +4307,8 @@ def run_approval_sync(
             "pull_completed": not bool(incomplete_cursors),
             "parse_failed_count": job.failed_count,
             "parse_errors": sync_job_parse_errors(session, job.id),
+            "historical_refresh_budget": 100,
+            "historical_selected_count": len(historical_ids),
             "detail_fetched_count": detail_fetched_count,
             "detail_skipped_count": detail_skipped_count,
             "skipped_missing_approval_count": len(skipped_missing_instance_ids),

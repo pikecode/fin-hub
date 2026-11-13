@@ -1,3 +1,4 @@
+from app.modules.matching.source_verification import verify_approval_source
 from app.modules.matching import accounting
 import json
 from datetime import date, datetime, timedelta
@@ -433,7 +434,7 @@ def real_approval_candidate_filter():
         ApprovalInstance.expense_scope == "operating",
         ExpenseItem.source == "dingtalk",
         ApprovalInstance.id.is_not(None),
-        or_(ApprovalInstance.approval_status.is_(None), ~func.lower(ApprovalInstance.approval_status).in_(["terminated", "canceled", "cancelled", "cancel", "withdrawn", "撤销", "已撤销"])),
+        or_(ApprovalInstance.approval_status.is_(None), ~func.lower(ApprovalInstance.approval_status).in_(["terminated", "canceled", "cancelled", "cancel", "withdrawn", "refuse", "reject", "rejected", "refused", "deny", "return", "returned", "退回", "撤销", "已撤销"])),
         ApprovalTemplate.is_enabled.is_(True),
         ~ApprovalInstance.dingtalk_instance_id.ilike("sample-%"),
         ~ApprovalInstance.dingtalk_instance_id.ilike("seed-instance-%"),
@@ -1109,6 +1110,7 @@ def create_match_candidate(
         raise HTTPException(status_code=409, detail="Special bank transactions cannot be matched")
     if expense_item.store_id != bank_transaction.store_id:
         raise HTTPException(status_code=409, detail="Store mismatch")
+    verify_approval_source(session, expense_item, audit_actor(current_user))
     accounting.protect_expense_changes(session, expense_item, {key: value for key, value in {'category_l1': payload.category_l1, 'category_l2': payload.category_l2}.items() if value is not None})
     existing_match = session.scalar(
         select(ExpenseBankMatch).where(
@@ -1364,7 +1366,7 @@ def list_reconciliation_candidates(
             )
         )
         .where(ExpenseItem.source.notin_(["revenue_fee", "accrual"]))
-        .where(or_(ApprovalInstance.approval_status.is_(None), ~func.lower(ApprovalInstance.approval_status).in_(["terminated", "canceled", "cancelled", "cancel", "withdrawn", "撤销", "已撤销"])))
+        .where(or_(ApprovalInstance.approval_status.is_(None), ~func.lower(ApprovalInstance.approval_status).in_(["terminated", "canceled", "cancelled", "cancel", "withdrawn", "refuse", "reject", "rejected", "refused", "deny", "return", "returned", "退回", "撤销", "已撤销"])))
         .where(ExpenseItem.amount > 0)
     )
     query = query.where(ExpenseItem.expense_scope == "operating")
@@ -1757,6 +1759,10 @@ def update_reconciliation_record(
 
     from app.modules.preopening.service import ensure_operating
     ensure_operating(session, target_expense, bank_transaction)
+    verify_approval_source(session, target_expense, audit_actor(current_user))
+    session.refresh(match, with_for_update=True)
+    if match.status != MatchStatus.CONFIRMED.value:
+        raise HTTPException(409, "匹配记录状态已变化，请刷新后重试")
     target_amount = updates.get("amount", match.amount)
     target_period = updates.get("accounting_period", match.accounting_period) or target_expense.ledger_period
     other_expense_store_ids = {
@@ -1919,6 +1925,10 @@ def confirm_match(
         return ApiEnvelope(data=match)
     if match.status == MatchStatus.REJECTED.value:
         raise HTTPException(status_code=409, detail="Rejected match cannot be confirmed")
+    verify_approval_source(session, expense_item, audit_actor(current_user, operator))
+    session.refresh(match, with_for_update=True)
+    if match.status != MatchStatus.CANDIDATE.value:
+        raise HTTPException(409, "匹配候选已失效，请刷新后重新匹配")
     confirmed_expense_amount = confirmed_expense_match_amount(session, expense_item.id, exclude_match_id=match.id)
     confirmed_bank_amount = confirmed_bank_match_amount(session, bank_transaction.id, exclude_match_id=match.id)
     ensure_approval_expense_category_selected(session, expense_item)

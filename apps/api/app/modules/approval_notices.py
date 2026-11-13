@@ -98,8 +98,6 @@ def detect_source_change(session, approval, incoming):
     if approval is None:
         return
     stores = matched_periods(session, approval)
-    if not stores:
-        return
     try:
         previous = json.loads(approval.raw_payload or "{}")
     except (ValueError, TypeError):
@@ -111,6 +109,28 @@ def detect_source_change(session, approval, incoming):
         before["说明"] = "旧来源快照缺失，需对照已入账费用核实，不能推断原表单内容"
     after = source_snapshot(incoming)
     changed = [key for key in after if before.get(key) != after[key]]
+    if changed and previous:
+        write_audit_log(
+            session, actor="dingtalk-sync", action="approval.source.updated",
+            resource_type="approval_instance", resource_id=approval.id,
+            summary="审批来源状态或表单发生变更",
+            metadata={"fields": changed, "before": before, "after": after},
+        )
+    if changed:
+        item_ids = select(ExpenseItem.id).where(or_(
+            ExpenseItem.approval_instance_id == approval.id,
+            ExpenseItem.source_document_id == approval.dingtalk_instance_id,
+            ExpenseItem.source_document_id.startswith(approval.dingtalk_instance_id + ":", autoescape=True),
+        ))
+        # Only unconfirmed proposals become stale; never rewrite historical matches.
+        for match in session.scalars(select(ExpenseBankMatch).where(
+            ExpenseBankMatch.expense_item_id.in_(item_ids), ExpenseBankMatch.status == "candidate",
+        )):
+            match.status = "rejected"
+            match.reason = ((match.reason or "") + "\n审批来源已变更，请刷新后重新匹配").strip()
+        session.flush()
+    if not stores:
+        return
     if not changed:
         # A missing source may recover without changing its original raw payload.
         missing_notice = session.scalar(

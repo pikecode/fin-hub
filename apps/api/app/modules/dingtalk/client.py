@@ -36,11 +36,13 @@ class DingTalkClient:
         api_base_url: str | None = None,
         oapi_base_url: str | None = None,
         timeout: float = 20.0,
+        retry_rate_limits: bool = True,
     ) -> None:
         self.credentials = credentials
         self.api_base_url = (api_base_url or settings.dingtalk_api_base_url).rstrip("/")
         self.oapi_base_url = (oapi_base_url or settings.dingtalk_oapi_base_url).rstrip("/")
         self.timeout = timeout
+        self.retry_rate_limits = retry_rate_limits
 
     def _token_cache_key(self) -> tuple[str, str, str, str]:
         return (self.api_base_url, self.oapi_base_url, self.credentials.app_key,
@@ -272,6 +274,9 @@ class DingTalkClient:
             if str(errcode) in {"40014", "42001", "40001"} and attempt == 0:
                 self.invalidate_access_token(token)
                 continue
+
+            if self.is_rate_limit_error(errcode, errmsg) and not self.retry_rate_limits:
+                break
 
             # 针对 90002 (QPS 限流) 错误的特殊处理
             if self.is_rate_limit_error(errcode, errmsg) and attempt < 5:
