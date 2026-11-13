@@ -1,12 +1,300 @@
-/* Report layout inherits the shared finance visual system. */
-.hero .title {
-  font-size: 36px;
-  margin: 10px 0;
+.workspace-header {
+  padding: 0 2px 2px;
 }
-.hero picker {
-  border-bottom: 1px solid #e1e7dc;
-  padding-bottom: 18px;
+.workspace-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 22px;
+  min-height: 98px;
 }
-.hero-subtitle {
+.store-heading {
+  flex: 1;
+  min-width: 0;
+}
+.store-select {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  min-height: 62px;
+}
+.store-select > text:first-child {
+  font-size: 34px;
+  color: #1b3f2f;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.select-arrow {
+  color: #688b76;
+  font-size: 30px;
+  flex-shrink: 0;
+}
+.month-select {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 16px 18px;
+  background: #fff;
+  border: 1px solid #e6ece8;
+  border-radius: 13px;
+  font-size: 25px;
+  white-space: nowrap;
+  height: 88px;
+  min-height: 88px;
+  box-sizing: border-box;
+}
+.month-select > text:last-child {
+  color: #80978a;
+}
+.workspace-tabs {
+  margin: 20px 0 0;
+}
+.workspace-caption {
+  font-size: 23px;
+  color: #5f7467;
+  margin: 10px 0 12px;
+}
+.filter-toggle {
+  background: #fff;
+  border: 1px solid #e4ebe6;
+  color: #63836e;
+  margin: 0;
+  font-size: 25px;
+  min-height: 88px;
+  padding: 16px 24px;
+}
+.filter-toggle.selected {
+  background: #e8f1eb;
+  color: #2f7657;
+}
+.bank-filters .section-title {
+  font-size: 27px;
+}
+.date-filter {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  color: #98a59b;
+  font-size: 24px;
+}
+.date-filter picker {
+  flex: 1;
+  text-align: center;
+  color: #465e4e;
+  background: #f5f7f5;
+  padding: 20px 6px;
+  border-radius: 10px;
+}
+.filter-statuses {
+  display: flex;
+  gap: 12px;
+  margin: 22px 0 10px;
+}
+.filter-statuses .filter-chip {
+  flex: 1;
+  padding: 12px 2px;
+  background: #f3f6f4;
+  color: #829287;
+  border: 1px solid transparent;
+  font-size: 23px;
+  min-height: 88px;
+  margin: 0;
+  font-weight: 400;
+}
+.filter-statuses .filter-chip.active {
+  color: #2d7053;
+  border-color: #9dbca8;
+  background: #eff6f0;
+}
+.filter-applied {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  justify-content: space-between;
+  color: #738d7c;
+  background: #eaf2ed;
+  border-radius: 12px;
+  padding: 18px;
+  margin: 16px 0;
+  font-size: 22px;
+}
+.filter-applied > text:last-child {
+  flex-shrink: 0;
+}
+.skeleton-panel {
+  border-radius: 24px;
+  padding: 36px;
+  margin-top: 22px;
+  background: #fff;
+  min-height: 300px;
+}
+.skeleton-panel > text {
+  font-size: 23px;
+  color: #9aa99d;
+  margin-top: 30px;
+}
+.skeleton-line {
+  background: #eff3f0;
+  height: 24px;
+  width: 100%;
+  border-radius: 8px;
+  margin-bottom: 20px;
+}
+.skeleton-line.short {
+  width: 35%;
+}
+.skeleton-line.amount {
+  width: 65%;
+  height: 64px;
+  margin: 32px 0;
+}
+.skeleton-pair {
+  display: flex;
+  gap: 40px;
+}
+.refresh-note {
+  color: #7e9b86;
   font-size: 21px;
+  padding: 12px 2px 0;
+}
+.balance-mark {
+  color: #7ba28a;
+  font-size: 20px;
+}
+.revenue-totals,
+.dividend-pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+  border-top: 1px solid #edf1ee;
+  padding-top: 24px;
+  margin-top: 24px;
+}
+.revenue-totals > view > text:last-child,
+.dividend-pair > view > text:last-child {
+  font-variant-numeric: tabular-nums;
+  font-size: 30px;
+  font-weight: 500;
+  margin-top: 6px;
+  overflow-wrap: anywhere;
+}
+.bank-item {
+  display: flex;
+  gap: 18px;
+  padding: 28px 0;
+  border-bottom: 1px solid #edf1ee;
+}
+.bank-item:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+.direction-icon {
+  flex-shrink: 0;
+  width: 64px;
+  height: 64px;
+  line-height: 64px;
+  text-align: center;
+  border-radius: 18px;
+  background: #f5f2ed;
+  color: #ab8a61;
+  font-size: 36px;
+}
+.direction-icon.income {
+  color: #558767;
+  background: #eaf4ed;
+}
+.bank-item-body {
+  min-width: 0;
+  flex: 1;
+}
+.bank-name {
+  font-size: 27px;
+  max-width: 48%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.bank-money {
+  flex-shrink: 0;
+  font-size: 31px;
+  font-weight: 600;
+  color: #425c4a;
+  letter-spacing: -0.5px;
+  font-variant-numeric: tabular-nums;
+}
+.income-text {
+  color: #2b7b55;
+}
+.bank-item-body .report-line:nth-child(2) {
+  margin-top: 8px;
+}
+.bank-note {
+  color: #7c8e80;
+  font-size: 23px;
+  margin-top: 14px;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.bank-item-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  color: #65796d;
+  font-size: 21px;
+  margin-top: 2px;
+}
+.bank-item-footer button.text-button {
+  font-size: 21px;
+  min-height: 88px;
+}
+.bank-item-body .record-link {
+  margin-top: 0;
+}
+.dividend-card .section-title {
+  margin: 0;
+}
+.dividend-heading {
+  min-height: 88px;
+}
+.dividend-heading .row-sub {
+  margin-top: 6px;
+}
+.dividend-primary {
+  margin-top: 24px;
+}
+.dividend-primary .balance-value {
+  margin-top: 8px;
+}
+.dividend-details {
+  border-top: 1px solid #edf1ee;
+  margin-top: 26px;
+  padding-top: 8px;
+}
+.detail-pair {
+  font-size: 24px;
+  padding: 18px 0;
+}
+.detail-pair > text:first-child {
+  color: #829486;
+}
+.detail-pair > text:last-child {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.dividend-entries {
+  border-top: 1px solid #edf1ee;
+  margin-top: 12px;
+  padding-top: 26px;
+}
+.workspace-footnote {
+  color: #a0aca3;
+  text-align: center;
+  font-size: 21px;
+  padding: 12px 0;
 }

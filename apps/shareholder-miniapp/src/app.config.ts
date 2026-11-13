@@ -12,7 +12,7 @@ export default defineAppConfig({
   ],
   tabBar: {
     color: "#87928d",
-    selectedColor: "#214f42",
+    selectedColor: "#22634e",
     backgroundColor: "#ffffff",
     borderStyle: "white",
     list: [
@@ -25,14 +25,14 @@ export default defineAppConfig({
       {
         pagePath: "pages/bank/index",
         text: "银行流水",
-        iconPath: "assets/tabbar/stores.png",
-        selectedIconPath: "assets/tabbar/stores-active.png",
+        iconPath: "assets/tabbar/bank.png",
+        selectedIconPath: "assets/tabbar/bank-active.png",
       },
       {
         pagePath: "pages/dividend/index",
         text: "分红管理",
-        iconPath: "assets/tabbar/business.png",
-        selectedIconPath: "assets/tabbar/business-active.png",
+        iconPath: "assets/tabbar/dividend.png",
+        selectedIconPath: "assets/tabbar/dividend-active.png",
       },
       {
         pagePath: "pages/profile/index",
@@ -44,7 +44,7 @@ export default defineAppConfig({
   },
   window: {
     backgroundTextStyle: "light",
-    navigationBarBackgroundColor: "#f5f5f1",
+    navigationBarBackgroundColor: "#f4f6f7",
     navigationBarTitleText: "蘑说财务",
     navigationBarTextStyle: "black",
   },

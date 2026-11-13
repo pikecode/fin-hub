@@ -1,3 +1,3 @@
 export default definePageConfig({
-  navigationBarTitleText: "股东授权",
+  navigationBarTitleText: "蘑说财务",
 });

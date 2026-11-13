@@ -1,10 +1,17 @@
 import { Button, Text, View } from "@tarojs/components";
 import Taro from "@tarojs/taro";
 import { useEffect, useState } from "react";
+import { formatMoney } from "@fin-hub/shared-utils";
 import type { BankTransactionBusinessDetail } from "@fin-hub/shared-types";
 import { api, API_BASE_URL, getShareholderToken } from "../../lib/api";
-const postingLabels: Record<string, string> = { bank_interest: "银行结息", other_income: "其他收入", bank_fee: "银行手续费", bank_sms_fee: "银行短信费", bank_other_expense: "银行其他支出" };
-const money = (x: unknown) => x == null ? "—" : "¥" + Number(x).toFixed(2);
+const postingLabels: Record<string, string> = {
+  bank_interest: "银行结息",
+  other_income: "其他收入",
+  bank_fee: "银行手续费",
+  bank_sms_fee: "银行短信费",
+  bank_other_expense: "银行其他支出",
+};
+const money = (x: unknown) => (x == null ? "—" : formatMoney(String(x)));
 export default function Detail() {
   const { id } = Taro.useRouter().params;
   const [data, D] = useState<BankTransactionBusinessDetail | null>(null),
@@ -47,96 +54,181 @@ export default function Detail() {
     }
   }
   return (
-    <View className="page">
-      <Text className="title">流水业务详情</Text>
-      {busy && <Text>正在加载…</Text>}
+    <View className="page detail-page">
+      {busy && (
+        <View className="section empty-state">
+          <Text className="empty-description">正在读取流水信息…</Text>
+        </View>
+      )}
       {error && (
-        <View>
-          <Text>{error}</Text>
-          <Button onClick={load}>重试</Button>
+        <View className="section empty-state">
+          <Text className="empty-title">暂时无法读取流水</Text>
+          <Text className="empty-description">{error}</Text>
+          <Button className="secondary-button" onClick={load}>
+            重新加载
+          </Button>
         </View>
       )}
       {data && (
         <>
-          <View className="section">
-            <Text className="value">{money(data.transaction.amount)}</Text>
-            <Text>{data.transaction.counterparty_name || "未填写户名"}</Text>
-            <Text>{data.transaction.occurred_at.slice(0, 10)}</Text>
-            <Text>{data.special_label}</Text>
-            <Text>{data.remark || "无备注"}</Text>
-          </View>
-          <Button onClick={() => SD(!showDetails)}>{showDetails ? "收起详情" : "详情"}</Button>
-          {showDetails && <View className="section">
-            <Text className="section-title">流水完整信息</Text>
-            {[
-              ["发生时间", data.transaction.occurred_at.replace("T", " ")],
-              ["方向", data.transaction.direction === "income" ? "收入" : "支出"],
-              ["金额", money(data.transaction.amount)],
-              ["对方户名", data.transaction.counterparty_name],
-              ["对方账号", data.transaction.counterparty_account],
-              ["银行流水号", data.transaction.bank_serial_no],
-              ["流水属性", data.special_label || "普通流水"],
-              ["直接入账", postingLabels[data.transaction.direct_posting_type || ""] || "—"],
-              ["付款情况", data.transaction.payment_status === "paid" ? "已实付" : "未实付"],
-              ["已匹配金额", money(data.transaction.matched_amount)],
-              ["入账月份", data.transaction.accounting_periods?.join("、") || "待入账"],
-              ["流水备注", data.transaction.summary || data.remark],
-              ["录入时间", data.transaction.created_at],
-              ["更新时间", data.transaction.updated_at],
-            ].map(([label, value]) => <View className="row" key={String(label)}><Text>{label}</Text><Text>{value || "—"}</Text></View>)}
-          </View>}
-          {data.expenses.map((x, i) => (
-            <View className="section" key={x.expense_item_id + i}>
-              <Text className="section-title">
-                关联报销 {x.approval_no || ""}
-              </Text>
-              <Text>报销单总额 {money(x.approval_total_amount)}</Text>
-              <Text>
-                {x.applicant_name} · {x.submit_at?.slice(0, 10)}
-              </Text>
-              <View className="row">
-                <Text>
-                  {x.category_l1} / {x.category_l2}
-                </Text>
-                <Text>{x.description}</Text>
-                <Text>{money(x.amount)}</Text>
-              </View>
-              {x.attachments.map((a) => (
-                <Button
-                  key={a.id}
-                  onClick={() =>
-                    preview(a.id, Boolean(a.content_type?.startsWith("image/")))
-                  }
-                >
-                  查看凭证 · {a.file_name}
-                </Button>
-              ))}
+          <View className="section transaction-summary">
+            <Text className="label">
+              {data.transaction.direction === "income"
+                ? "收入金额"
+                : "支出金额"}
+            </Text>
+            <Text className="transaction-amount">
+              {data.transaction.direction === "income" ? "+" : "−"}
+              {money(data.transaction.amount)}
+            </Text>
+            <Text className="transaction-name">
+              {data.transaction.counterparty_name || "未填写户名"}
+            </Text>
+            <View className="transaction-meta">
+              <Text>{data.transaction.occurred_at.slice(0, 10)}</Text>
+              {data.special_label && (
+                <Text className="status-badge">{data.special_label}</Text>
+              )}
             </View>
-          ))}
-          {data.revenues.map((x) => (
-            <View className="section" key={x.match_id}>
-              <Text className="section-title">
-                {x.channel} · {money(x.amount)}
-              </Text>
-              <Text>
-                {x.revenue_start_date} 至 {x.revenue_end_date}
-              </Text>
-              {x.records.map((r) => (
-                <View className="row" key={r.id}>
-                  <Text>
-                    {r.revenue_date} · {r.channel}
-                  </Text>
-                  <Text>
-                    营业 {money(r.gross_amount)} · 实收 {money(r.net_amount)}
-                  </Text>
+            {data.remark && <Text className="row-sub">{data.remark}</Text>}
+          </View>
+          <View className="tabs">
+            <Button
+              className={!showDetails ? "tab active" : "tab"}
+              onClick={() => SD(false)}
+            >
+              关联业务
+            </Button>
+            <Button
+              className={showDetails ? "tab active" : "tab"}
+              onClick={() => SD(true)}
+            >
+              流水信息
+            </Button>
+          </View>
+          {showDetails ? (
+            <View className="section">
+              <Text className="section-title">流水完整信息</Text>
+              {[
+                ["发生时间", data.transaction.occurred_at.replace("T", " ")],
+                [
+                  "方向",
+                  data.transaction.direction === "income" ? "收入" : "支出",
+                ],
+                ["金额", money(data.transaction.amount)],
+                ["对方户名", data.transaction.counterparty_name],
+                ["对方账号", data.transaction.counterparty_account],
+                ["银行流水号", data.transaction.bank_serial_no],
+                ["流水属性", data.special_label || "普通流水"],
+                [
+                  "直接入账",
+                  postingLabels[data.transaction.direct_posting_type || ""] ||
+                    "—",
+                ],
+                [
+                  "付款情况",
+                  data.transaction.payment_status === "paid"
+                    ? "已实付"
+                    : "未实付",
+                ],
+                ["已匹配金额", money(data.transaction.matched_amount)],
+                [
+                  "入账月份",
+                  data.transaction.accounting_periods?.join("、") || "待入账",
+                ],
+                ["流水备注", data.transaction.summary || data.remark],
+                ["录入时间", data.transaction.created_at],
+                ["更新时间", data.transaction.updated_at],
+              ].map(([label, value]) => (
+                <View className="information-row" key={String(label)}>
+                  <Text>{label}</Text>
+                  <Text>{value || "—"}</Text>
                 </View>
               ))}
             </View>
-          ))}
-          {!data.expenses.length && !data.revenues.length && (
-            <View className="section">
-              暂无关联报销或营业收入，业务说明见流水备注
-            </View>
+          ) : (
+            <>
+              {data.expenses.map((item, index) => (
+                <View className="section" key={item.expense_item_id + index}>
+                  <Text className="section-title">关联报销</Text>
+                  <View className="business-caption">
+                    <Text>{item.approval_no || "费用记录"}</Text>
+                    <Text>
+                      {item.applicant_name || "—"} ·{" "}
+                      {item.submit_at?.slice(0, 10) || "—"}
+                    </Text>
+                  </View>
+                  <View className="information-row">
+                    <Text>审批单总额</Text>
+                    <Text>{money(item.approval_total_amount)}</Text>
+                  </View>
+                  <View className="business-expense">
+                    <Text className="row-sub">
+                      {[item.category_l1, item.category_l2]
+                        .filter(Boolean)
+                        .join(" / ") || "未分类"}
+                    </Text>
+                    <Text className="record-description">
+                      {item.description}
+                    </Text>
+                    <Text className="detail-money">{money(item.amount)}</Text>
+                  </View>
+                  {item.attachments.map((attachment) => (
+                    <Button
+                      className="receipt-link"
+                      key={attachment.id}
+                      onClick={() =>
+                        preview(
+                          attachment.id,
+                          Boolean(
+                            attachment.content_type?.startsWith("image/"),
+                          ),
+                        )
+                      }
+                    >
+                      <Text className="file-badge">凭证</Text>
+                      <Text>{attachment.file_name}</Text>
+                      <Text>›</Text>
+                    </Button>
+                  ))}
+                </View>
+              ))}
+              {data.revenues.map((item) => (
+                <View className="section" key={item.match_id}>
+                  <View className="report-line">
+                    <Text className="section-title">{item.channel}</Text>
+                    <Text className="list-money">{money(item.amount)}</Text>
+                  </View>
+                  <Text className="row-sub">
+                    {item.revenue_start_date} 至 {item.revenue_end_date}
+                  </Text>
+                  {item.records.map((record) => (
+                    <View className="record-item" key={record.id}>
+                      <View className="report-line">
+                        <Text>{record.revenue_date}</Text>
+                        <Text className="list-money">
+                          {money(record.gross_amount)}
+                        </Text>
+                      </View>
+                      <Text className="row-sub">
+                        {record.channel} · 实收 {money(record.net_amount)}
+                      </Text>
+                    </View>
+                  ))}
+                </View>
+              ))}
+              {!data.expenses.length && !data.revenues.length && (
+                <View className="section empty-state">
+                  <Text className="empty-title">暂无关联业务</Text>
+                  <Text className="empty-description">
+                    可切换到流水信息，查看原始备注与入账属性。
+                  </Text>
+                  <Button className="secondary-button" onClick={() => SD(true)}>
+                    查看流水信息
+                  </Button>
+                </View>
+              )}
+            </>
           )}
         </>
       )}

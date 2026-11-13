@@ -1,0 +1,92 @@
+.profile-intro {
+  padding: 6px 4px 12px;
+}
+.profile-intro .title {
+  font-size: 38px;
+  margin-top: 8px;
+}
+.account-card {
+  display: flex;
+  align-items: center;
+  gap: 22px;
+  padding: 30px 26px;
+}
+.account-avatar {
+  width: 86px;
+  height: 86px;
+  border-radius: 26px;
+  background: #e9f2ed;
+  color: #44755b;
+  font-size: 36px;
+  line-height: 86px;
+  text-align: center;
+  flex-shrink: 0;
+}
+.account-info {
+  min-width: 0;
+  flex: 1;
+}
+.account-info .profile-name {
+  font-size: 30px;
+  margin-bottom: 4px;
+  overflow-wrap: anywhere;
+}
+.account-card .status-badge {
+  font-size: 20px;
+}
+.account-settings {
+  padding: 2px 28px;
+}
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 30px 0;
+  border-bottom: 1px solid #edf1ee;
+}
+.settings-row:last-child {
+  border-bottom: 0;
+}
+.settings-row .row-sub {
+  margin-top: 5px;
+  font-size: 22px;
+}
+.settings-end {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  font-size: 25px;
+  color: #7c9384;
+}
+.profile-page .chevron {
+  font-size: 36px;
+  color: #a4b0a9;
+}
+.authorized-stores {
+  border-bottom: 1px solid #edf1ee;
+  padding: 12px 0 22px;
+}
+.authorized-stores > text {
+  padding: 14px 8px;
+  font-size: 24px;
+  color: #6c8374;
+}
+.password-form {
+  padding: 24px 0 30px;
+}
+.field-label {
+  font-size: 24px;
+  color: #718679;
+  margin-top: 18px;
+}
+.password-form input {
+  margin: 12px 0 22px;
+}
+.account-note {
+  text-align: center;
+  font-size: 22px;
+  color: #9ba89f;
+  line-height: 1.9;
+  margin: 36px 16px;
+}

@@ -1,30 +1,99 @@
-.page {
-  padding: 96px 38px 48px;
-  background: #f5f5f1;
+.login-page {
+  padding: 60px 36px calc(44px + env(safe-area-inset-bottom));
 }
-.brand {
-  margin-bottom: 56px;
-  border-left: 5px solid #65836d;
-  padding-left: 24px;
+.login-brand {
+  text-align: left;
+  padding: 0 10px 38px;
 }
-.brand .title {
-  font-size: 48px;
-  margin: 22px 0;
+.brand-mark {
+  background: #245f49;
+  color: #fff;
+  width: 92px;
+  height: 92px;
+  line-height: 92px;
+  border-radius: 28px;
+  text-align: center;
+  font-weight: 600;
+  font-size: 40px;
+  margin-bottom: 32px;
 }
-.brand .muted {
-  max-width: 540px;
+.login-brand .eyebrow {
+  color: #5f7467;
+  letter-spacing: 1px;
+}
+.login-brand .title {
+  font-size: 42px;
+  margin: 16px 0 12px;
+}
+.login-brand .muted {
   font-size: 25px;
 }
 .login-panel {
   background: #fff;
-  border: 1px solid #e4e9df;
-  border-radius: 24px;
-  padding: 32px;
-  box-shadow: 0 12px 40px #34482a06;
+  border: 1px solid #e9eeea;
+  border-radius: 26px;
+  padding: 34px 30px;
 }
-.login-panel .input {
-  margin: 8px 0 24px;
+.login-heading {
+  color: #254c36;
+  font-size: 31px;
+  font-weight: 600;
 }
-.login-button {
-  margin-top: 30px;
+.login-description {
+  font-size: 22px;
+  color: #65796d;
+  margin-top: 8px;
+  margin-bottom: 30px;
+}
+.login-panel .field-label {
+  font-size: 24px;
+  color: #6f8777;
+  margin: 20px 0 10px;
+}
+.login-panel .login-input {
+  margin: 0;
+  height: 98px;
+  background: #f6f8f6;
+  font-size: 27px;
+}
+.password-input {
+  display: flex;
+  align-items: center;
+  background: #f6f8f6;
+  border: 1px solid #edf0ee;
+  border-radius: 14px;
+  padding-right: 22px;
+}
+.password-input .login-input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+}
+.password-input .text-button {
+  font-size: 23px;
+  padding-left: 18px;
+  min-width: 74px;
+  flex-shrink: 0;
+}
+.login-panel .login-button {
+  width: 100%;
+  margin-top: 34px;
+  min-height: 100px;
+  line-height: 2.1;
+}
+.login-error {
+  font-size: 23px;
+  color: #b16852;
+  background: #fcf2ed;
+  border-radius: 10px;
+  margin-top: 20px;
+  padding: 14px 18px;
+}
+.login-footer {
+  padding-top: 40px;
+  text-align: center;
+  color: #9ba99f;
+  font-size: 22px;
+  line-height: 1.9;
 }
