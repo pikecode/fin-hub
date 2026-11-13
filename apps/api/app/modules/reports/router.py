@@ -967,9 +967,9 @@ def read_financial_analytics_details(
     if detail_type == "report_expense":
         from app.modules.reports.financial import report_expense_items
         months = set(session.execute(select(Ledger.store_id, Ledger.period).where(Ledger.store_id.in_(store_ids))).all())
-        months.update(session.execute(select(ExpenseItem.store_id, ExpenseItem.ledger_period)
+        months.update(session.execute(select(ExpenseItem.store_id, ExpenseItem.ledger_period).distinct()
             .where(ExpenseItem.store_id.in_(store_ids))).all())
-        months.update(session.execute(select(ExpenseItem.store_id, ExpenseBankMatch.accounting_period)
+        months.update(session.execute(select(ExpenseItem.store_id, ExpenseBankMatch.accounting_period).distinct()
             .join(ExpenseBankMatch, ExpenseBankMatch.expense_item_id == ExpenseItem.id)
             .where(ExpenseItem.store_id.in_(store_ids), ExpenseBankMatch.status == "confirmed",
                    ExpenseBankMatch.accounting_period.is_not(None))).all())

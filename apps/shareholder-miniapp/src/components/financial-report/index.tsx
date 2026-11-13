@@ -19,6 +19,7 @@ export default function FinancialReport({data}:{data:MobileReport}){
  function detail(row:ReportCategory){Taro.navigateTo({url:`/pages/expenses/index?storeId=${storeId}&period=${period}&category=${encodeURIComponent(row.key)}`})}
  function category(row:ReportCategory,child=false){return <View className={child?"row report-child":"row"} key={row.key}><View className="report-line"><Text onClick={()=>detail(row)}>{row.name} ›</Text><Text>{cash(row.amount)}</Text></View><Text className="row-sub">占营业收入 {row.revenue_share} · 占总支出 {row.share}</Text><Text className="row-sub">历史累计 {cash(row.historical_amount)} · {row.item_count} 条</Text>{!!row.children?.length&&<Button size="mini" onClick={()=>EX(expanded.includes(row.key)?expanded.filter(x=>x!==row.key):[...expanded,row.key])}>{expanded.includes(row.key)?"收起分类":"展开分类"}</Button>}{expanded.includes(row.key)&&row.children?.map(c=>category(c,true))}</View>}
  return <View className="financial-report">
+ <Button onClick={()=>Taro.navigateTo({url:`/pages/report-export/index?storeId=${storeId}&period=${period}`})}>导出 HTML / PDF</Button>
  <View className="report-contents">{sections.map((name,i)=><Button key={name} size="mini" onClick={()=>Taro.pageScrollTo({selector:`#report-section-${i}`,duration:200})}>{name}</Button>)}</View>
  <Text className="row-sub">收入按收入日期，支出按入账月份；预充值、备用金/借款、异常费用不计入经营支出。</Text>
  <Text className="row-sub">读取时间：{data.retrieved_at?new Date(data.retrieved_at).toLocaleString():"本次加载"}</Text>

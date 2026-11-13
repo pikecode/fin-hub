@@ -35,6 +35,7 @@ from app.modules.ledgers.router import router as ledgers_router
 from app.modules.matching.router import router as matching_router
 from app.modules.metrics.router import router as metrics_router
 from app.modules.miniapp.router import router as miniapp_router
+from app.modules.miniapp.report_exports import router as miniapp_export_router
 from app.modules.preopening.router import router as preopening_router
 from app.modules.reports.router import router as reports_router
 from app.modules.revenue.router import channels_router as revenue_channels_router
@@ -115,6 +116,7 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
     app.include_router(miniapp_router, prefix="/api")
+    app.include_router(miniapp_export_router, prefix="/api")
     app.include_router(health_router, prefix="/api")
     app.include_router(auth_router, prefix="/api")
     app.include_router(audit_router, prefix="/api")

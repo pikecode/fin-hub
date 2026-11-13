@@ -1070,3 +1070,18 @@ class StoreLoanEvent(Base):
     payload_json: Mapped[str] = mapped_column(Text)
     created_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
+
+
+class FinancialReportExport(Base):
+    __tablename__ = "financial_report_exports"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    store_id: Mapped[str] = mapped_column(ForeignKey("stores.id"), index=True)
+    period: Mapped[str] = mapped_column(String(7))
+    status: Mapped[str] = mapped_column(String(16), default="pending")
+    snapshot_json: Mapped[str | None] = mapped_column(Text)
+    warnings_json: Mapped[str | None] = mapped_column(Text)
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)

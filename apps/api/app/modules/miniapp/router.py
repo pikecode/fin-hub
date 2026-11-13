@@ -156,7 +156,7 @@ def report(
             "report": read_store_financial_report(store_id, period, session, user).data,
             "supplement": supplement(store_id, period, session, user).data,
             "major_vouchers": list_major_expense_vouchers(store_id, period, session, user).data,
-            "retrieved_at": utc_now().isoformat(),
+            "retrieved_at": utc_now().isoformat(timespec="seconds") + "Z",
             "contract_version": "pc-parity-1",
         }
     )

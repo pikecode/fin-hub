@@ -8,6 +8,7 @@ export default defineAppConfig({
     "pages/bank-detail/index",
     "pages/expenses/index",
     "pages/receipts/index",
+    "pages/report-export/index",
   ],
   tabBar: {
     color: "#87928d",
