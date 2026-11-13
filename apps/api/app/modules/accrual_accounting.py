@@ -11,6 +11,7 @@ from app.models import (
     AccrualEntry,
     ApprovalAccountingAllocation,
     ApprovalAccountingPlan,
+    ApprovalPaidAccounting,
     ExpenseBankMatch,
     ExpenseItem,
     Ledger,
@@ -47,6 +48,9 @@ def ensure_approval_open(session, approval):
             )
         )
     )
+    paid_mode = session.get(ApprovalPaidAccounting, approval.id)
+    if paid_mode:
+        periods.add(paid_mode.period)
     periods.update(
         session.scalars(
             select(ApprovalAccountingAllocation.period).where(
@@ -97,6 +101,9 @@ def coverage_deductions(session, store_id):
                 )
             )
         )
+        paid_mode = session.get(ApprovalPaidAccounting, approval_id)
+        if paid_mode:
+            periods.add(paid_mode.period)
         cells = {}
         for period in sorted(p for p in periods if p):
             for row in confirmed_accounting_expense_rows(

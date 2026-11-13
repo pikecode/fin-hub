@@ -549,6 +549,12 @@ def complete(
         )
     )
     for match in matches:
+        from app.models import ExpenseItem, ApprovalPaidAccounting
+        from app.modules.matching.accounting import approval_for_item, ensure_periods_open
+        item = session.get(ExpenseItem, match.expense_item_id)
+        approval = approval_for_item(session, item) if item else None
+        if approval and session.get(ApprovalPaidAccounting, approval.id):
+            ensure_periods_open(session, item)
         if session.scalar(
             select(Ledger.id)
             .where(

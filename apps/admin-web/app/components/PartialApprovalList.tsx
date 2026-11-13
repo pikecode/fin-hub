@@ -1,5 +1,5 @@
 "use client";
-import { Alert, Button, Input, Space, Table, Tag, Typography } from "antd";
+import { Alert, Button, Input, Popconfirm, Space, Table, Tag, Typography } from "antd";
 import { useEffect, useRef, useState } from "react";
 import { formatMoney } from "@fin-hub/shared-utils";
 import { apiClient } from "../lib/api";
@@ -7,7 +7,7 @@ import { apiClient } from "../lib/api";
 interface PartialApproval {
   approval_id: string; approval_no: string; applicant_name?: string; template_name: string;
   approval_status: string; total_amount: string; matched_amount: string; remaining_amount: string;
-  confirmed_payment_count: number; sync_conflict_count: number;
+  paid_accounting?: boolean; confirmed_payment_count: number; sync_conflict_count: number;
 }
 interface Result { items: PartialApproval[]; total: number; }
 const terminal = new Set(["terminated", "canceled", "cancelled", "cancel", "withdrawn", "refuse", "reject", "rejected", "refused", "deny", "撤销", "已撤销"]);
@@ -29,6 +29,16 @@ export function PartialApprovalList({ storeId, onContinue }: { storeId: string; 
     } catch (e) { if (id === request.current) setError(e instanceof Error ? e.message : "加载失败"); }
     finally { if (id === request.current) setLoading(false); }
   }
+  async function setPaid(row: PartialApproval) {
+    setLoading(true);
+    try {
+      await apiClient.request(`/api/matches/reconciliation/approvals/${row.approval_id}/paid-accounting`, {
+        method: "PUT", body: JSON.stringify({ enabled: !row.paid_accounting }),
+      });
+      await load();
+    } catch (e) { setError(e instanceof Error ? e.message : "设置失败"); }
+    finally { setLoading(false); }
+  }
   useEffect(() => {
     void load(); const refresh = () => void load(); window.addEventListener("focus", refresh);
     return () => { ++request.current; window.removeEventListener("focus", refresh); };
@@ -45,8 +55,8 @@ export function PartialApprovalList({ storeId, onContinue }: { storeId: string; 
       { title: "已确认匹配", dataIndex: "matched_amount", align: "right", render: formatMoney },
       { title: "未匹配金额", dataIndex: "remaining_amount", align: "right", render: value => <Typography.Text strong type="warning">{formatMoney(value)}</Typography.Text> },
       { title: "已匹配流水笔数", dataIndex: "confirmed_payment_count" },
-      { title: "状态", render: (_, row) => <Space wrap><Tag color="orange">未匹配满</Tag>{terminal.has(row.approval_status.toLowerCase()) ? <Tag color="red">审批已撤销/终止，需核对报表</Tag> : null}{row.sync_conflict_count > 0 ? <Tag color="red">存在来源冲突</Tag> : null}</Space> },
-      { title: "操作", render: (_, row) => <Button type="link" disabled={terminal.has(row.approval_status.toLowerCase())} onClick={() => onContinue(row.approval_no)}>继续匹配银行流水</Button> },
+      { title: "状态", render: (_, row) => <Space wrap><Tag color="orange">未匹配满</Tag>{row.paid_accounting ? <Tag color="blue">以实付金额入账</Tag> : null}{terminal.has(row.approval_status.toLowerCase()) ? <Tag color="red">审批已撤销/终止，需核对报表</Tag> : null}{row.sync_conflict_count > 0 ? <Tag color="red">存在来源冲突</Tag> : null}</Space> },
+      { title: "操作", render: (_, row) => <Space><Popconfirm title={row.paid_accounting ? "恢复按审批金额入账？" : "按累计实付金额入账？"} description="仍按审批单入账月份计费，明细按比例分摊；计提覆盖部分不重复入账。" onConfirm={() => setPaid(row)}><Button type="link">{row.paid_accounting ? "恢复审批金额入账" : "以实付金额入账"}</Button></Popconfirm><Button type="link" disabled={terminal.has(row.approval_status.toLowerCase())} onClick={() => onContinue(row.approval_no)}>继续匹配银行流水</Button></Space> },
     ]} />
   </Space>;
 }

@@ -9,6 +9,8 @@ from sqlalchemy import delete, select
 from app.models import (
     ApprovalAccountingAllocation,
     ApprovalAccountingPlan,
+    ApprovalPaidAccounting,
+    BankTransaction,
     ApprovalInstance,
     ExpenseBankMatch,
     ExpenseItem,
@@ -145,6 +147,10 @@ def ensure_periods_open(session, item, periods=()):
             ensure_approval_open(session, approval)
     affected = set(periods)
     if approval:
+        paid_mode = session.get(ApprovalPaidAccounting, approval.id)
+        if paid_mode:
+            affected.add(paid_mode.period)
+    if approval:
         affected.update(a["period"] for a in read_plan(session, approval.id)["allocations"])
     ledgers = session.scalars(
         select(Ledger)
@@ -163,6 +169,13 @@ def apply_plan(session, match, item, actor):
             raise HTTPException(422, "该费用没有关联审批单，不能设置审批单多账期")
         return
     current = read_plan(session, approval.id)
+    if session.get(ApprovalPaidAccounting, approval.id):
+        ensure_periods_open(session, item)
+        if match.accounting_allocations_json:
+            proposed = json.loads(match.accounting_allocations_json)
+            mode = session.get(ApprovalPaidAccounting, approval.id)
+            if len(proposed) != 1 or proposed[0]["period"] != mode.period:
+                raise HTTPException(409, "请先关闭实付金额入账，再修改审批单入账月份")
     has_confirmed = session.scalar(
         select(ExpenseBankMatch.id)
         .where(
@@ -313,6 +326,12 @@ def planned_rows_for_periods(session, store_id, periods):
     ):
         if approval_id not in configured:
             legacy_periods.setdefault(approval_id, match.accounting_period)
+    paid_modes = {m.approval_id: m for m in session.scalars(
+        select(ApprovalPaidAccounting).join(ApprovalInstance,
+            ApprovalInstance.id == ApprovalPaidAccounting.approval_id)
+        .where(ApprovalInstance.store_id == store_id))}
+    for approval_id, mode in paid_modes.items():
+        legacy_periods[approval_id] = mode.period
     ids = list(configured | set(legacy_periods))
     if not ids:
         return set(), {}
@@ -354,6 +373,13 @@ def planned_rows_for_periods(session, store_id, periods):
     for approval_id in active:
         items = canonical_expense_items(groups.get(approval_id, []))
         rows = allocations.get(approval_id, [])
+        if approval_id in paid_modes:
+            shares = paid_item_amounts(session, approval_id, items)
+            period = paid_modes[approval_id].period
+            if period in result:
+                result[period].extend((item.id, item.category_l1, item.category_l2, shares[item.id])
+                                     for item in items if shares[item.id])
+            continue
         if approval_id in legacy_periods:
             period = legacy_periods[approval_id]
             if period in result:
@@ -395,6 +421,8 @@ def protect_expense_changes(session, item, changes):
     session.scalar(
         select(ApprovalInstance.id).where(ApprovalInstance.id == approval.id).with_for_update()
     )
+    if session.get(ApprovalPaidAccounting, approval.id):
+        ensure_periods_open(session, item)
     if not session.get(ApprovalAccountingPlan, approval.id, populate_existing=True):
         return
     ensure_periods_open(session, item)
@@ -433,6 +461,10 @@ def overlay_planned_expenses(
             .distinct()
         )
     )
+    scheduled_store_ids = sorted(set(scheduled_store_ids) | set(session.scalars(
+        select(ApprovalInstance.store_id).join(ApprovalPaidAccounting,
+            ApprovalPaidAccounting.approval_id == ApprovalInstance.id)
+        .where(ApprovalInstance.store_id.in_(store_ids)))))
     for store_id in scheduled_store_ids:
         query = (
             select(ApprovalAccountingAllocation.period)
@@ -451,7 +483,13 @@ def overlay_planned_expenses(
             legacy_query = legacy_query.where(ExpenseBankMatch.accounting_period >= period_start)
         if period_end:
             legacy_query = legacy_query.where(ExpenseBankMatch.accounting_period <= period_end)
-        periods = sorted(set(session.scalars(query.distinct())) | set(session.scalars(legacy_query.distinct())))
+        mode_periods = select(ApprovalPaidAccounting.period).join(ApprovalInstance,
+            ApprovalInstance.id == ApprovalPaidAccounting.approval_id).where(ApprovalInstance.store_id == store_id)
+        if period_start:
+            mode_periods = mode_periods.where(ApprovalPaidAccounting.period >= period_start)
+        if period_end:
+            mode_periods = mode_periods.where(ApprovalPaidAccounting.period <= period_end)
+        periods = sorted(set(session.scalars(query.distinct())) | set(session.scalars(legacy_query.distinct())) | set(session.scalars(mode_periods)))
         owned, rows = planned_rows_for_periods(session, store_id, periods)
         owned_all.update(owned)
         values = [
@@ -481,3 +519,32 @@ def overlay_planned_expenses(
         additions.extend(combined.values())
     from app.modules.accrual_accounting import overlay_reports
     return overlay_reports(session, [item for item in base_items if item.id not in owned_all] + additions, store_ids, period_start, period_end, aggregate=aggregate)
+
+
+def paid_item_amounts(session, approval_id, items):
+    """Distribute confirmed real payments by original detail weights, to cents."""
+    from app.modules.bank.unpaid import completed_payments
+    matches = list(session.scalars(select(ExpenseBankMatch).where(
+        ExpenseBankMatch.expense_item_id.in_([item.id for item in items]),
+        ExpenseBankMatch.status == "confirmed", ExpenseBankMatch.expense_scope == "operating")))
+    settlements = completed_payments(session, [m.bank_transaction_id for m in matches])
+    paid = Decimal(0)
+    for match in matches:
+        bank = session.get(BankTransaction, match.bank_transaction_id)
+        if not bank:
+            continue
+        if not bank.is_archived and bank.payment_status == "paid" and match.bank_occurred:
+            paid += Decimal(match.amount)
+        elif bank.id in settlements and bank.amount:
+            real = sum((Decimal(b.amount) for b in settlements[bank.id]
+                        if not b.is_archived and b.payment_status == "paid"), Decimal(0))
+            paid += Decimal(match.amount) * real / Decimal(bank.amount)
+    weights = {item.id: int(Decimal(item.amount) * 100) for item in items}
+    total = sum(weights.values())
+    if total <= 0 or any(v < 0 for v in weights.values()):
+        return {key: Decimal(0) for key in weights}
+    cents = max(0, int(paid.quantize(Decimal(".01")) * 100))
+    shares = {key: value * cents // total for key, value in weights.items()}
+    for key in sorted(weights, key=lambda key: (-(weights[key] * cents % total), key))[:cents - sum(shares.values())]:
+        shares[key] += 1
+    return {key: Decimal(value) / 100 for key, value in shares.items()}

@@ -12,6 +12,7 @@ from app.modules.bank.unpaid import protect_payment_bank, completed_payments, re
 from app.core.database import get_session
 from app.models import (
     ApprovalInstance,
+    ApprovalPaidAccounting,
     ApprovalTemplate,
     BankTransaction,
     ExpenseBankMatch,
@@ -1514,6 +1515,60 @@ def list_reconciliation_candidates(
     )
 
 
+from pydantic import BaseModel
+
+
+class PaidAccountingUpdate(BaseModel):
+    enabled: bool
+
+
+@router.put("/reconciliation/approvals/{approval_id}/paid-accounting")
+def set_paid_accounting(approval_id: str, payload: PaidAccountingUpdate,
+    session: Session = Depends(get_session), current_user: User = Depends(get_current_user)):
+    from app.models import ApprovalPaidAccounting
+    from app.modules.accrual_accounting import ensure_approval_open
+    ensure_permission(session, current_user, "reconciliation.manage")
+    mutation_lock(session)
+    approval = session.scalar(select(ApprovalInstance).where(ApprovalInstance.id == approval_id).with_for_update())
+    if approval is None:
+        raise HTTPException(404, "审批单不存在")
+    ensure_store_access(session, current_user, approval.store_id)
+    ensure_approval_open(session, approval)
+    existing = session.get(ApprovalPaidAccounting, approval_id)
+    if existing:
+        if session.scalar(select(Ledger.id).where(Ledger.store_id == approval.store_id,
+                Ledger.period == existing.period, Ledger.status == "closed").with_for_update()):
+            raise HTTPException(409, f"{existing.period} 已封账，不能改变实付入账方式")
+    plan = accounting.read_plan(session, approval_id)
+    items = accounting.approval_items(session, approval_id)
+    if payload.enabled:
+        if approval.expense_scope != "operating" or not items or any(i.amount < 0 for i in items):
+            raise HTTPException(422, "仅支持金额为正的日常费用审批单")
+        assignments = list(session.scalars(select(ExpenseBankMatch).where(
+            ExpenseBankMatch.expense_item_id.in_([i.id for i in items]),
+            ExpenseBankMatch.status == "confirmed").order_by(
+                ExpenseBankMatch.confirmed_at.asc().nulls_last(), ExpenseBankMatch.created_at, ExpenseBankMatch.id)))
+        if not assignments:
+            raise HTTPException(409, "请先确认匹配银行流水")
+        if plan["configured"] and len(plan["allocations"]) != 1:
+            raise HTTPException(409, "审批单已设置多月份分摊，请先调整为单一入账月份再启用实付入账")
+        period = plan["allocations"][0]["period"] if plan["configured"] else assignments[0].accounting_period
+        if not period:
+            raise HTTPException(409, "请先设置审批单入账月份")
+        accounting.ensure_periods_open(session, items[0], [period])
+        if not existing:
+            session.add(ApprovalPaidAccounting(approval_id=approval_id, period=period, updated_by=audit_actor(current_user)))
+    elif existing:
+        session.delete(existing)
+    write_audit_log(session, actor=audit_actor(current_user), action="approval.paid_accounting.update",
+        resource_type="approval_instance", resource_id=approval_id,
+        summary="启用实付金额入账" if payload.enabled else "恢复审批金额入账",
+        metadata={"before": existing is not None, "after": payload.enabled,
+                  "period": existing.period if existing else (period if payload.enabled else None)})
+    session.commit()
+    return ApiEnvelope(data={"enabled": payload.enabled})
+
+
 @router.get("/reconciliation/partial-approvals")
 def list_partial_approvals(
     store_id: str,
@@ -1544,7 +1599,8 @@ def list_partial_approvals(
         "processing_status": "partial_matched", "total_amount": stat["total_expense_amount"],
         "matched_amount": stat["confirmed_match_amount"], "remaining_amount": stat["remaining_match_amount"],
         "confirmed_payment_count": stat["confirmed_payment_count"],
-        "sync_conflict_count": stat["sync_conflict_expense_item_count"]} for approval, name, stat in selected]
+        "sync_conflict_count": stat["sync_conflict_expense_item_count"],
+        "paid_accounting": session.get(ApprovalPaidAccounting, approval.id) is not None} for approval, name, stat in selected]
     return ApiEnvelope(data={"items": items, "total": len(partials), "page": page, "page_size": page_size})
 
 

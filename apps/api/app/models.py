@@ -952,6 +952,14 @@ class ApprovalAccountingPlan(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
 
 
+class ApprovalPaidAccounting(Base):
+    __tablename__ = "approval_paid_accounting"
+    approval_id: Mapped[str] = mapped_column(ForeignKey("approval_instances.id"), primary_key=True)
+    period: Mapped[str] = mapped_column(String(7), nullable=False)
+    updated_by: Mapped[str] = mapped_column(String(80), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+
+
 class ApprovalAccountingAllocation(Base):
     __tablename__ = "approval_accounting_allocations"
     __table_args__ = (UniqueConstraint("approval_id", "period", name="uq_approval_accounting_period"),)

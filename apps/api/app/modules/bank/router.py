@@ -639,6 +639,15 @@ def update_bank_transaction(
 
     old_posting_key = posting_key(transaction)
     updates = payload.model_dump(exclude_unset=True)
+    if "payment_status" in updates and updates["payment_status"] != transaction.payment_status:
+        from app.modules.matching.accounting import approval_for_item, ensure_periods_open
+        from app.models import ApprovalPaidAccounting
+        for item in session.scalars(select(ExpenseItem).join(ExpenseBankMatch,
+                ExpenseBankMatch.expense_item_id == ExpenseItem.id).where(
+                ExpenseBankMatch.bank_transaction_id == transaction_id, ExpenseBankMatch.status == "confirmed")):
+            approval = approval_for_item(session, item)
+            if approval and session.get(ApprovalPaidAccounting, approval.id):
+                ensure_periods_open(session, item)
     if is_matched and set(updates.keys()) - {"payment_status"}:
         raise HTTPException(status_code=409, detail="Bank transaction already matched and cannot be edited")
     if "store_id" in updates and not updates["store_id"]:
