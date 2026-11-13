@@ -295,7 +295,25 @@ def planned_rows_for_periods(session, store_id, periods):
             .where(ApprovalInstance.store_id == store_id)
         )
     )
-    ids = [p.approval_id for p in plans]
+    # Legacy approvals have no explicit schedule. Anchor the whole approval to
+    # its first confirmed accounting assignment, independent of payment dates.
+    legacy_periods = {}
+    configured = {p.approval_id for p in plans}
+    for approval_id, match in session.execute(
+        select(ApprovalInstance.id, ExpenseBankMatch)
+        .join(ExpenseItem, approval_expense_join_condition())
+        .join(ExpenseBankMatch, ExpenseBankMatch.expense_item_id == ExpenseItem.id)
+        .where(ApprovalInstance.store_id == store_id, ExpenseItem.store_id == store_id,
+               ExpenseItem.expense_scope == "operating",
+               ExpenseBankMatch.expense_scope == "operating",
+               ExpenseBankMatch.status == "confirmed",
+               ExpenseBankMatch.accounting_period.is_not(None))
+        .order_by(ExpenseBankMatch.confirmed_at.asc().nulls_last(),
+                  ExpenseBankMatch.created_at.asc(), ExpenseBankMatch.id.asc())
+    ):
+        if approval_id not in configured:
+            legacy_periods.setdefault(approval_id, match.accounting_period)
+    ids = list(configured | set(legacy_periods))
     if not ids:
         return set(), {}
     groups = {}
@@ -336,6 +354,14 @@ def planned_rows_for_periods(session, store_id, periods):
     for approval_id in active:
         items = canonical_expense_items(groups.get(approval_id, []))
         rows = allocations.get(approval_id, [])
+        if approval_id in legacy_periods:
+            period = legacy_periods[approval_id]
+            if period in result:
+                result[period].extend(
+                    (item.id, item.category_l1, item.category_l2, Decimal(item.amount))
+                    for item in items
+                )
+            continue
         matrix = allocation_matrix(items, rows)
         for period in periods:
             for item in items:
@@ -390,18 +416,20 @@ def protect_expense_changes(session, item, changes):
 def overlay_planned_expenses(
     session, base_items, store_ids, period_start=None, period_end=None, *, aggregate=False
 ):
-    """Replace only explicitly scheduled approvals; leave legacy analytics untouched."""
+    """Use the same single-owner accounting as monthly reports and dividends."""
     from types import SimpleNamespace
 
     from app.modules.expense_classification import is_non_operating_expense
 
     owned_all = set()
     additions = []
+    from app.modules.store_ledgers.router import approval_expense_join_condition
     scheduled_store_ids = list(
         session.scalars(
             select(ApprovalInstance.store_id)
-            .join(ApprovalAccountingPlan, ApprovalAccountingPlan.approval_id == ApprovalInstance.id)
-            .where(ApprovalInstance.store_id.in_(store_ids))
+            .join(ExpenseItem, approval_expense_join_condition())
+            .join(ExpenseBankMatch, ExpenseBankMatch.expense_item_id == ExpenseItem.id)
+            .where(ApprovalInstance.store_id.in_(store_ids), ExpenseBankMatch.status == "confirmed")
             .distinct()
         )
     )
@@ -415,7 +443,15 @@ def overlay_planned_expenses(
             query = query.where(ApprovalAccountingAllocation.period >= period_start)
         if period_end:
             query = query.where(ApprovalAccountingAllocation.period <= period_end)
-        periods = list(session.scalars(query.distinct()))
+        legacy_query = (select(ExpenseBankMatch.accounting_period)
+            .join(ExpenseItem, ExpenseItem.id == ExpenseBankMatch.expense_item_id)
+            .where(ExpenseItem.store_id == store_id, ExpenseBankMatch.status == "confirmed",
+                   ExpenseBankMatch.accounting_period.is_not(None)))
+        if period_start:
+            legacy_query = legacy_query.where(ExpenseBankMatch.accounting_period >= period_start)
+        if period_end:
+            legacy_query = legacy_query.where(ExpenseBankMatch.accounting_period <= period_end)
+        periods = sorted(set(session.scalars(query.distinct())) | set(session.scalars(legacy_query.distinct())))
         owned, rows = planned_rows_for_periods(session, store_id, periods)
         owned_all.update(owned)
         values = [

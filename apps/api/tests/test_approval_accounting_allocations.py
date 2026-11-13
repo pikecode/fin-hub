@@ -351,3 +351,36 @@ def test_original_amount_and_closed_month_categories_cannot_bypass_plan(client, 
     response = client.patch(f"/api/expense-items/{items[0].id}", json={"category_l2": "项目1"})
     assert response.status_code == 409, response.text
     assert "封账" in response.json()["detail"]
+
+
+def test_legacy_cross_month_payment_counts_approval_once(client, session):
+    from app.models import ExpenseBankMatch
+    from app.modules.store_ledgers.router import confirmed_accounting_expense_rows
+    store, approval, items, bank = setup(session)
+    # Two payment records in different accounting months, no explicit plan.
+    for index, period in enumerate(["2026-09", "2026-10"]):
+        payment = BankTransaction(store_id=store.id, ledger_period=period,
+            occurred_at=datetime(2026, 10, 20), direction="expense", amount=100,
+            payment_status="paid")
+        session.add(payment)
+        session.flush()
+        session.add(ExpenseBankMatch(expense_item_id=items[0].id,
+            bank_transaction_id=payment.id, amount=100, accounting_period=period,
+            status="confirmed", confirmed_at=datetime(2026, 10, 20 + index)))
+    session.commit()
+    for period, expected in [("2026-09", Decimal(60000)), ("2026-10", Decimal(0))]:
+        rows = confirmed_accounting_expense_rows(session, store.id, period)
+        assert sum((r[3] for r in rows), Decimal(0)) == expected
+        r = client.get(f"/api/store-ledgers/{store.id}/report?period={period}")
+        assert r.status_code == 200, r.text
+        assert Decimal(r.json()["data"]["metrics"]["expense_amount"]) == expected
+    batch = calculate_store_ledger_profits(session, store.id, ["2026-09", "2026-10"])
+    assert batch == {"2026-09": Decimal(-60000), "2026-10": Decimal(0)}
+    assert not read_plan(session, approval.id)["configured"]
+
+    from app.modules.matching.accounting import overlay_planned_expenses
+    for period, expected in [("2026-09", Decimal(60000)), ("2026-10", Decimal(0))]:
+        overlay = overlay_planned_expenses(session, items, [store.id], period, period)
+        assert sum((Decimal(row.amount) for row in overlay), Decimal(0)) == expected
+    # Narrow queries must not choose their own first assignment.
+    assert calculate_store_ledger_profits(session, store.id, ["2026-10"]) == {"2026-10": Decimal(0)}
