@@ -630,10 +630,10 @@ def update_bank_transaction(
     protect_bank(session, transaction.id)
     ensure_store_access(session, current_user, transaction.store_id)
     has_expense_match = session.scalar(
-        select(ExpenseBankMatch).where(ExpenseBankMatch.bank_transaction_id == transaction_id).limit(1)
+        select(ExpenseBankMatch).where(ExpenseBankMatch.bank_transaction_id == transaction_id, ExpenseBankMatch.status != "rejected").limit(1)
     )
     has_revenue_match = session.scalar(
-        select(RevenueBankMatch).where(RevenueBankMatch.bank_transaction_id == transaction_id).limit(1)
+        select(RevenueBankMatch).where(RevenueBankMatch.bank_transaction_id == transaction_id, RevenueBankMatch.status != "rejected").limit(1)
     )
     is_matched = Decimal(transaction.matched_amount or 0) > 0 or has_expense_match or has_revenue_match
 

@@ -28,3 +28,17 @@ def test_delete_bank_after_unmatch_retains_history(client, session, batch):
     assert session.get(ExpenseBankMatch, match_id).status == "rejected"
     listed = client.get("/api/bank-transactions", params={"store_id": store}).json()["data"]
     assert bank_id not in {row["id"] for row in listed["items"]}
+
+
+def test_edit_bank_after_unmatch_retains_history(client, session):
+    _store, _approval, items, banks = salary_fixture(client, session)
+    match_id = match_bank(client, items[0], banks[0])
+    url = f"/api/bank-transactions/{banks[0].id}"
+    assert client.patch(url, json={"special_type": "current_account"}).status_code == 409
+    r = client.post(f"/api/matches/reconciliation/records/{match_id}/unmatch")
+    assert r.status_code == 200, r.text
+    r = client.patch(url, json={"special_type": "current_account"})
+    assert r.status_code == 200, r.text
+    session.expire_all()
+    assert session.get(BankTransaction, banks[0].id).special_type == "current_account"
+    assert session.get(ExpenseBankMatch, match_id).status == "rejected"
