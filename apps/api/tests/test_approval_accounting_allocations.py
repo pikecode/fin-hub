@@ -384,3 +384,45 @@ def test_legacy_cross_month_payment_counts_approval_once(client, session):
         assert sum((Decimal(row.amount) for row in overlay), Decimal(0)) == expected
     # Narrow queries must not choose their own first assignment.
     assert calculate_store_ledger_profits(session, store.id, ["2026-10"]) == {"2026-10": Decimal(0)}
+
+
+def test_removed_unmatched_line_is_not_an_effective_approval_expense(client, session):
+    from app.modules.approvals.status import (
+        approval_expense_stats_map, canonical_expense_condition, canonical_expense_items,
+    )
+
+    store, approval, items, bank = setup(session, ("43.80", "178.77", "300", "43.40", "44.11", "44.11"))
+    removed = items[-1]
+    cached = candidate(client, [removed], bank)
+    assert cached.status_code == 201, cached.text
+    cached_id = cached.json()["data"]["id"]
+    removed.parse_status = "source_removed"
+    removed.sync_conflict_status = "source_removed"
+    bank.amount = Decimal("610.08")
+    session.commit()
+    stats = approval_expense_stats_map(session, [approval.id])[approval.id]
+    assert stats["total_expense_amount"] == Decimal("610.08")
+    assert stats["expense_item_count"] == 5
+    assert removed not in canonical_expense_items(items)
+    assert removed not in session.scalars(select(ExpenseItem).where(canonical_expense_condition())).all()
+    response = client.get("/api/expense-items", params={"approval_instance_id": approval.id})
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["total"] == 5
+    response = client.get("/api/matches/reconciliation/candidates", params={"store_id": store.id})
+    assert response.status_code == 200, response.text
+    assert removed.id not in response.text
+    response = candidate(client, [removed], bank)
+    assert response.status_code == 409, response.text
+    assert session.get(ExpenseItem, removed.id) is not None
+    response = client.post(f"/api/matches/{cached_id}/confirm")
+    assert response.status_code == 409, response.text
+    # Previously recognized removed lines remain visible for financial review.
+    removed.sync_conflict_status = "source_removed_after_matched"
+    session.commit()
+    assert removed in canonical_expense_items(items)
+    assert removed in session.scalars(select(ExpenseItem).where(canonical_expense_condition())).all()
+    # A later synchronization may restore the current source line.
+    removed.parse_status = "parsed"
+    removed.sync_conflict_status = "none"
+    session.commit()
+    assert approval_expense_stats_map(session, [approval.id])[approval.id]["expense_item_count"] == 6

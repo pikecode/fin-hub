@@ -125,6 +125,8 @@ def validate_allocations(session, approval, allocations, version, *, check_close
 
 
 def prepare_candidate(session, match, item, allocations, version):
+    if item.parse_status == "source_removed":
+        raise HTTPException(409, "该审批明细已被撤回或移除，请刷新审批单后重新匹配")
     for name in ("_effective_allocations", "_effective_accounting_version"):
         if hasattr(match, name):
             delattr(match, name)
@@ -163,6 +165,8 @@ def ensure_periods_open(session, item, periods=()):
 
 
 def apply_plan(session, match, item, actor):
+    if item.parse_status == "source_removed":
+        raise HTTPException(409, "该审批明细已被撤回或移除，请刷新审批单后重新匹配")
     approval = approval_for_item(session, item)
     if approval is None:
         if match.accounting_allocations_json:

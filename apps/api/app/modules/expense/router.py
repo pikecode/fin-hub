@@ -18,7 +18,7 @@ from app.models import (
     MasterDataStatus,
     User,
 )
-from app.modules.approvals.status import refresh_approval_processing_status
+from app.modules.approvals.status import canonical_expense_condition, refresh_approval_processing_status
 from app.modules.audit.service import write_audit_log
 from app.modules.auth.router import audit_actor, require_permission
 from app.modules.common import paginate
@@ -175,7 +175,7 @@ def list_expense_items(
     page_size: int = 50,
     session: Session = Depends(get_session),
 ) -> ApiEnvelope[Page[ExpenseItemRead]]:
-    query = select(ExpenseItem).order_by(ExpenseItem.created_at.desc())
+    query = select(ExpenseItem).where(canonical_expense_condition()).order_by(ExpenseItem.created_at.desc())
     if store_id:
         query = query.where(ExpenseItem.store_id == store_id)
     if ledger_period:

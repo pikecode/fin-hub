@@ -32,6 +32,7 @@ from app.models import (
     utc_now,
 )
 from app.modules.approvals.status import (
+    canonical_expense_condition,
     approval_expense_stats,
     approval_expense_stats_map,
     refresh_approval_processing_status,
@@ -1352,6 +1353,7 @@ def list_reconciliation_candidates(
 
     query = (
         select(ExpenseItem, ApprovalInstance, ApprovalTemplate)
+        .where(canonical_expense_condition())
         .options(defer(ApprovalInstance.raw_payload))
         .outerjoin(ApprovalInstance, approval_expense_join_condition())
         .outerjoin(ApprovalTemplate, ApprovalInstance.template_id == ApprovalTemplate.id)

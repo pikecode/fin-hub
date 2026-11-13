@@ -91,7 +91,7 @@ def approval_expense_stats(
 
 
 def canonical_expense_condition():
-    """Exclude legacy DingTalk summaries even if category/month filters hide their lines."""
+    """Exclude obsolete unmatched lines and duplicate whole-approval summaries."""
     line = aliased(ExpenseItem)
     has_lines = exists(
         select(line.id).where(
@@ -101,16 +101,22 @@ def canonical_expense_condition():
             func.starts_with(line.source_document_id, ExpenseItem.source_document_id + ":"),
         )
     )
-    return ~and_(
-        ExpenseItem.source == "dingtalk",
-        ExpenseItem.source_document_id.is_not(None),
-        ~ExpenseItem.source_document_id.contains(":"),
-        has_lines,
+    return and_(
+        or_(
+            ExpenseItem.sync_conflict_status.is_(None),
+            ExpenseItem.sync_conflict_status != "source_removed",
+        ),
+        ~and_(
+            ExpenseItem.source == "dingtalk",
+            ExpenseItem.source_document_id.is_not(None),
+            ~ExpenseItem.source_document_id.contains(":"),
+            has_lines,
+        ),
     )
 
 
 def canonical_expense_items(expense_items: list[ExpenseItem]) -> list[ExpenseItem]:
-    """Exclude a synced whole-approval summary when line items exist for it."""
+    """Keep current lines and matched conflicts retained for financial review."""
     line_document_bases = {
         item.source_document_id.split(":", 1)[0]
         for item in expense_items
@@ -119,7 +125,8 @@ def canonical_expense_items(expense_items: list[ExpenseItem]) -> list[ExpenseIte
     return [
         item
         for item in expense_items
-        if not (
+        if item.sync_conflict_status != "source_removed"
+        and not (
             item.source == "dingtalk"
             and item.source_document_id
             and ":" not in item.source_document_id
