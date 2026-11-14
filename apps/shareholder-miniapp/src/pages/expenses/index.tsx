@@ -3,7 +3,8 @@ import Taro from "@tarojs/taro";
 import { useEffect, useState } from "react";
 import { formatMoney } from "@fin-hub/shared-utils";
 import type { Attachment } from "@fin-hub/shared-types";
-import { request, API_BASE_URL, getShareholderToken } from "../../lib/api";
+import { request } from "../../lib/api";
+import { previewAttachment } from "../../lib/attachments";
 interface Row {
   id: string;
   date: string;
@@ -44,15 +45,7 @@ export default function Expenses() {
   }, [page, p.storeId, p.period, p.category, retry]);
   async function preview(a: Attachment) {
     try {
-      const r = await Taro.downloadFile({
-        url: API_BASE_URL + "/api/miniapp/attachments/" + a.id,
-        header: { authorization: "Bearer " + getShareholderToken() },
-      });
-      if (r.statusCode !== 200) throw new Error("凭证暂不可用");
-      if (a.content_type?.startsWith("image/"))
-        await Taro.previewImage({ urls: [r.tempFilePath] });
-      else
-        await Taro.openDocument({ filePath: r.tempFilePath, showMenu: true });
+      await previewAttachment(a);
     } catch (e) {
       Taro.showToast({
         title: e instanceof Error ? e.message : "预览失败",

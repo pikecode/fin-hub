@@ -2,8 +2,12 @@ import { Button, Text, View } from "@tarojs/components";
 import Taro from "@tarojs/taro";
 import { useEffect, useState } from "react";
 import { formatMoney } from "@fin-hub/shared-utils";
-import type { BankTransactionBusinessDetail } from "@fin-hub/shared-types";
-import { api, API_BASE_URL, getShareholderToken } from "../../lib/api";
+import type {
+  Attachment,
+  BankTransactionBusinessDetail,
+} from "@fin-hub/shared-types";
+import { api } from "../../lib/api";
+import { previewAttachment } from "../../lib/attachments";
 const postingLabels: Record<string, string> = {
   bank_interest: "银行结息",
   other_income: "其他收入",
@@ -33,19 +37,9 @@ export default function Detail() {
   useEffect(() => {
     load();
   }, [id]);
-  async function preview(attachmentId: string, isImage: boolean) {
+  async function preview(attachment: Attachment) {
     try {
-      const result = await Taro.downloadFile({
-        url: API_BASE_URL + "/api/miniapp/attachments/" + attachmentId,
-        header: { authorization: "Bearer " + getShareholderToken() },
-      });
-      if (result.statusCode !== 200) throw new Error("凭证暂不可用");
-      if (isImage) await Taro.previewImage({ urls: [result.tempFilePath] });
-      else
-        await Taro.openDocument({
-          filePath: result.tempFilePath,
-          showMenu: true,
-        });
+      await previewAttachment(attachment);
     } catch (e) {
       Taro.showToast({
         title: e instanceof Error ? e.message : "预览失败",
@@ -177,14 +171,7 @@ export default function Detail() {
                     <Button
                       className="receipt-link"
                       key={attachment.id}
-                      onClick={() =>
-                        preview(
-                          attachment.id,
-                          Boolean(
-                            attachment.content_type?.startsWith("image/"),
-                          ),
-                        )
-                      }
+                      onClick={() => preview(attachment)}
                     >
                       <Text className="file-badge">凭证</Text>
                       <Text>{attachment.file_name}</Text>

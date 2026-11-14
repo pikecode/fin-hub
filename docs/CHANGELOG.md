@@ -21,6 +21,15 @@
 
 ## 2026-11-14
 
+### 小程序图片凭证误用文档预览修复（开发完成，已编译，未上传）
+
+- 时间：2026-11-14 11:11（Asia/Shanghai）；耗时约5分钟（估算）。流水详情凭证点击提示预览失败。
+- 定位：用户指定附件鉴权下载200、完整PNG约1.67MB，微信近期两次下载均200；数据库content_type为空，流水及费用入口仅按MIME判断，误调用openDocument。不是这两次下载的合法域名拦截，不修改生产附件元数据。
+- 修改：新增统一previewAttachment，图片同时按MIME和文件扩展名识别，三个入口（流水详情、费用明细、报表凭证）共用；继续带授权头下载并使用本地临时路径预览；PDF/Office文档指定支持的fileType。HTTP401/其他失败、网络及微信原生预览拒绝转为中文提示，无匿名访问、令牌输出或权限放宽。
+- 验证：新增test:attachments回归覆盖缺失MIME的PNG/JPG/JPEG/WebP/GIF、无扩展名但正确MIME、授权下载和本地图片路径、PDF、401/403/404/502、超时及原生预览失败；小程序typecheck、微信生产构建、18组浏览器交互回归通过，无页面异常。未完成iOS/安卓新版真机验证；本地日志 `/tmp/finhub-voucher-build.log`、`/tmp/finhub-voucher-interaction.log`。
+- 状态：代码及记录本地提交，已编译；未上传体验版、未部署、未推送远程。本批不涉及API或数据库变化，不改财务统计。
+- 分支：`work/20261114-miniapp-voucher-preview-01`；前备份 `backup/20261114-miniapp-voucher-preview-01-before`（3394c7a），后备份 `backup/20261114-miniapp-voucher-preview-01-after`。回退revert本批并重新构建上传小程序；无需数据库回退，前后备份仅本地。
+
 ### API报表性能优化生产发布完成
 
 - 时间：2026-11-14 10:39（Asia/Shanghai）；本轮复发及验收约3分钟，总排查/发布约13分钟（估算）。用户授权部署API，源代码6981fd4，API变化来自4d582ac。
