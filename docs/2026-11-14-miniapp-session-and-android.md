@@ -24,6 +24,6 @@
 - 临时浏览器预览4组会话与引擎兼容检查、18组现有交互检查通过；模拟缺失Intl及toLocaleString时，报表各区、流水、分红仍可显示。检查320/375/430px布局并查看重试截图。
 - 本地验证资料：`/tmp/finhub-miniapp-ui-qa/session-android-results.json`、`interaction-results.json`；构建日志在 `/tmp/finhub-miniapp-performance-qa/session-weapp-build.log`。临时预览不是微信安卓真机验证。
 
-本批仅本地提交、编译，未上传或部署。需要上传新的微信体验版，再用出现问题的安卓手机测试冷启动、切店/月、报表、流水和凭证；若仍异常，结合页面提示、微信版本及该构建实时日志定位。前序性能批次后端尚未部署，不能将本次编译当作性能优化已上线。
+本批仅本地提交、编译，未上传或部署。需要上传新的微信体验版，再用出现问题的安卓手机测试冷启动、切店/月、报表、流水和凭证；若仍异常，结合页面提示、微信版本及该构建实时日志定位。后续API性能版本已于同日10:37部署，见[发布记录](2026-11-14-api-performance-deployment.md)；本批客户端修复仍未上传。
 
 修改前备份 `backup/20261114-miniapp-session-android-01-before` 指向4d582ac，完成备份 `backup/20261114-miniapp-session-android-01-after`。两者仅本地，未远程备份。回退通过revert本批、重新构建并上传小程序，无数据库迁移或生产业务数据回退。
