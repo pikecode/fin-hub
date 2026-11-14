@@ -199,7 +199,7 @@ export function EnterpriseTable<T extends Record<string, any>>({
             </div>
           ) : (
             <span className="table-total">
-              共 <strong>{tableDataSource.length}</strong> 条数据
+              共 <strong>{restProps.pagination && typeof restProps.pagination.total === "number" ? restProps.pagination.total : tableDataSource.length}</strong> 条数据
             </span>
           )}
         </div>

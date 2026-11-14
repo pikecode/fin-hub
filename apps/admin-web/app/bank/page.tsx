@@ -1,4 +1,5 @@
 "use client";
+import { collectBankExport, bankExportCsv } from "./export";
 import { StoreLoans } from "../components/StoreLoans";
 
 import { Alert, Button, Card, Checkbox, DatePicker, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Statistic, Table, Tabs, Tag, Upload, Typography, message } from "antd";
@@ -383,6 +384,11 @@ export default function BankPage() {
 
   const [stores, setStores] = useState<Store[]>([]);
   const [ledgers, setLedgers] = useState<Ledger[]>([]);
+  const [listPage, setListPage] = useState(1);
+  const [listPageSize, setListPageSize] = useState(20);
+  const [listTotal, setListTotal] = useState(0);
+  const [exporting, setExporting] = useState(false);
+  const appliedFiltersRef = useRef<BankFilterValues>({});
   const [transactions, setTransactions] = useState<BankTransaction[]>([]);
   const [transactionSummary, setTransactionSummary] = useState<BankTransactionSummary>(emptyBankTransactionSummary);
   const [summaryRange, setSummaryRange] = useState<[dayjs.Dayjs, dayjs.Dayjs]>(defaultOccurredRange);
@@ -458,7 +464,7 @@ export default function BankPage() {
 
   function buildFilterParams(values?: BankFilterValues, options: { includePagination?: boolean } = {}) {
     const params = new URLSearchParams();
-    if (options.includePagination ?? true) params.set("page_size", "500");
+    if (options.includePagination ?? true) params.set("page_size", String(listPageSize));
     const storeId = values?.store_id || queryStoreId;
     if (storeId) params.set("store_id", storeId);
     if (focusedTransactionId) params.set("transaction_id", focusedTransactionId);
@@ -482,21 +488,28 @@ export default function BankPage() {
     return `?${params.toString()}`;
   }
 
-  async function loadData(filters?: BankFilterValues) {
+  async function loadData(filters?: BankFilterValues, page = 1, pageSize = listPageSize) {
     const requestId = ++loadRequestIdRef.current;
     setIsLoading(true);
     setErrorMessage(null);
     const effectiveFilters = filters ?? filterForm.getFieldsValue();
+    const params = new URLSearchParams(buildFilterParams(effectiveFilters, { includePagination: false }).slice(1));
+    params.set("page", String(page));
+    params.set("page_size", String(pageSize));
     try {
       const [storePage, ledgerPage, transactionPage] = await Promise.all([
         getStores(),
         getLedgers(),
-        apiClient.bankTransactions.list(buildFilterParams(effectiveFilters, { includePagination: true })),
+        apiClient.bankTransactions.list(`?${params}`),
       ]);
       if (requestId === loadRequestIdRef.current) {
         setStores(storePage);
         setLedgers(ledgerPage);
         setTransactions(transactionPage.items);
+        setListPage(page);
+        setListPageSize(pageSize);
+        setListTotal(transactionPage.total);
+        appliedFiltersRef.current = effectiveFilters;
       }
       if (queryStoreId) {
         const balance = await apiClient.bankBalance.get(queryStoreId);
@@ -513,6 +526,26 @@ export default function BankPage() {
         setIsLoading(false);
       }
     }
+  }
+
+  async function exportTransactions() {
+    if (exporting) return;
+    setExporting(true);
+    try {
+      const filters = buildFilterParams(filterForm.getFieldsValue(), { includePagination: false });
+      const rows = await collectBankExport(apiClient.bankTransactions.list, filters);
+      if (!rows.length) { message.info("当前筛选条件下没有可导出的流水"); return; }
+      const url = URL.createObjectURL(new Blob([bankExportCsv(rows, new Map(stores.map(store => [store.id, store.name])))], { type: "text/csv;charset=utf-8" }));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `银行流水-${dayjs().format("YYYYMMDD-HHmmss")}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      message.success(`已导出${rows.length}条流水`);
+    } catch (error) { message.error(error instanceof Error ? error.message : "导出失败，请重试"); }
+    finally { setExporting(false); }
   }
 
   async function loadSummary(range = summaryRange) {
@@ -1535,6 +1568,7 @@ export default function BankPage() {
           <Space style={{ marginBottom: 12 }}>
             <Tag>按门店查询 · 不限制账期</Tag>
             <Button onClick={() => void loadData()}>刷新列表</Button>
+            <Button icon={<DownloadOutlined />} loading={exporting} onClick={() => void exportTransactions()}>按筛选导出 CSV</Button>
           </Space>
           <EnterpriseTable
             rowKey="id"
@@ -1549,7 +1583,10 @@ export default function BankPage() {
             }}
             exportFileName="银行流水"
             pagination={{
-              defaultPageSize: 20,
+              current: listPage,
+              pageSize: listPageSize,
+              total: listTotal,
+              onChange: (page, pageSize) => void loadData(appliedFiltersRef.current, pageSize === listPageSize ? page : 1, pageSize),
               showSizeChanger: true,
               pageSizeOptions: [10, 20, 50, 100],
               showTotal: (total, range) => `${range[0]}-${range[1]} / 共 ${total} 条`,

@@ -142,7 +142,7 @@ def list_bank_transactions(
         occurred_from=occurred_from,
         occurred_to=occurred_to,
         exclude_special=exclude_special,
-    ).order_by(BankTransaction.occurred_at.desc())
+    ).order_by(BankTransaction.occurred_at.desc(), BankTransaction.id.desc())
     from app.modules.bank.accounting_visibility import attach_accounting_periods, direct_month_conditions
     if cross_period_only and not posting_period:
         raise HTTPException(422, "跨期查询需要指定入账月份")
