@@ -6,6 +6,8 @@ from types import SimpleNamespace
 from fastapi import HTTPException
 from sqlalchemy import select
 
+from app.modules.report_reads import memoized_read
+
 from app.models import (
     AccrualApprovalLink,
     AccrualEntry,
@@ -71,6 +73,7 @@ def ensure_approval_open(session, approval):
         raise HTTPException(409, f"{closed} 已封账，不能改变审批计提覆盖")
 
 
+@memoized_read("accrual-deductions", clone=dict)
 def coverage_deductions(session, store_id):
     """Spread covered cents over the approval's complete accounting matrix once."""
     from app.modules.matching.accounting import approval_items

@@ -19,6 +19,7 @@ from app.models import (
 )
 from app.modules.approvals.status import canonical_expense_items
 from app.modules.audit.service import write_audit_log
+from app.modules.report_reads import read_cache
 
 
 def approval_for_item(session, item):
@@ -303,6 +304,18 @@ def allocation_matrix(items, allocations):
 
 
 def planned_rows_for_periods(session, store_id, periods):
+    cache = read_cache(session)
+    if cache is None:
+        return _planned_rows_for_periods(session, store_id, periods)
+    key = ("approval-period-rows", store_id)
+    if key not in cache:
+        owned, rows = _planned_rows_for_periods(session, store_id, None)
+        cache[key] = (frozenset(owned), {period: tuple(items) for period, items in rows.items()})
+    owned, rows = cache[key]
+    return set(owned), {period: list(rows.get(period, ())) for period in periods}
+
+
+def _planned_rows_for_periods(session, store_id, periods):
     from app.modules.store_ledgers.router import approval_expense_join_condition
 
     plans = list(
@@ -373,31 +386,31 @@ def planned_rows_for_periods(session, store_id, periods):
         allocations.setdefault(row.approval_id, []).append(
             {"period": row.period, "amount": str(row.amount)}
         )
-    result = {period: [] for period in periods}
+    result = {} if periods is None else {period: [] for period in periods}
     for approval_id in active:
         items = canonical_expense_items(groups.get(approval_id, []))
         rows = allocations.get(approval_id, [])
         if approval_id in paid_modes:
             shares = paid_item_amounts(session, approval_id, items)
             period = paid_modes[approval_id].period
-            if period in result:
-                result[period].extend((item.id, item.category_l1, item.category_l2, shares[item.id])
+            if periods is None or period in result:
+                result.setdefault(period, []).extend((item.id, item.category_l1, item.category_l2, shares[item.id])
                                      for item in items if shares[item.id])
             continue
         if approval_id in legacy_periods:
             period = legacy_periods[approval_id]
-            if period in result:
-                result[period].extend(
+            if periods is None or period in result:
+                result.setdefault(period, []).extend(
                     (item.id, item.category_l1, item.category_l2, Decimal(item.amount))
                     for item in items
                 )
             continue
         matrix = allocation_matrix(items, rows)
-        for period in periods:
+        for period in matrix if periods is None else periods:
             for item in items:
                 amount = matrix.get(period, {}).get(item.id, 0)
                 if amount:
-                    result[period].append(
+                    result.setdefault(period, []).append(
                         (item.id, item.category_l1, item.category_l2, Decimal(amount) / 100)
                     )
     return owned, result

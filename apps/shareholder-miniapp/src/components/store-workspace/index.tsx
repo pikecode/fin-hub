@@ -62,7 +62,6 @@ export default function StoreWorkspace({
   const [periodBusy, periodLoading] = useState(false);
   function loadStores() {
     storeFailed("");
-    version.current++;
     api
       .stores()
       .then((rows) => {
@@ -73,7 +72,7 @@ export default function StoreWorkspace({
         I(next);
         PG(1);
         SR((n) => n + 1);
-        RF((n) => n + 1);
+        if (mode === "bank") RF((n) => n + 1);
         ready(true);
       })
       .catch((e) => {
@@ -107,6 +106,7 @@ export default function StoreWorkspace({
             ? selectedPeriod(storeId)
             : rows[0] || "",
         );
+        RF((n) => n + 1);
       })
       .catch((e) => {
         if (v === periodVersion.current) periodFailed(e.message);
@@ -118,6 +118,20 @@ export default function StoreWorkspace({
       periodVersion.current++;
     };
   }, [storeId, mode, storeRefresh]);
+  const requestKey =
+    !storeReady || !storeId
+      ? ""
+      : tab === 2
+        ? JSON.stringify([storeId, tab, page, start, end, status, refresh])
+        : period
+          ? JSON.stringify([
+              storeId,
+              tab,
+              period,
+              tab === 1 ? page : 1,
+              refresh,
+            ])
+          : "";
   useEffect(() => {
     const v = ++version.current;
     if (tab !== 0) R(null);
@@ -173,7 +187,7 @@ export default function StoreWorkspace({
     return () => {
       version.current++;
     };
-  }, [storeReady, storeId, period, tab, page, start, end, status, refresh]);
+  }, [requestKey]);
   const storeIndex = Math.max(
     0,
     stores.findIndex((x) => x.id === storeId),

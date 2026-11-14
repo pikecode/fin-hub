@@ -7,7 +7,8 @@
     "dev:weapp": "pnpm run build:deps && taro build --type weapp --watch",
     "build": "pnpm run build:deps && taro build --type weapp",
     "lint": "pnpm run build:deps && tsc --noEmit",
-    "typecheck": "pnpm run build:deps && tsc --noEmit"
+    "typecheck": "pnpm run build:deps && tsc --noEmit",
+    "test:requests": "node tests/request-coalescing.cjs"
   },
   "dependencies": {
     "@babel/runtime": "^7.28.0",

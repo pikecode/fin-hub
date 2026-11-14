@@ -6,6 +6,8 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, defer
 
 from app.core.database import get_session
+from app.modules.report_reads import memoized_read, report_read_scope
+
 from app.models import (
     ApprovalInstance,
     ApprovalTemplate,
@@ -82,6 +84,7 @@ def dedupe_expense_rows(rows):
     return unique_rows
 
 
+@memoized_read("monthly-expenses", clone=list)
 def confirmed_accounting_expense_rows(session: Session, store_id: str, period: str, *, apply_accrual=True):
     """Return expense detail rows for approvals confirmed into the accounting period.
 
@@ -743,4 +746,5 @@ def read_store_financial_report(
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ):
-    return read_store_ledger_workspace(store_id, period, session, current_user, include_details=False)
+    with report_read_scope(session):
+        return read_store_ledger_workspace(store_id, period, session, current_user, include_details=False)

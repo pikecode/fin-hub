@@ -16,6 +16,8 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_session
 from app.core.security import _sign, hash_password, verify_password
+from app.modules.report_reads import report_read_scope
+
 from app.models import Ledger, RevenueRecord, Store, User, utc_now
 from app.modules.auth.permissions import effective_store_ids, ensure_permission, ensure_store_access
 from app.modules.auth.router import to_current_user
@@ -150,16 +152,18 @@ def report(
     from app.modules.store_ledgers.router import read_store_financial_report
     from app.modules.expense.router import list_major_expense_vouchers
 
-    readable_period(session, user, store_id, period)
-    return ApiEnvelope(
-        data={
-            "report": read_store_financial_report(store_id, period, session, user).data,
-            "supplement": supplement(store_id, period, session, user).data,
-            "major_vouchers": list_major_expense_vouchers(store_id, period, session, user).data,
-            "retrieved_at": utc_now().isoformat(timespec="seconds") + "Z",
-            "contract_version": "pc-parity-1",
-        }
-    )
+    with report_read_scope(session):
+        readable_period(session, user, store_id, period)
+        return ApiEnvelope(
+            data={
+                "report": read_store_financial_report(store_id, period, session, user).data,
+                "supplement": supplement(store_id, period, session, user).data,
+                "major_vouchers": list_major_expense_vouchers(store_id, period, session, user).data,
+                "retrieved_at": utc_now().isoformat(timespec="seconds") + "Z",
+                "contract_version": "pc-parity-1",
+            }
+        )
+
 
 
 @router.get("/revenue")
@@ -264,27 +268,29 @@ def dividend(
     from app.modules.dividend.opening import configured_history, opening_read
     from app.modules.dividend.router import history_rows
 
-    readable_period(session, user, store_id, period)
-    store = session.get(Store, store_id)
-    opening = opening_read(session, store_id)
-    history = (
-        configured_history(session, store_id, period)
-        if opening.configured
-        else history_rows(session, store, period, create_missing=False)
-    )
-    visible = set(
-        session.scalars(
-            select(Ledger.period).where(
-                Ledger.store_id == store_id, Ledger.period <= period
+    with report_read_scope(session):
+        readable_period(session, user, store_id, period)
+        store = session.get(Store, store_id)
+        opening = opening_read(session, store_id)
+        history = (
+            configured_history(session, store_id, period)
+            if opening.configured
+            else history_rows(session, store, period, create_missing=False)
+        )
+        visible = set(
+            session.scalars(
+                select(Ledger.period).where(
+                    Ledger.store_id == store_id, Ledger.period <= period
+                )
             )
         )
-    )
-    from app.modules.reports.financial import supplement
+        from app.modules.reports.financial import supplement
 
-    return ApiEnvelope(
-        data={"opening": opening, "history": [r for r in history if r.period in visible],
-              "supplement": supplement(store_id, period, session, user).data}
-    )
+        return ApiEnvelope(
+            data={"opening": opening, "history": [r for r in history if r.period in visible],
+                  "supplement": supplement(store_id, period, session, user).data}
+        )
+
 
 
 @router.get("/preopening")

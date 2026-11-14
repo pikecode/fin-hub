@@ -6,6 +6,8 @@ from decimal import Decimal
 from fastapi import HTTPException
 from sqlalchemy import select, text
 
+from app.modules.report_reads import memoized_read
+
 from app.models import DividendOpeningBalance, DividendMonth, DividendEntry, Ledger, RevenueRecord
 from app.modules.store_ledgers.router import calculate_store_ledger_profits
 from app.schemas import DividendMonthRead, DividendEntryRead, DividendOpeningRead
@@ -70,6 +72,7 @@ def ensure_month_mutable(session, store_id, period):
     return opening
 
 
+@memoized_read("dividend-history")
 def configured_history(session, store_id, selected_period):
     """No inserted months, no ledger writes, no fixed transition date."""
     selected = valid_period(selected_period)
