@@ -1,4 +1,5 @@
 import { clearNavigation } from "./navigation";
+import { logIssue, networkIssue } from "./diagnostics";
 import Taro from "@tarojs/taro";
 import type {
   CurrentUser,
@@ -43,26 +44,50 @@ async function send<T>(
   token: string,
   version: number,
 ): Promise<T> {
-  const r = await Taro.request<{ data: T; detail?: string }>({
-    url: API_BASE_URL + "/api/miniapp" + path,
-    method: data ? "POST" : "GET",
-    data,
-    header: { authorization: "Bearer " + token },
-    timeout: 30000,
-  });
+  const started = Date.now();
+  let r;
+  try {
+    r = await Taro.request<{ data: T; detail?: string }>({
+      url: API_BASE_URL + "/api/miniapp" + path,
+      method: data ? "POST" : "GET",
+      data,
+      header: { authorization: "Bearer " + token },
+      timeout: 30000,
+    });
+  } catch (error) {
+    if (version !== sessionVersion || token !== getShareholderToken())
+      throw new MiniappApiError(401, "登录状态已变化，请重新加载");
+    const issue = networkIssue(error);
+    logIssue(issue.kind, { path, status: 0, durationMs: Date.now() - started });
+    throw new MiniappApiError(0, issue.message);
+  }
   if (version !== sessionVersion || token !== getShareholderToken())
     throw new MiniappApiError(401, "登录状态已变化，请重新加载");
   if (r.statusCode === 401 && path !== "/login") {
     clearShareholderToken();
     Taro.reLaunch({ url: "/pages/shareholder-login/index" });
   }
-  if (r.statusCode < 200 || r.statusCode >= 300)
+  if (r.statusCode < 200 || r.statusCode >= 300) {
+    logIssue("HTTP_ERROR", {
+      path,
+      status: r.statusCode,
+      durationMs: Date.now() - started,
+    });
     throw new MiniappApiError(
       r.statusCode,
-      typeof r.data.detail === "string"
+      typeof r.data?.detail === "string"
         ? r.data.detail
         : "请求失败，请稍后重试",
     );
+  }
+  if (!r.data || typeof r.data !== "object" || !("data" in r.data)) {
+    logIssue("INVALID_RESPONSE", {
+      path,
+      status: r.statusCode,
+      durationMs: Date.now() - started,
+    });
+    throw new MiniappApiError(502, "服务返回异常，请稍后重试");
+  }
   return r.data.data;
 }
 export function request<T>(path: string, data?: unknown): Promise<T> {

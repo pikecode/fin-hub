@@ -1,4 +1,5 @@
 import FinancialReport from "../financial-report";
+import { formatMoney } from "@fin-hub/shared-utils";
 import { Button, Picker, Text, View } from "@tarojs/components";
 import Taro from "@tarojs/taro";
 import { useEffect, useRef, useState } from "react";
@@ -20,14 +21,8 @@ import {
   selectPeriod,
 } from "../../lib/navigation";
 import "./index.css";
-const money = (n: unknown) =>
-  n == null
-    ? "—"
-    : "¥" +
-      Number(n).toLocaleString("zh-CN", {
-        minimumFractionDigits: 2,
-        maximumFractionDigits: 2,
-      });
+const money = (value: unknown) =>
+  value == null ? "—" : formatMoney(String(value));
 const pct = (n: unknown) => (n == null ? "—" : Number(n).toFixed(1) + "%");
 const tabs = ["财务报表", "营业收入"];
 export default function StoreWorkspace({
