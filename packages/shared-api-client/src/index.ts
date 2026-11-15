@@ -1,3 +1,4 @@
+import { apiErrorMessage } from "./errors";
 import type { ApprovalAccountingPlan } from "@fin-hub/shared-types";
 import type { DividendOpeningBalance, DividendOpeningUpdate } from "@fin-hub/shared-types";
 import type { FinancialReportSupplement, FinancialReportAppendix, DividendFundingSetting } from "@fin-hub/shared-types";
@@ -187,11 +188,7 @@ export function createApiClient(options: ApiClientOptions) {
     }).then(async (response) => {
       const payload = await response.json().catch(() => null);
       if (!response.ok) {
-        const detail =
-          payload && typeof payload === "object" && "detail" in payload && typeof (payload as { detail?: unknown }).detail === "string"
-            ? (payload as { detail: string }).detail
-            : null;
-        throw new ApiError(detail || response.statusText || "Request failed", response.status, payload);
+        throw new ApiError(apiErrorMessage(payload, response.status), response.status, payload);
       }
       return (payload as ApiEnvelope<T>).data ?? payload;
     });
@@ -222,11 +219,7 @@ export function createApiClient(options: ApiClientOptions) {
     });
     if (!response.ok) {
       const payload = await response.json().catch(() => null);
-      const detail =
-        payload && typeof payload === "object" && "detail" in payload && typeof (payload as { detail?: unknown }).detail === "string"
-          ? (payload as { detail: string }).detail
-          : null;
-      throw new ApiError(detail || response.statusText || "Request failed", response.status, payload);
+      throw new ApiError(apiErrorMessage(payload, response.status), response.status, payload);
     }
     return response.blob();
   }

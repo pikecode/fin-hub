@@ -1196,6 +1196,11 @@ export default function FinanceReconciliationPage() {
       message.warning("请先选择银行流水和审批单");
       return;
     }
+    if (Number(selectedCandidate.remaining_amount || 0) <= 0) {
+      message.warning("该审批单已匹配满，剩余可匹配金额为0。请查看已对账记录，核对是否选错审批单；如需更正，请先调整或解除原匹配。");
+      return;
+    }
+    if (bankRemaining <= 0) { message.warning("该流水已无剩余可匹配金额，请刷新列表核对"); return; }
     const accountingRequest = ++accountingRequestVersion.current;
     setIsExpenseItemsLoading(false);
     setAccountingError(null);
@@ -1251,6 +1256,11 @@ export default function FinanceReconciliationPage() {
 
   async function submitConfirm(values: ConfirmValues) {
     if (!selectedTransaction || !selectedCandidate || !selectedStoreId) return;
+    if (Number(selectedCandidate.remaining_amount || 0) <= 0) { setAccountingError("该审批单已匹配满，请查看已对账记录或选择其他审批单"); return; }
+    const requestedAmount = Number(values.amount || defaultMatchAmount.toFixed(2));
+    if (!Number.isFinite(requestedAmount) || requestedAmount <= 0) { setAccountingError("匹配金额必须大于0，请检查审批单剩余金额"); return; }
+    if (requestedAmount > Number(selectedCandidate.remaining_amount)) { setAccountingError("匹配金额不能超过审批单剩余可匹配金额"); return; }
+    if (requestedAmount > bankRemaining) { setAccountingError("匹配金额不能超过银行流水剩余可匹配金额"); return; }
     const accountingPeriod = values.multi_accounting ? values.accounting_allocations?.[0]?.month?.format("YYYY-MM") : values.accounting_month?.format("YYYY-MM");
     if (!accountingPeriod) { setAccountingError("请选择入账月份"); return; }
     setAccountingError(null);
@@ -2214,7 +2224,7 @@ export default function FinanceReconciliationPage() {
                         type="info"
                         showIcon
                         message="当前为审批编号检索结果"
-                        description="已匹配审批单也会展示，是否继续匹配由你确认。"
+                        description="已匹配审批单也会展示，供核对历史记录；已匹配满的审批单不能再次匹配。"
                       />
                     ) : null}
 	                    <Spin spinning={isCandidateLoading}>

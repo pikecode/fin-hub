@@ -1,0 +1,14 @@
+const assert=require('node:assert/strict');
+const fs=require('node:fs');
+const path=require('node:path');
+const ts=require('typescript');
+const out={};
+new Function('exports',ts.transpileModule(fs.readFileSync(path.join(__dirname,'../src/errors.ts'),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}}).outputText)(out);
+assert.match(out.apiErrorMessage({detail:[{loc:['body','amount'],type:'greater_than',input:'secret'}]},422),/金额必须大于0/);
+assert.match(out.apiErrorMessage({detail:[{loc:['body','accounting_period'],type:'missing'}]},422),/请填写入账月份/);
+assert.equal(out.apiErrorMessage({detail:'审批单已变化，请刷新'},409),'审批单已变化，请刷新');
+assert.match(out.apiErrorMessage(null,422),/提交内容/);
+assert.match(out.apiErrorMessage({detail:[{loc:['body','password'],type:'bad',input:'secret'}]},422),/提交字段/);
+assert.ok(!out.apiErrorMessage({detail:[{loc:['body','password'],type:'bad',input:'secret'}]},422).includes('secret'));
+assert.match(out.apiErrorMessage(null,500),/请求失败/);
+console.log('API errors: validation arrays, positive amount, required month, preserved business details, fallback and input redaction passed');
