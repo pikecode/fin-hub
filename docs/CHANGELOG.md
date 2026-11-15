@@ -21,6 +21,15 @@
 
 ## 2026-11-15
 
+### 银行流水分页导出及对账提示生产发布完成
+
+- 时间：2026-11-15 08:16（Asia/Shanghai）；耗时约10分钟（估算）。用户授权部署累计两批API/PC修改，源码6f7a2c5，功能提交7ca5f33、6f7a2c5；包含前序未发布的共享金额兼容处理，不上传小程序。
+- 发布：API与PC均使用 `deploy-20261115-bank-errors` 标签，08:13服务级切换完成；PC BUILD_ID `cicdO4NVzmiwnrELXmalA`。API仅bank/router.py稳定排序，与线上源码对比无其他遗漏；无依赖安装或数据库迁移，仍20261113_0049。API/PC重启计数0；数据库/Redis/Nginx容器未重建，Nginx检查/reload通过。
+- 构建：官方基础镜像鉴权网络超时，未影响线上；改用本地既有amd64源码构建镜像（build-20261105-finance-update），核对PC依赖清单一致，补齐共享utils到types的workspace符号链接后使用当前完整源码构建成功，无新依赖安装。服务器只封装3.7MB运行产物，排除.next/cache、standalone及node_modules，纳入共享client/utils dist；无服务器Next构建。
+- 验证：导出254条和错误解析本地回归通过；公网健康、登录/银行流水/对账页面及各自20/34/35个Next资源200。合法登录态只读验证阳光城254条，API第1页200/第2页54且唯一254，9月筛选132条；浏览器翻页及末页14条通过，下载CSV全量254条、唯一254，选9月后导出132条且日期全部在9月，无浏览器错误。确认新的中文对账校验代码已打包，不在生产提交真实匹配写入验证。
+- 备份：`/opt/fin-hub/releases/deploy-20261115-bank-errors/` 含manifest、构建日志、600权限env.before与evidence；旧API `fin-hub-api:deploy-20261114-report-performance`、PC `fin-hub-admin-web:deploy-20261113-parity` 保留。回滚仅恢复API_IMAGE/ADMIN_WEB_IMAGE并按服务重建、reload及验证，不整份覆盖env或恢复数据库。临时登录令牌仅用于浏览器验收且文件已删除，生产账目未修改。
+- 分支：work/20261115-bank-deploy-01，前备份backup/20261115-bank-deploy-01-before（6f7a2c5），完成提交后创建backup/20261115-bank-deploy-01-after；文档及备份仅本地、未推送远程。小程序凭证预览和登录修复仍需另行上传体验版。
+
 ### 对账确认与参数错误提示优化（开发完成，未部署）
 
 - 时间：2026-11-15 08:05（Asia/Shanghai）；耗时约4分钟（估算）。用户反馈匹配报错仅显示Unprocessable Entity，授权优化提示。
