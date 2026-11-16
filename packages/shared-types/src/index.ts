@@ -852,6 +852,7 @@ export interface DingTalkAutoSyncRunResult {
 
 export interface ApprovalTemplate {
   is_preopening_expense?: boolean;
+  allow_dual_reconciliation?: boolean;
   id: string;
   process_code: string;
   name: string;
@@ -865,6 +866,7 @@ export interface ApprovalTemplate {
 
 export interface ApprovalTemplateCreate {
   is_preopening_expense?: boolean;
+  allow_dual_reconciliation?: boolean;
   process_code: string;
   name: string;
   is_enabled?: boolean;
@@ -872,6 +874,7 @@ export interface ApprovalTemplateCreate {
 
 export interface ApprovalTemplateUpdate {
   is_preopening_expense?: boolean;
+  allow_dual_reconciliation?: boolean;
   name?: string | null;
   is_enabled?: boolean | null;
 }

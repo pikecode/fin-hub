@@ -2466,6 +2466,9 @@ export default function FinanceReconciliationPage() {
       >
         {accountingError ? <Alert type="error" showIcon message={accountingError} style={{marginBottom:12}} /> : null}
         {confirmDetailLoadError ? <Alert type="error" showIcon message={confirmDetailLoadError} /> : null}
+        {defaultMatchAmount > 0 && defaultMatchAmount < bankRemaining ? <Alert type="warning" showIcon style={{marginBottom:12}}
+          message={`审批单剩余可匹配 ${formatMoney(String(defaultMatchAmount))}，小于流水剩余 ${formatMoney(String(bankRemaining))}，本次默认按部分金额匹配。`}
+          description="请核对本次匹配金额。解除其他流水后，不会自动增加本笔已确认的匹配金额；如需补足，请编辑对应的已对账记录。" /> : null}
         <Form form={confirmForm} layout="vertical" onFinish={submitConfirm}>
           <div className="reconciliation-confirm-summary">
             <div className="reconciliation-confirm-summary__item">

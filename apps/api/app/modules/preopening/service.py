@@ -41,7 +41,14 @@ def ensure_operating(session: Session, expense: ExpenseItem, bank: BankTransacti
         )
     session.scalar(select(BankTransaction).where(BankTransaction.id == bank.id).with_for_update())
     session.refresh(expense)
-    if expense.expense_scope != "operating":
+    from app.modules.matching.accounting import approval_for_item
+    approval = approval_for_item(session, expense)
+    if approval:
+        from app.modules.preopening.eligibility import claim_scope
+        claim_scope(session, approval.id, "operating")
+        if expense.expense_scope != "operating":
+            raise HTTPException(409, "审批单与费用明细归属不一致，请先核对来源记录")
+    elif expense.expense_scope != "operating":
         raise HTTPException(409, "该审批单属于筹建费用，请在筹建费用中对账")
     if session.scalar(
         select(ExpenseBankMatch.id).where(

@@ -228,11 +228,12 @@ def item_read(session, e, voucher_counts=None):
 @router.get("/stores/{store_id}")
 def workspace(store_id: str, session: SessionDep, user: UserDep):
     authorize(session, user, "reconciliation.view", store_id)
+    from app.modules.preopening.eligibility import approval_scope_condition
     state = session.get(PreopeningStore, store_id)
     approvals = session.scalars(
         select(ApprovalInstance)
         .where(
-            ApprovalInstance.store_id == store_id, ApprovalInstance.expense_scope == "preopening"
+            ApprovalInstance.store_id == store_id, approval_scope_condition("preopening")
         )
         .order_by(ApprovalInstance.created_at.desc())
     ).all()
@@ -256,7 +257,6 @@ def workspace(store_id: str, session: SessionDep, user: UserDep):
     items_by_approval = {}
     all_items = list(session.scalars(select(ExpenseItem).where(
         ExpenseItem.approval_instance_id.in_([a.id for a in approvals]),
-        ExpenseItem.expense_scope == "preopening",
     ).order_by(ExpenseItem.approval_line_no)))
     for item in all_items:
         items_by_approval.setdefault(item.approval_instance_id, []).append(item)
@@ -379,6 +379,8 @@ def confirm(
         raise HTTPException(409, "直接入账流水不能参与筹建对账")
     if approval.store_id != store_id or bank.store_id != store_id:
         raise HTTPException(409, "审批单和流水必须属于当前门店")
+    from app.modules.preopening.eligibility import claim_scope
+    claim_scope(session, approval.id, "preopening")
     if (
         approval.expense_scope != "preopening"
         or (approval.approval_status or "").lower() in TERMINAL

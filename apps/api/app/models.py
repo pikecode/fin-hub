@@ -745,6 +745,7 @@ class DingTalkDepartment(Base):
 
 
 class ApprovalTemplate(Base):
+    allow_dual_reconciliation: Mapped[bool] = mapped_column(default=False, server_default=text("false"), nullable=False)
     __tablename__ = "approval_templates"
     __table_args__ = (UniqueConstraint("process_code", name="uq_approval_templates_process_code"),)
 

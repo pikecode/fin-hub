@@ -135,6 +135,7 @@ def template_read(session: Session, template: ApprovalTemplate) -> ApprovalTempl
         name=template.name,
         is_enabled=template.is_enabled,
         is_preopening_expense=template.is_preopening_expense,
+        allow_dual_reconciliation=template.allow_dual_reconciliation,
         mapping_status=template_mapping_status(session, template.id),
         last_sync_at=template.last_sync_at,
         raw_snapshot=template.raw_snapshot,
@@ -596,6 +597,8 @@ def update_template(
     if template is None:
         raise HTTPException(status_code=404, detail="Template not found")
     updates = payload.model_dump(exclude_unset=True)
+    if "allow_dual_reconciliation" in updates and updates["allow_dual_reconciliation"] is None:
+        raise HTTPException(422, "双入口开关必须选择开启或关闭")
     if updates.get("is_preopening_expense") is not None and updates["is_preopening_expense"] != template.is_preopening_expense:
         from app.modules.preopening.service import change_template_scope
         change_template_scope(session, template, updates["is_preopening_expense"])

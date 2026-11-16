@@ -53,6 +53,10 @@ def read_plan(session, approval_id):
         raise HTTPException(404, "审批单不存在")
     plan = session.get(ApprovalAccountingPlan, approval_id)
     items = approval_items(session, approval_id)
+    if approval.expense_scope != "operating":
+        from app.modules.preopening.eligibility import dual_unclaimed
+        if session.scalar(select(ApprovalInstance.id).where(ApprovalInstance.id == approval_id, dual_unclaimed())):
+            items = canonical_expense_items(list(session.scalars(select(ExpenseItem).where(ExpenseItem.approval_instance_id == approval_id))))
     allocations = [
         {"period": r.period, "amount": str(r.amount)}
         for r in session.scalars(

@@ -927,6 +927,7 @@ class DingTalkAutoSyncSettingUpdate(BaseModel):
 
 
 class ApprovalTemplateCreate(BaseModel):
+    allow_dual_reconciliation: bool = False
     is_preopening_expense: bool = False
     process_code: str = Field(min_length=1, max_length=160)
     name: str = Field(min_length=1, max_length=160)
@@ -934,6 +935,7 @@ class ApprovalTemplateCreate(BaseModel):
 
 
 class ApprovalTemplateUpdate(BaseModel):
+    allow_dual_reconciliation: bool | None = None
     is_preopening_expense: bool | None = None
     name: str | None = Field(default=None, min_length=1, max_length=160)
     is_enabled: bool | None = None

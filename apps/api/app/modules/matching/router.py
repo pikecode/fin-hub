@@ -1100,6 +1100,10 @@ def create_match_candidate(
     bank_transaction = session.get(BankTransaction, payload.bank_transaction_id)
     if bank_transaction is None:
         raise HTTPException(status_code=404, detail="Bank transaction not found")
+    mutation_lock(session)
+    ensure_store_access(session, current_user, expense_item.store_id)
+    ensure_store_access(session, current_user, bank_transaction.store_id)
+    verify_approval_source(session, expense_item, audit_actor(current_user))
     from app.modules.preopening.service import ensure_operating
     ensure_operating(session, expense_item, bank_transaction)
     ensure_store_access(session, current_user, bank_transaction.store_id)
@@ -1110,7 +1114,6 @@ def create_match_candidate(
         raise HTTPException(status_code=409, detail="Special bank transactions cannot be matched")
     if expense_item.store_id != bank_transaction.store_id:
         raise HTTPException(status_code=409, detail="Store mismatch")
-    verify_approval_source(session, expense_item, audit_actor(current_user))
     accounting.protect_expense_changes(session, expense_item, {key: value for key, value in {'category_l1': payload.category_l1, 'category_l2': payload.category_l2}.items() if value is not None})
     existing_match = session.scalar(
         select(ExpenseBankMatch).where(
@@ -1369,7 +1372,8 @@ def list_reconciliation_candidates(
         .where(or_(ApprovalInstance.approval_status.is_(None), ~func.lower(ApprovalInstance.approval_status).in_(["terminated", "canceled", "cancelled", "cancel", "withdrawn", "refuse", "reject", "rejected", "refused", "deny", "return", "returned", "退回", "撤销", "已撤销"])))
         .where(ExpenseItem.amount > 0)
     )
-    query = query.where(ExpenseItem.expense_scope == "operating")
+    from app.modules.preopening.eligibility import dual_unclaimed
+    query = query.where(or_(ExpenseItem.expense_scope == "operating", dual_unclaimed()))
     if not approval_search:
         query = query.where(
             or_(ApprovalInstance.id.is_not(None), ExpenseItem.payment_status.in_(
@@ -1758,8 +1762,9 @@ def update_reconciliation_record(
         ensure_store_access(session, current_user, target_expense.store_id)
 
     from app.modules.preopening.service import ensure_operating
-    ensure_operating(session, target_expense, bank_transaction)
+    mutation_lock(session)
     verify_approval_source(session, target_expense, audit_actor(current_user))
+    ensure_operating(session, target_expense, bank_transaction)
     session.refresh(match, with_for_update=True)
     if match.status != MatchStatus.CONFIRMED.value:
         raise HTTPException(409, "匹配记录状态已变化，请刷新后重试")

@@ -1751,6 +1751,19 @@ export default function DingTalkPage() {
         onChange={(checked) => setPendingExpenseScope({ template: record, enabled: checked })} />,
     },
     {
+      key: "allow_dual_reconciliation",
+      title: "允许筹建/日常双入口",
+      width: 195,
+      render: (_, record) => <Switch checked={record.allow_dual_reconciliation ?? false} checkedChildren="允许" unCheckedChildren="关闭" loading={isLoading}
+        onChange={async (checked) => {
+          try {
+            await apiClient.dingtalk.updateTemplate(record.id, { allow_dual_reconciliation: checked });
+            message.success(checked ? "已开放双入口，同一审批单只能在其中一处匹配；历史归属不变" : "已关闭跨入口认领，已有匹配归属不变");
+            await loadTemplatesTab(true);
+          } catch (error) { message.error(error instanceof Error ? error.message : "更新失败"); }
+        }} />,
+    },
+    {
       key: "last_sync_at",
       title: "上次同步",
       dataIndex: "last_sync_at",
