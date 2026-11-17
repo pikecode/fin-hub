@@ -1,5 +1,6 @@
 "use client";
 
+import { bankApprovalOverage } from "../../lib/reconciliationWarnings";
 import { AccrualManagement } from "../../components/AccrualManagement";
 import { AccrualCoverageFields } from "../../components/AccrualCoverageFields";
 import { ApprovalChangeNoticePanel } from "../../components/ApprovalChangeNoticePanel";
@@ -9,6 +10,7 @@ import { ApprovalAccountingFields, accountingPayload, type AccountingFormValues 
 
 import {
   Alert,
+  Checkbox,
   Button,
   Card,
   Col,
@@ -86,6 +88,7 @@ interface CandidateFilters {
 }
 
 interface ConfirmValues extends AccountingFormValues {
+  confirm_bank_overage?: boolean;
   accrual_enabled?: boolean;
   accrual_original_id?: string;
   accrual_amount?: string;
@@ -431,6 +434,11 @@ export default function FinanceReconciliationPage() {
   );
   const bankRemaining = selectedTransaction ? remainingAmount(selectedTransaction) : 0;
   const defaultMatchAmount = selectedCandidate ? Math.min(bankRemaining, Number(selectedCandidate.remaining_amount || 0)) : bankRemaining;
+  const overageWarning = selectedTransaction && selectedCandidate ? bankApprovalOverage(
+    Number(selectedTransaction.amount), bankRemaining, Number(approvalTotalAmount(selectedCandidate)), Number(selectedCandidate.remaining_amount || 0),
+  ) : null;
+  useEffect(() => { confirmForm.setFieldValue("confirm_bank_overage", false); },
+    [confirmForm, selectedTransaction?.id, selectedCandidate?.expense_item.id, selectedTransaction?.amount, bankRemaining, selectedCandidate?.remaining_amount, selectedCandidate?.approval_instance?.total_expense_amount, selectedCandidate?.expense_item.amount]);
   const fallbackLedgerPeriod = useMemo(() => defaultLedgerPeriod(), []);
   const selectedLedgerPeriod = initialLedgerPeriod ?? fallbackLedgerPeriod;
   const selectedLedger = selectedStoreId ? ledgersByKey.get(`${selectedStoreId}|${selectedLedgerPeriod}`) : undefined;
@@ -1257,6 +1265,7 @@ export default function FinanceReconciliationPage() {
   async function submitConfirm(values: ConfirmValues) {
     if (!selectedTransaction || !selectedCandidate || !selectedStoreId) return;
     if (Number(selectedCandidate.remaining_amount || 0) <= 0) { setAccountingError("该审批单已匹配满，请查看已对账记录或选择其他审批单"); return; }
+    if (overageWarning && values.confirm_bank_overage !== true) { setAccountingError("银行流水金额超额，请先检查是否有流水匹配错误，并勾选核对确认"); return; }
     const requestedAmount = Number(values.amount || defaultMatchAmount.toFixed(2));
     if (!Number.isFinite(requestedAmount) || requestedAmount <= 0) { setAccountingError("匹配金额必须大于0，请检查审批单剩余金额"); return; }
     if (requestedAmount > Number(selectedCandidate.remaining_amount)) { setAccountingError("匹配金额不能超过审批单剩余可匹配金额"); return; }
@@ -2466,10 +2475,13 @@ export default function FinanceReconciliationPage() {
       >
         {accountingError ? <Alert type="error" showIcon message={accountingError} style={{marginBottom:12}} /> : null}
         {confirmDetailLoadError ? <Alert type="error" showIcon message={confirmDetailLoadError} /> : null}
-        {defaultMatchAmount > 0 && defaultMatchAmount < bankRemaining ? <Alert type="warning" showIcon style={{marginBottom:12}}
-          message={`审批单剩余可匹配 ${formatMoney(String(defaultMatchAmount))}，小于流水剩余 ${formatMoney(String(bankRemaining))}，本次默认按部分金额匹配。`}
-          description="请核对本次匹配金额。解除其他流水后，不会自动增加本笔已确认的匹配金额；如需补足，请编辑对应的已对账记录。" /> : null}
+        {overageWarning ? <Alert type="warning" showIcon style={{marginBottom:12}}
+          message={`银行流水金额已超额 ${formatMoney(String(overageWarning.excess))}，请检查是否有流水匹配错误`}
+          description={<><div>{overageWarning.kind === "remaining" ? "流水剩余金额" : "银行流水总额"}：{formatMoney(String(overageWarning.bank))}；{overageWarning.kind === "remaining" ? "审批单剩余可匹配金额" : "审批单总额"}：{formatMoney(String(overageWarning.approval))}。</div><div>请核对是否选错审批单、重复匹配或包含其他费用。确认无误才继续部分匹配；解除其他流水不会自动补足本笔已确认金额。</div></>} /> : null}
         <Form form={confirmForm} layout="vertical" onFinish={submitConfirm}>
+          {overageWarning ? <Form.Item name="confirm_bank_overage" valuePropName="checked" rules={[{ validator: (_, value) => value === true ? Promise.resolve() : Promise.reject(new Error("请先检查是否有流水匹配错误，并确认仅按本次填写金额匹配")) }]}>
+            <Checkbox>我已核对超额原因，确认流水及审批单无误，仅按本次填写金额匹配</Checkbox>
+          </Form.Item> : null}
           <div className="reconciliation-confirm-summary">
             <div className="reconciliation-confirm-summary__item">
               <Typography.Text type="secondary">银行流水</Typography.Text>
