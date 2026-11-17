@@ -89,6 +89,7 @@ interface CandidateFilters {
 
 interface ConfirmValues extends AccountingFormValues {
   confirm_bank_overage?: boolean;
+  paid_accounting?: boolean;
   accrual_enabled?: boolean;
   accrual_original_id?: string;
   accrual_amount?: string;
@@ -384,11 +385,13 @@ export default function FinanceReconciliationPage() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [filterForm] = Form.useForm<CandidateFilters>();
   const accountingRequestVersion = useRef(0);
-  const [confirmPlan, setConfirmPlan] = useState<{total:string; configured:boolean}>({total:'0',configured:false});
+  const [confirmPlan, setConfirmPlan] = useState<{total:string; configured:boolean; paidEnabled?:boolean; paidSupported?:boolean}>({total:'0',configured:false});
   const [editPlan, setEditPlan] = useState<{total:string; configured:boolean}>({total:'0',configured:false});
   const [editAccountingLoadError, setEditAccountingLoadError] = useState(false);
   const [accountingError, setAccountingError] = useState<string | null>(null);
   const [confirmForm] = Form.useForm<ConfirmValues>();
+  const confirmPaidAccounting = Form.useWatch("paid_accounting", confirmForm);
+  const confirmMultiAccounting = Form.useWatch("multi_accounting", confirmForm);
   const [editForm] = Form.useForm<EditValues>();
   const [kuailvForm] = Form.useForm<KuailvPurchaseValues>();
   const [majorExpenseVoucherForm] = Form.useForm<MajorExpenseVoucherValues>();
@@ -439,6 +442,11 @@ export default function FinanceReconciliationPage() {
   ) : null;
   useEffect(() => { confirmForm.setFieldValue("confirm_bank_overage", false); },
     [confirmForm, selectedTransaction?.id, selectedCandidate?.expense_item.id, selectedTransaction?.amount, bankRemaining, selectedCandidate?.remaining_amount, selectedCandidate?.approval_instance?.total_expense_amount, selectedCandidate?.expense_item.amount]);
+  useEffect(() => {
+    if (confirmMultiAccounting && !confirmPlan.paidEnabled && confirmPaidAccounting) {
+      confirmForm.setFieldsValue({ paid_accounting: false, amount: defaultMatchAmount.toFixed(2) });
+    }
+  }, [confirmMultiAccounting, confirmPlan.paidEnabled, confirmPaidAccounting, confirmForm, defaultMatchAmount]);
   const fallbackLedgerPeriod = useMemo(() => defaultLedgerPeriod(), []);
   const selectedLedgerPeriod = initialLedgerPeriod ?? fallbackLedgerPeriod;
   const selectedLedger = selectedStoreId ? ledgersByKey.get(`${selectedStoreId}|${selectedLedgerPeriod}`) : undefined;
@@ -1204,10 +1212,6 @@ export default function FinanceReconciliationPage() {
       message.warning("请先选择银行流水和审批单");
       return;
     }
-    if (Number(selectedCandidate.remaining_amount || 0) <= 0) {
-      message.warning("该审批单已匹配满，剩余可匹配金额为0。请查看已对账记录，核对是否选错审批单；如需更正，请先调整或解除原匹配。");
-      return;
-    }
     if (bankRemaining <= 0) { message.warning("该流水已无剩余可匹配金额，请刷新列表核对"); return; }
     const accountingRequest = ++accountingRequestVersion.current;
     setIsExpenseItemsLoading(false);
@@ -1231,10 +1235,12 @@ export default function FinanceReconciliationPage() {
       const [page, plan] = await Promise.all([fetchApprovalExpenseItems(approvalId), apiClient.matches.approvalAccounting(approvalId)]);
       if (accountingRequest !== accountingRequestVersion.current) return;
       setConfirmExpenseItems(page.items);
-      setConfirmPlan({ total: plan.approval_total, configured: plan.configured });
+      setConfirmPlan({ total: plan.approval_total, configured: plan.configured, paidEnabled: plan.paid_accounting === true, paidSupported: typeof plan.paid_accounting === "boolean" });
+      confirmForm.setFieldsValue({ paid_accounting: plan.paid_accounting === true,
+        amount: plan.paid_accounting ? bankRemaining.toFixed(2) : defaultMatchAmount.toFixed(2) });
       confirmForm.setFieldsValue({ multi_accounting: plan.allocations.length > 1, accounting_version: plan.version,
         accounting_allocations: plan.allocations.map((row) => ({ month: dayjs(row.period+'-01'), amount: row.amount })),
-        ...(plan.allocations[0] ? {accounting_month:dayjs(plan.allocations[0].period+'-01')} : {}),
+        ...(plan.allocations[0] ? {accounting_month:dayjs(plan.allocations[0].period+'-01')} : plan.paid_accounting_period ? {accounting_month:dayjs(plan.paid_accounting_period+'-01')} : {}),
       });
     } catch (error) {
       if (accountingRequest !== accountingRequestVersion.current) return;
@@ -1264,11 +1270,12 @@ export default function FinanceReconciliationPage() {
 
   async function submitConfirm(values: ConfirmValues) {
     if (!selectedTransaction || !selectedCandidate || !selectedStoreId) return;
-    if (Number(selectedCandidate.remaining_amount || 0) <= 0) { setAccountingError("该审批单已匹配满，请查看已对账记录或选择其他审批单"); return; }
-    if (overageWarning && values.confirm_bank_overage !== true) { setAccountingError("银行流水金额超额，请先检查是否有流水匹配错误，并勾选核对确认"); return; }
+    if (values.paid_accounting && (!confirmPlan.paidSupported || values.multi_accounting)) { setAccountingError("以实付金额入账仅支持单一审批入账月份，请核对账期设置"); return; }
+    if (!values.paid_accounting && Number(selectedCandidate.remaining_amount || 0) <= 0) { setAccountingError("该审批单已匹配满；如确认存在真实追加支付，请勾选以实付金额入账，否则请核对是否选错流水"); return; }
+    if (overageWarning && values.confirm_bank_overage !== true && values.paid_accounting !== true) { setAccountingError("银行流水金额超额，请先检查是否有流水匹配错误，并勾选核对确认"); return; }
     const requestedAmount = Number(values.amount || defaultMatchAmount.toFixed(2));
     if (!Number.isFinite(requestedAmount) || requestedAmount <= 0) { setAccountingError("匹配金额必须大于0，请检查审批单剩余金额"); return; }
-    if (requestedAmount > Number(selectedCandidate.remaining_amount)) { setAccountingError("匹配金额不能超过审批单剩余可匹配金额"); return; }
+    if (!values.paid_accounting && requestedAmount > Number(selectedCandidate.remaining_amount)) { setAccountingError("匹配金额不能超过审批单剩余可匹配金额"); return; }
     if (requestedAmount > bankRemaining) { setAccountingError("匹配金额不能超过银行流水剩余可匹配金额"); return; }
     const accountingPeriod = values.multi_accounting ? values.accounting_allocations?.[0]?.month?.format("YYYY-MM") : values.accounting_month?.format("YYYY-MM");
     if (!accountingPeriod) { setAccountingError("请选择入账月份"); return; }
@@ -1297,7 +1304,7 @@ export default function FinanceReconciliationPage() {
         if (!expenseItem) continue;
         await apiClient.expenseItems.update(expenseItem.id, categoryPayloadFromPath(draft.category_path));
       }
-      await apiClient.matches.confirm(match.id, "admin");
+      await apiClient.matches.confirm(match.id, "admin", values.paid_accounting === true);
       message.success("匹配已确认");
       setIsConfirmOpen(false);
       setConfirmExpenseItems([]);
@@ -2477,9 +2484,15 @@ export default function FinanceReconciliationPage() {
         {confirmDetailLoadError ? <Alert type="error" showIcon message={confirmDetailLoadError} /> : null}
         {overageWarning ? <Alert type="warning" showIcon style={{marginBottom:12}}
           message={`银行流水金额已超额 ${formatMoney(String(overageWarning.excess))}，请检查是否有流水匹配错误`}
-          description={<><div>{overageWarning.kind === "remaining" ? "流水剩余金额" : "银行流水总额"}：{formatMoney(String(overageWarning.bank))}；{overageWarning.kind === "remaining" ? "审批单剩余可匹配金额" : "审批单总额"}：{formatMoney(String(overageWarning.approval))}。</div><div>请核对是否选错审批单、重复匹配或包含其他费用。确认无误才继续部分匹配；解除其他流水不会自动补足本笔已确认金额。</div></>} /> : null}
+          description={<><div>{overageWarning.kind === "remaining" ? "流水剩余金额" : "银行流水总额"}：{formatMoney(String(overageWarning.bank))}；{overageWarning.kind === "remaining" ? "审批单剩余可匹配金额" : "审批单总额"}：{formatMoney(String(overageWarning.approval))}。</div><div>请核对是否选错审批单、重复匹配或包含其他费用。确认无误后，可选择以实付金额入账，或仅按审批剩余额度部分匹配；解除其他流水不会自动补足本笔已确认金额。</div></>} /> : null}
         <Form form={confirmForm} layout="vertical" onFinish={submitConfirm}>
-          {overageWarning ? <Form.Item name="confirm_bank_overage" valuePropName="checked" rules={[{ validator: (_, value) => value === true ? Promise.resolve() : Promise.reject(new Error("请先检查是否有流水匹配错误，并确认仅按本次填写金额匹配")) }]}>
+          {confirmPlan.paidSupported && selectedCandidate?.approval_instance?.id ? <Form.Item name="paid_accounting" valuePropName="checked"
+            extra="仅支持单一入账月份。勾选后整张审批单按累计已确认、已实付的匹配金额入账，多明细按原金额比例分摊。入账月份仍以审批为准，计提覆盖部分不重复计费。">
+            <Checkbox disabled={isSaving || isExpenseItemsLoading || confirmPlan.paidEnabled || confirmMultiAccounting === true} onChange={(event) => {
+              confirmForm.setFieldValue("amount", (event.target.checked ? bankRemaining : defaultMatchAmount).toFixed(2));
+            }}>以实付金额入账{confirmPlan.paidEnabled ? "（该审批单已启用）" : ""}</Checkbox>
+          </Form.Item> : null}
+          {overageWarning && !confirmPaidAccounting ? <Form.Item name="confirm_bank_overage" valuePropName="checked" rules={[{ validator: (_, value) => value === true ? Promise.resolve() : Promise.reject(new Error("请先检查是否有流水匹配错误，并确认仅按本次填写金额匹配")) }]}>
             <Checkbox>我已核对超额原因，确认流水及审批单无误，仅按本次填写金额匹配</Checkbox>
           </Form.Item> : null}
           <div className="reconciliation-confirm-summary">
@@ -2591,7 +2604,7 @@ export default function FinanceReconciliationPage() {
             </Spin>
           </div>
           <div className="reconciliation-confirm-fields">
-            <ApprovalAccountingFields approvalTotal={confirmPlan.total} configured={confirmPlan.configured} allowMultiple={Boolean(selectedCandidate?.approval_instance?.id)} disabled={isSaving || isExpenseItemsLoading} />
+            <ApprovalAccountingFields approvalTotal={confirmPlan.total} configured={confirmPlan.configured} allowMultiple={Boolean(selectedCandidate?.approval_instance?.id) && !confirmPaidAccounting} disabled={isSaving || isExpenseItemsLoading} />
             {selectedStoreId && selectedCandidate?.approval_instance?.id ? <AccrualCoverageFields storeId={selectedStoreId} /> : null}
             <Form.Item name="amount" label="匹配金额" rules={[{ required: true, message: "请输入匹配金额" }]}>
               <Input disabled />

@@ -65,7 +65,10 @@ def read_plan(session, approval_id):
             .order_by(ApprovalAccountingAllocation.period)
         )
     ]
+    paid_mode = session.get(ApprovalPaidAccounting, approval_id)
     return {
+        "paid_accounting": paid_mode is not None,
+        "paid_accounting_period": paid_mode.period if paid_mode else None,
         "approval_id": approval_id,
         "approval_total": str(
             sum((Decimal(i.amount) for i in items), Decimal(0)).quantize(Decimal(".01"))
@@ -541,6 +544,45 @@ def overlay_planned_expenses(
     from app.modules.accrual_accounting import overlay_reports
     return overlay_reports(session, [item for item in base_items if item.id not in owned_all] + additions, store_ids, period_start, period_end, aggregate=aggregate)
 
+
+def enable_paid_accounting(session, approval, actor, requested_period=None):
+    """Enable whole-approval paid accounting in the caller's transaction."""
+    from app.modules.accrual_accounting import ensure_approval_open
+
+    ensure_approval_open(session, approval)
+    if approval.expense_scope != "operating":
+        raise HTTPException(422, "仅支持日常费用审批单以实付金额入账")
+    items = approval_items(session, approval.id)
+    if not items or any(Decimal(i.amount) < 0 for i in items) or sum((Decimal(i.amount) for i in items), Decimal(0)) <= 0:
+        raise HTTPException(422, "审批金额必须为正，含负数明细时请先核对原始费用")
+    existing = session.get(ApprovalPaidAccounting, approval.id)
+    if existing:
+        if requested_period and requested_period != existing.period:
+            raise HTTPException(409, f"该审批单已确定在 {existing.period} 入账，本次匹配不能改入其他月份")
+        ensure_periods_open(session, items[0], [existing.period])
+        return existing
+    current = read_plan(session, approval.id)
+    if current["configured"] and len(current["allocations"]) != 1:
+        raise HTTPException(409, "实付金额入账仅支持单一入账月份，请先核对审批单账期分摊")
+    assignments = list(session.scalars(select(ExpenseBankMatch).where(
+        ExpenseBankMatch.expense_item_id.in_([i.id for i in items]),
+        ExpenseBankMatch.status == "confirmed", ExpenseBankMatch.expense_scope == "operating").order_by(
+            ExpenseBankMatch.confirmed_at.asc().nulls_last(), ExpenseBankMatch.created_at, ExpenseBankMatch.id)))
+    if not assignments:
+        raise HTTPException(409, "请先确认匹配银行流水")
+    period = current["allocations"][0]["period"] if current["configured"] else assignments[0].accounting_period
+    if not period:
+        raise HTTPException(409, "请先设置审批单入账月份")
+    if requested_period and requested_period != period:
+        raise HTTPException(409, f"该审批单已确定在 {period} 入账，本次匹配不能改入其他月份")
+    ensure_periods_open(session, items[0], [period])
+    mode = ApprovalPaidAccounting(approval_id=approval.id, period=period, updated_by=actor)
+    session.add(mode)
+    session.flush()
+    write_audit_log(session, actor=actor, action="approval.paid_accounting.update",
+        resource_type="approval_instance", resource_id=approval.id, summary="启用实付金额入账",
+        metadata={"before": False, "after": True, "period": period})
+    return mode
 
 def paid_item_amounts(session, approval_id, items):
     """Distribute confirmed real payments by original detail weights, to cents."""

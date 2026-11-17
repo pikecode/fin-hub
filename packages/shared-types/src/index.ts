@@ -1655,5 +1655,7 @@ export interface DividendOpeningUpdate {
 
 export interface AccountingAllocation { period: string; amount: string; }
 export interface ApprovalAccountingPlan {
+  paid_accounting?: boolean;
+  paid_accounting_period?: string | null;
   approval_id: string; approval_total: string; configured: boolean; version: number; allocations: AccountingAllocation[];
 }

@@ -559,8 +559,8 @@ export function createApiClient(options: ApiClientOptions) {
         request<ExpenseBankMatch>(`/api/matches/reconciliation/records/${id}/unmatch`, {
           method: "POST",
         }),
-      confirm: (id: string, operator = "admin") =>
-        request<ExpenseBankMatch>(`/api/matches/${id}/confirm?operator=${encodeURIComponent(operator)}`, {
+      confirm: (id: string, operator = "admin", paidAccounting = false) =>
+        request<ExpenseBankMatch>(`/api/matches/${id}/confirm?operator=${encodeURIComponent(operator)}${paidAccounting ? "&paid_accounting=true" : ""}`, {
           method: "POST",
         }),
       reject: (id: string) =>

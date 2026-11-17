@@ -1547,32 +1547,14 @@ def set_paid_accounting(approval_id: str, payload: PaidAccountingUpdate,
         if session.scalar(select(Ledger.id).where(Ledger.store_id == approval.store_id,
                 Ledger.period == existing.period, Ledger.status == "closed").with_for_update()):
             raise HTTPException(409, f"{existing.period} 已封账，不能改变实付入账方式")
-    plan = accounting.read_plan(session, approval_id)
-    items = accounting.approval_items(session, approval_id)
     if payload.enabled:
-        if approval.expense_scope != "operating" or not items or any(i.amount < 0 for i in items):
-            raise HTTPException(422, "仅支持金额为正的日常费用审批单")
-        assignments = list(session.scalars(select(ExpenseBankMatch).where(
-            ExpenseBankMatch.expense_item_id.in_([i.id for i in items]),
-            ExpenseBankMatch.status == "confirmed").order_by(
-                ExpenseBankMatch.confirmed_at.asc().nulls_last(), ExpenseBankMatch.created_at, ExpenseBankMatch.id)))
-        if not assignments:
-            raise HTTPException(409, "请先确认匹配银行流水")
-        if plan["configured"] and len(plan["allocations"]) != 1:
-            raise HTTPException(409, "审批单已设置多月份分摊，请先调整为单一入账月份再启用实付入账")
-        period = plan["allocations"][0]["period"] if plan["configured"] else assignments[0].accounting_period
-        if not period:
-            raise HTTPException(409, "请先设置审批单入账月份")
-        accounting.ensure_periods_open(session, items[0], [period])
-        if not existing:
-            session.add(ApprovalPaidAccounting(approval_id=approval_id, period=period, updated_by=audit_actor(current_user)))
+        accounting.enable_paid_accounting(session, approval, audit_actor(current_user))
     elif existing:
         session.delete(existing)
-    write_audit_log(session, actor=audit_actor(current_user), action="approval.paid_accounting.update",
-        resource_type="approval_instance", resource_id=approval_id,
-        summary="启用实付金额入账" if payload.enabled else "恢复审批金额入账",
-        metadata={"before": existing is not None, "after": payload.enabled,
-                  "period": existing.period if existing else (period if payload.enabled else None)})
+    if not payload.enabled:
+        write_audit_log(session, actor=audit_actor(current_user), action="approval.paid_accounting.update",
+            resource_type="approval_instance", resource_id=approval_id, summary="恢复审批金额入账",
+            metadata={"before": existing is not None, "after": False, "period": existing.period if existing else None})
     session.commit()
     return ApiEnvelope(data={"enabled": payload.enabled})
 
@@ -1904,6 +1886,7 @@ def unmatch_reconciliation_record(
 def confirm_match(
     match_id: str,
     operator: str = "system",
+    paid_accounting: bool = False,
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> ApiEnvelope[MatchRead]:
@@ -1927,6 +1910,10 @@ def confirm_match(
     if expense_item.store_id != bank_transaction.store_id:
         raise HTTPException(status_code=409, detail="Store mismatch")
     if match.status == MatchStatus.CONFIRMED.value:
+        if paid_accounting:
+            approval = accounting.approval_for_item(session, expense_item)
+            if not approval or not session.get(ApprovalPaidAccounting, approval.id):
+                raise HTTPException(409, "该匹配已确认；请通过审批单实付入账设置调整，或重新核对匹配")
         return ApiEnvelope(data=match)
     if match.status == MatchStatus.REJECTED.value:
         raise HTTPException(status_code=409, detail="Rejected match cannot be confirmed")
@@ -1936,6 +1923,8 @@ def confirm_match(
         raise HTTPException(409, "匹配候选已失效，请刷新后重新匹配")
     confirmed_expense_amount = confirmed_expense_match_amount(session, expense_item.id, exclude_match_id=match.id)
     confirmed_bank_amount = confirmed_bank_match_amount(session, bank_transaction.id, exclude_match_id=match.id)
+    if match.amount > Decimal(bank_transaction.amount) - confirmed_bank_amount:
+        raise HTTPException(409, "匹配金额超过银行流水剩余可匹配金额，请刷新后核对")
     ensure_approval_expense_category_selected(session, expense_item)
     accounting.apply_plan(session, match, expense_item, audit_actor(current_user, operator))
     match.status = MatchStatus.CONFIRMED.value
@@ -1951,6 +1940,16 @@ def confirm_match(
         try:
             apply_link(LinkCreate(**json.loads(match.accrual_coverage_json), approval_id=approval.id,
                 request_key=f"{match.id}:{uuid4().hex[:20]}"), session, current_user)
+        except Exception:
+            session.rollback()
+            raise
+    if paid_accounting:
+        session.flush()
+        approval = accounting.approval_for_item(session, expense_item)
+        try:
+            if approval is None:
+                raise HTTPException(422, "以实付金额入账需要关联审批单")
+            accounting.enable_paid_accounting(session, approval, audit_actor(current_user, operator), requested_period=match.accounting_period)
         except Exception:
             session.rollback()
             raise
@@ -1973,6 +1972,7 @@ def confirm_match(
             "expense_item_id": match.expense_item_id,
             "bank_transaction_id": match.bank_transaction_id,
             "amount": match.amount,
+            "paid_accounting_requested": paid_accounting,
         },
     )
     session.commit()
