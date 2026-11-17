@@ -2240,7 +2240,7 @@ export default function FinanceReconciliationPage() {
                         type="info"
                         showIcon
                         message="当前为审批编号检索结果"
-                        description="已匹配审批单也会展示，供核对历史记录；已匹配满的审批单不能再次匹配。"
+                        description="已匹配审批单也会展示，供核对历史记录；若确有追加实付，请核对超额原因并在确认时勾选“以实付金额入账”。"
                       />
                     ) : null}
 	                    <Spin spinning={isCandidateLoading}>
