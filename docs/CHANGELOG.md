@@ -21,6 +21,13 @@
 
 ## 2026-11-18
 
+### 重复明细、双入口及大图压缩生产发布（已完成）
+
+- 时间：2026-11-18 15:24（Asia/Shanghai），14:46开始，耗时约38分钟（含本机网络重试及浏览器验收）。范围：251ea69、60590a7、81db517，源码81db517；仅API和PC，无迁移/依赖变化，不涉及小程序重新编译。
+- 预检：SSH、HTTPS健康正常；内存可用1.7GiB，磁盘空余44GB。当前API deploy-20261117-match-paid，PC deploy-20261117-match-paid-r2，重启数均0。本地Linux/amd64构建，服务器只封装产物，不安装依赖/编译前端。
+- 分支work/20261118-deploy-01，前备份backup/20261118-deploy-01-before（81db517）；发布目录/opt/fin-hub/releases/deploy-20261118-voucher-dual，环境已备份env.before（权限600），旧镜像保留。新API/PC镜像均为deploy-20261118-voucher-dual，15:07切换，均running、重启数0；迁移保持20261116_0050。代码备份仅本地未推送，完成提交建立backup/20261118-deploy-01-after。失败仅恢复上述旧API/PC镜像，无数据库恢复及业务数据修改。
+- 验收：本地Linux/amd64构建及API编译通过；前端首次轻量封装因基线node权限失败，切换前加USER root清理旧产物并恢复node运行后成功。公网健康正常；生产服务器HTTPS验证login/finance-reconciliation/bank/dingtalk页面200及分别20/35/34/33个资源全部200。图中审批单以approval_only=true检索成功，重复检查返回具体记录；关键审批统计、实付模式与报表摘要发布前后完全一致。Chrome实际页面确认候选可见、模板页正常、无页面运行错误、业务写请求0。未在生产执行凭证上传或提交对账；图片压缩已在本地真实Chrome验证。本机Python HTTPS有EOF，改由服务器HTTPS完成完整资源验收，未关闭TLS校验。
+
 ### 计提凭证大图自动压缩及实付链路核对（开发完成，未部署）
 
 - 时间：2026-11-18 14:39（Asia/Shanghai），耗时约15分钟（估算）。需求：大于500KB计提图片允许自动压缩上传；匹配超额弹窗提醒、勾选实付后多明细比例分摊。
