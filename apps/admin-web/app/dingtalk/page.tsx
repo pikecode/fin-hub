@@ -3108,7 +3108,9 @@ export default function DingTalkPage() {
           } catch (error) { message.error(error instanceof Error ? error.message : "更新失败"); }
           finally { setIsLoading(false); }
         }}>
-        该模板下未匹配的审批单将进入{pendingExpenseScope?.enabled ? "筹建" : "日常"}费用流程，原有费用分类需要重新选择。已占用或已封账的单据会阻止此操作。
+        {pendingExpenseScope?.template.allow_dual_reconciliation
+          ? "已开启双入口：修改默认费用归属，尚未占用的审批单可从筹建或日常入口匹配；已匹配、已入账或已封账的单据保留原归属。"
+          : <>该模板下未匹配的审批单将进入{pendingExpenseScope?.enabled ? "筹建" : "日常"}费用流程，原有费用分类需要重新选择。已占用或已封账的单据会阻止此操作；如需保留历史归属，请先开启双入口。</>}
       </Modal>
     </AppShell>
   );

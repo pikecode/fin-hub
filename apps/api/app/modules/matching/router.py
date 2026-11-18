@@ -430,8 +430,6 @@ def approval_instance_response(
 
 def real_approval_candidate_filter():
     return (
-        ExpenseItem.expense_scope == "operating",
-        ApprovalInstance.expense_scope == "operating",
         ExpenseItem.source == "dingtalk",
         ApprovalInstance.id.is_not(None),
         or_(ApprovalInstance.approval_status.is_(None), ~func.lower(ApprovalInstance.approval_status).in_(["terminated", "canceled", "cancelled", "cancel", "withdrawn", "refuse", "reject", "rejected", "refused", "deny", "return", "returned", "退回", "撤销", "已撤销"])),

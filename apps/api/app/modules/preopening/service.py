@@ -61,9 +61,26 @@ def ensure_operating(session: Session, expense: ExpenseItem, bank: BankTransacti
 
 
 def change_template_scope(session: Session, template: ApprovalTemplate, enabled: bool):
+    from app.modules.bank.unpaid import mutation_lock
+
+    mutation_lock(session)
     session.scalar(
         select(ApprovalTemplate).where(ApprovalTemplate.id == template.id).with_for_update()
     )
+    if template.allow_dual_reconciliation:
+        # Changing the default must not move approvals already claimed by either entry.
+        from app.modules.preopening.eligibility import claim_scope, dual_unclaimed
+
+        target = "preopening" if enabled else "operating"
+        approvals = session.scalars(
+            select(ApprovalInstance)
+            .where(ApprovalInstance.template_id == template.id, dual_unclaimed())
+            .order_by(ApprovalInstance.id)
+            .with_for_update()
+        ).all()
+        for approval in approvals:
+            claim_scope(session, approval.id, target)
+        return
     store_ids = list(
         session.scalars(
             select(ApprovalInstance.store_id)

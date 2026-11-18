@@ -276,3 +276,54 @@ def test_invalid_switch_rejected_without_scope_change(client, session):
     assert response.status_code == 422
     assert template.allow_dual_reconciliation is False
     assert approval.expense_scope == "operating"
+
+
+def test_pc_real_approval_filter_respects_dual_entry(client, session):
+    store, template, approval, items, banks = setup(session)
+    client.patch(f"/api/dingtalk/templates/{template.id}", json={"is_preopening_expense": True})
+    enable(client, template)
+    url = f"/api/matches/reconciliation/candidates?store_id={store.id}&bank_transaction_id={banks[0].id}&approval_only=true&compact=true&approval_no=TEST-001"
+    response = client.get(url)
+    assert response.status_code == 200, response.text
+    assert len(response.json()["data"]["candidates"]) == 1
+    assert approval.expense_scope == "preopening", "candidate reads must not claim"
+    session.add(ExpenseBankMatch(expense_item_id=items[0].id, bank_transaction_id=banks[1].id,
+        amount=Decimal("100"), status="confirmed", expense_scope="preopening"))
+    session.commit()
+    assert client.get(url).json()["data"]["candidates"] == []
+
+
+def test_dual_default_switch_preserves_claimed_approvals(client, session):
+    store, template, approval, items, banks = setup(session)
+    enable(client, template)
+    session.add(ExpenseBankMatch(expense_item_id=items[0].id, bank_transaction_id=banks[0].id,
+        amount=Decimal("100"), status="confirmed", expense_scope="operating"))
+    session.commit()
+    response = client.patch(f"/api/dingtalk/templates/{template.id}", json={"is_preopening_expense": True})
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["is_preopening_expense"] is True
+    assert approval.expense_scope == "operating"
+    assert all(item.expense_scope == "operating" for item in items)
+    assert session.scalar(select(ExpenseBankMatch.amount)) == Decimal("100")
+
+
+def test_dual_default_switch_keeps_closed_history_and_moves_free_approval(client, session):
+    from app.models import ApprovalInstance, ExpenseItem
+
+    store, template, approval, items, banks = setup(session)
+    enable(client, template)
+    other = ApprovalInstance(template_id=template.id, store_id=store.id,
+        dingtalk_instance_id="free-dual-approval", approval_status="agree")
+    session.add(other)
+    session.flush()
+    free = ExpenseItem(store_id=store.id, approval_instance_id=other.id,
+        source="dingtalk", source_document_id="free-dual-approval", description="待认领费用", amount=Decimal("50"),
+        ledger_period="2026-09", expense_scope="operating")
+    session.add_all([free, Ledger(store_id=store.id, period="2026-08", status="closed")])
+    session.commit()
+    r = client.patch(f"/api/dingtalk/templates/{template.id}", json={"is_preopening_expense": True})
+    assert r.status_code == 200, r.text
+    assert approval.expense_scope == "operating"
+    assert all(item.expense_scope == "operating" for item in items)
+    assert other.expense_scope == "preopening"
+    assert free.expense_scope == "preopening"
