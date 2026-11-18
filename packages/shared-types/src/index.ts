@@ -614,6 +614,7 @@ export interface BankTransactionBatchCreateResult {
 }
 
 export interface BankTransactionDuplicateCheckResult {
+  duplicate_details?: { index: number; earlier_indices: number[]; existing_records: Pick<BankTransaction, "id" | "store_id" | "occurred_at" | "direction" | "amount" | "counterparty_name" | "summary" | "bank_serial_no" | "is_archived">[] }[];
   duplicate_indices: number[];
   duplicate_count: number;
 }

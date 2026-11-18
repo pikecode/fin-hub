@@ -1,5 +1,7 @@
 "use client";
 import { collectBankExport, bankExportCsv } from "./export";
+import { DuplicateDetails } from "./DuplicateDetails";
+import type { ReactNode } from "react";
 import { StoreLoans } from "../components/StoreLoans";
 
 import { Alert, Button, Card, Checkbox, DatePicker, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Statistic, Table, Tabs, Tag, Upload, Typography, message } from "antd";
@@ -23,11 +25,12 @@ import type {
   BankImportPreviewRow,
   BankImportPreviewResult,
   BankImportRowError,
+  BankTransactionCreate,
+  BankTransactionDuplicateCheckResult,
   BankBalance,
   BankBalanceCorrection,
   BankBalanceCorrectionCreate,
   BankTransaction,
-  BankTransactionCreate,
   BankTransactionSummary,
   Ledger,
   Store,
@@ -417,7 +420,7 @@ export default function BankPage() {
     duplicatesConfirmed: boolean;
   } | null>(null);
   const [pendingDuplicateConfirm, setPendingDuplicateConfirm] = useState<{
-    content: string;
+    content: ReactNode;
     okText: string;
     onConfirm: () => void;
   } | null>(null);
@@ -727,7 +730,7 @@ export default function BankPage() {
         const duplicateCheck = await apiClient.bankTransactions.checkDuplicates({ items: [payload] });
         if (duplicateCheck.duplicate_count > 0) {
           openDuplicateTransactionConfirm(
-            "已有发生日期、对方户名和金额均相同的流水。仍要导入这笔流水吗？",
+            duplicateDetails("已有疑似重复流水，请核对以下明细。", [payload], duplicateCheck),
             () => void submitTransaction(values, specialConfirmed, true),
           );
           return;
@@ -764,7 +767,7 @@ export default function BankPage() {
         } catch (error) {
           if (!duplicatesConfirmed && isDuplicateConflict(error)) {
             openDuplicateTransactionConfirm(
-              "已有发生日期、对方户名和金额均相同的流水。仍要导入这笔流水吗？",
+              duplicateDetails("已有疑似重复流水，请核对明细。", [payload], await apiClient.bankTransactions.checkDuplicates({ items: [payload] })),
               () => void submitTransaction(values, specialConfirmed, true),
             );
             return;
@@ -795,7 +798,11 @@ export default function BankPage() {
     }
   }
 
-  function openDuplicateTransactionConfirm(content: string, onConfirm: () => void, okText = "仍然导入") {
+  function duplicateDetails(message: string, items: BankTransactionCreate[], check: BankTransactionDuplicateCheckResult, rowNumbers = items.map((_, index) => index + 1)) {
+    return <DuplicateDetails message={message} rowNumbers={rowNumbers} rows={check.duplicate_indices.map(index => ({ ...items[index], row_number: rowNumbers[index], detail: check.duplicate_details?.find(detail => detail.index === index) }))} />;
+  }
+
+  function openDuplicateTransactionConfirm(content: ReactNode, onConfirm: () => void, okText = "仍然导入") {
     setPendingDuplicateConfirm({ content, okText, onConfirm });
   }
 
@@ -893,7 +900,7 @@ export default function BankPage() {
         const duplicateCheck = await apiClient.bankTransactions.checkDuplicates({ items: batch });
         if (duplicateCheck.duplicate_count > 0) {
           openDuplicateTransactionConfirm(
-            `有 ${duplicateCheck.duplicate_count} 条流水与已有流水或本次录入的其他流水日期、对方户名和金额相同。仍要继续导入吗？`,
+            duplicateDetails(`有 ${duplicateCheck.duplicate_count} 条疑似重复流水，请核对以下明细。`, batch, duplicateCheck, nonEmptyRows.map(row => entryRows.indexOf(row) + 1)),
             () => void submitEntryBatch(values, true),
           );
           return;
@@ -907,7 +914,7 @@ export default function BankPage() {
       } catch (error) {
         if (!duplicatesConfirmed && isDuplicateConflict(error)) {
           openDuplicateTransactionConfirm(
-            "有流水的日期、对方户名和金额与已有记录一致。仍要继续导入吗？",
+            duplicateDetails("有疑似重复流水，请核对明细。", batch, await apiClient.bankTransactions.checkDuplicates({ items: batch }), nonEmptyRows.map(row => entryRows.indexOf(row) + 1)),
             () => void submitEntryBatch(values, true),
           );
           return;
@@ -1013,10 +1020,15 @@ export default function BankPage() {
       return;
     }
     if (importPreview.duplicate_count > 0 && !duplicatesConfirmed) {
+      try {
+      const previewItems: BankTransactionCreate[] = importPreview.preview_rows.map(row => ({...row, store_id: storeId, ledger_period: row.occurred_at.slice(0, 7), direction: row.direction as "income" | "expense", payment_status: "paid"}));
+      const check = await apiClient.bankTransactions.checkDuplicates({ items: previewItems });
+      if (!check.duplicate_count) { message.info("重复状态已变化，请重新预览文件后再导入"); return; }
       openDuplicateTransactionConfirm(
-        `导入文件中有 ${importPreview.duplicate_count} 条流水与已有流水或文件内其他流水日期、对方户名和金额相同。仍要继续导入吗？`,
+        duplicateDetails("文件中的重复流水如下，行号对应导入文件。", previewItems, check, importPreview.preview_rows.map(row => row.row_number)),
         () => void confirmImport(true),
       );
+      } catch (error) { message.error(error instanceof Error ? error.message : "重复检查失败，请重试"); }
       return;
     }
     setIsLoading(true);
@@ -1736,6 +1748,7 @@ export default function BankPage() {
 
       <Modal
         title="发现重复流水"
+        width={1100}
         open={Boolean(pendingDuplicateConfirm)}
         okText={pendingDuplicateConfirm?.okText ?? "仍然导入"}
         cancelText="取消"
@@ -1746,9 +1759,7 @@ export default function BankPage() {
           onConfirm?.();
         }}
       >
-        <Typography.Paragraph style={{ marginBottom: 0 }}>
-          {pendingDuplicateConfirm?.content}
-        </Typography.Paragraph>
+        <div>{pendingDuplicateConfirm?.content}</div>
       </Modal>
 
       <Modal

@@ -1,6 +1,6 @@
 from datetime import UTC, date, datetime
 from decimal import Decimal
-from typing import Generic, TypeVar
+from typing import Any, Generic, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -653,6 +653,7 @@ class BankTransactionBatchCreateResult(BaseModel):
 
 
 class BankTransactionDuplicateCheckResult(BaseModel):
+    duplicate_details: list[dict[str, Any]] = Field(default_factory=list)
     duplicate_indices: list[int]
     duplicate_count: int
 

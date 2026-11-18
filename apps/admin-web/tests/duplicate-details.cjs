@@ -1,0 +1,18 @@
+const assert=require('node:assert/strict');
+const fs=require('node:fs');
+const path=require('node:path');
+const ts=require('typescript');
+const React=require('react');
+const {renderToStaticMarkup}=require('react-dom/server');
+const moduleExports={};
+new Function('require','exports',ts.transpileModule(fs.readFileSync(path.join(__dirname,'../app/bank/DuplicateDetails.tsx'),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX,target:ts.ScriptTarget.ES2020}}).outputText)(require,moduleExports);
+const {DuplicateDetails}=moduleExports;
+const rows=[{row_number:8,occurred_at:'2026-10-27T12:00:00',direction:'expense',amount:'300.00',counterparty_name:'供应商',summary:'本次备注',detail:{index:1,earlier_indices:[0],existing_records:[{id:'existing-id',store_id:'store-id',occurred_at:'2026-10-27',direction:'expense',amount:'300.00',summary:'原记录备注',bank_serial_no:'serial-1'}]}}];
+const html=renderToStaticMarkup(React.createElement(DuplicateDetails,{message:'疑似重复',rows,rowNumbers:[3,8]}));
+const text=html.replace(/<[^>]*>/g,'');
+assert.ok(text.includes('与本批第 3 行重复'));
+for(const value of ['录入行号','8','2026-10-27','供应商','300.00','本次备注','原记录备注','serial-1'])assert.ok(text.includes(value),value);
+assert.ok(html.includes('/bank?store_id=store-id&amp;transaction_id=existing-id'));
+const fallback=renderToStaticMarkup(React.createElement(DuplicateDetails,{message:'重复',rows:[{...rows[0],detail:undefined}]}));
+assert.ok(fallback.includes('与已有流水或本批其他行重复'));
+console.log('Duplicate UI: original row numbers with blank rows, existing link, amount/summary/source and old API fallback passed.');

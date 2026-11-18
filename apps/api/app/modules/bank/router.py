@@ -535,11 +535,12 @@ def check_bank_transaction_duplicates(
     ensure_permission(session, current_user, "reconciliation.manage")
     for item in payload.items:
         ensure_store_access(session, current_user, item.store_id)
-    duplicate_indices = find_bank_transaction_duplicate_indices(session, payload.items)
+    duplicate_indices, duplicate_details = find_bank_transaction_duplicates(session, payload.items)
     return ApiEnvelope(
         data=BankTransactionDuplicateCheckResult(
             duplicate_indices=duplicate_indices,
             duplicate_count=len(duplicate_indices),
+            duplicate_details=duplicate_details,
         )
     )
 
@@ -550,6 +551,10 @@ def find_bank_transaction_duplicate_indices(
     *,
     exclude_transaction_id: str | None = None,
 ) -> list[int]:
+    return find_bank_transaction_duplicates(session, items, exclude_transaction_id=exclude_transaction_id)[0]
+
+
+def find_bank_transaction_duplicates(session, items, *, exclude_transaction_id=None):
     predicates = []
     draft_keys: list[tuple[str, object, str, Decimal]] = []
     for item in items:
@@ -571,6 +576,7 @@ def find_bank_transaction_duplicate_indices(
         draft_keys.append(
             (item.store_id, occurred_date, (item.counterparty_name or "").strip(), item.amount)
         )
+    matches = []
     existing_keys: set[tuple[str, object, str, Decimal]] = set()
     if predicates:
         matches = session.scalars(select(BankTransaction).where(or_(*predicates))).all()
@@ -584,14 +590,20 @@ def find_bank_transaction_duplicate_indices(
             for transaction in matches
         }
 
-    seen_keys: set[tuple[str, object, str, Decimal]] = set()
+    seen = {}
     duplicate_indices = []
+    details = []
+    existing = {}
+    for transaction in matches:
+        key = (transaction.store_id, transaction.occurred_at.date(), (transaction.counterparty_name or "").strip(), Decimal(transaction.amount))
+        existing.setdefault(key, []).append({field: getattr(transaction, field) for field in [
+            "id", "store_id", "occurred_at", "direction", "amount", "counterparty_name", "summary", "bank_serial_no", "is_archived"]})
     for index, key in enumerate(draft_keys):
-        if key in existing_keys or key in seen_keys:
+        if key in existing_keys or key in seen:
             duplicate_indices.append(index)
-        seen_keys.add(key)
-
-    return duplicate_indices
+            details.append({"index": index, "earlier_indices": list(seen.get(key, [])), "existing_records": existing.get(key, [])})
+        seen.setdefault(key, []).append(index)
+    return duplicate_indices, details
 
 
 @router.get("/import/template.csv")
