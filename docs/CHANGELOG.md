@@ -21,10 +21,12 @@
 
 ## 2026-11-22
 
-### 实付改月同步API生产发布（进行中）
+### 实付改月同步API生产发布（已完成）
 
-- 时间：2026-11-22 21:02（Asia/Shanghai），耗时发布后更新。源码f6fe8c6，仅matching/accounting.py和router.py，无依赖/数据库迁移；本地27项回归已通过。
+- 时间：2026-11-22 21:16（Asia/Shanghai），约21:01开始，耗时约15分钟。源码f6fe8c6，仅matching/accounting.py和router.py，无依赖/数据库迁移；本地27项回归已通过。
 - 预检：SSH、HTTPS健康正常，可用内存1.6GiB、磁盘44GB；API基线deploy-20261118-voucher-dual，运行正常重启0。本次仅API，PC/小程序不变。
+- 发布：新API镜像fin-hub-api:deploy-20261122-paid-period，21:06切换，运行正常、重启0；旧镜像和env.before（权限600）保留。迁移保持20261116_0050，PC容器ID前后一致。
+- 验收：镜像Python编译及新函数加载校验通过；公网健康、登录及认证入账方案接口200。南京单实付与匹配月份均10月，9月费用0、10月23113.50，before.json/after.json完全一致；未提交测试匹配，无业务数据变更。完成记录另存backup/20261122-paid-deploy-01-verified-after，已有备份不移动。
 - 分支work/20261122-paid-deploy-01，前备份backup/20261122-paid-deploy-01-before（f6fe8c6）；发布目录/opt/fin-hub/releases/deploy-20261122-paid-period。备份环境配置与旧API镜像，失败仅恢复旧API镜像；不撤销已纠正的10月业务记录、不恢复数据库。代码备份仅本地，未推送。
 
 
