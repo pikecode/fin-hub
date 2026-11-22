@@ -1770,10 +1770,11 @@ def update_reconciliation_record(
         approval = accounting.approval_for_item(session, target_expense)
         if approval and accounting.read_plan(session, approval.id)['configured']:
             raise HTTPException(409, "审批单使用账期分配，请在入账方案中修改各月份和金额")
-    accounting.apply_plan(session, match, target_expense, audit_actor(current_user))
+    accounting.apply_plan(session, match, target_expense, audit_actor(current_user), allow_paid_period_change=True)
     match.expense_item_id = target_expense.id
     match.amount = target_amount
     match.accounting_period = target_period
+    accounting.sync_paid_accounting_period(session, target_expense, target_period, audit_actor(current_user))
     if "bank_occurred" in updates:
         match.bank_occurred = updates["bank_occurred"]
     if "reason" in updates:

@@ -185,3 +185,52 @@ def test_paid_checkbox_cannot_move_existing_approval_to_payment_month(client, se
     session.expire_all()
     assert session.get(ExpenseBankMatch, mid).status == "candidate"
     assert session.get(ApprovalPaidAccounting, approval.id) is None
+
+
+def test_edit_paid_month_moves_whole_approval_and_report(client, session):
+    store, approval, items, banks = salary_fixture(client, session, lines=True)
+    for bank in banks:
+        bank.payment_status = "paid"
+    session.commit()
+    first = create(client, items[0], banks[0])
+    assert client.post(f"/api/matches/{first}/confirm?paid_accounting=true").status_code == 200
+    second = create(client, items[1], banks[1])
+    assert client.post(f"/api/matches/{second}/confirm?paid_accounting=true").status_code == 200
+    total = sum(row[3] for row in rows(session, store, "2026-09"))
+    r = client.patch(f"/api/matches/reconciliation/records/{first}", json={"accounting_period": "2026-10"})
+    assert r.status_code == 200, r.text
+    assert session.get(ApprovalPaidAccounting, approval.id).period == "2026-10"
+    assert all(session.get(ExpenseBankMatch, mid).accounting_period == "2026-10" for mid in [first, second])
+    assert rows(session, store, "2026-09") == []
+    assert sum(row[3] for row in rows(session, store, "2026-10")) == total
+
+
+def test_edit_paid_month_cannot_move_into_closed_month(client, session):
+    store, approval, items, banks = salary_fixture(client, session)
+    banks[0].payment_status = "paid"
+    session.commit()
+    mid = create(client, items[0], banks[0])
+    assert client.post(f"/api/matches/{mid}/confirm?paid_accounting=true").status_code == 200
+    ledger = session.scalar(select(Ledger).where(Ledger.store_id == store, Ledger.period == "2026-10"))
+    ledger.status = "closed"
+    session.commit()
+    r = client.patch(f"/api/matches/reconciliation/records/{mid}", json={"accounting_period":"2026-10"})
+    assert r.status_code == 409, r.text
+    session.expire_all()
+    assert session.get(ApprovalPaidAccounting, approval.id).period == "2026-09"
+    assert session.get(ExpenseBankMatch, mid).accounting_period == "2026-09"
+
+
+def test_paid_month_edit_using_single_allocation(client, session):
+    store, approval, items, banks = salary_fixture(client, session)
+    banks[0].payment_status = "paid"
+    session.commit()
+    mid = create(client, items[0], banks[0])
+    assert client.post(f"/api/matches/{mid}/confirm?paid_accounting=true").status_code == 200
+    r = client.patch(f"/api/matches/reconciliation/records/{mid}", json={
+        "accounting_allocations": [{"period":"2026-10","amount":str(items[0].amount)}],
+        "accounting_version":0})
+    assert r.status_code == 200, r.text
+    assert session.get(ApprovalPaidAccounting, approval.id).period == "2026-10"
+    assert session.get(ExpenseBankMatch, mid).accounting_period == "2026-10"
+    assert rows(session, store, "2026-09") == []

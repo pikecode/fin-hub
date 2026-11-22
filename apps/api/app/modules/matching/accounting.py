@@ -172,7 +172,7 @@ def ensure_periods_open(session, item, periods=()):
         raise HTTPException(409, f"{closed.period} 账期已封账，不能调整入账或解除匹配")
 
 
-def apply_plan(session, match, item, actor):
+def apply_plan(session, match, item, actor, *, allow_paid_period_change=False):
     if item.parse_status == "source_removed":
         raise HTTPException(409, "该审批明细已被撤回或移除，请刷新审批单后重新匹配")
     approval = approval_for_item(session, item)
@@ -185,9 +185,11 @@ def apply_plan(session, match, item, actor):
         ensure_periods_open(session, item)
         if match.accounting_allocations_json:
             proposed = json.loads(match.accounting_allocations_json)
+            if len(proposed) != 1:
+                raise HTTPException(409, "实付金额入账仅支持单一入账月份")
             mode = session.get(ApprovalPaidAccounting, approval.id)
-            if len(proposed) != 1 or proposed[0]["period"] != mode.period:
-                raise HTTPException(409, "请先关闭实付金额入账，再修改审批单入账月份")
+            if proposed[0]["period"] != mode.period and not allow_paid_period_change:
+                raise HTTPException(409, "请在已对账记录中编辑整单入账月份，新增匹配不能另设月份")
     has_confirmed = session.scalar(
         select(ExpenseBankMatch.id)
         .where(
@@ -611,3 +613,31 @@ def paid_item_amounts(session, approval_id, items):
     for key in sorted(weights, key=lambda key: (-(weights[key] * cents % total), key))[:cents - sum(shares.values())]:
         shares[key] += 1
     return {key: Decimal(value) / 100 for key, value in shares.items()}
+
+
+def sync_paid_accounting_period(session, item, period, actor):
+    """An explicit match edit moves the whole paid approval, never its bank date."""
+    approval = approval_for_item(session, item)
+    mode = session.get(ApprovalPaidAccounting, approval.id) if approval else None
+    if mode is None:
+        return
+    allocations = read_plan(session, approval.id)["allocations"]
+    if allocations:
+        if len(allocations) != 1:
+            raise HTTPException(409, "实付金额入账仅支持单一入账月份")
+        period = allocations[0]["period"]
+    ensure_periods_open(session, item, [period])
+    before = mode.period
+    mode.period = period
+    mode.updated_by = actor
+    mode.updated_at = utc_now()
+    for related in session.scalars(select(ExpenseBankMatch).where(
+        ExpenseBankMatch.expense_item_id.in_([e.id for e in approval_items(session, approval.id)]),
+        ExpenseBankMatch.status == "confirmed", ExpenseBankMatch.expense_scope == "operating",
+    )):
+        related.accounting_period = period
+    if before != period:
+        write_audit_log(session, actor=actor, action="approval.paid_accounting.period.update",
+            resource_type="approval_instance", resource_id=approval.id,
+            summary="按保存的匹配入账月份同步整单实付账期",
+            metadata={"before": before, "after": period})
