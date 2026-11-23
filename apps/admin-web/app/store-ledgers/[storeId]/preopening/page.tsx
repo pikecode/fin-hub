@@ -166,6 +166,8 @@ export default function PreopeningPage() {
   const [candidates, setCandidates] = useState<Approval[]>([]),
     [candidateLoading, setCandidateLoading] = useState(false),
     [approvalSearch, setApprovalSearch] = useState("");
+  const [activeTab, setActiveTab] = useState("report");
+  const [matchedSearch, setMatchedSearch] = useState("");
   const [isConfirmOpen, setIsConfirmOpen] = useState(false);
   const [selectedItemIds, setSelectedItemIds] = useState<string[]>([]);
   const [candidatePage, setCandidatePage] = useState(1);
@@ -390,6 +392,8 @@ export default function PreopeningPage() {
         }
       >
         <Tabs
+          activeKey={activeTab}
+          onChange={setActiveTab}
           items={[
             {
               key: "report",
@@ -619,6 +623,22 @@ export default function PreopeningPage() {
                             setApprovalSearch(event.target.value);
                             setCandidatePage(1);
                           }}
+                          onSearch={(value) => {
+                            const keyword = value.trim();
+                            setApprovalSearch(keyword);
+                            setCandidatePage(1);
+                            if (!keyword) return;
+                            const ids = new Set((data?.approvals ?? []).filter(a => a.approval_no?.includes(keyword)).map(a => a.id));
+                            if ((data?.matches ?? []).some(m => ids.has(m.approval_id))) {
+                              setMatchedSearch(keyword);
+                              setActiveTab("matched");
+                              message.info("该审批单已有匹配记录，已定位；仍需追加匹配时请返回候选并选择流水");
+                            } else if (!bank) {
+                              message.info("请先选择左侧银行流水，再搜索可匹配审批单");
+                            } else if (!candidates.some(a => a.approval_no?.includes(keyword))) {
+                              message.info("未找到可匹配审批单，请核对编号、门店及费用归属");
+                            }
+                          }}
                           style={{ marginBottom: 16, maxWidth: 320 }}
                         />
                         <Spin spinning={candidateLoading}>
@@ -771,10 +791,13 @@ export default function PreopeningPage() {
               key: "matched",
               label: `已匹配记录（${data?.matches.length ?? 0}）`,
               children: (
+                  <div>
+                  <Input.Search placeholder="搜索已匹配审批编号" allowClear value={matchedSearch}
+                    onChange={e => setMatchedSearch(e.target.value)} style={{ marginBottom: 16, maxWidth: 320 }} />
                   <Table
                     rowKey="id"
                     loading={loading}
-                    dataSource={data?.matches ?? []}
+                    dataSource={(data?.matches ?? []).filter(m => !matchedSearch.trim() || data?.approvals.find(a => a.id === m.approval_id)?.approval_no?.includes(matchedSearch.trim()))}
                     scroll={{ x: 1000 }}
                     columns={[
                       {
@@ -832,6 +855,7 @@ export default function PreopeningPage() {
                       },
                     ]}
                   />
+                  </div>
               ),
             },
           ]}
