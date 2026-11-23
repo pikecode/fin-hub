@@ -19,6 +19,16 @@
 13. 提交前对照全部 git diff 及新增/删除文件核对记录，写明问题、影响范围、实际验证、未完成项、工作分支和备份点；已有提交或发布版本一并关联，禁止编造耗时或验证结果。
 14. 简单改动只维护本文件；复杂方案另建日期前缀文档并在此链接。记录状态必须区分开发完成、已提交、已推送、已部署及已验收。
 
+## 2026-11-24
+
+### 筹建搜索PC生产发布（已完成）
+
+- 时间：2026-11-24 00:15（Asia/Shanghai），23日23:59开始预检，耗时约16分钟。源码258e5cb；仅PC筹建搜索交互，API与数据库不变。
+- 预检：SSH、HTTPS健康正常，可用内存1.6GiB、磁盘43GB。PC基线deploy-20261118-voucher-dual，API deploy-20261122-paid-period。本地Linux/amd64构建；服务器只封装产物。
+- 分支work/20261123-search-deploy-01，前备份backup/20261123-search-deploy-01-before（258e5cb）；跨午夜沿用已建立分支。发布目录/opt/fin-hub/releases/deploy-20261124-preopening-search；保留旧PC镜像和env.before，失败仅恢复PC，不恢复数据库。未推送，备份仅本地。
+- 发布：PC镜像fin-hub-admin-web:deploy-20261124-preopening-search，00:10切换，running、重启0；API容器ID发布前后一致，未修改数据库/业务数据。env.before权限600及旧镜像保留，本地Linux/amd64生产构建通过，上传排除缓存和standalone。
+- 验收：公网健康正常，登录和南京门店筹建页200，分别20/31个JS/CSS资源全部200。只读Chrome使用真实编号202609241609000262970搜索，验证切换到对应已匹配记录、清空后恢复另一笔记录；页面运行错误0、业务写请求0。服务器发布目录保存assets-check.json及browser-check.log；未测试生产写操作。完成提交创建backup/20261123-search-deploy-01-after；无需小程序编译。
+
 ## 2026-11-23
 
 ### 筹建候选搜索反馈与已匹配定位（开发完成，未部署）
