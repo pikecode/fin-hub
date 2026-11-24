@@ -327,3 +327,19 @@ def test_dual_default_switch_keeps_closed_history_and_moves_free_approval(client
     assert all(item.expense_scope == "operating" for item in items)
     assert other.expense_scope == "preopening"
     assert free.expense_scope == "preopening"
+
+
+def test_dormant_paid_mode_after_unmatch_can_cross_entry(client, session):
+    from app.models import ApprovalPaidAccounting
+    store, template, approval, items, banks = setup(session)
+    enable(client, template)
+    session.add(ApprovalPaidAccounting(approval_id=approval.id, period="2026-08", updated_by="admin"))
+    session.add(ExpenseBankMatch(expense_item_id=items[0].id, bank_transaction_id=banks[0].id,
+        amount=Decimal("100"), status="rejected", expense_scope="operating"))
+    session.commit()
+    result = client.get(f"/api/preopening/stores/{store.id}")
+    assert any(a["id"] == approval.id for a in result.json()["data"]["approvals"])
+    claim_scope(session, approval.id, "preopening")
+    session.flush()
+    assert approval.expense_scope == "preopening"
+    assert session.get(ApprovalPaidAccounting, approval.id) is None

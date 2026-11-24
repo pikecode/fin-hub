@@ -168,6 +168,7 @@ export default function PreopeningPage() {
     [approvalSearch, setApprovalSearch] = useState("");
   const [activeTab, setActiveTab] = useState("report");
   const [matchedSearch, setMatchedSearch] = useState("");
+  const searchableApprovals = bank ? candidates : approvalSearch.trim() ? (data?.approvals ?? []) : [];
   const [isConfirmOpen, setIsConfirmOpen] = useState(false);
   const [selectedItemIds, setSelectedItemIds] = useState<string[]>([]);
   const [candidatePage, setCandidatePage] = useState(1);
@@ -231,7 +232,6 @@ export default function PreopeningPage() {
     let ignore = false;
     setCandidateLoading(true);
     setCandidates([]);
-    setApprovalSearch("");
     setCandidatePage(1);
     apiClient
       .request<Approval[]>(
@@ -634,7 +634,11 @@ export default function PreopeningPage() {
                               setActiveTab("matched");
                               message.info("该审批单已有匹配记录，已定位；仍需追加匹配时请返回候选并选择流水");
                             } else if (!bank) {
-                              message.info("请先选择左侧银行流水，再搜索可匹配审批单");
+                              if ((data?.approvals ?? []).some(a => a.approval_no?.includes(keyword))) {
+                                message.info("已找到审批单；确认匹配前请选择左侧银行流水");
+                              } else {
+                                message.info("当前门店未找到可用于筹建对账的审批单，请核对编号、审批状态及费用归属");
+                              }
                             } else if (!candidates.some(a => a.approval_no?.includes(keyword))) {
                               message.info("未找到可匹配审批单，请核对编号、门店及费用归属");
                             }
@@ -643,11 +647,11 @@ export default function PreopeningPage() {
                         />
                         <Spin spinning={candidateLoading}>
                           <div className="approval-candidate-list">
-                            {candidates
+                            {searchableApprovals
                               .filter(
                                 (a) =>
                                   !approvalSearch ||
-                                  a.approval_no?.includes(approvalSearch),
+                                  a.approval_no?.includes(approvalSearch.trim()),
                               )
                               .slice(
                                 (candidatePage - 1) * 10,
@@ -749,17 +753,17 @@ export default function PreopeningPage() {
                                   </div>
                                 </div>
                               ))}
-                            {!candidates.filter(
+                            {!searchableApprovals.filter(
                               (a) =>
                                 !approvalSearch ||
-                                a.approval_no?.includes(approvalSearch),
+                                a.approval_no?.includes(approvalSearch.trim()),
                             ).length && (
                               <Empty
                                 image={Empty.PRESENTED_IMAGE_SIMPLE}
                                 description={
-                                  bank
-                                    ? "暂无符合条件的审批单"
-                                    : "请先选择银行流水"
+                                  bank || approvalSearch.trim()
+                                    ? "暂无符合条件的审批单，请核对编号、审批状态及费用归属"
+                                    : "可先搜索审批编号，或选择银行流水查看推荐候选"
                                 }
                               />
                             )}
@@ -769,10 +773,10 @@ export default function PreopeningPage() {
                             current={candidatePage}
                             pageSize={10}
                             total={
-                              candidates.filter(
+                              searchableApprovals.filter(
                                 (a) =>
                                   !approvalSearch ||
-                                  a.approval_no?.includes(approvalSearch),
+                                  a.approval_no?.includes(approvalSearch.trim()),
                               ).length
                             }
                             showSizeChanger={false}

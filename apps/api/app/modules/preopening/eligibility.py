@@ -56,9 +56,6 @@ def dual_unclaimed(approval=ApprovalInstance):
             select(1).where(ApprovalAccountingPlan.approval_id == approval.id).correlate(approval)
         ),
         ~exists(
-            select(1).where(ApprovalPaidAccounting.approval_id == approval.id).correlate(approval)
-        ),
-        ~exists(
             select(1)
             .where(
                 AccrualApprovalLink.approval_id == approval.id, AccrualApprovalLink.active.is_(True)
@@ -119,6 +116,14 @@ def claim_scope(session: Session, approval_id: str, target: str):
         raise HTTPException(
             409, "该审批单已在另一费用入口占用、已封账或模板未开放双入口；不能跨筹建和日常重复匹配"
         )
+    # A dormant paid mode after unmatch is not an active ownership claim.
+    mode = session.get(ApprovalPaidAccounting, approval.id)
+    if mode is not None:
+        from app.modules.matching.accounting import approval_items, ensure_periods_open
+        expenses = approval_items(session, approval.id)
+        if expenses:
+            ensure_periods_open(session, expenses[0], [mode.period])
+        session.delete(mode)
     previous = approval.expense_scope
     approval.expense_scope = target
     for item in session.scalars(
@@ -142,6 +147,6 @@ def claim_scope(session: Session, approval_id: str, target: str):
         resource_type="approval_instance",
         resource_id=approval.id,
         summary="匹配时确定审批单整单费用归属",
-        metadata={"before": previous, "after": target},
+        metadata={"before": previous, "after": target, "removed_dormant_paid_period": mode.period if mode else None},
     )
     session.flush()
