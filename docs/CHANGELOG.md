@@ -21,6 +21,15 @@
 
 ## 2026-11-24
 
+### 筹建独立搜索及残留占用生产发布（已完成）
+
+- 时间：2026-11-24 13:01（Asia/Shanghai），12:55开始，耗时约6分钟。源码7701d94，API仅eligibility.py，PC仅筹建页；无迁移/依赖变化。预检SSH、HTTPS正常，内存可用1.5GiB、磁盘43GB。
+- API基线deploy-20261122-paid-period，PC基线deploy-20261124-preopening-search；本地Linux/amd64构建，服务器仅轻量封装。新标签deploy-20261124-independent；发布目录/opt/fin-hub/releases/deploy-20261124-independent，备份env.before及旧镜像，失败恢复对应旧API/PC，不恢复数据库。
+- 分支work/20261124-independent-deploy-01，前备份backup/20261124-independent-deploy-01-before（7701d94）；仅本地未推送。只读验收，不提交生产匹配或清理生产模式；残留模式仅在用户实际跨入口匹配时经封账检查处理。
+- 发布：API/PC镜像均deploy-20261124-independent，13:00切换，running、重启0；数据库保持20261116_0050。Linux/amd64构建通过，上传排除缓存及standalone；env.before权限600，保留旧API/PC用于回退。
+- 验收：只读Chrome实测未选流水搜索202610121258000124613显示审批卡片；既有匹配编号202609241609000262970仍能定位。页面错误0、业务写请求0；初次脚本误选隐藏Tab中的同名元素超时，限定可见元素后通过。登录/筹建页200及20/31个资源全部200，公网健康正常；生产实付模式及匹配状态before.json/after.json一致。证据存发布目录browser-check.log及assets-check.json；未提交真实匹配。完成提交创建backup/20261124-independent-deploy-01-after，未推送。
+
+
 ### 筹建未选流水独立搜索补修（开发完成，未部署）
 
 - 时间：2026-11-24 12:49（Asia/Shanghai），耗时约20分钟（估算）。用户反馈新编号202610121258000124613未匹配，原修复只覆盖已有匹配定位，未选银行流水仍无候选。
