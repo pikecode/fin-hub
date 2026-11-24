@@ -21,6 +21,13 @@
 
 ## 2026-11-24
 
+### 独立搜索补修主线合并与远程同步
+
+- 时间：2026-11-24 14:49（Asia/Shanghai），耗时约2分钟（估算）。用户授权合并推送；main与origin/main一致，待合入7701d94独立搜索/残留占用修复和c5c2f1c生产发布记录；工作区干净。
+- 分支work/20261124-independent-sync-01，前备份backup/20261124-independent-sync-01-before（c5c2f1c），主线保护backup/20261124-independent-sync-01-main-before（927d971）；完成提交建立backup/20261124-independent-sync-01-after。快进main，原子推送工作成果和可达未推送备份，远程已有备份逐个SHA核对，不覆盖、不强推。
+- 验证：git diff --check，推送后git ls-remote核对全部推送引用。仅同步代码与文档，不重复部署/测试或改变生产数据；历史未推送状态保留当时事实。回退从最新main创建rollback分支revert，不reset/强推共享主线，不恢复数据库。
+
+
 ### 筹建独立搜索及残留占用生产发布（已完成）
 
 - 时间：2026-11-24 13:01（Asia/Shanghai），12:55开始，耗时约6分钟。源码7701d94，API仅eligibility.py，PC仅筹建页；无迁移/依赖变化。预检SSH、HTTPS正常，内存可用1.5GiB、磁盘43GB。
